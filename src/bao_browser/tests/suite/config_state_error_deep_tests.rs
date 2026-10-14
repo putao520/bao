@@ -182,6 +182,7 @@ fn test_page_config_clone() {
         viewport_height: Some(720),
         stealth_profile: None,
         permission: None,
+        browser_context_id: None,
     };
     let cloned = cfg.clone();
     assert_eq!(cloned.url, cfg.url);

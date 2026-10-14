@@ -341,8 +341,20 @@ impl WebViewDelegate for BaoWebViewDelegate {
         let permission = opener
             .as_ref()
             .and_then(|page| page.permission().config().cloned());
+        // REQ-CDS-009: the popup inherits its opener's browser context
+        // alongside the fingerprint/permission config — an auxiliary of a
+        // context-2 page must not silently land in the default context.
+        let browser_context_id = opener
+            .as_ref()
+            .map(|page| pool.page_context_id(page.id()));
         if pool
-            .create_popup_page(request, self.viewport, stealth_profile, permission)
+            .create_popup_page(
+                request,
+                self.viewport,
+                stealth_profile,
+                permission,
+                browser_context_id,
+            )
             .is_none()
         {
             log::warn!(

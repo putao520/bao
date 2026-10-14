@@ -59,12 +59,68 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
                 }),
             };
         }
+        // REQ-CDS-009: the browser-context lifecycle faces are domain-owned
+        // (unknown context = Chrome's "Failed to find browser context"
+        // server error), so they ride the classified funnel like
+        // Fetch.resolve / Overlay.highlightNode — transport-class -32603 is
+        // reserved for channel faces.
+        BridgeCommand::DisposeBrowserContext { browser_context_id } => {
+            return BridgeResponse {
+                // The response names the targets the disposal closed so the
+                // WS face can emit Chrome's close-event stream per target
+                // (targetDestroyed/detachedFromTarget — REQ-CDS-009
+                // criterion 2's observable destruction face).
+                result: pool
+                    .dispose_browser_context(&browser_context_id)
+                    .map(|closed| {
+                        serde_json::json!({
+                            "closedTargetIds": closed
+                                .into_iter()
+                                .map(|id| id.to_string())
+                                .collect::<Vec<String>>(),
+                        })
+                    })
+                    .map_err(|e| BridgeError::domain(to_browser_error(e))),
+            };
+        }
+        BridgeCommand::CreateTargetInContext {
+            url,
+            browser_context_id,
+        } => {
+            return BridgeResponse {
+                result: if pool.browser_context_exists(&browser_context_id) {
+                    cmd_create_target(pool, &url, Some(&browser_context_id))
+                        .map_err(BridgeError::no_bridge)
+                } else {
+                    Err(BridgeError::domain(format!(
+                        "Failed to find browser context: {browser_context_id}"
+                    )))
+                },
+            };
+        }
         _ => {}
     }
     let result = match cmd {
         // Multi-target management commands — operate on the pool, not a specific page
-        BridgeCommand::CreateTarget { url } => cmd_create_target(pool, &url),
+        BridgeCommand::CreateTarget { url } => cmd_create_target(pool, &url, None),
         BridgeCommand::ListTargets => cmd_list_targets(pool),
+        // REQ-CDS-009: browser context registry faces — pool-level, like the
+        // multi-target management commands above.
+        BridgeCommand::CreateBrowserContext => {
+            Ok(serde_json::json!({
+                "browserContextId": pool.create_browser_context()
+            }))
+        }
+        BridgeCommand::ListBrowserContexts => Ok(serde_json::json!({
+            "browserContextIds": pool.list_browser_contexts()
+        })),
+        BridgeCommand::GetTargetContextId { target_id } => parse_target_id(&target_id)
+            .ok_or_else(|| format!("invalid target_id: {target_id}"))
+            .map(|id| {
+                serde_json::json!({
+                    "browserContextId": pool.page_context_id(id)
+                })
+            }),
 
         // All other commands require a target_id to look up the page
         BridgeCommand::Navigate { target_id, url } => {
@@ -455,6 +511,12 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         // Worker/ServiceWorker target management — CDP Target domain for Workers
         // @trace REQ-BRW-004 [entity:Worker] [entity:ServiceWorker]
         BridgeCommand::ListWorkerTargets { target_id } => {
+            // REQ-CDS-009: worker sub-targets inherit the owning page's
+            // context attribution (resolved pool-side, before the page
+            // closure).
+            let context_id = parse_target_id(&target_id)
+                .map(|id| pool.page_context_id(id))
+                .unwrap_or_else(|| bao_cdp::servo_bridge::DEFAULT_BROWSER_CONTEXT_ID.to_string());
             with_page(pool, &target_id, |page| {
                 // Real worker registry: the per-webview scope tables populated
                 // by Worker construction (DEC-WK-001 native path). Every entry
@@ -465,12 +527,12 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
                 let mut workers: Vec<Value> = st
                     .dedicated_worker_scopes()
                     .into_iter()
-                    .map(|scope| worker_target_json(&scope.worker_id.0, "worker"))
+                    .map(|scope| worker_target_json(&scope.worker_id.0, "worker", &context_id))
                     .collect();
                 workers.extend(
                     st.shared_worker_scopes()
                         .into_iter()
-                        .map(|scope| worker_target_json(&scope.shared_worker_id.script_url, "shared_worker")),
+                        .map(|scope| worker_target_json(&scope.shared_worker_id.script_url, "shared_worker", &context_id)),
                 );
                 Ok(serde_json::json!({ "workerTargets": workers }))
             })
@@ -478,27 +540,33 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::GetWorkerTargetInfo {
             target_id,
             worker_id,
-        } => with_page(pool, &target_id, |page| {
-            // Real registry lookup: the worker id must identify a registered
-            // Dedicated/Shared Worker scope — unknown ids are an explicit
-            // error, never a fabricated TargetInfo.
-            let state = page.webview_state();
-            let st = state.borrow();
-            if let Some(scope) = st.dedicated_worker_scope_by_url(&worker_id) {
-                return Ok(serde_json::json!({
-                    "targetInfo": worker_target_json(&scope.worker_id.0, "worker")
-                }));
-            }
-            if let Some(scope) = st.shared_worker_scope_by_script_url(&worker_id) {
-                return Ok(serde_json::json!({
-                    "targetInfo": worker_target_json(
-                        &scope.shared_worker_id.script_url,
-                        "shared_worker"
-                    )
-                }));
-            }
-            Err(format!("unknown worker targetId: {worker_id}"))
-        }),
+        } => {
+            let context_id = parse_target_id(&target_id)
+                .map(|id| pool.page_context_id(id))
+                .unwrap_or_else(|| bao_cdp::servo_bridge::DEFAULT_BROWSER_CONTEXT_ID.to_string());
+            with_page(pool, &target_id, |page| {
+                // Real registry lookup: the worker id must identify a registered
+                // Dedicated/Shared Worker scope — unknown ids are an explicit
+                // error, never a fabricated TargetInfo.
+                let state = page.webview_state();
+                let st = state.borrow();
+                if let Some(scope) = st.dedicated_worker_scope_by_url(&worker_id) {
+                    return Ok(serde_json::json!({
+                        "targetInfo": worker_target_json(&scope.worker_id.0, "worker", &context_id)
+                    }));
+                }
+                if let Some(scope) = st.shared_worker_scope_by_script_url(&worker_id) {
+                    return Ok(serde_json::json!({
+                        "targetInfo": worker_target_json(
+                            &scope.shared_worker_id.script_url,
+                            "shared_worker",
+                            &context_id
+                        )
+                    }));
+                }
+                Err(format!("unknown worker targetId: {worker_id}"))
+            })
+        }
         BridgeCommand::ListServiceWorkerRegistrations { target_id } => {
             with_page(pool, &target_id, |page| {
                 // Real per-webview registry: the page's controlling
@@ -537,9 +605,13 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::OverlayHideHighlight { target_id } => {
             with_page(pool, &target_id, cmd_overlay_hide_highlight)
         }
-        // Domain-classified faces are dispatched above (e234/e236 hoist);
+        // Domain-classified faces are dispatched above (e234/e236 hoist;
+        // REQ-CDS-009 adds the browser-context lifecycle pair);
         // the funnel itself is fail-closed if one ever lands here.
-        BridgeCommand::FetchResolve { .. } | BridgeCommand::OverlayHighlightNode { .. } => {
+        BridgeCommand::FetchResolve { .. }
+        | BridgeCommand::OverlayHighlightNode { .. }
+        | BridgeCommand::DisposeBrowserContext { .. }
+        | BridgeCommand::CreateTargetInContext { .. } => {
             Err("domain-classified command reached the transport funnel".into())
         }
     };
@@ -625,18 +697,26 @@ fn sw_registration_to_json(handle: ServiceWorkerHandle) -> Value {
     })
 }
 
-fn cmd_create_target(pool: &PagePool, url: &str) -> Result<Value, String> {
+fn cmd_create_target(pool: &PagePool, url: &str, context_id: Option<&str>) -> Result<Value, String> {
     let config = PageConfig {
         url: if url.is_empty() {
             None
         } else {
             Some(url.to_string())
         },
+        browser_context_id: context_id.map(|s| s.to_string()),
         ..Default::default()
     };
     let page = pool.create_page(&config).map_err(|e| format!("{e}"))?;
     let page_id = page.id();
-    Ok(serde_json::json!({ "targetId": page_id.to_string() }))
+    // REQ-CDS-009: the response carries the context the page actually landed
+    // in (read back from the pool registry) so the WS event stream can
+    // attribute the attachedToTarget event without re-querying.
+    let attributed = pool.page_context_id(page_id);
+    Ok(serde_json::json!({
+        "targetId": page_id.to_string(),
+        "browserContextId": attributed,
+    }))
 }
 
 fn cmd_list_targets(pool: &PagePool) -> Result<Value, String> {
@@ -644,14 +724,21 @@ fn cmd_list_targets(pool: &PagePool) -> Result<Value, String> {
     // the array form ServoTargetProvider::list_targets parses ({id,title,url}
     // entries) — the previous {"targetIds": [...]} object never matched the
     // provider, silently forcing the single-target fallback path.
-    let stats = pool.stats();
+    // REQ-CDS-009 criterion 5: entries carry their context attribution — the
+    // protocol face passes it through to TargetInfo verbatim.
+    //
+    // Enumeration uses `live_page_ids` (the documented single source): the
+    // former `1..=stats-count` reconstruction silently missed live pages
+    // above closed low ids (the webdriver enumerator's regression shape,
+    // called out on `live_page_ids`).
     let mut targets: Vec<Value> = Vec::new();
-    for id in 1..=(stats.active + stats.idle) {
+    for id in pool.live_page_ids() {
         if let Some(page) = pool.get_page(id) {
             targets.push(serde_json::json!({
                 "id": id.to_string(),
                 "title": page.page_title().unwrap_or_default(),
                 "url": page.current_url().unwrap_or_else(|| "about:blank".into()),
+                "browserContextId": pool.page_context_id(id),
             }));
         }
     }
@@ -660,14 +747,17 @@ fn cmd_list_targets(pool: &PagePool) -> Result<Value, String> {
 
 /// CDP TargetInfo JSON for a Worker sub-target. `target_id` is the Worker's
 /// script URL (the WorkerId) — the real registry key, not a synthetic index.
+/// `context_id` is the owning page's browser context (REQ-CDS-009: workers
+/// are sub-targets of their page and inherit its attribution).
 /// @trace REQ-BRW-004 [entity:Worker] [entity:SharedWorker] [criterion:19]
-fn worker_target_json(target_id: &str, target_type: &str) -> Value {
+fn worker_target_json(target_id: &str, target_type: &str, context_id: &str) -> Value {
     serde_json::json!({
         "targetId": target_id,
         "type": target_type,
         "title": target_id,
         "url": target_id,
         "attached": false,
+        "browserContextId": context_id,
     })
 }
 

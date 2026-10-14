@@ -67,6 +67,11 @@ pub struct PagePool {
     /// the pool from the pump thread. Unarmed (`Weak::new()`) = delegates
     /// deny popup opens / closes, logged — never a panic.
     self_weak: RefCell<std::rc::Weak<PagePool>>,
+    /// REQ-CDS-009: browser context registry — explicit context identities
+    /// plus page→context attribution. Lives in the pool's pump-thread domain:
+    /// disposal closes member pages through this pool and every attribution
+    /// query rides the bridge drain path (same thread, `RefCell` discipline).
+    browser_contexts: RefCell<crate::browser_context::BrowserContextRegistry>,
 }
 
 impl PagePool {
@@ -89,6 +94,7 @@ impl PagePool {
             init_retries: RefCell::new(HashMap::new()),
             pending_closes: RefCell::new(Vec::new()),
             self_weak: RefCell::new(std::rc::Weak::new()),
+            browser_contexts: RefCell::new(crate::browser_context::BrowserContextRegistry::new()),
         }
     }
 
@@ -113,6 +119,22 @@ impl PagePool {
                 "page limit exceeded: {total}/{}",
                 self.max_total
             )));
+        }
+
+        // REQ-CDS-009 criterion 4: a named browser context must exist BEFORE
+        // any WebView is built — an unknown id fails closed (Chrome's "Failed
+        // to find browser context") instead of leaking a page into the wrong
+        // context. The default context is implicit and always valid.
+        if let Some(ctx) = &config.browser_context_id {
+            if !self
+                .browser_contexts
+                .borrow()
+                .context_exists(ctx)
+            {
+                return Err(BrowserError::Init(format!(
+                    "Failed to find browser context: {ctx}"
+                )));
+            }
         }
 
         // SM-EVOLUTION #28 (verdict consumed 2026-09-10, REQ-STL identity
@@ -257,6 +279,11 @@ impl PagePool {
         }
 
         self.active_pages.borrow_mut().insert(id, page.clone());
+        // REQ-CDS-009 criterion 5: record the context attribution the moment
+        // the page enters the pool (only live pages are attributed).
+        self.browser_contexts
+            .borrow_mut()
+            .attribute_page(id, config.browser_context_id.as_deref());
         *self.total_created.borrow_mut() += 1;
         // create_page fully returned — park the watchdog until the next phase.
         crate::phase_watch::enter_phase(crate::phase_watch::phase::IDLE, 0);
@@ -298,6 +325,7 @@ impl PagePool {
         viewport: PhysicalSize<u32>,
         stealth_profile: Option<bao_stealth::StealthProfile>,
         permission: Option<Permission>,
+        browser_context_id: Option<String>,
     ) -> Option<PageHandle> {
         let total = self.active_pages.borrow().len() + self.idle_pages.borrow().len();
         if total >= self.max_total {
@@ -368,6 +396,12 @@ impl PagePool {
         }
 
         self.active_pages.borrow_mut().insert(id, page.clone());
+        // REQ-CDS-009: popups are auxiliaries of their opener — same context
+        // attribution (the delegate resolves the opener's context alongside
+        // its stealth/permission inheritance).
+        self.browser_contexts
+            .borrow_mut()
+            .attribute_page(id, browser_context_id.as_deref());
         *self.total_created.borrow_mut() += 1;
         self.pending_inits.borrow_mut().push(id);
         crate::phase_watch::enter_phase(crate::phase_watch::phase::IDLE, 0);
@@ -510,6 +544,9 @@ impl PagePool {
             .or_else(|| self.idle_pages.borrow_mut().remove(&id).map(|e| e.page));
         match retired {
             Some(page) => {
+                // REQ-CDS-009: map removal is the accounting signal — the
+                // context attribution goes with it.
+                self.browser_contexts.borrow_mut().remove_page(id);
                 self.pending_closes.borrow_mut().push(page);
                 true
             }
@@ -567,11 +604,13 @@ impl PagePool {
     fn close_page_inner(&self, id: usize) -> Result<(), BrowserError> {
         let _ = self.init_retries.borrow_mut().remove(&id);
         if let Some(page) = self.active_pages.borrow_mut().remove(&id) {
+            self.browser_contexts.borrow_mut().remove_page(id);
             page.close()?;
             *self.total_destroyed.borrow_mut() += 1;
             return Ok(());
         }
         if let Some(entry) = self.idle_pages.borrow_mut().remove(&id) {
+            self.browser_contexts.borrow_mut().remove_page(id);
             entry.page.close()?;
             *self.total_destroyed.borrow_mut() += 1;
             return Ok(());
@@ -610,6 +649,7 @@ impl PagePool {
 
         for id in expired {
             if let Some(entry) = self.idle_pages.borrow_mut().remove(&id) {
+                self.browser_contexts.borrow_mut().remove_page(id);
                 let _ = entry.page.close();
                 *self.total_destroyed.borrow_mut() += 1;
                 reclaimed += 1;
@@ -681,14 +721,74 @@ impl PagePool {
     }
 
     pub fn close_all(&self) {
-        for (_, page) in self.active_pages.borrow_mut().drain() {
+        for (id, page) in self.active_pages.borrow_mut().drain() {
+            self.browser_contexts.borrow_mut().remove_page(id);
             let _ = page.close();
             *self.total_destroyed.borrow_mut() += 1;
         }
-        for (_, entry) in self.idle_pages.borrow_mut().drain() {
+        for (id, entry) in self.idle_pages.borrow_mut().drain() {
+            self.browser_contexts.borrow_mut().remove_page(id);
             let _ = entry.page.close();
             *self.total_destroyed.borrow_mut() += 1;
         }
+    }
+
+    // ── REQ-CDS-009: browser context lifecycle (bridge drain face) ──────
+
+    /// Target.createBrowserContext — mint an explicit context id.
+    pub fn create_browser_context(&self) -> String {
+        self.browser_contexts.borrow_mut().create_context()
+    }
+
+    /// Target.disposeBrowserContext — destroy the context and close every
+    /// page that belonged to it. Returns the ids of the pages actually
+    /// closed, so the command face can emit Chrome's close-event face
+    /// (targetDestroyed/detachedFromTarget) — a context disposal whose pages
+    /// die silently strands client-side page objects. The context is gone
+    /// even when a member page close errors (already-closed pages are the
+    /// benign case) — failures are logged, never a fake "all closed" claim.
+    /// Unknown/default contexts fail closed with Chrome's "Failed to find
+    /// browser context" error.
+    pub fn dispose_browser_context(&self, id: &str) -> Result<Vec<usize>, BrowserError> {
+        let orphaned = self
+            .browser_contexts
+            .borrow_mut()
+            .dispose_context(id)
+            .map_err(BrowserError::Init)?;
+        let mut closed = Vec::new();
+        for page_id in orphaned {
+            match self.close_page_inner(page_id) {
+                Ok(()) => closed.push(page_id),
+                Err(e) => {
+                    log::error!(
+                        "[page_pool] disposing context {id}: closing page {page_id} errored: {e}"
+                    );
+                }
+            }
+        }
+        Ok(closed)
+    }
+
+    /// Target.getBrowserContexts — the explicit contexts (Chrome never lists
+    /// the implicit default).
+    pub fn list_browser_contexts(&self) -> Vec<String> {
+        self.browser_contexts.borrow().list_contexts()
+    }
+
+    /// Registry existence probe for the classified create-with-context face
+    /// (the domain-error class is decided here, before page creation runs).
+    pub fn browser_context_exists(&self, id: &str) -> bool {
+        self.browser_contexts.borrow().context_exists(id)
+    }
+
+    /// The context a live page belongs to (absence = the implicit default) —
+    /// the single attribution query for the listing faces and popup
+    /// inheritance.
+    pub fn page_context_id(&self, page_id: usize) -> String {
+        self.browser_contexts
+            .borrow()
+            .context_of_page(page_id)
+            .to_string()
     }
 }
 

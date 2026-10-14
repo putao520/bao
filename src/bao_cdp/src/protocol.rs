@@ -45,7 +45,9 @@ use serde_json::Value;
 use crate::devtools_dom;
 // FetchResolveAction: REQ-CDP-006 C6 — the Fetch domain and the legacy
 // Network interception face both resolve paused requests through it.
-use crate::servo_bridge::{BridgeCommand, BridgeErrorKind, BridgeSender, FetchResolveAction};
+use crate::servo_bridge::{
+    BridgeCommand, BridgeErrorKind, BridgeSender, FetchResolveAction, DEFAULT_BROWSER_CONTEXT_ID,
+};
 
 // Chrome DevTools "server error" code used for not-supported commands.
 pub(crate) const ERR_NOT_SUPPORTED: i64 = -32000;
@@ -193,7 +195,11 @@ pub(crate) fn eval_json(
         })
 }
 
-fn live_target_info(target_id: &str, bridge: Option<&BridgeSender>) -> Value {
+fn live_target_info(
+    target_id: &str,
+    bridge: Option<&BridgeSender>,
+    context_hint: Option<&str>,
+) -> Value {
     let title = bridge
         .and_then(|b| {
             b.send(BridgeCommand::GetTitle {
@@ -220,10 +226,37 @@ fn live_target_info(target_id: &str, bridge: Option<&BridgeSender>) -> Value {
         "title": title,
         "url": url,
         "attached": true,
-        // Stable default-context id (pages are created outside any explicit
-        // BrowserContext; clients like Playwright require the field present).
-        "browserContextId": "bao-default-context",
+        // Real attribution (REQ-CDS-009): the context id the target was
+        // created in — passed through from the listing entry, queried from
+        // the bridge registry, or the implicit default when the target was
+        // created outside any explicit BrowserContext. Clients like
+        // Playwright require the field present.
+        "browserContextId": context_hint
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_BROWSER_CONTEXT_ID),
     })
+}
+
+/// Per-target attribution query for the single-target faces (`getTargetInfo`):
+/// the browser-side context registry is the truth source. A dead/unresolvable
+/// target degrades to the implicit default — the same fallback every
+/// bridge-less face uses — rather than failing the info lookup.
+fn target_context_id(target_id: &str, bridge: Option<&BridgeSender>) -> String {
+    bridge
+        .and_then(|b| {
+            b.send(BridgeCommand::GetTargetContextId {
+                target_id: target_id.to_string(),
+            })
+            .result
+            .ok()
+        })
+        .and_then(|v| {
+            v.get("browserContextId")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| DEFAULT_BROWSER_CONTEXT_ID.to_string())
 }
 
 fn handle_target(
@@ -245,10 +278,17 @@ fn handle_target(
                 Some(entries) => {
                     for entry in entries {
                         let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                        target_infos.push(live_target_info(id, bridge));
+                        // REQ-CDS-009 attribution: the listing entry carries
+                        // the context the browser-side registry recorded at
+                        // creation — passed through verbatim, never re-minted.
+                        let context = entry
+                            .get("browserContextId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(DEFAULT_BROWSER_CONTEXT_ID);
+                        target_infos.push(live_target_info(id, bridge, Some(context)));
                     }
                 }
-                None => target_infos.push(live_target_info(target_id, bridge)),
+                None => target_infos.push(live_target_info(target_id, bridge, None)),
             }
             push_worker_target_infos(&mut target_infos, target_id, bridge);
             Ok(serde_json::json!({ "targetInfos": target_infos }))
@@ -265,13 +305,54 @@ fn handle_target(
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .unwrap_or("about:blank");
+            // REQ-CDS-009 criterion 4: a browserContextId param routes the
+            // creation into that context (unknown ids fail closed at the
+            // browser-side registry, Chrome's "Failed to find browser
+            // context" server error). No param → the implicit default.
+            let context_id = params
+                .as_ref()
+                .and_then(|v| v.get("browserContextId"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty());
+            match context_id {
+                Some(ctx) => bridge_send(
+                    bridge,
+                    BridgeCommand::CreateTargetInContext {
+                        url: url.to_string(),
+                        browser_context_id: ctx.to_string(),
+                    },
+                ),
+                None => bridge_send(
+                    bridge,
+                    BridgeCommand::CreateTarget {
+                        url: url.to_string(),
+                    },
+                ),
+            }
+        }
+        // REQ-CDS-009 criteria 1-3: browser context lifecycle. All three are
+        // bridge-backed — the registry lives browser-side with the PagePool
+        // (single servo truth); the protocol face is thin dispatch.
+        "createBrowserContext" => bridge_send(bridge, BridgeCommand::CreateBrowserContext),
+        "disposeBrowserContext" => {
+            let context_id = params
+                .as_ref()
+                .and_then(|v| v.get("browserContextId"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| CdpError {
+                    code: ERR_INVALID_PARAMS,
+                    message: "'Target.disposeBrowserContext' requires a non-empty browserContextId param"
+                        .into(),
+                })?;
             bridge_send(
                 bridge,
-                BridgeCommand::CreateTarget {
-                    url: url.to_string(),
+                BridgeCommand::DisposeBrowserContext {
+                    browser_context_id: context_id.to_string(),
                 },
             )
         }
+        "getBrowserContexts" => bridge_send(bridge, BridgeCommand::ListBrowserContexts),
         "closeTarget" => {
             // CDP semantics: closes the target named by params.targetId (the
             // session's own target when omitted). Blocking bridge round-trip —
@@ -300,7 +381,12 @@ fn handle_target(
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .unwrap_or(target_id);
-            Ok(serde_json::json!({ "targetInfo": live_target_info(tid, bridge) }))
+            // REQ-CDS-009 attribution: the single-target face queries the
+            // browser-side registry (criterion 5).
+            let context = target_context_id(tid, bridge);
+            Ok(serde_json::json!({
+                "targetInfo": live_target_info(tid, bridge, Some(&context))
+            }))
         }
         // Session-table commands: minting/removing CDP sessions requires the
         // WS session registry (bao_browser::ws_registry::BaoWsRegistry), the
@@ -2813,6 +2899,163 @@ mod tests {
         assert_eq!(result["targetInfos"][0]["targetId"], "t1");
     }
 
+    // ─── REQ-CDS-009: browser context command face ─────────────────────
+
+    /// Scripted bridge responder serving the context-management commands and
+    /// the context-aware create routing — the same live-channel shape the
+    /// ws_registry tests use.
+    fn context_responder(
+        rx: crate::servo_bridge::BridgeReceiver,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || loop {
+            let handled = rx.try_process(|cmd| {
+                crate::servo_bridge::BridgeResponse {
+                    result: match cmd {
+                        BridgeCommand::CreateBrowserContext => {
+                            Ok(json!({"browserContextId": "bao-context-1"}))
+                        }
+                        BridgeCommand::ListBrowserContexts => {
+                            Ok(json!({"browserContextIds": ["bao-context-1"]}))
+                        }
+                        BridgeCommand::DisposeBrowserContext { browser_context_id } => {
+                            if browser_context_id == "bao-context-1" {
+                                Ok(json!({}))
+                            } else {
+                                Err(crate::servo_bridge::BridgeError::domain(format!(
+                                    "Failed to find browser context: {browser_context_id}"
+                                )))
+                            }
+                        }
+                        BridgeCommand::CreateTargetInContext { browser_context_id, .. } => {
+                            if browser_context_id == "bao-context-1" {
+                                Ok(json!({
+                                    "targetId": "7",
+                                    "browserContextId": browser_context_id
+                                }))
+                            } else {
+                                Err(crate::servo_bridge::BridgeError::domain(format!(
+                                    "Failed to find browser context: {browser_context_id}"
+                                )))
+                            }
+                        }
+                        BridgeCommand::GetTargetContextId { target_id } => {
+                            Ok(json!({"browserContextId": format!("ctx-of-{target_id}")}))
+                        }
+                        BridgeCommand::GetTitle { .. } => Ok(json!("T")),
+                        BridgeCommand::GetUrl { .. } => Ok(json!("https://example.com")),
+                        BridgeCommand::ListTargets => Ok(json!([
+                            {"id": "1", "title": "P", "url": "about:blank",
+                             "browserContextId": "bao-context-1"}
+                        ])),
+                        _ => Ok(json!({})),
+                    },
+                }
+            });
+            if !handled {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        })
+    }
+
+    fn dispatch_with_bridge(
+        id: i64,
+        method: &str,
+        params: Option<Value>,
+        bridge: &crate::servo_bridge::BridgeSender,
+    ) -> CdpResponse {
+        let msg = cdp_msg(id, method, params);
+        let params = msg.params.clone();
+        handle_command(msg, "t1", &params, Some(bridge))
+    }
+
+    // @trace TEST-CDS-009 [req:REQ-CDS-009] [criterion:1] [level:unit]
+    #[test]
+    fn create_browser_context_returns_bridge_minted_id() {
+        let (tx, rx) = crate::servo_bridge::bridge_channel(std::time::Duration::from_secs(2));
+        let _keeper = context_responder(rx);
+        let resp = dispatch_with_bridge(1, "Target.createBrowserContext", None, &tx);
+        assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+        let id = resp.result.unwrap()["browserContextId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(id, "bao-context-1");
+        assert_ne!(id, DEFAULT_BROWSER_CONTEXT_ID);
+    }
+
+    // @trace TEST-CDS-009 [req:REQ-CDS-009] [criterion:2] [level:unit]
+    #[test]
+    fn dispose_browser_context_unknown_id_surfaces_domain_error() {
+        let (tx, rx) = crate::servo_bridge::bridge_channel(std::time::Duration::from_secs(2));
+        let _keeper = context_responder(rx);
+        let resp = dispatch_with_bridge(
+            1,
+            "Target.disposeBrowserContext",
+            Some(json!({"browserContextId": "nope"})),
+            &tx,
+        );
+        let err = resp.error.expect("unknown context must fail");
+        assert_eq!(err.code, ERR_NOT_SUPPORTED);
+        assert!(err.message.contains("Failed to find browser context"));
+    }
+
+    // @trace TEST-CDS-009 [req:REQ-CDS-009] [criterion:3] [level:unit]
+    #[test]
+    fn get_browser_contexts_returns_registry_listing() {
+        let (tx, rx) = crate::servo_bridge::bridge_channel(std::time::Duration::from_secs(2));
+        let _keeper = context_responder(rx);
+        let resp = dispatch_with_bridge(1, "Target.getBrowserContexts", None, &tx);
+        assert!(resp.error.is_none());
+        let ids = resp.result.unwrap()["browserContextIds"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(ids, vec![json!("bao-context-1")]);
+    }
+
+    // @trace TEST-CDS-009 [req:REQ-CDS-009] [criterion:4] [level:unit]
+    #[test]
+    fn create_target_with_context_routes_context_aware_creation() {
+        let (tx, rx) = crate::servo_bridge::bridge_channel(std::time::Duration::from_secs(2));
+        let _keeper = context_responder(rx);
+        let resp = dispatch_with_bridge(
+            1,
+            "Target.createTarget",
+            Some(json!({"url": "about:blank", "browserContextId": "bao-context-1"})),
+            &tx,
+        );
+        assert!(resp.error.is_none());
+        let r = resp.result.unwrap();
+        assert_eq!(r["targetId"], "7");
+        assert_eq!(r["browserContextId"], "bao-context-1");
+        // Unknown context fails closed with Chrome's server-error class.
+        let err = dispatch_with_bridge(
+            2,
+            "Target.createTarget",
+            Some(json!({"url": "about:blank", "browserContextId": "nope"})),
+            &tx,
+        )
+        .error
+        .expect("unknown context must fail");
+        assert_eq!(err.code, ERR_NOT_SUPPORTED);
+        assert!(err.message.contains("Failed to find browser context"));
+    }
+
+    // @trace TEST-CDS-009 [req:REQ-CDS-009] [criterion:5] [level:unit]
+    #[test]
+    fn get_targets_attribution_comes_from_listing_entries() {
+        let (tx, rx) = crate::servo_bridge::bridge_channel(std::time::Duration::from_secs(2));
+        let _keeper = context_responder(rx);
+        let resp = dispatch_with_bridge(1, "Target.getTargets", None, &tx);
+        assert!(resp.error.is_none());
+        let infos = resp.result.unwrap()["targetInfos"].as_array().unwrap().clone();
+        let page = infos
+            .iter()
+            .find(|i| i["type"] == "page")
+            .expect("page entry present");
+        assert_eq!(page["browserContextId"], "bao-context-1");
+    }
+
     // ─── handle_command table-driven protocol matrix ──────────────────
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
     //
@@ -3230,6 +3473,40 @@ mod tests {
             ),
             // 88. Page.setContent (no html param) → -32602 invalid params
             (17, "Page.setContent", None, -32602, "html"),
+            // REQ-CDS-009: browser-context lifecycle commands are
+            // bridge-backed (the registry lives browser-side with the
+            // PagePool) — bridge-less dispatch fails loudly, never a canned
+            // context id or an empty list.
+            (
+                18,
+                "Target.createBrowserContext",
+                None,
+                -32603,
+                "no servo bridge connected",
+            ),
+            (
+                19,
+                "Target.disposeBrowserContext",
+                Some(json!({"browserContextId": "bao-context-1"})),
+                -32603,
+                "no servo bridge connected",
+            ),
+            (
+                20,
+                "Target.getBrowserContexts",
+                None,
+                -32603,
+                "no servo bridge connected",
+            ),
+            // Missing browserContextId param → -32602 invalid params (Chrome
+            // requires it for disposeBrowserContext).
+            (
+                21,
+                "Target.disposeBrowserContext",
+                None,
+                -32602,
+                "requires a non-empty browserContextId param",
+            ),
         ];
         for (id, method, params, code, msg) in cases {
             let resp = dispatch_no_bridge(id, method, params);

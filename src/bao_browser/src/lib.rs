@@ -8,6 +8,7 @@
 // REQ-BRW-4: Worker/SharedWorker/ServiceWorker constructors on JS global object
 // REQ-CLI-002: bao browser 子命令 → servo 初始化 + CDP 端口输出
 // REQ-LIB-004: BrowserRuntime top-level coordinator
+mod browser_context;
 mod cdp_handler;
 pub mod cdp_memory;
 mod config;

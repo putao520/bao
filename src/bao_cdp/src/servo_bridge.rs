@@ -34,6 +34,14 @@ pub fn main_frame_id_for_target(target_id: &str) -> String {
     format!("main-{target_id}")
 }
 
+/// The implicit default browser context id (REQ-CDS-009). Pages created
+/// outside any explicit `Target.createBrowserContext` belong here; Chrome
+/// likewise never lists the implicit default in `Target.getBrowserContexts`.
+/// Single source for every wire face that reports attribution
+/// (protocol `live_target_info`, the WS event stream) — the explicit-context
+/// registry mints `bao-context-*` ids that can never collide with it.
+pub const DEFAULT_BROWSER_CONTEXT_ID: &str = "bao-default-context";
+
 // ─── REQ-CDP-006 C6: request interception command face ──────────────────
 // The Fetch domain and the legacy `Network.setRequestInterception` /
 // `Network.continueInterceptedRequest` face share one interception facility
@@ -233,6 +241,26 @@ pub enum BridgeCommand {
         url: String,
     },
     ListTargets,
+    // Browser context management (REQ-CDS-009). The context-aware target
+    // creation is a distinct variant rather than a new field on CreateTarget:
+    // the parallel-universe client (bao_cdp_client BridgeSenderBackend)
+    // constructs/matches the base variant outside this wave's ownership
+    // boundary, and the context-free shape is the only one it can mint.
+    CreateBrowserContext,
+    DisposeBrowserContext {
+        browser_context_id: String,
+    },
+    ListBrowserContexts,
+    CreateTargetInContext {
+        url: String,
+        browser_context_id: String,
+    },
+    /// Per-target attribution query for the single-target `getTargetInfo`
+    /// face (`getTargets` reads the context id straight off the
+    /// `ListTargets` entries).
+    GetTargetContextId {
+        target_id: String,
+    },
     // Debugger domain — mapped to servo DevtoolScriptControlMsg (BUG-CDP-006)
     DebuggerEnable {
         target_id: String,

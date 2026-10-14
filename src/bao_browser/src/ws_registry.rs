@@ -16,7 +16,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use bao_cdp::servo_bridge::{BridgeCommand, BridgeSender, main_frame_id_for_target};
+use bao_cdp::servo_bridge::{
+    BridgeCommand, BridgeSender, DEFAULT_BROWSER_CONTEXT_ID, main_frame_id_for_target,
+};
 use cdp_server::{CdpError, CdpMessage, EventSender, RegistryDispatch};
 use serde_json::{json, Value};
 
@@ -220,14 +222,11 @@ impl BaoWsRegistry {
             | "SystemInfo.enable" | "SystemInfo.disable" => {
                 Some(Ok(serde_json::json!({})))
             }
-            // W40 (#11-D): Puppeteer's connect handshake enumerates browser
-            // contexts before creating pages. Bao is a single-default-context
-            // server (no incognito/context isolation yet) — the honest
-            // answer is the empty list: everything lives in the one default
-            // context, exactly like Chrome answers for its default context.
-            "Target.getBrowserContexts" => Some(Ok(serde_json::json!({
-                "browserContextIds": []
-            }))),
+            // W40 (#11-D) retirement via REQ-CDS-009: Target.getBrowserContexts
+            // / createBrowserContext / disposeBrowserContext are no longer
+            // served here — they fall through to the bridge-backed
+            // bao_cdp dispatch (the context registry lives browser-side with
+            // the PagePool, the single servo truth).
             // W40 (#11-D): Puppeteer may query version/target info at the
             // browser session; a stable single-line answer (mirroring
             // /json/version) is the compatible face.
@@ -319,6 +318,9 @@ impl BaoWsRegistry {
                     continue;
                 };
                 let session_id = self.mint_session(id);
+                // REQ-CDS-009 criterion 5: attribution is the listing entry's
+                // context id (browser-side registry truth) — the default id
+                // is the fallback for entries predating the field.
                 event_sender.send_event(
                     "Target.attachedToTarget",
                     json!({
@@ -329,7 +331,10 @@ impl BaoWsRegistry {
                             "title": entry.get("title").cloned().unwrap_or(json!("")),
                             "url": entry.get("url").cloned().unwrap_or(json!("about:blank")),
                             "attached": true,
-                            "browserContextId": "bao-default-context",
+                            "browserContextId": entry
+                                .get("browserContextId")
+                                .cloned()
+                                .unwrap_or(json!(DEFAULT_BROWSER_CONTEXT_ID)),
                         },
                     }),
                 );
@@ -489,6 +494,14 @@ impl BaoWsRegistry {
             .filter(|s| !s.is_empty())
             .unwrap_or(target_id)
             .to_string();
+        self.emit_target_destroyed(event_sender, &closed_tid);
+    }
+
+    /// The per-target half of the Chrome close-event face — shared by
+    /// Target.closeTarget and Target.disposeBrowserContext (REQ-CDS-009
+    /// criterion 2: a disposed context's pages must die observably, or
+    /// client-side page objects for them strand).
+    fn emit_target_destroyed(&self, event_sender: &dyn EventSender, closed_tid: &str) {
         self.emit(
             event_sender,
             None,
@@ -500,7 +513,7 @@ impl BaoWsRegistry {
         if let Ok(mut table) = self.attached_sessions.lock() {
             let bound: Vec<String> = table
                 .iter()
-                .filter(|(_, t)| **t == closed_tid)
+                .filter(|(_, t)| t.as_str() == closed_tid)
                 .map(|(s, _)| s.clone())
                 .collect();
             for s in bound {
@@ -616,6 +629,9 @@ impl BaoWsRegistry {
         };
         if let Some(new_id) = r.get("targetId").and_then(|v| v.as_str()) {
             let session_id = self.mint_session(new_id);
+            // REQ-CDS-009 criterion 4/5: the create response carries the
+            // context the page landed in (read back from the pool registry
+            // by the bridge face) — the event attributes the same truth.
             event_sender.send_event(
                 "Target.attachedToTarget",
                 json!({
@@ -626,7 +642,10 @@ impl BaoWsRegistry {
                         "title": "",
                         "url": "about:blank",
                         "attached": true,
-                        "browserContextId": "bao-default-context",
+                        "browserContextId": r
+                            .get("browserContextId")
+                            .cloned()
+                            .unwrap_or(json!(DEFAULT_BROWSER_CONTEXT_ID)),
                     },
                 }),
             );
@@ -814,6 +833,22 @@ impl RegistryDispatch for BaoWsRegistry {
                 // Chrome close semantics — see `emit_target_closed_events`.
                 "Target.closeTarget" => {
                     self.emit_target_closed_events(event_sender, msg, &target_id);
+                }
+                // REQ-CDS-009 criterion 2: disposing a context closes its
+                // pages — every closed target gets the same Chrome
+                // close-event stream Target.closeTarget delivers.
+                "Target.disposeBrowserContext" => {
+                    if let Ok(closed) = &result {
+                        for tid in closed
+                            .get("closedTargetIds")
+                            .and_then(|v| v.as_array())
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|v| v.as_str())
+                        {
+                            self.emit_target_destroyed(event_sender, tid);
+                        }
+                    }
                 }
                 // Playwright page-session init — see
                 // `emit_runtime_enabled_context`.
@@ -1405,5 +1440,255 @@ mod tests {
             sender.events.lock().unwrap().is_empty(),
             "unsubscribed target events must not degrade to the untagged broadcast"
         );
+    }
+
+    // ── REQ-CDS-009: browser context lifecycle over the WS face ─────────
+
+    /// Browser-side context registry emulation (the same arms
+    /// `cdp_handler::handle_bridge_command` serves) — scripted so the WS-face
+    /// tests stay hermetic.
+    fn context_responder(rx: bao_cdp::servo_bridge::BridgeReceiver) -> std::thread::JoinHandle<()> {
+        use bao_cdp::servo_bridge::BridgeResponse;
+        let created: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let counter = Arc::new(AtomicU64::new(1));
+        std::thread::spawn(move || loop {
+            let handled = rx.try_process(|cmd| {
+                let result = match cmd {
+                    BridgeCommand::CreateBrowserContext => {
+                        let n = counter.fetch_add(1, Ordering::Relaxed);
+                        let id = format!("bao-context-{n:016x}");
+                        created.lock().unwrap().push(id.clone());
+                        Ok(json!({ "browserContextId": id }))
+                    }
+                    BridgeCommand::ListBrowserContexts => Ok(json!({
+                        "browserContextIds": created.lock().unwrap().clone()
+                    })),
+                    BridgeCommand::DisposeBrowserContext { browser_context_id } => {
+                        let mut ids = created.lock().unwrap();
+                        if let Some(pos) = ids.iter().position(|c| *c == browser_context_id) {
+                            ids.remove(pos);
+                            // Emulates the pool response: the context's member
+                            // pages were closed (this hermetic fixture pins
+                            // target 9 as the context's member —
+                            // createTargetInContext mints it below).
+                            Ok(json!({ "closedTargetIds": ["9"] }))
+                        } else {
+                            Err(bao_cdp::servo_bridge::BridgeError::domain(format!(
+                                "Failed to find browser context: {browser_context_id}"
+                            )))
+                        }
+                    }
+                    BridgeCommand::CreateTargetInContext {
+                        url,
+                        browser_context_id,
+                    } => {
+                        if created.lock().unwrap().contains(&browser_context_id) {
+                            Ok(json!({
+                                "targetId": "9",
+                                "browserContextId": browser_context_id,
+                                "_url": url,
+                            }))
+                        } else {
+                            Err(bao_cdp::servo_bridge::BridgeError::domain(format!(
+                                "Failed to find browser context: {browser_context_id}"
+                            )))
+                        }
+                    }
+                    BridgeCommand::ListTargets => Ok(json!([
+                        {
+                            "id": "1",
+                            "title": "Page 1",
+                            "url": "about:blank",
+                            "browserContextId": "bao-context-1",
+                        }
+                    ])),
+                    _ => Ok(json!({})),
+                };
+                BridgeResponse { result }
+            });
+            if !handled {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })
+    }
+
+    // @trace TEST-CDS-009 [req:REQ-CDS-009] [criterion:1,3] [level:unit]
+    #[test]
+    fn ws_browser_session_context_create_and_list_roundtrip() {
+        let (tx, rx) = bridge_channel(Duration::from_secs(2));
+        let _keeper = context_responder(rx);
+        let reg = BaoWsRegistry::new(tx);
+        let sender = NopSender;
+
+        // Chrome's getBrowserContexts before any explicit creation: empty —
+        // the implicit default is never listed.
+        let empty = reg
+            .dispatch_message(
+                &msg("Target.getBrowserContexts", json!({}), None),
+                BROWSER_TARGET,
+                &sender,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(empty["browserContextIds"], json!([]));
+
+        let created = reg
+            .dispatch_message(
+                &msg("Target.createBrowserContext", json!({}), None),
+                BROWSER_TARGET,
+                &sender,
+            )
+            .unwrap()
+            .unwrap();
+        let id = created["browserContextId"].as_str().unwrap().to_string();
+        assert!(id.starts_with("bao-context-"), "minted id: {id}");
+        assert_ne!(id, "bao-default-context");
+
+        let listed = reg
+            .dispatch_message(
+                &msg("Target.getBrowserContexts", json!({}), None),
+                BROWSER_TARGET,
+                &sender,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(listed["browserContextIds"], json!([id]));
+    }
+
+    // @trace TEST-CDS-009 [req:REQ-CDS-009] [criterion:2] [level:unit]
+    #[test]
+    fn ws_dispose_browser_context_removes_emits_close_events_unknown_fails() {
+        let (tx, rx) = bridge_channel(Duration::from_secs(2));
+        let _keeper = context_responder(rx);
+        let reg = BaoWsRegistry::new(tx);
+        let sender = CapturingSender::new();
+
+        let id = reg
+            .dispatch_message(
+                &msg("Target.createBrowserContext", json!({}), None),
+                BROWSER_TARGET,
+                &*sender,
+            )
+            .unwrap()
+            .unwrap()["browserContextId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        reg.dispatch_message(
+            &msg(
+                "Target.disposeBrowserContext",
+                json!({"browserContextId": id}),
+                None,
+            ),
+            BROWSER_TARGET,
+            &*sender,
+        )
+        .unwrap()
+        .unwrap();
+
+        // Chrome close semantics: every target the disposal closed dies
+        // observably — targetDestroyed on the browser stream.
+        let events = sender.events.lock().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|(m, p)| m == "Target.targetDestroyed" && p["targetId"] == "9"),
+            "disposed context's pages must emit targetDestroyed: {events:?}"
+        );
+        drop(events);
+
+        let listed = reg
+            .dispatch_message(
+                &msg("Target.getBrowserContexts", json!({}), None),
+                BROWSER_TARGET,
+                &*sender,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(listed["browserContextIds"], json!([]));
+
+        // Unknown id → the domain-classified server error, never a fake ok.
+        let err = reg
+            .dispatch_message(
+                &msg(
+                    "Target.disposeBrowserContext",
+                    json!({"browserContextId": "bao-context-404"}),
+                    None,
+                ),
+                BROWSER_TARGET,
+                &*sender,
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("Failed to find browser context"));
+    }
+
+    // @trace TEST-CDS-009 [req:REQ-CDS-009] [criterion:4,5] [level:unit]
+    #[test]
+    fn ws_create_target_in_context_and_auto_attach_attribution() {
+        let (tx, rx) = bridge_channel(Duration::from_secs(2));
+        let _keeper = context_responder(rx);
+        let reg = BaoWsRegistry::new(tx);
+        let sender = CapturingSender::new();
+
+        let id = reg
+            .dispatch_message(
+                &msg("Target.createBrowserContext", json!({}), None),
+                BROWSER_TARGET,
+                &*sender,
+            )
+            .unwrap()
+            .unwrap()["browserContextId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // createTarget carrying the context id → created inside it, and the
+        // auto-attach event attributes the same context.
+        reg.dispatch_message(
+            &msg(
+                "Target.setAutoAttach",
+                json!({"autoAttach": true, "flatten": true}),
+                None,
+            ),
+            BROWSER_TARGET,
+            &*sender,
+        )
+        .unwrap()
+        .unwrap();
+        {
+            let events = sender.events.lock().unwrap();
+            let attach = events
+                .iter()
+                .find(|(m, _)| m == "Target.attachedToTarget")
+                .expect("auto-attach enumerates existing pages");
+            assert_eq!(attach.1["targetInfo"]["browserContextId"], "bao-context-1");
+        }
+
+        let created = reg
+            .dispatch_message(
+                &msg(
+                    "Target.createTarget",
+                    json!({"url": "about:blank", "browserContextId": id}),
+                    None,
+                ),
+                BROWSER_TARGET,
+                &*sender,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(created["browserContextId"], id);
+
+        // Auto-attach for the programmatically created target reuses the
+        // response's attribution.
+        let events = sender.events.lock().unwrap();
+        let attach_for_new = events
+            .iter()
+            .filter(|(m, _)| m == "Target.attachedToTarget")
+            .find(|(_, p)| p["targetInfo"]["targetId"] == "9")
+            .expect("created target auto-attached");
+        assert_eq!(attach_for_new.1["targetInfo"]["browserContextId"], id);
     }
 }

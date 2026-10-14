@@ -77,6 +77,12 @@ pub struct PageConfig {
     pub viewport_height: Option<u32>,
     pub stealth_profile: Option<StealthProfile>,
     pub permission: Option<Permission>,
+    /// REQ-CDS-009: the browser context this page belongs to. `None` = the
+    /// implicit default context. `create_page` validates the id against the
+    /// pool's context registry BEFORE building the WebView — unknown ids
+    /// fail closed (Chrome's "Failed to find browser context" error), never
+    /// a page silently parked in the wrong context.
+    pub browser_context_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
