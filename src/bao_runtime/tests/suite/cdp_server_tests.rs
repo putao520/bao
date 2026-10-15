@@ -297,7 +297,7 @@ fn req_cdp_001_http_target_list_new_close_activate() {
     assert_eq!(entries[0]["id"], "page-1");
     assert_eq!(entries[0]["type"], "page");
     assert_eq!(entries[0]["url"], "about:blank");
-    assert!(entries[0]["web_socket_debugger_url"].is_string());
+    assert!(entries[0]["webSocketDebuggerUrl"].is_string());
 
     let http = http_get(server.port, "/json/list");
     assert!(
@@ -745,14 +745,24 @@ fn req_cdp_007_css_input_emulation_overlay_domains() {
         json!({"media": "light"}),
     ));
 
-    for m in [
-        "Overlay.enable",
-        "Overlay.highlightNode",
-        "Overlay.hideHighlight",
+    ok_result(&dispatch("Overlay.enable", json!({})));
+    // REQ-BRW-048 task #10 / REQ-CDP-007 C1 wave (46e8615a3): highlight state
+    // is a real bridge write — the stateless face answers the error ladder
+    // (missing node shape -32602 → no bridge -32603), never a silent no-op ok
+    // (mirror of bao_cdp's internal 195a/195b/195e pins).
+    assert_eq!(err_code(&dispatch("Overlay.highlightNode", json!({}))), -32602);
+    assert_eq!(
+        err_code(&dispatch("Overlay.highlightNode", json!({"nodeId": 1}))),
+        -32603
+    );
+    assert_eq!(
+        err_code(&dispatch("Overlay.hideHighlight", json!({}))),
+        -32603
+    );
+    ok_result(&dispatch(
         "Overlay.setPausedInDebuggerMessage",
-    ] {
-        ok_result(&dispatch(m, json!({})));
-    }
+        json!({}),
+    ));
     assert_eq!(err_code(&dispatch("Overlay.bogus", json!({}))), -32601);
 }
 

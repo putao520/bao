@@ -8,6 +8,11 @@ use std::net::TcpStream;
 use serde_json::Value;
 
 /// Browser Target information.
+///
+/// Wire contract = CDP HTTP discovery (`/json/list`, Chrome DevTools):
+/// `id` / `type` / `title` / `url` / `webSocketDebuggerUrl`. Rust field
+/// names stay snake_case; `#[serde(rename)]` maps Rust ↔ wire on both
+/// serialize and deserialize.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TargetInfo {
     pub id: String,
@@ -15,6 +20,7 @@ pub struct TargetInfo {
     pub target_type: String,
     pub title: String,
     pub url: String,
+    #[serde(rename = "webSocketDebuggerUrl")]
     pub web_socket_debugger_url: String,
 }
 
@@ -293,5 +299,34 @@ mod tests {
         assert_eq!(hex_val(b'0'), 0);
         assert_eq!(hex_val(b'a'), 10);
         assert_eq!(hex_val(b'F'), 15);
+    }
+
+    // @trace REQ-CDS-002 [req:REQ-CDS-002] [level:unit]
+    #[test]
+    fn target_info_wire_uses_camelcase_websocket_debugger_url() {
+        // CDP discovery wire contract (/json/list + /json/new, Chrome
+        // DevTools): the key is `webSocketDebuggerUrl` (camelCase). The
+        // snake_case Rust field name must never leak onto the wire — that
+        // breaks Playwright/Puppeteer page discovery.
+        let info = TargetInfo {
+            id: "t-1".into(),
+            target_type: "page".into(),
+            title: "T".into(),
+            url: "https://example.com".into(),
+            web_socket_debugger_url: "ws://127.0.0.1:9222/devtools/page/t-1".into(),
+        };
+        let raw = serde_json::to_string(&info).unwrap();
+        assert!(
+            raw.contains(r#""webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/page/t-1""#),
+            "wire key must be webSocketDebuggerUrl: {}",
+            raw
+        );
+        assert!(
+            !raw.contains("web_socket_debugger_url"),
+            "snake_case rust field name must not leak onto the wire: {}",
+            raw
+        );
+        let back: TargetInfo = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.web_socket_debugger_url, info.web_socket_debugger_url);
     }
 }

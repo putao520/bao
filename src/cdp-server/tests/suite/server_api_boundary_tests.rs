@@ -151,7 +151,7 @@ fn test_target_info_type_field_rename() {
 
 #[test]
 fn test_target_info_deserialize_with_type_rename() {
-    let raw = r#"{"id":"x","type":"worker","title":"W","url":"about:blank","web_socket_debugger_url":"ws://127.0.0.1:9222/devtools/page/x"}"#;
+    let raw = r#"{"id":"x","type":"worker","title":"W","url":"about:blank","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/page/x"}"#;
     let info: TargetInfo = serde_json::from_str(raw).unwrap();
     assert_eq!(info.target_type, "worker");
 }

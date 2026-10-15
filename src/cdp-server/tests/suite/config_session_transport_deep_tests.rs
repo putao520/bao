@@ -182,7 +182,7 @@ fn test_target_info_serialize() {
 
 #[test]
 fn test_target_info_deserialize() {
-    let json = r#"{"id":"x","type":"page","title":"T","url":"U","web_socket_debugger_url":"W"}"#;
+    let json = r#"{"id":"x","type":"page","title":"T","url":"U","webSocketDebuggerUrl":"W"}"#;
     let info: TargetInfo = serde_json::from_str(json).unwrap();
     assert_eq!(info.id, "x");
     assert_eq!(info.target_type, "page");

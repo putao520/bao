@@ -436,7 +436,7 @@ fn test_target_info_deserialize_with_type_field() {
         "type": "service_worker",
         "title": "SW",
         "url": "https://example.com/sw.js",
-        "web_socket_debugger_url": "ws://localhost/devtools/page/t2"
+        "webSocketDebuggerUrl": "ws://localhost/devtools/page/t2"
     }"#;
     let info: TargetInfo = serde_json::from_str(json).unwrap();
     assert_eq!(info.id, "t2");
@@ -489,7 +489,7 @@ fn test_target_info_serde_json_value() {
     assert_eq!(value["type"], "page");
     assert_eq!(value["title"], "Test");
     assert_eq!(value["url"], "about:blank");
-    assert_eq!(value["web_socket_debugger_url"], "ws://x");
+    assert_eq!(value["webSocketDebuggerUrl"], "ws://x");
 }
 
 // ---- Cross-function consistency ----

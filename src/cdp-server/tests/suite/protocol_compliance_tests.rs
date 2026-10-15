@@ -304,14 +304,14 @@ fn test_target_info_roundtrip() {
     assert_eq!(parsed["title"], "Test Page");
     assert_eq!(parsed["url"], "https://example.com");
     assert_eq!(
-        parsed["web_socket_debugger_url"],
+        parsed["webSocketDebuggerUrl"],
         "ws://127.0.0.1:9222/devtools/page/target-123"
     );
 }
 
 #[test]
 fn test_target_info_deserialize() {
-    let raw = r#"{"id":"abc","type":"iframe","title":"Inner","url":"about:blank","web_socket_debugger_url":"ws://localhost:9222/devtools/page/abc"}"#;
+    let raw = r#"{"id":"abc","type":"iframe","title":"Inner","url":"about:blank","webSocketDebuggerUrl":"ws://localhost:9222/devtools/page/abc"}"#;
     let info: TargetInfo = serde_json::from_str(raw).unwrap();
     assert_eq!(info.id, "abc");
     assert_eq!(info.target_type, "iframe");
@@ -1064,7 +1064,7 @@ fn test_target_info_all_fields_required_on_deserialize() {
     )
     .is_err());
     assert!(serde_json::from_str::<TargetInfo>(
-        r#"{"type":"page","title":"t","url":"u","web_socket_debugger_url":"ws"}"# // missing id
+        r#"{"type":"page","title":"t","url":"u","webSocketDebuggerUrl":"ws"}"# // missing id
     )
     .is_err());
 }

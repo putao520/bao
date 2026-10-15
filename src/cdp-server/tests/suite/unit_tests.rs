@@ -285,7 +285,7 @@ mod transport_tests {
     #[test]
     fn target_info_deserialization() {
         let json =
-            r#"{"id":"xyz","type":"page","title":"T","url":"U","web_socket_debugger_url":"W"}"#;
+            r#"{"id":"xyz","type":"page","title":"T","url":"U","webSocketDebuggerUrl":"W"}"#;
         let info: cdp_server::TargetInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.id, "xyz");
         assert_eq!(info.target_type, "page");

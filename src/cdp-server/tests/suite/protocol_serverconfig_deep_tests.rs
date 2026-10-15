@@ -138,7 +138,7 @@ fn test_target_info_serialization() {
 
 #[test]
 fn test_target_info_deserialization() {
-    let json = r#"{"id":"t-2","type":"iframe","title":"Sub","url":"about:blank","web_socket_debugger_url":"ws://127.0.0.1:9222/devtools/page/t-2"}"#;
+    let json = r#"{"id":"t-2","type":"iframe","title":"Sub","url":"about:blank","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/page/t-2"}"#;
     let info: TargetInfo = serde_json::from_str(json).unwrap();
     assert_eq!(info.id, "t-2");
     assert_eq!(info.target_type, "iframe");
@@ -1248,7 +1248,7 @@ fn test_target_info_deserialize_requires_type_alias() {
     // because #[serde(rename = "type")] has NO alias — the original name is
     // rejected as a missing `type` field. Document this strict one-way rename.
     let bad =
-        r#"{"id":"t","target_type":"page","title":"T","url":"u","web_socket_debugger_url":"ws"}"#;
+        r#"{"id":"t","target_type":"page","title":"T","url":"u","webSocketDebuggerUrl":"ws"}"#;
     let result: Result<TargetInfo, _> = serde_json::from_str(bad);
     let err = result.unwrap_err();
     assert!(
@@ -1260,10 +1260,11 @@ fn test_target_info_deserialize_requires_type_alias() {
 
 #[test]
 fn test_target_info_serialization_key_set_exact() {
-    // Adversarial: exact key set on the wire. Only `target_type` is renamed
-    // (to "type"); all other fields keep their snake_case Rust names (NOT
-    // camelCase). This documents the actual contract — consumers must read
-    // `web_socket_debugger_url` (snake_case), not `webSocketDebuggerUrl`.
+    // Adversarial: exact key set on the wire. Two fields are renamed to the
+    // CDP discovery wire contract (`/json/list`, Chrome DevTools): Rust
+    // `target_type` → "type" and Rust `web_socket_debugger_url` →
+    // "webSocketDebuggerUrl" (camelCase). The remaining fields are
+    // single-word names that are already wire-canonical.
     let info = TargetInfo {
         id: "t".into(),
         target_type: "page".into(),
@@ -1281,9 +1282,9 @@ fn test_target_info_serialization_key_set_exact() {
             "title".to_string(),
             "type".to_string(),
             "url".to_string(),
-            "web_socket_debugger_url".to_string(),
+            "webSocketDebuggerUrl".to_string(),
         ],
-        "TargetInfo JSON keys: only `type` is renamed; rest stay snake_case"
+        "TargetInfo JSON keys: `type` and `webSocketDebuggerUrl` are the wire-canonical renames"
     );
 }
 

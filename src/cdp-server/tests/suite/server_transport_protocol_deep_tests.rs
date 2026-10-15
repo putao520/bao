@@ -505,7 +505,7 @@ fn test_target_info_deserialize() {
         "type": "page",
         "title": "Desc",
         "url": "http://d",
-        "web_socket_debugger_url": "ws://d/t-d"
+        "webSocketDebuggerUrl": "ws://d/t-d"
     }"#;
     let info: TargetInfo = serde_json::from_str(json).unwrap();
     assert_eq!(info.id, "t-d");
@@ -1370,7 +1370,7 @@ fn adversarial_target_info_type_field_rename_roundtrip() {
 #[test]
 fn adversarial_target_info_missing_type_field_deserialize_fails() {
     // A TargetInfo JSON without "type" must fail (field is required).
-    let raw = r#"{"id":"x","title":"t","url":"u","web_socket_debugger_url":"ws://x"}"#;
+    let raw = r#"{"id":"x","title":"t","url":"u","webSocketDebuggerUrl":"ws://x"}"#;
     assert!(serde_json::from_str::<TargetInfo>(raw).is_err());
 }
 
@@ -1378,9 +1378,9 @@ fn adversarial_target_info_missing_type_field_deserialize_fails() {
 fn adversarial_target_info_all_fields_required_deserialize() {
     // Each field is required (no #[serde(default)]); omitting any must fail.
     let full =
-        r#"{"id":"x","type":"page","title":"t","url":"u","web_socket_debugger_url":"ws://x"}"#;
+        r#"{"id":"x","type":"page","title":"t","url":"u","webSocketDebuggerUrl":"ws://x"}"#;
     assert!(serde_json::from_str::<TargetInfo>(full).is_ok());
-    for field in ["id", "type", "title", "url", "web_socket_debugger_url"] {
+    for field in ["id", "type", "title", "url", "webSocketDebuggerUrl"] {
         let mut v: Value = serde_json::from_str(full).unwrap();
         let obj = v.as_object_mut().unwrap();
         obj.remove(field);

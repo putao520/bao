@@ -538,7 +538,7 @@ fn test_target_info_serialize() {
     assert_eq!(json["title"], "Test Page");
     assert_eq!(json["url"], "https://example.com");
     assert_eq!(
-        json["web_socket_debugger_url"],
+        json["webSocketDebuggerUrl"],
         "ws://127.0.0.1:9222/devtools/page/t1"
     );
 }
@@ -550,7 +550,7 @@ fn test_target_info_deserialize() {
         "type": "page",
         "title": "Page 2",
         "url": "about:blank",
-        "web_socket_debugger_url": "ws://localhost:9222/devtools/page/t2"
+        "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/t2"
     });
     let info: TargetInfo = serde_json::from_value(json).unwrap();
     assert_eq!(info.id, "t2");

@@ -41,14 +41,14 @@ fn test_target_info_json_fields() {
     assert_eq!(json_val["title"], "Title");
     assert_eq!(json_val["url"], "https://test.com");
     assert_eq!(
-        json_val["web_socket_debugger_url"],
+        json_val["webSocketDebuggerUrl"],
         "ws://localhost:9222/devtools/page/abc"
     );
 }
 
 #[test]
 fn test_target_info_deserialize_with_type_field() {
-    let json = r#"{"id":"x","type":"iframe","title":"Sub","url":"about:blank","web_socket_debugger_url":"ws://127.0.0.1:9222/devtools/page/x"}"#;
+    let json = r#"{"id":"x","type":"iframe","title":"Sub","url":"about:blank","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/page/x"}"#;
     let info: TargetInfo = serde_json::from_str(json).unwrap();
     assert_eq!(info.target_type, "iframe");
 }

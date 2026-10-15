@@ -399,7 +399,7 @@ fn test_parse_close_request() {
 
 #[test]
 fn test_target_info_deserialize() {
-    let json = r#"{"id":"p2","type":"page","title":"Hello","url":"http://test","web_socket_debugger_url":"ws://x:9222/devtools/page/p2"}"#;
+    let json = r#"{"id":"p2","type":"page","title":"Hello","url":"http://test","webSocketDebuggerUrl":"ws://x:9222/devtools/page/p2"}"#;
     let info: TargetInfo = serde_json::from_str(json).unwrap();
     assert_eq!(info.id, "p2");
     assert_eq!(info.target_type, "page");
