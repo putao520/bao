@@ -1,6 +1,6 @@
 [package]
 name = "bao_cdp"
-version = "0.3.15"
+version = "0.4.0"
 edition = "2021"
 description.workspace = true
 license.workspace = true
@@ -20,7 +20,7 @@ bao_ipc = { path = "../bao_ipc", version = "^0.1.0" }
 #               live in bun_uws::ws_handshake against BoringSSL directly).
 bun_uws = { path = "../uws", version = "^0.2.0" }
 compact_str.workspace = true
-cdp-server = { path = "../../src/cdp-server", version = "0.1.0" }
+cdp-server = { path = "../../src/cdp-server", version = "0.2.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cdp-protocol = "0.3"
@@ -34,4 +34,4 @@ log = "0.4"
 [dev-dependencies]
 # Package key is `bao-browser` (crates.io name); the lib target stays
 # `bao_browser`, so `use bao_browser::` is unchanged in test code.
-bao-browser = { path = "../bao_browser", version = "^0.3.0" }
+bao-browser = { path = "../bao_browser", version = "^0.4.0" }
