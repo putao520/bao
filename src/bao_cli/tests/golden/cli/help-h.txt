@@ -44,5 +44,7 @@ Options:
           Use throwaway storage for this run (upstream `--temporary-storage`; accepted for command-line parity â bao already keeps per-run state)
       --headless
           Headless mode (upstream `--headless`; bao is headless by default â accepted for command-line parity)
+  -v, --version
+          Print the version and exit 0 (node/bun parity face: `node -v` / `bun -v` print the bare version string â no name prefix, no extra text)
   -h, --help
           Print help

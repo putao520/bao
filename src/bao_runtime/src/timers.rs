@@ -543,7 +543,23 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
         // work is in flight: the same primitive the http branch above and the
         // fs/crypto-only branch below already use; a cheap no-op when nothing
         // has arrived yet (pop finds an empty queue).
-        if crate::node_fs::fs_async_pending() > 0 || crate::node_crypto::crypto_async_pending() > 0
+        //
+        // Windows live-children supplement (WINRED-II root fix, .200
+        // wire-proven 2026-10-15): `wait_for_timer_deadline` early-returns
+        // without ticking when the next deadline is ALREADY DUE — and the
+        // canonical async-spawn wait shape (`ChildProcess._pollTick`
+        // rescheduling setTimeout(0) every pass) keeps one due timer
+        // registered forever, so the timer branch selects every pass while
+        // none of its inner conditions tick. The uv loop then is never
+        // pumped, the child's exit IOCP completion sits unprocessed,
+        // `on_exit_uv` never runs, and 'exit'/'close' never fire (trace
+        // evidence: 0 loop pumps + pipe EOF seen + no exit push in a 15s
+        // window). Add live async children to the supplement: same
+        // primitive, POSIX unaffected (exits are waitpid-driven there; the
+        // extra zero-timeout tick is a cheap no-op).
+        if crate::node_fs::fs_async_pending() > 0
+            || crate::node_crypto::crypto_async_pending() > 0
+            || crate::node_child_process::has_live_async_children()
         {
             with_event_loop(|loop_| {
                 loop_.tick_without_idle(core::ptr::null_mut());
@@ -698,7 +714,16 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
         // branch, and the raw tick never pops `concurrent_tasks`, so an
         // arrived fs/crypto completion tasklet needs this supplementary
         // non-blocking tick to be delivered to the JS thread.
-        if crate::node_fs::fs_async_pending() > 0 || crate::node_crypto::crypto_async_pending() > 0
+        //
+        // Windows live-children supplement (WINRED-II root fix): mirrors
+        // `drain_and_check`'s timer branch — a due setTimeout(0) wait chain
+        // (async spawn's `_pollTick` rescheduling) selects this branch every
+        // pass while `wait_for_timer_deadline` early-returns without
+        // ticking, so the loop must be pumped here for the child's exit
+        // IOCP completion to ever reach `on_exit_uv`.
+        if crate::node_fs::fs_async_pending() > 0
+            || crate::node_crypto::crypto_async_pending() > 0
+            || crate::node_child_process::has_live_async_children()
         {
             with_event_loop(|loop_| {
                 loop_.tick_without_idle(core::ptr::null_mut());

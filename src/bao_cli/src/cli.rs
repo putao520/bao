@@ -92,6 +92,13 @@ struct Cli {
     #[arg(long)]
     headless: bool,
 
+    /// Print the version and exit 0 (node/bun parity face: `node -v` /
+    /// `bun -v` print the bare version string — no name prefix, no extra
+    /// text).
+    // @trace REQ-CLI-001
+    #[arg(long, short = 'v')]
+    version: bool,
+
     /// Initial URL for the browser entry (the trailing positional in the
     /// wptrunner command line, e.g. `about:blank`).
     url: Option<String>,
@@ -226,6 +233,13 @@ pub fn run() -> ::std::result::Result<(), i32> {
     bao_bundler::build_api::install();
 
     let cli = Cli::parse();
+    // node/bun parity face (REQ-CLI-001): the version flag wins before any
+    // dispatch — `bao --version` / `bao -v` print the bare version string
+    // and exit 0 (`bun -v` → 1.2.x, `node -v` → v24.x).
+    if cli.version {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     // WPT official-toolchain face (REQ-BRW-002): any servoshell-compatible
     // browser flag (or the positional URL) selects the browser entry before
     // any other dispatch — wptrunner's command line carries no subcommand.

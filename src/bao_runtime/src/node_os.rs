@@ -456,20 +456,6 @@ use bun_windows_sys::ws2_32::in6_addr;
 #[cfg(windows)]
 type in_addr_t = u32;
 
-// BCE-20260816-OS-NETIF — os_networkInterfaces previously returned a bare
-// empty object (silently fake). Real enumeration via libc getifaddrs(3),
-// grouped per interface name with the Node shape:
-//   { "lo": [{ address, netmask, family: "IPv4"|"IPv6", mac, internal,
-//              cidr, scopeid? }] }
-// mac comes from the AF_PACKET entry (link-layer address), internal is the
-// IFF_LOOPBACK flag, cidr is address/prefixlen (netmask popcount).
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn os_network_interfaces(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-
-// ────────────────── os.networkInterfaces (node shape) ──────────────────
-
 struct IfaceEntry {
     address: String,
     netmask: String,
@@ -479,8 +465,17 @@ struct IfaceEntry {
 }
 
 
-/// Node-shaped interface enumeration on POSIX via getifaddrs(3). Grouped per
-/// IPv4 netmask (dotted string, prefix length) from a getifaddrs netmask
+/// node/libuv `uv__ifaddr_exclude` UP && RUNNING gate: an entry only counts
+/// when its interface is administratively up (IFF_UP) AND has carrier
+/// (IFF_RUNNING) — an empty docker bridge (NO-CARRIER) and a
+/// media-disconnected link stay out of `os.networkInterfaces()`. libuv
+/// applies the same gate to the MAC pass.
+#[cfg(not(windows))]
+fn ifaddr_entry_gated_in(flags: u32) -> bool {
+    flags & libc::IFF_UP as u32 != 0 && flags & libc::IFF_RUNNING as u32 != 0
+}
+
+/// IPv4 netmask (string, prefix length) from a getifaddrs netmask
 /// sockaddr, or `("0.0.0.0", 0)` when the entry carries none.
 #[cfg(not(windows))]
 fn ipv4_netmask(ifa_netmask: *const libc::sockaddr) -> (String, u8) {
@@ -514,8 +509,15 @@ fn ipv6_netmask(ifa_netmask: *const libc::sockaddr) -> (String, u8) {
     }
 }
 
+/// Node-shaped interface enumeration on POSIX via getifaddrs(3), grouped per
 /// interface name with the MAC from the AF_PACKET entry and IFF_LOOPBACK for
 /// `internal` (see the os_networkInterfaces BCE note above).
+///
+/// node/libuv parity (uv__ifaddr_exclude / UV__EXCLUDE_IFADDR): an entry
+/// counts only when [`ifaddr_entry_gated_in`] passes and it carries a
+/// sockaddr; link-layer (AF_PACKET) entries feed the MAC of an already-minted
+/// slot and never mint one — an interface with no qualifying address entry
+/// (a bare veth end) gets no key at all.
 #[cfg(not(windows))]
 fn collect_posix_ifaddrs(
     ifaces: &mut Vec<(String, String, bool, Vec<IfaceEntry>)>,
@@ -525,6 +527,9 @@ fn collect_posix_ifaddrs(
     if !ok || ifap.is_null() {
         return false;
     }
+    // Link-layer MACs seen during the walk, applied to minted slots after it
+    // (an AF_PACKET entry can precede the interface's first address entry).
+    let mut macs: Vec<(String, String)> = Vec::new();
     let mut cur = ifap;
     while !cur.is_null() {
         let ifa = unsafe { &*cur };
@@ -535,11 +540,30 @@ fn collect_posix_ifaddrs(
             }
             ::std::ffi::CStr::from_ptr(ifa.ifa_name).to_string_lossy().into_owned()
         };
+        if !ifaddr_entry_gated_in(ifa.ifa_flags) {
+            continue;
+        }
         let sa = ifa.ifa_addr as *const libc::sockaddr;
         if sa.is_null() {
             continue;
         }
         let family = unsafe { (*sa).sa_family as i32 };
+        if family == libc::AF_PACKET {
+            // MAC pass (libuv's UV__EXCLUDE_IFPHYS face): record, never mint.
+            let sll = sa as *const libc::sockaddr_ll;
+            let mac = unsafe {
+                format!(
+                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    (*sll).sll_addr[0], (*sll).sll_addr[1], (*sll).sll_addr[2],
+                    (*sll).sll_addr[3], (*sll).sll_addr[4], (*sll).sll_addr[5]
+                )
+            };
+            match macs.iter_mut().find(|(n, _)| *n == name) {
+                Some(slot) => slot.1 = mac,
+                None => macs.push((name, mac)),
+            }
+            continue;
+        }
         let flags = ifa.ifa_flags;
         let slot = match ifaces.iter_mut().find(|(n, _, _, _)| *n == name) {
             Some(slt) => slt,
@@ -552,17 +576,6 @@ fn collect_posix_ifaddrs(
             slot.2 = true;
         }
         match family {
-            libc::AF_PACKET => {
-                let sll = sa as *const libc::sockaddr_ll;
-                let mac = unsafe {
-                    format!(
-                        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                        (*sll).sll_addr[0], (*sll).sll_addr[1], (*sll).sll_addr[2],
-                        (*sll).sll_addr[3], (*sll).sll_addr[4], (*sll).sll_addr[5]
-                    )
-                };
-                slot.1 = mac;
-            }
             libc::AF_INET => {
                 let sin = sa as *const libc::sockaddr_in;
                 let addr = unsafe { ipv4_to_string((*sin).sin_addr.s_addr) };
@@ -592,6 +605,11 @@ fn collect_posix_ifaddrs(
         }
     }
     unsafe { libc::freeifaddrs(ifap) };
+    for (name, mac) in &macs {
+        if let Some(slot) = ifaces.iter_mut().find(|(n, _, _, _)| *n == *name) {
+            slot.1 = mac.clone();
+        }
+    }
     true
 }
 
@@ -608,6 +626,8 @@ mod netif {
     use bun_windows_sys::ws2_32::sockaddr;
 
     pub const IF_TYPE_SOFTWARE_LOOPBACK: u32 = 24; // ipifcons.h
+    /// `IfOperStatusUp` (ipifcons.h IF_OPER_STATUS) — node's keep gate.
+    pub const IF_OPER_STATUS_UP: i32 = 1;
     pub const ERROR_BUFFER_OVERFLOW: i32 = 122; // winerror.h
     // Win11 ws2_32-era GetAdaptersAnswers size probes also report the
     // documented-in-practice ERROR_MORE_DATA (111) — accepting only 122
@@ -639,7 +659,7 @@ mod netif {
     }
 
     /// IP_ADAPTER_ADDRESSES_LH prefix (x64) — walked fields only; the record
-    /// continues past `if_type` in the SDK but is never read here.
+    /// continues past `oper_status` in the SDK but is never read here.
     #[repr(C)]
     pub struct IpAdapterAddresses {
         pub length_and_if_index: u64, // union { Alignment; {Length,IfIndex} }
@@ -657,6 +677,8 @@ mod netif {
         _flags: u32,
         _mtu: u32,
         pub if_type: u32,
+        /// IF_OPER_STATUS (ipifcons.h) — `IfOperStatusUp` is node's keep gate.
+        pub oper_status: i32,
     }
 
     #[link(name = "iphlpapi")]
@@ -764,6 +786,15 @@ fn collect_adapters(ifaces: &mut Vec<(String, String, bool, Vec<IfaceEntry>)>) -
         let mut cur = head;
         while !cur.is_null() {
             let a = &*cur;
+            cur = a.next;
+            // node/libuv parity (win/util.c uv_interface_addresses): skip
+            // adapters that are not operationally up (media-disconnected
+            // WLAN, Wi-Fi Direct ghosts, Bluetooth PAN) and adapters with no
+            // unicast address at all — neither produces a key in the node
+            // face.
+            if a.oper_status != IF_OPER_STATUS_UP || a.first_unicast_address.is_null() {
+                continue;
+            }
             let name = if a.friendly_name.is_null() {
                 String::new()
             } else {
@@ -795,7 +826,6 @@ fn collect_adapters(ifaces: &mut Vec<(String, String, bool, Vec<IfaceEntry>)>) -
                 slot.2 = true;
             }
             collect_adapter_unicast_addresses(slot, a.first_unicast_address);
-            cur = a.next;
         }
         true
     }
@@ -823,6 +853,19 @@ fn prefix_to_ipv6_mask(prefix: u8) -> String {
     }
     ::std::net::Ipv6Addr::from(groups).to_string()
 }
+
+// BCE-20260816-OS-NETIF — os_networkInterfaces previously returned a bare
+// empty object (silently fake). Real enumeration via libc getifaddrs(3),
+// grouped per interface name with the Node shape:
+//   { "lo": [{ address, netmask, family: "IPv4"|"IPv6", mac, internal,
+//              cidr, scopeid? }] }
+// mac comes from the AF_PACKET entry (link-layer address), internal is the
+// IFF_LOOPBACK flag, cidr is address/prefixlen (netmask popcount).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn os_network_interfaces(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+
     // (name, mac, internal, entries) — platform enumeration fills this in
     // getifaddrs / GetAdaptersAddresses order.
     let mut ifaces: Vec<(String, String, bool, Vec<IfaceEntry>)> = Vec::new();
@@ -1680,5 +1723,70 @@ mod tests {
         assert!(info.totalram > 0);
         assert!(info.freeram > 0);
         assert!(info.uptime > 0);
+    }
+
+    // ─── netif node-shape filter (os.networkInterfaces parity face) ───────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    /// libuv `uv__ifaddr_exclude` gate truth table: an interface that is up
+    /// but carrier-less (IFF_UP without IFF_RUNNING — an empty docker
+    /// bridge) is excluded, as is a powered-down one.
+    #[cfg(not(windows))]
+    #[test]
+    fn test_netif_up_running_gate_truth_table() {
+        let up = libc::IFF_UP as u32;
+        let running = libc::IFF_RUNNING as u32;
+        assert!(super::ifaddr_entry_gated_in(up | running));
+        assert!(!super::ifaddr_entry_gated_in(up));
+        assert!(!super::ifaddr_entry_gated_in(running));
+        assert!(!super::ifaddr_entry_gated_in(0));
+    }
+
+    /// Live node-shape pins (the two faces the node-parity wave fixed):
+    /// (1) no key without at least one address entry — link-layer-only
+    /// interfaces (bare veth ends) never mint one; (2) every key's interface
+    /// passes the UP && RUNNING gate per a raw getifaddrs flags walk that is
+    /// independent of the filter under test.
+    #[cfg(not(windows))]
+    #[test]
+    fn test_netif_posix_enumeration_node_shape() {
+        let mut ifaces = Vec::new();
+        assert!(super::collect_posix_ifaddrs(&mut ifaces));
+        assert!(!ifaces.is_empty(), "a live host has at least loopback");
+        for (name, _, _, entries) in &ifaces {
+            assert!(
+                !entries.is_empty(),
+                "interface {name} has an empty entry array — node emits no such key"
+            );
+        }
+        let mut ifap: *mut libc::ifaddrs = ::std::ptr::null_mut();
+        assert_eq!(unsafe { libc::getifaddrs(&mut ifap) }, 0);
+        let mut gated_by_name: Vec<(String, bool)> = Vec::new();
+        let mut cur = ifap;
+        while !cur.is_null() {
+            let ifa = unsafe { &*cur };
+            cur = ifa.ifa_next;
+            if ifa.ifa_name.is_null() {
+                continue;
+            }
+            let name = unsafe {
+                ::std::ffi::CStr::from_ptr(ifa.ifa_name)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            let gated = super::ifaddr_entry_gated_in(ifa.ifa_flags);
+            match gated_by_name.iter_mut().find(|(n, _)| *n == name) {
+                Some(slot) => slot.1 |= gated,
+                None => gated_by_name.push((name, gated)),
+            }
+        }
+        unsafe { libc::freeifaddrs(ifap) };
+        for (name, _, _, _) in &ifaces {
+            let Some((_, gated)) = gated_by_name.iter().find(|(n, _)| *n == *name) else {
+                // The interface churned away between the two walks.
+                continue;
+            };
+            assert!(gated, "interface {name} listed but not UP+RUNNING");
+        }
     }
 }

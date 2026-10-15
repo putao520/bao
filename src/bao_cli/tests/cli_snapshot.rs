@@ -220,6 +220,9 @@ fn snapshot_cases() -> Vec<(&'static str, Vec<&'static str>, &'static str)> {
         ("help-compat-bun", vec!["compat", "bun", "--help"], "stdout"),
         ("help-compat-cdp", vec!["compat", "cdp", "--help"], "stdout"),
         ("help-compat-web", vec!["compat", "web", "--help"], "stdout"),
+        // node/bun parity version face (bare version string on stdout).
+        ("version-long", vec!["--version"], "stdout"),
+        ("version-short", vec!["-v"], "stdout"),
         // Misuse / error stderr paths (static one-liners + clap errors).
         ("err-no-args", vec![], "stderr"),
         ("err-unknown-command", vec!["unknown-cmd"], "stderr"),
@@ -292,6 +295,9 @@ fn cli_exit_code_matrix() {
     let matrix: &[(&[&str], i32)] = &[
         (&["--help"], 0),
         (&["-h"], 0),
+        // node/bun parity version face (bare version, exit 0)
+        (&["--version"], 0),
+        (&["-v"], 0),
         (&["run", "--help"], 0),
         (&["build", "--help"], 0),
         (&["test", "--help"], 0),
