@@ -12,7 +12,7 @@
 //!
 //! # 设计要点
 //!
-//! - **零 tokio**:同步阻塞 I/O(`std::net::TcpStream` 阻塞读、`std::sync::mpsc`
+//! - **零 tokio**:同步阻塞 I/O(`std::net::TcpStream` 阻塞读、`bao_ipc`
 //!   channel 阻塞 recv)。上层 API 包装为 `bun_event_loop` 任务即可。
 //! - **错误类型**:统一用 [`crate::error::CdpError`],新增 `TransportError` /
 //!   `HandshakeError` 变体覆盖 REQ-BAO-API-002 错误码集合。

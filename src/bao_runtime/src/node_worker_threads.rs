@@ -6,17 +6,17 @@
 //   - SpiderMonkey's JSEngine is process-global (OnceLock<JSEngineHandle>).
 //   - Each Worker spawns a std::thread that calls Runtime::new(handle) to get
 //     its own thread-local JSContext. No cross-thread JSObject sharing.
-//   - Messages cross threads as SpiderMonkey structured-clone bytes via mpsc
-//     channels (Node semantics: postMessage = structured clone, NOT JSON —
+//   - Messages cross threads as SpiderMonkey structured-clone bytes over
+//     bao_ipc unbounded channels (REQ-ARCH-3 unified MPMC substrate; Node
+//     semantics: postMessage = structured clone, NOT JSON —
 //     TypedArray/Map/Set/Date/BigInt/cyclic objects keep their types).
 //   - Worker JS objects (postMessage/terminate/threadId) are native host fns.
 
 use ::std::cell::RefCell;
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
-use ::std::sync::atomic::{AtomicU32, Ordering};
-use ::std::sync::mpsc::{self, Receiver, Sender};
 use ::std::sync::OnceLock;
+use ::std::sync::atomic::{AtomicU32, Ordering};
 
 use dashmap::DashMap;
 use mozjs::conversions::jsstr_to_string;
@@ -27,8 +27,8 @@ use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
-use mozjs::rust::wrappers2 as w2;
 use mozjs::rust::JSAutoStructuredCloneBufferWrapper;
+use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
 
@@ -55,13 +55,16 @@ fn worker_registry() -> &'static DashMap<u32, WorkerHandle> {
 
 /// Handle held by the main thread for each Worker.
 struct WorkerHandle {
-    sender: Sender<WorkerMessage>,
+    sender: bao_ipc::Sender<WorkerMessage>,
     /// JoinHandle for the worker OS thread, taken on terminate/join.
     thread: Option<::std::thread::JoinHandle<()>>,
     /// Receiver for worker → main messages, drained non-blockingly by
-    /// `worker_try_recv` (the main-side receive primitive). Mutex-wrapped:
-    /// mpsc::Receiver is !Sync but the registry is a process-global static.
-    main_rx: Option<::std::sync::Mutex<Receiver<WorkerToMainMessage>>>,
+    /// `worker_try_recv` (the main-side receive primitive). Mutex-wrapped
+    /// registry form kept from the std-mpsc era: bao_ipc (crossbeam)
+    /// `Receiver` is `Sync`, so the lock is uncontended today — unwrapping
+    /// it is the separately-ruled optional optimization, not part of this
+    /// migration's parity face (REQ-ARCH-3 wave R2).
+    main_rx: Option<::std::sync::Mutex<bao_ipc::Receiver<WorkerToMainMessage>>>,
     /// B1 (用户裁决 2026-09-17 A): creating NodeRuntime's cleanup token,
     /// stamped at registration via `crate::runtime::current_runtime_token()`.
     /// `0` = created outside any runtime = process-shared, exempt from the
@@ -177,8 +180,9 @@ enum WorkerToMainMessage {
 // anything the engine cannot clone (functions, WeakMap, ...) fails the write,
 // which the callers surface as a DataCloneError. `DifferentProcess` scope
 // keeps the serialized form a flat byte buffer, safe to move across threads
-// via mpsc. Both ends live in the same binary, so no protocol versioning is
-// needed beyond the engine's own JS_STRUCTURED_CLONE_VERSION header.
+// over the bao_ipc channel. Both ends live in the same binary, so no
+// protocol versioning is needed beyond the engine's own
+// JS_STRUCTURED_CLONE_VERSION header.
 
 /// Clone data policy: shared-memory objects are rejected (cross-thread SAB
 /// semantics are not provided); everything else clones.
@@ -359,7 +363,10 @@ unsafe fn sc_boundary_helper_call(
 /// contains anything the structured clone algorithm cannot clone — the caller
 /// must report a DataCloneError (Node ERR_DATACLONE_ERROR semantics).
 #[allow(unsafe_op_in_unsafe_fn)]
-pub(crate) unsafe fn sc_serialize(raw_cx: *mut JSContext, value: JSVal) -> ::std::result::Result<Vec<u8>, ()> {
+pub(crate) unsafe fn sc_serialize(
+    raw_cx: *mut JSContext,
+    value: JSVal,
+) -> ::std::result::Result<Vec<u8>, ()> {
     sc_serialize_with_transfer(raw_cx, value, None)
 }
 
@@ -513,8 +520,8 @@ unsafe fn report_data_clone_error(raw_cx: *mut JSContext) {
 fn worker_entry(
     filename: String,
     thread_id: u32,
-    receiver: Receiver<WorkerMessage>,
-    main_sender: Sender<WorkerToMainMessage>,
+    receiver: bao_ipc::Receiver<WorkerMessage>,
+    main_sender: bao_ipc::Sender<WorkerToMainMessage>,
     worker_data_bytes: Option<Vec<u8>>,
 ) {
     // 0. Name THIS thread `bao-worker-<id>` at the OS level. The std
@@ -535,11 +542,9 @@ fn worker_entry(
     let engine_handle = match bao_engine::context::ensure_engine_handle() {
         Ok(h) => h,
         Err(e) => {
-
             return;
         }
     };
-
 
     // 2. Create a new Runtime on this thread — gets its own JSContext.
     let _runtime = mozjs::rust::Runtime::new(engine_handle);
@@ -553,7 +558,6 @@ fn worker_entry(
     let mut ctx = match unsafe { bao_engine::context::JsContext::from_servo_runtime() } {
         Ok(c) => c,
         Err(e) => {
-
             return;
         }
     };
@@ -565,7 +569,6 @@ fn worker_entry(
 
     // 4. Init JobQueue + ModuleLoader on this thread's JSContext.
     if !bao_engine::job_queue::JobQueue::init(&cx) {
-
         return;
     }
 
@@ -664,7 +667,6 @@ fn worker_entry(
             return;
         }
         Err(e) => {
-
             let _ = main_sender.send(WorkerToMainMessage::Error(format!(
                 "Worker realm init failed: {}",
                 e.message
@@ -719,7 +721,6 @@ fn worker_entry(
     );
 
     if let Err(e) = eval_result {
-
         let msg = format!(
             "Worker script error: {} ({}:{})",
             e.message, e.filename, e.line
@@ -731,7 +732,6 @@ fn worker_entry(
         });
         return;
     }
-
 
     // 8. Drain the job queue (process any microtasks from the script).
     bao_engine::job_queue::JobQueue::drain(&mut cx);
@@ -834,7 +834,7 @@ unsafe extern "C" fn worker_post_to_main(cx: *mut JSContext, argc: u32, vp: *mut
 
 // Thread-local for the main-thread sender, set by worker_entry.
 thread_local! {
-    static WORKER_MAIN_SENDER: RefCell<Option<Sender<WorkerToMainMessage>>> =
+    static WORKER_MAIN_SENDER: RefCell<Option<bao_ipc::Sender<WorkerToMainMessage>>> =
         RefCell::new(None);
 }
 
@@ -933,7 +933,8 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
     }
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let filename = jsstr_to_string(&wrapped_cx,
+    let filename = jsstr_to_string(
+        &wrapped_cx,
         NonNull::new_unchecked(filename_val.to_string()),
     );
 
@@ -1003,13 +1004,12 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
     // Allocate thread ID.
     let thread_id = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
 
-    // Create channels.
-    let (main_to_worker_tx, main_to_worker_rx): (Sender<WorkerMessage>, Receiver<WorkerMessage>) =
-        mpsc::channel();
-    let (worker_to_main_tx, worker_to_main_rx): (
-        Sender<WorkerToMainMessage>,
-        Receiver<WorkerToMainMessage>,
-    ) = mpsc::channel();
+    // Create channels — bao_ipc unbounded (REQ-ARCH-3 unified MPMC
+    // substrate): send never blocks, FIFO per producer, drain-then-close
+    // when every sender drops (the worker loop's `Err(_)` exit arm and the
+    // main-side post-death drain both ride these two faces).
+    let (main_to_worker_tx, main_to_worker_rx) = bao_ipc::unbounded::<WorkerMessage>();
+    let (worker_to_main_tx, worker_to_main_rx) = bao_ipc::unbounded::<WorkerToMainMessage>();
 
     // Spawn the worker OS thread.
     let worker_filename = abs_filename.clone();
@@ -1149,7 +1149,7 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
     // even when user JS drops its reference mid-flight (Node keeps workers in
     // its internal worker registry the same way). Same-thread only — the
     // pump runs on the creating thread's JSContext; cross-thread traffic is
-    // serialized bytes on the mpsc channels, never JSObject pointers.
+    // serialized bytes on the bao_ipc channels, never JSObject pointers.
 
     crate::gc_store::gc_store_insert_ns(
         cx,
@@ -1374,7 +1374,7 @@ pub fn worker_try_recv(
                 _ => {
                     return WorkerIncoming::Error(
                         "worker_try_recv: main thread realm not initialized".into(),
-                    )
+                    );
                 }
             };
             rooted!(&in(cx) let global_root = global);
@@ -1717,11 +1717,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 })"#;
             let mut mp_text = mozjs::rust::transform_str_to_source_text(mp_source);
             let mut mp_val = UndefinedValue();
-            let mp_opts = mozjs::glue::NewCompileOptions(
-                raw_cx,
-                c"<worker_threads:MessagePort>".as_ptr(),
-                1,
-            );
+            let mp_opts =
+                mozjs::glue::NewCompileOptions(raw_cx, c"<worker_threads:MessagePort>".as_ptr(), 1);
             if !mp_opts.is_null() {
                 let mp_ok = mozjs_sys::jsapi::JS::Evaluate2(
                     raw_cx,
@@ -2021,7 +2018,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 /// A throwing listener is contained here (pending exception cleared): one bad
 /// handler must not kill the shared pump pass, mirroring cluster's
 /// try/catch-per-listener dispatch.
-unsafe fn emit_worker_event(cx: *mut JSContext, target: *mut JSObject, event: &str, args: &[JSVal]) {
+unsafe fn emit_worker_event(
+    cx: *mut JSContext,
+    target: *mut JSObject,
+    event: &str,
+    args: &[JSVal],
+) {
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx = &mut wrapped_cx;
@@ -2148,7 +2150,6 @@ unsafe fn pump_one_worker(cx: *mut JSContext, thread_id: u32) {
             .map(|h| h.thread.as_ref().is_some_and(|j| j.is_finished()))
             .unwrap_or(false);
 
-
         let worker_obj =
             crate::gc_store::gc_store_get_ns(cx, "worker-threads", &format!("w{}", thread_id));
 
@@ -2169,11 +2170,9 @@ unsafe fn pump_one_worker(cx: *mut JSContext, thread_id: u32) {
 
             match inc {
                 WorkerIncoming::Data => {
-
                     if let Some(obj) = worker_obj {
                         let data = rval.get();
                         emit_worker_event(cx, obj, "message", &[data]);
-
                     }
                 }
                 WorkerIncoming::Error(msg) => {

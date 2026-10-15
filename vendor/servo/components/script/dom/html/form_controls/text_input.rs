@@ -48,18 +48,30 @@ pub(crate) struct EmbedderClipboardProvider {
     pub webview_id: WebViewId,
 }
 
+impl EmbedderClipboardProvider {
+    /// Family sender for `EmbedderMsg` clipboard traffic (REQ-ARCH-3 F4-W2),
+    /// mirroring the consumer-side family handler in `servo.rs`
+    /// (`handle_clipboard_message`). Forwards verbatim over the script
+    /// channel, preserving the explicit `unwrap` send-error semantics.
+    fn send_clipboard_message_to_embedder(&self, message: EmbedderMsg) {
+        self.embedder_sender.send(message).unwrap();
+    }
+}
+
 impl ClipboardProvider for EmbedderClipboardProvider {
     fn get_text(&mut self) -> Result<String, String> {
         let (callback, rx) = GenericCallback::new_blocking().unwrap();
-        self.embedder_sender
-            .send(EmbedderMsg::GetClipboardText(self.webview_id, callback))
-            .unwrap();
+        self.send_clipboard_message_to_embedder(EmbedderMsg::GetClipboardText(
+            self.webview_id,
+            callback,
+        ));
         rx.recv().unwrap()
     }
     fn set_text(&mut self, s: String) {
-        self.embedder_sender
-            .send(EmbedderMsg::SetClipboardText(self.webview_id, s))
-            .unwrap();
+        self.send_clipboard_message_to_embedder(EmbedderMsg::SetClipboardText(
+            self.webview_id,
+            s,
+        ));
     }
 }
 

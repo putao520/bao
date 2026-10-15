@@ -125,7 +125,7 @@ struct LiveFixture {
     runtime: BrowserRuntime,
     page: PageHandle,
     bridge_rx: BridgeReceiver,
-    servo_event_rx: Receiver<ServoEvent>,
+    servo_event_rx: bao_ipc::Receiver<ServoEvent>,
     event_router: Arc<BaoWsRegistry>,
     broadcaster: Arc<EventBroadcaster>,
     ws_url: String,
@@ -145,7 +145,7 @@ impl LiveFixture {
             })
             .map_err(|e| e.to_string())?;
         let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
-        let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (event_tx, servo_event_rx) = bao_ipc::unbounded::<ServoEvent>();
         runtime.set_event_channel(event_tx);
         let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
         let event_router = Arc::clone(&registry);

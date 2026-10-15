@@ -205,7 +205,10 @@ impl DevtoolsInstance {
             Err(())
         };
         let token = format!("{:X}", rng().next_u32());
-        embedder.send(EmbedderMsg::OnDevtoolsStarted(port, token.clone()));
+        send_dialog_permission_message_to_embedder(
+            &embedder,
+            EmbedderMsg::OnDevtoolsStarted(port, token.clone()),
+        );
 
         let listener = match bound {
             Some((l, _)) => l,
@@ -934,6 +937,13 @@ impl DevtoolsInstance {
     }
 }
 
+/// Family sender for `EmbedderMsg` dialog/permission traffic (REQ-ARCH-3
+/// F4-W2), mirroring the consumer-side family handler in `servo.rs`
+/// (`handle_dialog_permission_message`). Forwards verbatim to the embedder.
+fn send_dialog_permission_message_to_embedder(embedder: &EmbedderProxy, message: EmbedderMsg) {
+    embedder.send(message);
+}
+
 fn allow_devtools_client(stream: &mut TcpStream, embedder: &EmbedderProxy, token: &str) -> bool {
     // By-pass prompt if we receive a valid token.
     let token = format!("25:{{\"auth_token\":\"{}\"}}", token);
@@ -956,7 +966,10 @@ fn allow_devtools_client(stream: &mut TcpStream, embedder: &EmbedderProxy, token
     // No token found. Prompt user
     let (request_sender, request_receiver) =
         generic_channel::channel().expect("Failed to create IPC channel!");
-    embedder.send(EmbedderMsg::RequestDevtoolsConnection(request_sender));
+    send_dialog_permission_message_to_embedder(
+        embedder,
+        EmbedderMsg::RequestDevtoolsConnection(request_sender),
+    );
     request_receiver.recv().unwrap() == AllowOrDeny::Allow
 }
 

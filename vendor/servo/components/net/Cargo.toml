@@ -104,6 +104,7 @@ webpki-roots = {version = "1.0"}
 webrender_api = {version = "0.70"}
 
 bao_boringssl_bridge = { path = "../../../../src/bao_boringssl_bridge", version = "^0.2.0" }
+bao_ipc = { path = "../../../../src/bao_ipc", version = "0.1.0" }
 bao_stealth = { path = "../../../../src/bao_stealth", version = "^0.4.0" }
 # Shared per-host DNS cache (Bao fusion: usockets + node:dns + the WS loader
 # resolve through one cache). Low-tier, std-only surface.

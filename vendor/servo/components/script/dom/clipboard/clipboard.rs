@@ -115,7 +115,10 @@ impl ClipboardMethods<crate::DomTypeHolder> for Clipboard {
         // Step 3.3 Let data be a copy of the system clipboard data.
         let window = global.as_window();
         let callback = callback_promise(&p, self, global.task_manager().clipboard_task_source());
-        window.send_to_embedder(EmbedderMsg::GetClipboardText(window.webview_id(), callback));
+        window.send_clipboard_message_to_embedder(EmbedderMsg::GetClipboardText(
+            window.webview_id(),
+            callback,
+        ));
 
         // Step 3.4 Queue a global task on the clipboard task source,
         // given realm’s global object, to perform the below steps:
@@ -270,7 +273,7 @@ fn write_blobs_and_option_to_the_clipboard(
         // Step 2.3 Let payload be the result of UTF-8 decoding item’s underlying byte sequence.
         // Step 2.4 Insert payload and presentationStyle into the system clipboard
         // using formatString as the native clipboard format.
-        window.send_to_embedder(EmbedderMsg::SetClipboardText(
+        window.send_clipboard_message_to_embedder(EmbedderMsg::SetClipboardText(
             window.webview_id(),
             String::from_utf8(
                 item.get_bytes()

@@ -12,11 +12,11 @@ use bytes::Bytes;
 use content_security_policy as csp;
 use crossbeam_channel::Sender;
 use devtools_traits::DevtoolsControlMsg;
+use bao_ipc::unbounded;
 use embedder_traits::resources::{self, Resource};
 use headers::{AccessControlExposeHeaders, ContentType, HeaderMapExt};
 use http::header::{self, HeaderMap, HeaderName, RANGE};
 use http::{HeaderValue, Method, StatusCode};
-use ipc_channel::ipc;
 use log::{debug, trace, warn};
 use malloc_size_of_derive::MallocSizeOf;
 use mime::{self, Mime};
@@ -1155,7 +1155,7 @@ fn handle_allowcert_request(request: &mut Request, context: &FetchContext) -> io
 
     let stream = body.clone_stream();
     let mut stream = stream.lock();
-    let (body_chan, body_port) = ipc::channel().unwrap();
+    let (body_chan, body_port) = unbounded();
     let Some(chunk_requester) = stream.as_mut() else {
         log::error!(
             "Could not connect to the request body stream because it has already been closed."

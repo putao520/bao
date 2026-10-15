@@ -3,9 +3,8 @@ use super::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 
 use dpi::PhysicalSize;
 use servo::{
@@ -1025,20 +1024,16 @@ mod tests {
 
     #[test]
     fn test_worker_script_loader_validate_mime_type_valid() {
-        assert!(
-            WorkerScriptLoader::validate_mime_type(
-                "text/javascript",
-                "https://example.com/worker.js"
-            )
-            .is_ok()
-        );
-        assert!(
-            WorkerScriptLoader::validate_mime_type(
-                "application/javascript",
-                "https://example.com/worker.js"
-            )
-            .is_ok()
-        );
+        assert!(WorkerScriptLoader::validate_mime_type(
+            "text/javascript",
+            "https://example.com/worker.js"
+        )
+        .is_ok());
+        assert!(WorkerScriptLoader::validate_mime_type(
+            "application/javascript",
+            "https://example.com/worker.js"
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1153,11 +1148,9 @@ mod tests {
         state.reap_terminated_workers();
         // worker1's script load state should be reaped, worker2's should remain
         assert_eq!(state.worker_script_load_state_count(), 1);
-        assert!(
-            state
-                .worker_script_load_state(&WorkerId("worker2.js".to_string()))
-                .is_some()
-        );
+        assert!(state
+            .worker_script_load_state(&WorkerId("worker2.js".to_string()))
+            .is_some());
     }
 
     #[test]
@@ -1205,12 +1198,10 @@ mod tests {
 
         // Step 1: Worker created → Pending
         state.register_worker_script_load_state(worker_id.clone(), WorkerScriptLoadState::Pending);
-        assert!(
-            state
-                .worker_script_load_state(&worker_id)
-                .unwrap()
-                .is_loading()
-        );
+        assert!(state
+            .worker_script_load_state(&worker_id)
+            .unwrap()
+            .is_loading());
 
         // Step 2: Fetch started → Fetching
         state.update_worker_script_load_state(&worker_id, WorkerScriptLoadState::Fetching);
@@ -1230,12 +1221,10 @@ mod tests {
 
         // Step 6: Compilation succeeded → Ready
         state.update_worker_script_load_state(&worker_id, WorkerScriptLoadState::Ready);
-        assert!(
-            state
-                .worker_script_load_state(&worker_id)
-                .unwrap()
-                .is_ready()
-        );
+        assert!(state
+            .worker_script_load_state(&worker_id)
+            .unwrap()
+            .is_ready());
     }
 
     #[test]
@@ -1253,11 +1242,9 @@ mod tests {
                 url: "https://example.com/bad-worker.js".to_string(),
             }),
         );
-        assert!(
-            state
-                .worker_script_load_state(&worker_id)
-                .unwrap()
-                .is_failed()
-        );
+        assert!(state
+            .worker_script_load_state(&worker_id)
+            .unwrap()
+            .is_failed());
     }
 }

@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use bao_cdp::servo_bridge::{
-    BridgeCommand, BridgeSender, DEFAULT_BROWSER_CONTEXT_ID, main_frame_id_for_target,
+    main_frame_id_for_target, BridgeCommand, BridgeSender, DEFAULT_BROWSER_CONTEXT_ID,
 };
 use cdp_server::{CdpError, CdpMessage, EventSender, RegistryDispatch};
 use serde_json::{json, Value};
@@ -211,17 +211,26 @@ impl BaoWsRegistry {
             // any other method in these domains still answers not-found.
             // (The W11 matrix marks them out-of-matrix; this is the honest
             // compat face for clients that gate on the enable round-trip.)
-            "Audits.enable" | "Audits.disable"
-            | "Tracing.enable" | "Tracing.disable" | "Tracing.start" | "Tracing.end"
-            | "Performance.enable" | "Performance.disable"
-            | "Accessibility.enable" | "Accessibility.disable"
-            | "Console.enable" | "Console.disable"
-            | "HeapProfiler.enable" | "HeapProfiler.disable"
-            | "Profiler.enable" | "Profiler.disable"
-            | "Overlay.enable" | "Overlay.disable"
-            | "SystemInfo.enable" | "SystemInfo.disable" => {
-                Some(Ok(serde_json::json!({})))
-            }
+            "Audits.enable"
+            | "Audits.disable"
+            | "Tracing.enable"
+            | "Tracing.disable"
+            | "Tracing.start"
+            | "Tracing.end"
+            | "Performance.enable"
+            | "Performance.disable"
+            | "Accessibility.enable"
+            | "Accessibility.disable"
+            | "Console.enable"
+            | "Console.disable"
+            | "HeapProfiler.enable"
+            | "HeapProfiler.disable"
+            | "Profiler.enable"
+            | "Profiler.disable"
+            | "Overlay.enable"
+            | "Overlay.disable"
+            | "SystemInfo.enable"
+            | "SystemInfo.disable" => Some(Ok(serde_json::json!({}))),
             // W40 (#11-D) retirement via REQ-CDS-009: Target.getBrowserContexts
             // / createBrowserContext / disposeBrowserContext are no longer
             // served here — they fall through to the bridge-backed
@@ -234,10 +243,7 @@ impl BaoWsRegistry {
             // GetTargetContextId), which carries the real browserContextId.
             "Target.getTargetInfo"
                 if msg.session_id.is_none()
-                    && params
-                        .as_ref()
-                        .and_then(|p| p.get("targetId"))
-                        .is_none() =>
+                    && params.as_ref().and_then(|p| p.get("targetId")).is_none() =>
             {
                 Some(Ok(serde_json::json!({
                     "targetInfo": {
@@ -601,7 +607,12 @@ impl BaoWsRegistry {
         // contexts (Chrome semantics): clear the old ones and announce a
         // fresh default context bound to the frame, or clients wait for a
         // context that never comes after navigation.
-        self.emit(event_sender, sid, "Runtime.executionContextsCleared", json!({}));
+        self.emit(
+            event_sender,
+            sid,
+            "Runtime.executionContextsCleared",
+            json!({}),
+        );
         let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
         self.emit_execution_context(event_sender, sid, context_id, "", true, &fid);
         // Chrome keeps isolated worlds alive across documents: re-announce
@@ -814,10 +825,7 @@ impl RegistryDispatch for BaoWsRegistry {
         if let Err(err) = &result {
             if err.code == -32601 {
                 let fallback_params = msg.params.clone().unwrap_or(Value::Null);
-                match self
-                    .rdp
-                    .dispatch(&target_id, &msg.method, fallback_params)
-                {
+                match self.rdp.dispatch(&target_id, &msg.method, fallback_params) {
                     Ok(v) => result = Ok(v),
                     // Universe miss — the production "'X.y' wasn't found"
                     // verdict in `result` stays as-is.
@@ -1394,7 +1402,10 @@ mod tests {
         assert_eq!(session_events.len(), 1, "exactly one tagged delivery");
         assert_eq!(session_events[0].0, s1);
         assert_eq!(session_events[0].1, "Page.frameNavigated");
-        assert!(sender.events.lock().unwrap().is_empty(), "no untagged broadcast");
+        assert!(
+            sender.events.lock().unwrap().is_empty(),
+            "no untagged broadcast"
+        );
         drop(session_events);
 
         // Same for target "2".

@@ -5,8 +5,8 @@
 // @trace REQ-CDP-006 [entity:ServoDelegateHooks] (servo delegate → CDP event forwarding)
 
 mod service_worker;
-mod shared_worker;
 mod servo_delegate;
+mod shared_worker;
 mod webview_delegate;
 mod webview_state;
 mod worker_channel;
@@ -15,8 +15,8 @@ mod worker_scope;
 mod worker_script;
 
 pub use service_worker::*;
-pub use shared_worker::*;
 pub use servo_delegate::*;
+pub use shared_worker::*;
 pub use webview_delegate::*;
 pub use webview_state::*;
 pub use worker_channel::*;

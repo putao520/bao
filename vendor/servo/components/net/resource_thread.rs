@@ -20,7 +20,7 @@ use hyper_serde::Serde;
 use log::{debug, trace, warn};
 use malloc_size_of_derive::MallocSizeOf;
 use net_traits::blob_url_store::{BlobTokenCommunicator, parse_blob_url};
-use net_traits::filemanager_thread::FileTokenCheck;
+use net_traits::filemanager_thread::{FileManagerThreadMsg, FileTokenCheck};
 use net_traits::pub_domains::public_suffix_list_size_of;
 use net_traits::request::{Destination, PreloadEntry, PreloadId, RequestBuilder, RequestId};
 use net_traits::response::{Response, ResponseInit};
@@ -43,8 +43,8 @@ use rustls_pki_types::CertificateDer;
 use rustls_pki_types::pem::PemObject;
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::{
-    self, CallbackSetter, GenericCallback, GenericReceiver, GenericReceiverSet,
-    GenericSelectionResult,
+    self, CallbackSetter, GenericCallback, GenericOneshotSender, GenericReceiver,
+    GenericReceiverSet, GenericSelectionResult,
 };
 use servo_base::context_partition;
 use servo_base::id::{ContextPartitionId, CookieStoreId, WebViewId};
@@ -501,52 +501,137 @@ impl ResourceChannelManager {
         let (msg, http_state) = self.resolve_partition(msg, http_state);
         let http_state = &http_state;
         match msg {
-            CoreResourceMsg::Fetch(request_builder, channels) => match channels {
-                FetchChannels::ResponseMsg(sender) => {
-                    let cancellation_listener =
-                        self.get_or_create_cancellation_listener(request_builder.id);
-                    self.resource_manager.fetch(
-                        request_builder,
-                        None,
-                        sender,
-                        http_state,
-                        cancellation_listener,
-                        protocols,
-                    );
-                },
-                FetchChannels::WebSocket {
-                    event_sender,
-                    action_receiver,
-                } => {
-                    let cancellation_listener =
-                        self.get_or_create_cancellation_listener(request_builder.id);
-
-                    self.resource_manager.websocket_connect(
-                        request_builder,
-                        event_sender,
-                        action_receiver,
-                        http_state,
-                        cancellation_listener,
-                        protocols,
-                    )
-                },
-                FetchChannels::Prefetch => self.resource_manager.fetch(
-                    request_builder,
-                    None,
-                    DiscardFetch,
+            // BAO PATCH (REQ-ARCH-3 F4-W5) FetchRouter: the fetch family
+            // (Fetch / FetchRedirect / Cancel — TotalSizeOfInFlightKeepAlive
+            // Records is infra and stays in `handle_keep_alive_message`,
+            // F4-W4) demuxes to the family handler below; the arm bodies
+            // moved verbatim — payloads, channel wiring, the
+            // cancellation-listener registry, and the `return` semantics are
+            // unchanged. The e240 wire-count seam (http_loader) and the SW
+            // mediator registry (`NetworkMediator` arm below) are not
+            // touched.
+            CoreResourceMsg::Fetch(..)
+            | CoreResourceMsg::Cancel(..)
+            | CoreResourceMsg::FetchRedirect(..) => {
+                self.handle_fetch_message(msg, http_state, protocols);
+            },
+            // BAO PATCH (REQ-ARCH-3 F4-W3) CookieRouter: the 15 non-embedder
+            // cookie variants demux to the family handler below; the
+            // Embedder* 4 stay inline (servo.rs site_data_manager response
+            // chain). Arm bodies moved verbatim — payloads, ordering, jar
+            // access, and the `return` semantics are unchanged.
+            CoreResourceMsg::DeleteCookiesForSites(..)
+            | CoreResourceMsg::DeleteSessionCookies(..)
+            | CoreResourceMsg::DeleteCookies(..)
+            | CoreResourceMsg::DeleteCookie(..)
+            | CoreResourceMsg::DeleteCookieAsync(..)
+            | CoreResourceMsg::SetCookieForUrl(..)
+            | CoreResourceMsg::SetCookiesForUrl(..)
+            | CoreResourceMsg::SetCookieForUrlAsync(..)
+            | CoreResourceMsg::GetCookieStringForUrl(..)
+            | CoreResourceMsg::GetCookiesForUrl(..)
+            | CoreResourceMsg::GetCookieDataForUrlAsync(..)
+            | CoreResourceMsg::GetAllCookieDataForUrlAsync(..)
+            | CoreResourceMsg::NewCookieListener(..)
+            | CoreResourceMsg::RemoveCookieListener(..)
+            | CoreResourceMsg::ListCookies(..) => {
+                self.handle_cookie_message(msg, http_state);
+            },
+            // BAO PATCH (REQ-ARCH-3 F4-W3): the embedder cookie family (4
+            // variants) stays inline — its servo.rs `site_data_manager`
+            // response chain is W1's domain and its arm shapes must not
+            // change.
+            CoreResourceMsg::EmbedderGetCookiesForUrl(operation_id, url, source) => {
+                let mut cookie_jar = http_state.cookie_jar.write();
+                cookie_jar.remove_expired_cookies_for_url(&url);
+                let cookies: Vec<Cookie<'static>> =
+                    cookie_jar.cookies_data_for_url(&url, source).collect();
+                http_state.embedder_proxy.send(
+                    NetToEmbedderMsg::EmbedderCookieOperationResponseWithCookies(
+                        operation_id,
+                        cookies,
+                    ),
+                );
+            },
+            CoreResourceMsg::EmbedderSetCookieForUrl(operation_id, url, cookie, source) => {
+                self.resource_manager.set_cookie_for_url(
+                    &url,
+                    cookie.into_inner(),
+                    source,
                     http_state,
-                    Arc::new(Default::default()),
-                    protocols,
-                ),
+                );
+                http_state
+                    .embedder_proxy
+                    .send(NetToEmbedderMsg::EmbedderCookieOperationResponse(
+                        operation_id,
+                    ));
             },
-            CoreResourceMsg::Cancel(request_ids) => {
-                for cancellation_listener in request_ids
-                    .into_iter()
-                    .filter_map(|request_id| self.cancellation_listener(request_id))
-                {
-                    cancellation_listener.cancel();
-                }
+            CoreResourceMsg::EmbedderClearCookies(operation_id) => {
+                http_state.cookie_jar.write().clear_storage(None);
+                http_state
+                    .embedder_proxy
+                    .send(NetToEmbedderMsg::EmbedderCookieOperationResponse(
+                        operation_id,
+                    ));
             },
+            CoreResourceMsg::EmbedderClearSessionCookies(operation_id) => {
+                http_state.cookie_jar.write().clear_session_cookies();
+                http_state
+                    .embedder_proxy
+                    .send(NetToEmbedderMsg::EmbedderCookieOperationResponse(
+                        operation_id,
+                    ));
+            },
+            CoreResourceMsg::NetworkMediator(mediator_chan, origin) => {
+                // BAO PATCH (REQ-BRW-004 C19): shared registry — the async
+                // fetch tasks consult it to invoke "handle fetch".
+                self.resource_manager
+                    .sw_managers
+                    .lock()
+                    .insert(origin, mediator_chan);
+            },
+            // BAO PATCH (REQ-ARCH-3 F4-W4): the history / cache-file / infra
+            // families demux to their family handlers below; the arm bodies
+            // moved verbatim — payloads, ordering, lock discipline, and the
+            // `return` semantics are unchanged. The `Exit` handler returns
+            // the thread-stopping `false` through unchanged.
+            CoreResourceMsg::GetHistoryState(..)
+            | CoreResourceMsg::SetHistoryState(..)
+            | CoreResourceMsg::RemoveHistoryStates(..) => {
+                self.handle_history_message(msg, http_state);
+            },
+            CoreResourceMsg::GetCacheEntries(..) | CoreResourceMsg::ClearCache(..) => {
+                self.handle_cache_message(msg, http_state);
+            },
+            CoreResourceMsg::ToFileManager(msg) => self.handle_file_manager_message(msg),
+            CoreResourceMsg::TotalSizeOfInFlightKeepAliveRecords(..) => {
+                self.handle_keep_alive_message(msg);
+            },
+            CoreResourceMsg::Exit(sender) => {
+                return self.handle_exit_message(sender, http_state);
+            },
+            // Ignore these messages as they are only sent on very specific channels.
+            CoreResourceMsg::CollectMemoryReport(_) |
+            CoreResourceMsg::RevokeTokenForFile(..) |
+            CoreResourceMsg::RefreshTokenForFile(..) => {},
+            // REQ-CDS-009 C6: partition envelopes are unwrapped by
+            // `resolve_partition` above — an envelope can never reach this
+            // match.
+            CoreResourceMsg::Partition(..) => {
+                unreachable!("partition envelope survived resolve_partition")
+            },
+        }
+        true
+    }
+
+    // BAO PATCH (REQ-ARCH-3 F4-W3) CookieRouter: private family handler for
+    // the 15 non-embedder `CoreResourceMsg` cookie variants, extracted
+    // verbatim from `process_msg`. Only dispatch reaches this method (the
+    // Embedder* 4 remain in `process_msg` — servo.rs `site_data_manager`
+    // response chain, W1). Payloads, ordering, jar access, listener
+    // registry, and the `return` semantics are unchanged.
+    fn handle_cookie_message(&mut self, msg: CoreResourceMsg, http_state: &Arc<HttpState>) -> bool {
+        match msg {
             CoreResourceMsg::DeleteCookiesForSites(sites, sender) => {
                 http_state
                     .cookie_jar
@@ -581,18 +666,6 @@ impl ResourceChannelManager {
                     .write()
                     .delete_cookie_with_name(&url, name);
                 self.send_cookie_response(cookie_store_id, CookieData::Delete(Ok(())));
-            },
-            CoreResourceMsg::FetchRedirect(request_builder, res_init, sender) => {
-                let cancellation_listener =
-                    self.get_or_create_cancellation_listener(request_builder.id);
-                self.resource_manager.fetch(
-                    request_builder,
-                    Some(res_init),
-                    sender,
-                    http_state,
-                    cancellation_listener,
-                    protocols,
-                )
             },
             CoreResourceMsg::SetCookieForUrl(request, cookie, source, sender) => {
                 self.resource_manager.set_cookie_for_url(
@@ -658,47 +731,6 @@ impl ResourceChannelManager {
                     .collect();
                 self.send_cookie_response(cookie_store_id, CookieData::GetAll(cookies));
             },
-            CoreResourceMsg::EmbedderGetCookiesForUrl(operation_id, url, source) => {
-                let mut cookie_jar = http_state.cookie_jar.write();
-                cookie_jar.remove_expired_cookies_for_url(&url);
-                let cookies: Vec<Cookie<'static>> =
-                    cookie_jar.cookies_data_for_url(&url, source).collect();
-                http_state.embedder_proxy.send(
-                    NetToEmbedderMsg::EmbedderCookieOperationResponseWithCookies(
-                        operation_id,
-                        cookies,
-                    ),
-                );
-            },
-            CoreResourceMsg::EmbedderSetCookieForUrl(operation_id, url, cookie, source) => {
-                self.resource_manager.set_cookie_for_url(
-                    &url,
-                    cookie.into_inner(),
-                    source,
-                    http_state,
-                );
-                http_state
-                    .embedder_proxy
-                    .send(NetToEmbedderMsg::EmbedderCookieOperationResponse(
-                        operation_id,
-                    ));
-            },
-            CoreResourceMsg::EmbedderClearCookies(operation_id) => {
-                http_state.cookie_jar.write().clear_storage(None);
-                http_state
-                    .embedder_proxy
-                    .send(NetToEmbedderMsg::EmbedderCookieOperationResponse(
-                        operation_id,
-                    ));
-            },
-            CoreResourceMsg::EmbedderClearSessionCookies(operation_id) => {
-                http_state.cookie_jar.write().clear_session_cookies();
-                http_state
-                    .embedder_proxy
-                    .send(NetToEmbedderMsg::EmbedderCookieOperationResponse(
-                        operation_id,
-                    ));
-            },
             CoreResourceMsg::NewCookieListener(cookie_store_id, callback, _url) => {
                 // TODO: Use the URL for setting up the actual monitoring
                 self.cookie_listeners.insert(cookie_store_id, callback);
@@ -706,19 +738,25 @@ impl ResourceChannelManager {
             CoreResourceMsg::RemoveCookieListener(cookie_store_id) => {
                 self.cookie_listeners.remove(&cookie_store_id);
             },
-            CoreResourceMsg::NetworkMediator(mediator_chan, origin) => {
-                // BAO PATCH (REQ-BRW-004 C19): shared registry — the async
-                // fetch tasks consult it to invoke "handle fetch".
-                self.resource_manager
-                    .sw_managers
-                    .lock()
-                    .insert(origin, mediator_chan);
-            },
             CoreResourceMsg::ListCookies(sender) => {
                 let mut cookie_jar = http_state.cookie_jar.write();
                 cookie_jar.remove_all_expired_cookies();
                 sender.send_or_ignore(cookie_jar.cookie_site_descriptors());
             },
+            // REQ-ARCH-3 F4-W3: only the cookie family is dispatched here;
+            // mirrors the `Partition` guard in `process_msg`.
+            other => unreachable!("non-cookie message reached handle_cookie_message: {other:?}"),
+        }
+        true
+    }
+
+    // BAO PATCH (REQ-ARCH-3 F4-W4) HistoryRouter: private family handler for
+    // the 3 `CoreResourceMsg` history variants, extracted verbatim from
+    // `process_msg`. Only dispatch reaches this method. Payloads, ordering,
+    // and the lock discipline (read for Get, write for Set/Remove) are
+    // unchanged.
+    fn handle_history_message(&self, msg: CoreResourceMsg, http_state: &Arc<HttpState>) {
+        match msg {
             CoreResourceMsg::GetHistoryState(history_state_id, consumer) => {
                 let history_states = http_state.history_states.read();
                 consumer.send_or_ignore(history_states.get(&history_state_id).cloned());
@@ -733,6 +771,18 @@ impl ResourceChannelManager {
                     history_states.remove(&history_state);
                 }
             },
+            // REQ-ARCH-3 F4-W4: only the history family is dispatched here;
+            // mirrors the `Partition` guard in `process_msg`.
+            other => unreachable!("non-history message reached handle_history_message: {other:?}"),
+        }
+    }
+
+    // BAO PATCH (REQ-ARCH-3 F4-W4) CacheRouter: private family handler for
+    // the 2 `CoreResourceMsg` HTTP-cache variants, extracted verbatim from
+    // `process_msg`. Only dispatch reaches this method; payloads, ordering,
+    // and cache access are unchanged.
+    fn handle_cache_message(&self, msg: CoreResourceMsg, http_state: &Arc<HttpState>) {
+        match msg {
             CoreResourceMsg::GetCacheEntries(sender) => {
                 sender.send_or_ignore(http_state.http_cache.cache_entry_descriptors());
             },
@@ -742,7 +792,24 @@ impl ResourceChannelManager {
                     sender.send_or_ignore(());
                 }
             },
-            CoreResourceMsg::ToFileManager(msg) => self.resource_manager.filemanager.handle(msg),
+            // REQ-ARCH-3 F4-W4: only the cache family is dispatched here;
+            // mirrors the `Partition` guard in `process_msg`.
+            other => unreachable!("non-cache message reached handle_cache_message: {other:?}"),
+        }
+    }
+
+    // BAO PATCH (REQ-ARCH-3 F4-W4) FileManagerRouter: the `ToFileManager`
+    // arm forwards the nested `FileManagerThreadMsg` OPAQUELY — the nested
+    // enum is a black box at this seam (DEC-ARCH-001 ⑥, no expansion).
+    fn handle_file_manager_message(&self, msg: FileManagerThreadMsg) {
+        self.resource_manager.filemanager.handle(msg);
+    }
+
+    // BAO PATCH (REQ-ARCH-3 F4-W4): in-flight keep-alive accounting arm,
+    // extracted verbatim from `process_msg`. Only dispatch reaches this
+    // method; the default-on-missing total is unchanged.
+    fn handle_keep_alive_message(&self, msg: CoreResourceMsg) {
+        match msg {
             CoreResourceMsg::TotalSizeOfInFlightKeepAliveRecords(pipeline_id, sender) => {
                 let total = self
                     .resource_manager
@@ -758,32 +825,116 @@ impl ResourceChannelManager {
                     .unwrap_or_default();
                 sender.send_or_ignore(total);
             },
-            CoreResourceMsg::Exit(sender) => {
-                if let Some(ref config_dir) = self.config_dir {
-                    let auth_cache = http_state.auth_cache.read();
-                    servo_base::write_json_to_file(&*auth_cache, config_dir, "auth_cache.json");
-                    let jar = http_state.cookie_jar.read();
-                    servo_base::write_json_to_file(&*jar, config_dir, "cookie_jar.json");
-                    let hsts = http_state.hsts_list.read();
-                    servo_base::write_json_to_file(&*hsts, config_dir, "hsts_list.json");
-                }
-                self.resource_manager.exit();
-
-                let _ = sender.send(());
-                return false;
-            },
-            // Ignore these messages as they are only sent on very specific channels.
-            CoreResourceMsg::CollectMemoryReport(_) |
-            CoreResourceMsg::RevokeTokenForFile(..) |
-            CoreResourceMsg::RefreshTokenForFile(..) => {},
-            // REQ-CDS-009 C6: partition envelopes are unwrapped by
-            // `resolve_partition` above — an envelope can never reach this
-            // match.
-            CoreResourceMsg::Partition(..) => {
-                unreachable!("partition envelope survived resolve_partition")
+            // REQ-ARCH-3 F4-W4: only the keep-alive variant is dispatched
+            // here; mirrors the `Partition` guard in `process_msg`.
+            other => {
+                unreachable!("non-keep-alive message reached handle_keep_alive_message: {other:?}")
             },
         }
-        true
+    }
+
+    // BAO PATCH (REQ-ARCH-3 F4-W4) ExitRouter: the Exit arm, extracted
+    // verbatim from `process_msg`. The e134 shutdown semantics travel with
+    // this body unchanged (config-dir persistence of auth cache / cookie
+    // jar / HSTS list, `CoreResourceManager::exit`, the oneshot ack, and the
+    // `false` that stops the thread); the e134 anchors themselves live in
+    // the constellation's teardown (FetchThread re-arm / multiprocess gates)
+    // and are untouched by this extraction.
+    fn handle_exit_message(
+        &mut self,
+        sender: GenericOneshotSender<()>,
+        http_state: &Arc<HttpState>,
+    ) -> bool {
+        if let Some(ref config_dir) = self.config_dir {
+            let auth_cache = http_state.auth_cache.read();
+            servo_base::write_json_to_file(&*auth_cache, config_dir, "auth_cache.json");
+            let jar = http_state.cookie_jar.read();
+            servo_base::write_json_to_file(&*jar, config_dir, "cookie_jar.json");
+            let hsts = http_state.hsts_list.read();
+            servo_base::write_json_to_file(&*hsts, config_dir, "hsts_list.json");
+        }
+        self.resource_manager.exit();
+
+        let _ = sender.send(());
+        false
+    }
+
+    // BAO PATCH (REQ-ARCH-3 F4-W5) FetchRouter: private family handler for
+    // the `CoreResourceMsg` fetch family (Fetch / FetchRedirect / Cancel),
+    // extracted verbatim from `process_msg`. Only dispatch reaches this
+    // method. Payloads, channel-specific wiring (ResponseMsg / WebSocket /
+    // Prefetch), the cancellation-listener registry, and the `return`
+    // semantics are unchanged. The `e240` wire-count seam and the SW
+    // mediator registry are net-task-internal and untouched.
+    fn handle_fetch_message(
+        &mut self,
+        msg: CoreResourceMsg,
+        http_state: &Arc<HttpState>,
+        protocols: Arc<ProtocolRegistry>,
+    ) {
+        match msg {
+            CoreResourceMsg::Fetch(request_builder, channels) => match channels {
+                FetchChannels::ResponseMsg(sender) => {
+                    let cancellation_listener =
+                        self.get_or_create_cancellation_listener(request_builder.id);
+                    self.resource_manager.fetch(
+                        request_builder,
+                        None,
+                        sender,
+                        http_state,
+                        cancellation_listener,
+                        protocols,
+                    );
+                },
+                FetchChannels::WebSocket {
+                    event_sender,
+                    action_receiver,
+                } => {
+                    let cancellation_listener =
+                        self.get_or_create_cancellation_listener(request_builder.id);
+
+                    self.resource_manager.websocket_connect(
+                        request_builder,
+                        event_sender,
+                        action_receiver,
+                        http_state,
+                        cancellation_listener,
+                        protocols,
+                    )
+                },
+                FetchChannels::Prefetch => self.resource_manager.fetch(
+                    request_builder,
+                    None,
+                    DiscardFetch,
+                    http_state,
+                    Arc::new(Default::default()),
+                    protocols,
+                ),
+            },
+            CoreResourceMsg::Cancel(request_ids) => {
+                for cancellation_listener in request_ids
+                    .into_iter()
+                    .filter_map(|request_id| self.cancellation_listener(request_id))
+                {
+                    cancellation_listener.cancel();
+                }
+            },
+            CoreResourceMsg::FetchRedirect(request_builder, res_init, sender) => {
+                let cancellation_listener =
+                    self.get_or_create_cancellation_listener(request_builder.id);
+                self.resource_manager.fetch(
+                    request_builder,
+                    Some(res_init),
+                    sender,
+                    http_state,
+                    cancellation_listener,
+                    protocols,
+                )
+            },
+            // REQ-ARCH-3 F4-W5: only the fetch family is dispatched here;
+            // mirrors the `Partition` guard in `process_msg`.
+            other => unreachable!("non-fetch message reached handle_fetch_message: {other:?}"),
+        }
     }
 }
 

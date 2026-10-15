@@ -4,17 +4,16 @@
 
 use std::sync::Arc;
 
+use bao_ipc::{Receiver, Sender, unbounded};
 use content_security_policy::{self as csp};
 use http::header::{AUTHORIZATION, HeaderName};
 use http::{HeaderMap, Method};
-use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
-use ipc_channel::router::ROUTER;
 use log::error;
 use malloc_size_of_derive::MallocSizeOf;
 use mime::Mime;
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use servo_base::generic_channel::GenericSharedMemory;
 use servo_base::id::{PipelineId, WebViewId};
 use servo_url::{ImmutableOrigin, ServoUrl};
@@ -307,12 +306,17 @@ pub enum BodyChunkResponse {
 /// Messages used to implement <https://fetch.spec.whatwg.org/#concept-request-transmit-body>
 /// which are sent from net to script
 /// (with the exception of Done, which is sent from script to script).
-#[derive(Debug, Deserialize, Serialize)]
+///
+/// These travel on in-process `bao_ipc` channels (REQ-ARCH-3): every endpoint
+/// of the body-chunk family lives in the same process, so the channel handles
+/// move by value and the messages are never serialized. The upstream
+/// ipc-channel `Serialize`/`Deserialize` derives are therefore gone.
+#[derive(Debug)]
 pub enum BodyChunkRequest {
     /// Connect a fetch in `net`, with a stream of bytes from `script`.
-    Connect(IpcSender<BodyChunkResponse>),
+    Connect(Sender<BodyChunkResponse>),
     /// Re-extract a new stream from the source, following a redirect.
-    Extract(IpcReceiver<BodyChunkRequest>),
+    Extract(Receiver<BodyChunkRequest>),
     /// Ask for another chunk.
     Chunk,
     /// Signal the stream is done(sent from script to script).
@@ -322,15 +326,15 @@ pub enum BodyChunkRequest {
 }
 
 /// A process local view into <https://fetch.spec.whatwg.org/#bodies>.
-/// After IPC serialization, each process gets its own shared sender state for the same body
-/// stream. the net side fetch entry points own clearing their local copy once that fetch invocation
-/// reaches its terminal state. Redirect replay can later deserialize a fresh "RequestBody", so
-/// lower level fetch steps cannot always clean up immediately.
-#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
+/// After a serialization round trip, each copy gets its own shared sender state for the same
+/// body stream. the net side fetch entry points own clearing their local copy once that fetch
+/// invocation reaches its terminal state. Redirect replay can later deserialize a fresh
+/// "RequestBody", so lower level fetch steps cannot always clean up immediately.
+#[derive(Clone, Debug, MallocSizeOf)]
 pub struct RequestBody {
     /// Net's channel to communicate with script re this body.
     #[conditional_malloc_size_of]
-    body_chunk_request_channel: Arc<Mutex<Option<IpcSender<BodyChunkRequest>>>>,
+    body_chunk_request_channel: Arc<Mutex<Option<Sender<BodyChunkRequest>>>>,
     /// <https://fetch.spec.whatwg.org/#concept-body-source>
     source: BodySource,
     /// <https://fetch.spec.whatwg.org/#concept-body-total-bytes>
@@ -339,7 +343,7 @@ pub struct RequestBody {
 
 impl RequestBody {
     pub fn new(
-        body_chunk_request_channel: IpcSender<BodyChunkRequest>,
+        body_chunk_request_channel: Sender<BodyChunkRequest>,
         source: BodySource,
         total_bytes: Option<usize>,
     ) -> Self {
@@ -355,7 +359,7 @@ impl RequestBody {
         match self.source {
             BodySource::Null => panic!("Null sources should never be re-directed."),
             BodySource::Object => {
-                let (chan, port) = ipc::channel().unwrap();
+                let (chan, port) = unbounded();
                 let mut lock = self.body_chunk_request_channel.lock();
                 let Some(selfchan) = lock.as_mut() else {
                     error!(
@@ -375,7 +379,7 @@ impl RequestBody {
     }
 
     /// This is the current process shared optional sender for requesting body chunks.
-    pub fn clone_stream(&self) -> Arc<Mutex<Option<IpcSender<BodyChunkRequest>>>> {
+    pub fn clone_stream(&self) -> Arc<Mutex<Option<Sender<BodyChunkRequest>>>> {
         self.body_chunk_request_channel.clone()
     }
 
@@ -394,6 +398,58 @@ impl RequestBody {
     #[expect(clippy::len_without_is_empty)]
     pub fn len(&self) -> Option<usize> {
         self.total_bytes
+    }
+}
+
+/// `RequestBody` rides inside `RequestBuilder` and `LoadData`, whose
+/// `Serialize`/`Deserialize` derives are still required by the `GenericSend`
+/// bounds of the channels that carry them, so the impls must exist. The
+/// channel handle itself is "serialized" as a leaked `Box` pointer — exactly
+/// the single-process contract of `GenericSender`'s crossbeam arm in
+/// `servo_base::generic_channel` — which is only valid for
+/// serialize→deserialize round trips inside one address space. That is the
+/// only shape Bao runs (REQ-ARCH-3: every endpoint of the body-chunk family
+/// is same-process; multiprocess mode is not supported by the `bao_ipc`
+/// substrate).
+impl Serialize for RequestBody {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        enum SenderRepr {
+            None,
+            Sender(usize),
+        }
+        let repr = match self.body_chunk_request_channel.lock().clone() {
+            Some(sender) => SenderRepr::Sender(Box::into_raw(Box::new(sender)) as *mut _ as usize),
+            None => SenderRepr::None,
+        };
+        (repr, &self.source, &self.total_bytes).serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for RequestBody {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        enum SenderRepr {
+            None,
+            Sender(usize),
+        }
+        let (repr, source, total_bytes) = <(SenderRepr, BodySource, Option<usize>)>::deserialize(d)?;
+        let sender = match repr {
+            SenderRepr::None => None,
+            SenderRepr::Sender(address) => {
+                // SAFETY: the address was produced by `Serialize for
+                // RequestBody` in this address space (single-process
+                // contract above) and has not been reconstructed before.
+                #[expect(unsafe_code)]
+                let sender = unsafe { Box::from_raw(address as *mut Sender<BodyChunkRequest>) };
+                Some(*sender)
+            },
+        };
+        Ok(RequestBody {
+            body_chunk_request_channel: Arc::new(Mutex::new(sender)),
+            source,
+            total_bytes,
+        })
     }
 }
 
@@ -1288,17 +1344,18 @@ pub fn create_request_body_with_content(content: String) -> RequestBody {
     let content_bytes = GenericSharedMemory::from_vec(content.into_bytes());
     let content_len = content_bytes.len();
 
-    let (chunk_request_sender, chunk_request_receiver) = ipc::channel().unwrap();
-    ROUTER.add_typed_route(
-        chunk_request_receiver,
-        Box::new(move |message| {
-            let request = message.unwrap();
-            if let BodyChunkRequest::Connect(sender) = request {
-                let _ = sender.send(BodyChunkResponse::Chunk(content_bytes.clone()));
-                let _ = sender.send(BodyChunkResponse::Done);
+    let (chunk_request_sender, chunk_request_receiver) = unbounded();
+    std::thread::Builder::new()
+        .name("RequestBodyStatic".to_string())
+        .spawn(move || {
+            while let Ok(request) = chunk_request_receiver.recv() {
+                if let BodyChunkRequest::Connect(sender) = request {
+                    let _ = sender.send(BodyChunkResponse::Chunk(content_bytes.clone()));
+                    let _ = sender.send(BodyChunkResponse::Done);
+                }
             }
-        }),
-    );
+        })
+        .expect("Spawning the static request body pump failed.");
 
     RequestBody::new(chunk_request_sender, BodySource::Object, Some(content_len))
 }

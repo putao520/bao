@@ -469,7 +469,7 @@ fn ws_face_screencast_e2e() {
     runtime.pump_cdp(Duration::from_millis(800));
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
-    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<ServoEvent>();
+    let (event_tx, servo_event_rx) = bao_ipc::unbounded::<ServoEvent>();
     runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));

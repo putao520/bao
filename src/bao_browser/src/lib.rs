@@ -17,12 +17,12 @@ mod error;
 pub mod overlay;
 mod page;
 mod page_pool;
-mod phase_watch;
 mod permission;
+mod phase_watch;
 pub mod prefs;
 mod runtime_bridge;
-mod screenshot;
 pub mod screencast;
+mod screenshot;
 #[cfg(feature = "webdriver")]
 pub mod webdriver_host;
 mod ws_registry;
@@ -65,7 +65,7 @@ use std::time::Duration;
 use servo::{Opts, Preferences, Servo, ServoBuilder};
 
 use bao_cdp::domains::ServoTargetProvider;
-use bao_cdp::servo_bridge::bridge_channel;
+use bao_cdp::servo_bridge::{bridge_channel, BridgeRequest};
 use bao_cdp_client::bridge::{translate, ServoEvent};
 use cdp_server::{CdpServer, EventBroadcaster, EventSender, ServerConfig};
 
@@ -110,20 +110,148 @@ pub fn servo_event_pumped_total() -> u64 {
 /// site built on this helper participates in the emitted==pumped assertion
 /// (`run_with_bridge` and the suite pump-shape harnesses alike).
 ///
+/// The queue is the unified MPMC substrate (REQ-ARCH-3, `bao_ipc::unbounded`)
+/// — the REQ-CDP-004 reliable-queue legislation (never blocks, never drops)
+/// is unchanged by the migration.
+///
 /// @trace REQ-CDP-004 [req:REQ-CDP-004] [level:library]
 pub fn drain_servo_events(
-    servo_event_rx: &std::sync::mpsc::Receiver<ServoEvent>,
+    servo_event_rx: &bao_ipc::Receiver<ServoEvent>,
+    handle: impl FnMut(ServoEvent),
+) {
+    drain_servo_events_starting(servo_event_rx, None, handle);
+}
+
+/// [`drain_servo_events`] with one already-received event spliced in front of
+/// the queue drain — the pump-tail park face (REQ-ARCH-3): the tail's
+/// `recv_timeout` consumed the first event to wake, and this hands it through
+/// the same `handle` in FIFO order. A received event is never dropped by the
+/// park.
+///
+/// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+pub(crate) fn drain_servo_events_starting(
+    servo_event_rx: &bao_ipc::Receiver<ServoEvent>,
+    first: Option<ServoEvent>,
     mut handle: impl FnMut(ServoEvent),
 ) {
-    while let Ok(servo_event) = servo_event_rx.try_recv() {
+    let mut pending = first;
+    loop {
+        let servo_event = match pending.take() {
+            Some(servo_event) => servo_event,
+            None => match servo_event_rx.try_recv() {
+                Ok(servo_event) => servo_event,
+                // Empty = quiesced. Disconnected = no sender will ever
+                // produce again (crossbeam surfaces buffered messages before
+                // Disconnected, so this arm never abandons a queued event).
+                Err(bao_ipc::TryRecvError::Empty | bao_ipc::TryRecvError::Disconnected) => break,
+            },
+        };
         SERVO_EVENT_PUMPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         handle(servo_event);
     }
 }
 
+/// Park the pump tail on the servo event queue for `budget` (REQ-ARCH-3):
+/// block until the next ServoEvent arrives or the budget elapses, whichever
+/// first. A cross-thread `send` during the park wakes the pump immediately —
+/// event latency drops from the fixed 1ms poll's worst-case full budget to
+/// the wake path. `Some` is the consumed first event, which the caller MUST
+/// splice into its drain via [`drain_servo_events_starting`].
+///
+/// Disconnected (channel replaced by an embedder's `set_event_channel` /
+/// teardown) and no-receiver degrade to a plain `budget` sleep: a dead queue
+/// returns from `recv_timeout` instantly, which would resurrect the
+/// full-core spin the bounded tail exists to prevent (e26 evidence
+/// 2026-10-03). The 1ms deadline itself is the servo spin cadence contract —
+/// never raised.
+///
+/// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+pub(crate) fn park_for_event(
+    servo_event_rx: Option<&bao_ipc::Receiver<ServoEvent>>,
+    budget: Duration,
+) -> Option<ServoEvent> {
+    let Some(rx) = servo_event_rx else {
+        std::thread::sleep(budget);
+        return None;
+    };
+    match rx.recv_timeout(budget) {
+        Ok(servo_event) => Some(servo_event),
+        Err(bao_ipc::RecvTimeoutError::Timeout) => None,
+        Err(bao_ipc::RecvTimeoutError::Disconnected) => {
+            std::thread::sleep(budget);
+            None
+        }
+    }
+}
+
+/// The two-channel pump-tail park (REQ-ARCH-3 wave F2c): the
+/// [`park_for_event`] wait extended to the CDP bridge leg — block until a
+/// ServoEvent (servo event queue) OR a BridgeRequest (bridge command queue)
+/// lands, whichever first, with the same 1ms deadline (the servo spin cadence
+/// contract — never raised; only reached when both queues stay quiet). A CDP
+/// command landing mid-park is consumed on the wake path instead of waiting
+/// out the full budget for the next iteration's head drain.
+///
+/// The wait primitive is `bao_ipc::Select` — the unified substrate's
+/// multi-channel face (crossbeam `SelectedOperation::drop` panics, so a
+/// successful selection is ALWAYS completed here: each consumed message is
+/// returned to the caller, which MUST splice it into its same-iteration
+/// drain — [`drain_servo_events_starting`] for the servo leg,
+/// `BridgeReceiver::process_request` for the bridge leg. A received message
+/// is never dropped).
+///
+/// Per-channel liveness (`*_live` flags, loop-carried by the caller): a
+/// disconnected channel is *always* instantly ready to `Select`, so once a
+/// queue surfaces Disconnected it is excluded from later parks — a dead queue
+/// must neither spin the tail hot (the e26 floor) nor mask the live channel's
+/// immediate wake. With no live channel left the call degrades to the plain
+/// budget sleep, exactly [`park_for_event`]'s disconnected face.
+///
+/// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+pub(crate) fn park_for_event_or_bridge(
+    servo_event_rx: &bao_ipc::Receiver<ServoEvent>,
+    servo_live: &mut bool,
+    bridge_rx: &bao_ipc::Receiver<BridgeRequest>,
+    bridge_live: &mut bool,
+    budget: Duration,
+) -> (Option<ServoEvent>, Option<BridgeRequest>) {
+    if !*servo_live && !*bridge_live {
+        // No live queue remains: a Select over only-dead channels returns
+        // instantly (disconnected = always ready), so degrade to the plain
+        // timed sleep — the anti-hot-loop floor.
+        std::thread::sleep(budget);
+        return (None, None);
+    }
+    let mut sel = bao_ipc::Select::new();
+    let servo_idx = servo_live.then(|| sel.recv(servo_event_rx));
+    let bridge_idx = bridge_live.then(|| sel.recv(bridge_rx));
+    match sel.select_timeout(budget) {
+        Ok(op) => {
+            if Some(op.index()) == servo_idx {
+                match op.recv(servo_event_rx) {
+                    Ok(servo_event) => return (Some(servo_event), None),
+                    // Disconnected (empty): gate the dead queue out of later
+                    // parks.
+                    Err(_) => *servo_live = false,
+                }
+            } else if Some(op.index()) == bridge_idx {
+                match op.recv(bridge_rx) {
+                    Ok(request) => return (None, Some(request)),
+                    Err(_) => *bridge_live = false,
+                }
+            }
+            (None, None)
+        }
+        Err(bao_ipc::SelectTimeoutError) => (None, None),
+    }
+}
+
 /// Deprecated alias for the browser coordinator runtime (0.x transition;
 /// removed in 1.0).
-#[deprecated(since = "0.4.0", note = "renamed to `BrowserRuntime`; will be removed in 1.0")]
+#[deprecated(
+    since = "0.4.0",
+    note = "renamed to `BrowserRuntime`; will be removed in 1.0"
+)]
 pub type BaoRuntime = BrowserRuntime;
 
 pub struct BrowserRuntime {
@@ -373,11 +501,8 @@ impl BrowserRuntime {
         // application (`webdriver_host::apply_pref_overrides` from
         // `run_browser_entry`) would otherwise be wiped by the reset.
         // Fail-closed: a bad override aborts BrowserRuntime::new.
-        preferences = crate::prefs::apply_pref_overrides_to(
-            preferences,
-            &config.pref_overrides,
-        )
-        .map_err(BrowserError::Init)?;
+        preferences = crate::prefs::apply_pref_overrides_to(preferences, &config.pref_overrides)
+            .map_err(BrowserError::Init)?;
 
         let servo: Rc<Servo> = Rc::new(if servo_already_initialized {
             // Already initialized. `Servo::new` (servo.rs:877) ALWAYS calls
@@ -458,9 +583,8 @@ impl BrowserRuntime {
         // (post_discard_resolve_suppressed_total) for the guard's e2e
         // matrix.
         servo::register_bao_realm_liveness_probe(Box::new(|global_ptr| {
-            let discarded = bun_runtime::timers::is_global_discarded(
-                global_ptr as *mut mozjs::jsapi::JSObject,
-            );
+            let discarded =
+                bun_runtime::timers::is_global_discarded(global_ptr as *mut mozjs::jsapi::JSObject);
             if discarded {
                 bun_runtime::timers::post_discard_resolve_suppressed_fetch_add();
             }
@@ -509,9 +633,8 @@ impl BrowserRuntime {
             );
         });
         bun_runtime::fetch_async::set_thread_wakeup_bridge(|| {
-            servo::bao_current_thread_wake_fn().map(|wake| {
-                wake as bun_runtime::fetch_async::ThreadWakeup
-            })
+            servo::bao_current_thread_wake_fn()
+                .map(|wake| wake as bun_runtime::fetch_async::ThreadWakeup)
         });
 
         // BCE-20260910-002 (embedder pump gap — webview-less fetch): SW/worker
@@ -533,9 +656,9 @@ impl BrowserRuntime {
         // embedder round-trip (CDP/stealth mediation unchanged). If bao ever
         // overrides `load_web_resource` for webview-less loads, that logic
         // belongs in this handler.
-        servo::set_webviewless_resource_handler(Some(Arc::new(
-            |_request| servo::BaoWebviewlessResourceVerdict::PassThrough,
-        )));
+        servo::set_webviewless_resource_handler(Some(Arc::new(|_request| {
+            servo::BaoWebviewlessResourceVerdict::PassThrough
+        })));
 
         let page_pool = Rc::new(PagePool::new(
             Rc::clone(&servo),
@@ -562,10 +685,9 @@ impl BrowserRuntime {
         // registry (last-writer-wins across runtimes); `run()` drains the
         // receiver so servo-routed commands execute for real.
         let (cdp_bridge, cdp_bridge_rx) = cdp_memory::MemoryCdpBridge::new("");
-        let cdp_bridge_token =
-            bao_cdp_client::browser::set_process_memory_bridge(
-                cdp_bridge.clone() as std::sync::Arc<dyn bao_cdp_client::transport::InMemoryBridge>,
-            );
+        let cdp_bridge_token = bao_cdp_client::browser::set_process_memory_bridge(
+            cdp_bridge.clone() as std::sync::Arc<dyn bao_cdp_client::transport::InMemoryBridge>,
+        );
 
         // Runtime-owned servo event channel (Path B, e199 REQ-LIB-003): the
         // RECEIVER + tap install on the DELEGATE (e207, REQ-LIB-002) — every
@@ -577,7 +699,10 @@ impl BrowserRuntime {
         // `servo_delegate.event_tx()`).
         // @trace REQ-LIB-003 [req:REQ-LIB-003]
         // @trace REQ-LIB-002 [req:REQ-LIB-002]
-        let (servo_event_tx, servo_event_rx) = std::sync::mpsc::channel::<ServoEvent>();
+        // The queue is the unified MPMC substrate (REQ-ARCH-3): bao_ipc
+        // unbounded — the REQ-CDP-004 reliable-queue semantics (never blocks,
+        // never drops) carry over unchanged from the former std mpsc.
+        let (servo_event_tx, servo_event_rx) = bao_ipc::unbounded::<ServoEvent>();
         let tap = cdp_bridge.event_tap();
         delegate.install_runtime_event_drain(servo_event_rx, tap);
         let runtime = BrowserRuntime {
@@ -639,10 +764,7 @@ impl BrowserRuntime {
 
     /// Find a live page by servo WebViewId (the per-webview command face).
     #[cfg(feature = "webdriver")]
-    pub fn page_for_webview(
-        &self,
-        webview_id: servo::WebViewId,
-    ) -> Option<(usize, PageHandle)> {
+    pub fn page_for_webview(&self, webview_id: servo::WebViewId) -> Option<(usize, PageHandle)> {
         self.page_pool.live_page_ids().into_iter().find_map(|id| {
             self.page_pool.get_page(id).and_then(|page| {
                 if page.webdriver_webview_id() == Some(webview_id) {
@@ -657,10 +779,7 @@ impl BrowserRuntime {
     /// Create an about:blank page for a WebDriver NewWindow and return its
     /// (WebViewId, page) pair.
     #[cfg(feature = "webdriver")]
-    pub fn create_webdriver_page(
-        &self,
-        url: url::Url,
-    ) -> Option<(servo::WebViewId, PageHandle)> {
+    pub fn create_webdriver_page(&self, url: url::Url) -> Option<(servo::WebViewId, PageHandle)> {
         let config = PageConfig {
             url: Some(url.to_string()),
             ..Default::default()
@@ -867,7 +986,14 @@ impl BrowserRuntime {
 
     /// Set the console log forwarding channel on the servo delegate.
     /// Console messages from servo will be sent to this channel.
-    pub fn set_console_log_channel(&self, tx: std::sync::mpsc::Sender<cdp_server::ConsoleMessage>) {
+    ///
+    /// On the unified MPMC substrate (`bao_ipc::Sender`, REQ-ARCH-3 wave R3 —
+    /// the F2a deferral is closed): pair with `bao_ipc::unbounded()`; the
+    /// paired receiver is consumed by `CdpServer::set_console_receiver`,
+    /// which took the same substrate in the same wave — one channel pair
+    /// cannot span two substrate implementations.
+    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    pub fn set_console_log_channel(&self, tx: bao_ipc::Sender<cdp_server::ConsoleMessage>) {
         self.delegate.set_console_log_tx(tx.clone());
         // Retro-propagate to every existing page's webview state, exactly
         // like set_event_channel below: servo routes console messages
@@ -894,6 +1020,11 @@ impl BrowserRuntime {
     /// per-webview delegate, which reads `state.event_tx`, so the channel
     /// must live on each state, not only the runtime-level delegate.
     ///
+    /// The sender is the unified MPMC substrate's (`bao_ipc::Sender`,
+    /// REQ-ARCH-3); pair it with `bao_ipc::unbounded()` — the REQ-CDP-004
+    /// reliable-queue semantics (never blocks, never drops) require the
+    /// unbounded constructor.
+    ///
     /// Replaces the runtime-owned channel installed by `new()`: the
     /// replaced sender's last clones drop with the delegate/page states it
     /// was handed to, so the delegate-installed receiver disconnects and
@@ -901,7 +1032,7 @@ impl BrowserRuntime {
     /// caller-owned receiver is drained by its own pump shape
     /// (`run_with_bridge` takes it as a parameter).
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-    pub fn set_event_channel(&self, tx: std::sync::mpsc::Sender<ServoEvent>) {
+    pub fn set_event_channel(&self, tx: bao_ipc::Sender<ServoEvent>) {
         self.delegate.set_event_tx(tx.clone());
         let stats = self.page_pool.stats();
         for id in 1..=(stats.active + stats.idle) {
@@ -1036,16 +1167,20 @@ impl BrowserRuntime {
             if let Some(host) = self.webdriver_host() {
                 host.drain(self);
             }
-            // Bounded poll (1ms): the loop drains non-blocking channels, so it
-            // must re-poll on a fixed cadence rather than block — but a bare
+            // Bounded park (1ms deadline): the loop drains non-blocking
+            // channels, so the tail wait bounds the iteration cadence — a bare
             // `yield_now()` burns a FULL core per process forever (proven: an
             // idle single process sat at 99.4% CPU with zero voluntary context
             // switches, e26 evidence 2026-10-03). At N concurrent wptrunner
             // browsers that is N cores of pure spin amplifying scheduler
-            // contention machine-wide. A 1ms poll keeps drain latency bounded
-            // at ≤1ms (orders of magnitude under every WebDriver/WPT budget)
-            // while dropping the idle burn to ~0.1% of a core.
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            // contention machine-wide. The former fixed 1ms sleep kept drain
+            // latency ≤1ms at ~0.1% of a core; the REQ-ARCH-3 event-driven
+            // park keeps the SAME 1ms deadline (the servo spin cadence
+            // contract) but wakes early when the runtime-owned event queue
+            // stirs, and degrades back to the plain sleep when that receiver
+            // is disconnected (embedder-replaced channel) — the anti-hot-loop
+            // contract holds in every embedder shape.
+            self.delegate.park_runtime_events(Duration::from_millis(1));
         }
 
         let _stats = self.page_pool.stats();
@@ -1090,26 +1225,35 @@ impl BrowserRuntime {
             // REQ-LIB-003 + e207 REQ-LIB-002: same delegate drain as `run`
             // (the bounded pump face stays waitFor*-live).
             self.delegate.drain_runtime_events();
-            // Bounded poll — same cadence rationale as `run` (yield_now burned
-            // a full core for the whole pump duration).
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            // Bounded park — same cadence rationale as `run` (yield_now burned
+            // a full core for the whole pump duration). REQ-ARCH-3
+            // event-driven wake on the runtime-owned queue, 1ms deadline
+            // unchanged.
+            self.delegate.park_runtime_events(Duration::from_millis(1));
         }
     }
 
     /// Run with a CDP bridge that processes commands during the event loop.
     /// Also drains ServoEvent from the real event queue (Path B — unbounded
-    /// reliable mpsc) and broadcasts translated CdpEvents via the shared
-    /// EventBroadcaster.
+    /// reliable queue on the unified MPMC substrate, REQ-ARCH-3
+    /// `bao_ipc::unbounded`) and broadcasts translated CdpEvents via the
+    /// shared EventBroadcaster.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     pub fn run_with_bridge(
         &self,
         bridge_rx: bao_cdp::servo_bridge::BridgeReceiver,
-        servo_event_rx: std::sync::mpsc::Receiver<ServoEvent>,
+        servo_event_rx: bao_ipc::Receiver<ServoEvent>,
         broadcaster: Arc<EventBroadcaster>,
         event_demux: Option<Arc<BaoWsRegistry>>,
     ) -> Result<(), BrowserError> {
         let max_wait = Duration::from_secs(3600);
         let start = std::time::Instant::now();
+        // Per-channel tail-park liveness (REQ-ARCH-3 F2c): flipped to false by
+        // `park_for_event_or_bridge` when a queue surfaces Disconnected
+        // (sender half gone — embedder `set_event_channel` replacement /
+        // bridge teardown), so the dead queue is gated out of later parks.
+        let mut servo_queue_live = true;
+        let mut bridge_queue_live = true;
 
         while start.elapsed() < max_wait {
             self.servo.spin_event_loop();
@@ -1120,16 +1264,13 @@ impl BrowserRuntime {
             // REQ-CDP-009 screencast tick BEFORE the repaint sweep (capture
             // consumes the latch; ordering rationale as `run`). WS-origin
             // frames ride the same target-scoped routing as servo events.
-            let ws_sink = |target: &str, method: &str, params: serde_json::Value| {
-                match event_demux.as_ref() {
-                    Some(registry) => registry.broadcast_for_target(
-                        broadcaster.as_ref(),
-                        target,
-                        method,
-                        params,
-                    ),
-                    None => broadcaster.send_page_event(target, method, params),
+            let ws_sink = |target: &str, method: &str, params: serde_json::Value| match event_demux
+                .as_ref()
+            {
+                Some(registry) => {
+                    registry.broadcast_for_target(broadcaster.as_ref(), target, method, params)
                 }
+                None => broadcaster.send_page_event(target, method, params),
             };
             screencast::drive(&self.page_pool, Some(&ws_sink));
             // Headless redraw leg: composite any webview servo requested a frame
@@ -1164,7 +1305,11 @@ impl BrowserRuntime {
             .into_iter()
             .flatten()
             .collect();
-            drain_servo_events(&servo_event_rx, |servo_event| {
+            // The per-iteration translate+broadcast body, shared by the
+            // in-iteration drain AND the tail-park splice (REQ-ARCH-3): an
+            // event that wakes the park must flow through the exact same
+            // path. Copy closure — every capture is a shared borrow.
+            let translate_and_broadcast = |servo_event: ServoEvent| {
                 // W43 flat-session demux: ServoEvents are target-scoped —
                 // route to every CDP session attached to that target (tagged),
                 // falling back to the untagged broadcast with no attachments.
@@ -1192,12 +1337,33 @@ impl BrowserRuntime {
                         }
                     }
                 }
-            });
+            };
+            drain_servo_events_starting(&servo_event_rx, None, translate_and_broadcast);
 
-            // Bounded poll — same cadence rationale as `run` (yield_now burned
-            // a full core for the whole pump duration; 1ms keeps bridge-command
-            // latency negligible).
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            // Bounded two-channel park — same cadence rationale as `run`
+            // (yield_now burned a full core for the whole pump duration; 1ms
+            // keeps latency negligible). REQ-ARCH-3 event-driven wake on BOTH
+            // legs (F2c): the park returns as soon as a ServoEvent OR a CDP
+            // bridge command arrives. A consumed servo event is spliced into
+            // the SAME drain body below (never dropped, in-iteration drain
+            // position unchanged); a consumed bridge command is processed
+            // through the same handler as the head drain, in arrival order
+            // (nothing else runs in between). Disconnected gating: see
+            // `park_for_event_or_bridge` — a dead queue neither spins the
+            // tail hot nor masks the live leg's wake.
+            let (first, bridge_request) = park_for_event_or_bridge(
+                &servo_event_rx,
+                &mut servo_queue_live,
+                bridge_rx.select_receiver(),
+                &mut bridge_queue_live,
+                Duration::from_millis(1),
+            );
+            if let Some(request) = bridge_request {
+                bridge_rx.process_request(request, |cmd| {
+                    cdp_handler::handle_bridge_command(cmd, &self.page_pool)
+                });
+            }
+            drain_servo_events_starting(&servo_event_rx, first, translate_and_broadcast);
         }
 
         Ok(())
@@ -1324,7 +1490,7 @@ fn bao_execution_control_armer<'a>(
         bao_engine::execution_control::TerminalState::TimedOut
         | bao_engine::execution_control::TerminalState::Cancelled => {
             Some(bao_engine::execution_control::terminal_message(state))
-        },
+        }
         _ => None,
     };
     (boxed, termination)
@@ -1366,17 +1532,26 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
         // Create bridge channel for CDP <-> servo communication
         let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
 
-        // Create console log forwarding channel: servo delegate → CDP Log domain
-        let (console_tx, console_rx) = std::sync::mpsc::channel::<cdp_server::ConsoleMessage>();
+        // Create console log forwarding channel: servo delegate → CDP Log domain.
+        // Unified MPMC substrate (REQ-ARCH-3, wave R3 — the F2a deferral is
+        // closed): the receiver half is consumed by
+        // `CdpServer::set_console_receiver` (cdp-server), which took the same
+        // substrate in the same wave — one channel pair cannot span two
+        // substrate implementations. Unbounded: the delegate's send sites are
+        // fire-and-forget console observability and must never stall the
+        // servo script thread on CDP delivery.
+        // @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+        let (console_tx, console_rx) = bao_ipc::unbounded::<cdp_server::ConsoleMessage>();
         runtime.set_console_log_channel(console_tx);
 
-        // Real event queue (Path B): unbounded reliable mpsc — the servo
+        // Real event queue (Path B): unbounded reliable queue on the unified
+        // MPMC substrate (REQ-ARCH-3, bao_ipc::unbounded) — the servo
         // delegate pushes ServoEvents that `run_with_bridge` drains and
         // translates. Delivery is lossless by construction (REQ-CDP-004);
         // the emitted/pumped probe pair (delegate.rs / the pump loop below)
         // asserts it.
         // @trace REQ-CDP-006
-        let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (event_tx, servo_event_rx) = bao_ipc::unbounded::<ServoEvent>();
         runtime.set_event_channel(event_tx);
 
         // Build CdpServer and extract the shared broadcaster BEFORE moving the
@@ -1414,7 +1589,12 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
             let _ = server.run();
         });
 
-        let result = runtime.run_with_bridge(bridge_rx, servo_event_rx, broadcaster, Some(registry.clone()));
+        let result = runtime.run_with_bridge(
+            bridge_rx,
+            servo_event_rx,
+            broadcaster,
+            Some(registry.clone()),
+        );
         // Deterministic CDP shutdown (B0 census #3): signal the cooperative
         // stop and join the server thread so the listener port, registry and
         // sessions are released before run_browser returns. Bounded: run()

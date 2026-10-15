@@ -27,7 +27,6 @@ use js::rust::wrappers2::{
 };
 use js::rust::{HandleObject, HandleValue, IdVector};
 use net_traits::CookieSource::{HTTP, NonHTTP};
-use net_traits::CoreResourceMsg::{DeleteCookie, DeleteCookies, GetCookiesForUrl, SetCookieForUrl};
 use script_bindings::codegen::GenericBindings::PermissionStatusBinding::{
     PermissionName, PermissionState,
 };
@@ -36,7 +35,7 @@ use script_bindings::conversions::is_array_like;
 use script_bindings::num::Finite;
 use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
-use servo_base::generic_channel::{self, GenericOneshotSender, GenericSend, GenericSender};
+use servo_base::generic_channel::{GenericOneshotSender, GenericSender};
 use servo_base::id::{BrowsingContextId, PipelineId};
 use webdriver::command::SetPermissionState;
 use webdriver::error::ErrorStatus;
@@ -1514,13 +1513,12 @@ pub(crate) fn handle_get_cookies(
             match documents.find_document(pipeline) {
                 Some(document) => {
                     let url = document.url();
-                    let (sender, receiver) = generic_channel::channel().unwrap();
-                    let _ = document
+                    let cookies = document
                         .window()
                         .as_global_scope()
                         .resource_threads()
-                        .send(GetCookiesForUrl(url, sender, NonHTTP));
-                    Ok(receiver.recv().unwrap())
+                        .cookies_for_url(url, NonHTTP);
+                    Ok(cookies.into_iter().map(Serde).collect())
                 },
                 None => Ok(Vec::new()),
             },
@@ -1541,16 +1539,15 @@ pub(crate) fn handle_get_cookie(
             match documents.find_document(pipeline) {
                 Some(document) => {
                     let url = document.url();
-                    let (sender, receiver) = generic_channel::channel().unwrap();
-                    let _ = document
+                    let cookies = document
                         .window()
                         .as_global_scope()
                         .resource_threads()
-                        .send(GetCookiesForUrl(url, sender, NonHTTP));
-                    let cookies = receiver.recv().unwrap();
+                        .cookies_for_url(url, NonHTTP);
                     Ok(cookies
                         .into_iter()
                         .filter(|cookie| cookie.name() == &*name)
+                        .map(Serde)
                         .collect())
                 },
                 None => Ok(Vec::new()),
@@ -1592,7 +1589,7 @@ pub(crate) fn handle_add_cookie(
                     .window()
                     .as_global_scope()
                     .resource_threads()
-                    .send(SetCookieForUrl(url, Serde(cookie), method, None));
+                    .set_cookie_for_url(url, cookie, method);
                 Ok(())
             },
             // If cookie domain is not equal to session's current browsing context's
@@ -1603,7 +1600,7 @@ pub(crate) fn handle_add_cookie(
                     .window()
                     .as_global_scope()
                     .resource_threads()
-                    .send(SetCookieForUrl(url, Serde(cookie), method, None));
+                    .set_cookie_for_url(url, cookie, method);
                 Ok(())
             },
         })
@@ -1627,7 +1624,7 @@ pub(crate) fn handle_delete_cookies(
         .window()
         .as_global_scope()
         .resource_threads()
-        .send(DeleteCookies(Some(url), None))
+        .clear_cookies_for_url(url)
         .unwrap();
     reply.send(Ok(())).unwrap();
 }
@@ -1650,7 +1647,7 @@ pub(crate) fn handle_delete_cookie(
         .window()
         .as_global_scope()
         .resource_threads()
-        .send(DeleteCookie(url, name))
+        .delete_cookie_for_url(url, name)
         .unwrap();
     reply.send(Ok(())).unwrap();
 }

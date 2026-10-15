@@ -492,7 +492,85 @@ impl ServoInner {
         }
     }
 
+    // BAO PATCH (REQ-ARCH-3 F4-W1, 2026-10-15): table-driven dispatch for
+    // `EmbedderMsg`. The match below is the routing table: each arm forwards
+    // one variant to its family handler, which owns the (verbatim) arm body.
+    // Arm bodies are byte-identical to the pre-refactor match; only the
+    // grouping changed. Exhaustiveness is compiler-checked here, so an
+    // upstream `EmbedderMsg` variant added during an absorb wave forces a
+    // routing decision at this match instead of silently landing in a family
+    // handler's `unreachable!` arm.
     fn handle_embedder_message(&self, message: EmbedderMsg) {
+        match message {
+            // Chrome-level notifications and state updates (10 variants).
+            EmbedderMsg::Status(..) => self.handle_chrome_notification_message(message),
+            EmbedderMsg::ChangePageTitle(..) => self.handle_chrome_notification_message(message),
+            EmbedderMsg::InputEventsHandled(..) => self.handle_chrome_notification_message(message),
+            EmbedderMsg::SetCursor(..) => self.handle_chrome_notification_message(message),
+            EmbedderMsg::NewFavicon(..) => self.handle_chrome_notification_message(message),
+            EmbedderMsg::NotifyLoadStatusChanged(..) => {
+                self.handle_chrome_notification_message(message)
+            },
+            EmbedderMsg::NotifyFullscreenStateChanged(..) => {
+                self.handle_chrome_notification_message(message)
+            },
+            EmbedderMsg::ShowNotification(..) => self.handle_chrome_notification_message(message),
+            EmbedderMsg::ShowConsoleApiMessage(..) => {
+                self.handle_chrome_notification_message(message)
+            },
+            EmbedderMsg::AccessibilityTreeUpdate(..) => {
+                self.handle_chrome_notification_message(message)
+            },
+
+            // Window geometry requests (4 variants).
+            EmbedderMsg::MoveTo(..) => self.handle_window_geometry_message(message),
+            EmbedderMsg::ResizeTo(..) => self.handle_window_geometry_message(message),
+            EmbedderMsg::GetWindowRect(..) => self.handle_window_geometry_message(message),
+            EmbedderMsg::GetScreenMetrics(..) => self.handle_window_geometry_message(message),
+
+            // Dialogs and permission requests (8 variants).
+            EmbedderMsg::ShowSimpleDialog(..) => self.handle_dialog_permission_message(message),
+            EmbedderMsg::AllowProtocolHandlerRequest(..) => {
+                self.handle_dialog_permission_message(message)
+            },
+            EmbedderMsg::AllowUnload(..) => self.handle_dialog_permission_message(message),
+            EmbedderMsg::GetSelectedBluetoothDevice(..) => {
+                self.handle_dialog_permission_message(message)
+            },
+            EmbedderMsg::PromptPermission(..) => self.handle_dialog_permission_message(message),
+            EmbedderMsg::RequestWakeLockPermission(..) => {
+                self.handle_dialog_permission_message(message)
+            },
+            EmbedderMsg::OnDevtoolsStarted(..) => self.handle_dialog_permission_message(message),
+            EmbedderMsg::RequestDevtoolsConnection(..) => {
+                self.handle_dialog_permission_message(message)
+            },
+
+            // Clipboard operations (5 variants).
+            EmbedderMsg::ClearClipboard(..) => self.handle_clipboard_message(message),
+            EmbedderMsg::GetClipboardText(..) => self.handle_clipboard_message(message),
+            EmbedderMsg::SetClipboardText(..) => self.handle_clipboard_message(message),
+            EmbedderMsg::GetClipboardHtml(..) => self.handle_clipboard_message(message),
+            EmbedderMsg::SetClipboardHtml(..) => self.handle_clipboard_message(message),
+
+            // Embedder controls (2 variants).
+            EmbedderMsg::ShowEmbedderControl(..) => self.handle_embedder_control_message(message),
+            EmbedderMsg::HideEmbedderControl(..) => self.handle_embedder_control_message(message),
+
+            // Gamepad haptic effects (2 variants, feature-gated like the
+            // corresponding `EmbedderMsg` variants).
+            #[cfg(feature = "gamepad")]
+            EmbedderMsg::PlayGamepadHapticEffect(..) => self.handle_gamepad_message(message),
+            #[cfg(feature = "gamepad")]
+            EmbedderMsg::StopGamepadHapticEffect(..) => self.handle_gamepad_message(message),
+        }
+    }
+
+    /// Chrome-level notifications and state updates for a specific [`WebView`]
+    /// (status text, page title, input-event outcomes, cursor, favicon, load
+    /// status, fullscreen state, notifications, console API messages, and
+    /// accessibility tree updates).
+    fn handle_chrome_notification_message(&self, message: EmbedderMsg) {
         match message {
             EmbedderMsg::Status(webview_id, status_text) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
@@ -504,6 +582,76 @@ impl ServoInner {
                     webview.set_page_title(title);
                 }
             },
+            EmbedderMsg::InputEventsHandled(webview_id, event_outcomes) => {
+                let webview = self.get_webview_handle(webview_id);
+                for InputEventOutcome {
+                    id: input_event_id,
+                    result,
+                } in event_outcomes
+                {
+                    self.paint.borrow_mut().notify_input_event_handled(
+                        webview_id,
+                        input_event_id,
+                        result,
+                    );
+                    if let Some(ref webview) = webview {
+                        webview.delegate().notify_input_event_handled(
+                            webview.clone(),
+                            input_event_id,
+                            result,
+                        );
+                    }
+                }
+            },
+            EmbedderMsg::SetCursor(webview_id, cursor) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview.set_cursor(cursor);
+                }
+            },
+            EmbedderMsg::NewFavicon(webview_id, image) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview.set_favicon(image);
+                }
+            },
+            EmbedderMsg::NotifyLoadStatusChanged(webview_id, load_status) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview.set_load_status(load_status);
+                }
+            },
+            EmbedderMsg::NotifyFullscreenStateChanged(webview_id, fullscreen) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview
+                        .delegate()
+                        .notify_fullscreen_state_changed(webview, fullscreen);
+                }
+            },
+            EmbedderMsg::ShowNotification(webview_id, notification) => {
+                match webview_id.and_then(|webview_id| self.get_webview_handle(webview_id)) {
+                    Some(webview) => webview.delegate().show_notification(webview, notification),
+                    None => self.delegate.borrow().show_notification(notification),
+                }
+            },
+            EmbedderMsg::ShowConsoleApiMessage(webview_id, level, message) => {
+                match webview_id.and_then(|webview_id| self.get_webview_handle(webview_id)) {
+                    Some(webview) => webview
+                        .delegate()
+                        .show_console_message(webview, level, message),
+                    None => self.delegate.borrow().show_console_message(level, message),
+                }
+            },
+            EmbedderMsg::AccessibilityTreeUpdate(webview_id, tree_update, epoch) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview.process_accessibility_tree_update(tree_update, epoch);
+                }
+            },
+            _ => unreachable!("non-chrome-notification message reached the chrome handler"),
+        }
+    }
+
+    /// Window geometry requests: move/resize the window hosting a [`WebView`],
+    /// and synchronous window-rect/screen-metrics queries.
+    fn handle_window_geometry_message(&self, message: EmbedderMsg) {
+        match message {
             EmbedderMsg::MoveTo(webview_id, position) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
                     webview.delegate().request_move_to(webview, position);
@@ -516,6 +664,58 @@ impl ServoInner {
                         .request_resize_to(webview, size.max(MINIMUM_WEBVIEW_SIZE));
                 }
             },
+            EmbedderMsg::GetWindowRect(webview_id, response_sender) => {
+                let window_rect = || {
+                    let Some(webview) = self.get_webview_handle(webview_id) else {
+                        return DeviceIndependentIntRect::default();
+                    };
+                    let hidpi_scale_factor = webview.hidpi_scale_factor();
+                    let Some(screen_geometry) = webview.delegate().screen_geometry(webview) else {
+                        return DeviceIndependentIntRect::default();
+                    };
+
+                    convert_rect_to_css_pixel(screen_geometry.window_rect, hidpi_scale_factor)
+                };
+
+                if let Err(error) = response_sender.send(window_rect()) {
+                    warn!("Failed to respond to GetWindowRect: {error}");
+                }
+            },
+            EmbedderMsg::GetScreenMetrics(webview_id, response_sender) => {
+                let screen_metrics = || {
+                    let Some(webview) = self.get_webview_handle(webview_id) else {
+                        return ScreenMetrics::default();
+                    };
+                    let hidpi_scale_factor = webview.hidpi_scale_factor();
+                    let Some(screen_geometry) = webview.delegate().screen_geometry(webview) else {
+                        return ScreenMetrics::default();
+                    };
+
+                    ScreenMetrics {
+                        screen_size: convert_size_to_css_pixel(
+                            screen_geometry.size,
+                            hidpi_scale_factor,
+                        ),
+                        available_size: convert_size_to_css_pixel(
+                            screen_geometry.available_size,
+                            hidpi_scale_factor,
+                        ),
+                    }
+                };
+                if let Err(error) = response_sender.send(screen_metrics()) {
+                    warn!("Failed to respond to GetScreenMetrics: {error}");
+                }
+            },
+            _ => unreachable!("non-window-geometry message reached the geometry handler"),
+        }
+    }
+
+    /// Dialogs and permission requests surfaced to the embedder: simple
+    /// dialogs, protocol handler (un)registration, unload confirmation,
+    /// Bluetooth device selection, permission and wake-lock prompts, and
+    /// devtools server status / connection gating.
+    fn handle_dialog_permission_message(&self, message: EmbedderMsg) {
+        match message {
             EmbedderMsg::ShowSimpleDialog(webview_id, simple_dialog) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
                     webview.delegate().show_embedder_control(
@@ -560,78 +760,6 @@ impl ServoInner {
                         self.servo_errors.sender(),
                     );
                     webview.delegate().request_unload(webview, request);
-                }
-            },
-            EmbedderMsg::InputEventsHandled(webview_id, event_outcomes) => {
-                let webview = self.get_webview_handle(webview_id);
-                for InputEventOutcome {
-                    id: input_event_id,
-                    result,
-                } in event_outcomes
-                {
-                    self.paint.borrow_mut().notify_input_event_handled(
-                        webview_id,
-                        input_event_id,
-                        result,
-                    );
-                    if let Some(ref webview) = webview {
-                        webview.delegate().notify_input_event_handled(
-                            webview.clone(),
-                            input_event_id,
-                            result,
-                        );
-                    }
-                }
-            },
-            EmbedderMsg::ClearClipboard(webview_id) => {
-                if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.clipboard_delegate().clear(webview);
-                }
-            },
-            EmbedderMsg::GetClipboardText(webview_id, result_sender) => {
-                if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview
-                        .clipboard_delegate()
-                        .get_text(webview, StringRequest::from(result_sender));
-                }
-            },
-            EmbedderMsg::SetClipboardText(webview_id, string) => {
-                if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.clipboard_delegate().set_text(webview, string);
-                }
-            },
-            EmbedderMsg::GetClipboardHtml(webview_id, result_sender) => {
-                if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview
-                        .clipboard_delegate()
-                        .get_html(webview, StringRequest::from(result_sender));
-                }
-            },
-            EmbedderMsg::SetClipboardHtml(webview_id, string) => {
-                if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.clipboard_delegate().set_html(webview, string);
-                }
-            },
-            EmbedderMsg::SetCursor(webview_id, cursor) => {
-                if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.set_cursor(cursor);
-                }
-            },
-            EmbedderMsg::NewFavicon(webview_id, image) => {
-                if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.set_favicon(image);
-                }
-            },
-            EmbedderMsg::NotifyLoadStatusChanged(webview_id, load_status) => {
-                if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.set_load_status(load_status);
-                }
-            },
-            EmbedderMsg::NotifyFullscreenStateChanged(webview_id, fullscreen) => {
-                if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview
-                        .delegate()
-                        .notify_fullscreen_state_changed(webview, fullscreen);
                 }
             },
             EmbedderMsg::GetSelectedBluetoothDevice(webview_id, items, response_sender) => {
@@ -691,7 +819,71 @@ impl ServoInner {
                         self.servo_errors.sender(),
                     ));
             },
-            #[cfg(feature = "gamepad")]
+            _ => unreachable!("non-dialog/permission message reached the dialog handler"),
+        }
+    }
+
+    /// Clipboard operations, routed to the [`WebView`]'s clipboard delegate.
+    fn handle_clipboard_message(&self, message: EmbedderMsg) {
+        match message {
+            EmbedderMsg::ClearClipboard(webview_id) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview.clipboard_delegate().clear(webview);
+                }
+            },
+            EmbedderMsg::GetClipboardText(webview_id, result_sender) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview
+                        .clipboard_delegate()
+                        .get_text(webview, StringRequest::from(result_sender));
+                }
+            },
+            EmbedderMsg::SetClipboardText(webview_id, string) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview.clipboard_delegate().set_text(webview, string);
+                }
+            },
+            EmbedderMsg::GetClipboardHtml(webview_id, result_sender) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview
+                        .clipboard_delegate()
+                        .get_html(webview, StringRequest::from(result_sender));
+                }
+            },
+            EmbedderMsg::SetClipboardHtml(webview_id, string) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview.clipboard_delegate().set_html(webview, string);
+                }
+            },
+            _ => unreachable!("non-clipboard message reached the clipboard handler"),
+        }
+    }
+
+    /// Embedder control show/hide requests: user-interface controls (e.g.
+    /// file pickers) rendered by the embedding application.
+    fn handle_embedder_control_message(&self, message: EmbedderMsg) {
+        match message {
+            EmbedderMsg::ShowEmbedderControl(control_id, position, embedder_control_request) => {
+                if let Some(webview) = self.get_webview_handle(control_id.webview_id) {
+                    webview.show_embedder_control(control_id, position, embedder_control_request);
+                }
+            },
+            EmbedderMsg::HideEmbedderControl(control_id) => {
+                if let Some(webview) = self.get_webview_handle(control_id.webview_id) {
+                    webview
+                        .delegate()
+                        .hide_embedder_control(webview, control_id);
+                }
+            },
+            _ => unreachable!("non-embedder-control message reached the control handler"),
+        }
+    }
+
+    /// Gamepad haptic effect requests, routed to the [`WebView`]'s gamepad
+    /// delegate. Feature-gated like the corresponding [`EmbedderMsg`] variants.
+    #[cfg(feature = "gamepad")]
+    fn handle_gamepad_message(&self, message: EmbedderMsg) {
+        match message {
             EmbedderMsg::PlayGamepadHapticEffect(
                 webview_id,
                 gamepad_index,
@@ -713,7 +905,6 @@ impl ServoInner {
                         .handle_haptic_effect_request(request);
                 }
             },
-            #[cfg(feature = "gamepad")]
             EmbedderMsg::StopGamepadHapticEffect(webview_id, gamepad_index, callback) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
                     let request = GamepadHapticEffectRequest::new(
@@ -730,79 +921,7 @@ impl ServoInner {
                         .handle_haptic_effect_request(request);
                 }
             },
-            EmbedderMsg::ShowNotification(webview_id, notification) => {
-                match webview_id.and_then(|webview_id| self.get_webview_handle(webview_id)) {
-                    Some(webview) => webview.delegate().show_notification(webview, notification),
-                    None => self.delegate.borrow().show_notification(notification),
-                }
-            },
-            EmbedderMsg::ShowConsoleApiMessage(webview_id, level, message) => {
-                match webview_id.and_then(|webview_id| self.get_webview_handle(webview_id)) {
-                    Some(webview) => webview
-                        .delegate()
-                        .show_console_message(webview, level, message),
-                    None => self.delegate.borrow().show_console_message(level, message),
-                }
-            },
-            EmbedderMsg::ShowEmbedderControl(control_id, position, embedder_control_request) => {
-                if let Some(webview) = self.get_webview_handle(control_id.webview_id) {
-                    webview.show_embedder_control(control_id, position, embedder_control_request);
-                }
-            },
-            EmbedderMsg::HideEmbedderControl(control_id) => {
-                if let Some(webview) = self.get_webview_handle(control_id.webview_id) {
-                    webview
-                        .delegate()
-                        .hide_embedder_control(webview, control_id);
-                }
-            },
-            EmbedderMsg::GetWindowRect(webview_id, response_sender) => {
-                let window_rect = || {
-                    let Some(webview) = self.get_webview_handle(webview_id) else {
-                        return DeviceIndependentIntRect::default();
-                    };
-                    let hidpi_scale_factor = webview.hidpi_scale_factor();
-                    let Some(screen_geometry) = webview.delegate().screen_geometry(webview) else {
-                        return DeviceIndependentIntRect::default();
-                    };
-
-                    convert_rect_to_css_pixel(screen_geometry.window_rect, hidpi_scale_factor)
-                };
-
-                if let Err(error) = response_sender.send(window_rect()) {
-                    warn!("Failed to respond to GetWindowRect: {error}");
-                }
-            },
-            EmbedderMsg::GetScreenMetrics(webview_id, response_sender) => {
-                let screen_metrics = || {
-                    let Some(webview) = self.get_webview_handle(webview_id) else {
-                        return ScreenMetrics::default();
-                    };
-                    let hidpi_scale_factor = webview.hidpi_scale_factor();
-                    let Some(screen_geometry) = webview.delegate().screen_geometry(webview) else {
-                        return ScreenMetrics::default();
-                    };
-
-                    ScreenMetrics {
-                        screen_size: convert_size_to_css_pixel(
-                            screen_geometry.size,
-                            hidpi_scale_factor,
-                        ),
-                        available_size: convert_size_to_css_pixel(
-                            screen_geometry.available_size,
-                            hidpi_scale_factor,
-                        ),
-                    }
-                };
-                if let Err(error) = response_sender.send(screen_metrics()) {
-                    warn!("Failed to respond to GetScreenMetrics: {error}");
-                }
-            },
-            EmbedderMsg::AccessibilityTreeUpdate(webview_id, tree_update, epoch) => {
-                if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.process_accessibility_tree_update(tree_update, epoch);
-                }
-            },
+            _ => unreachable!("non-gamepad message reached the gamepad handler"),
         }
     }
 

@@ -3,7 +3,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
@@ -229,10 +228,7 @@ impl PageInner {
         match transition(cur, ev) {
             Some(next) => *self.state.borrow_mut() = next,
             None => {
-                debug_assert!(
-                    false,
-                    "illegal PageLifecycle transition {cur:?} + {ev:?}"
-                );
+                debug_assert!(false, "illegal PageLifecycle transition {cur:?} + {ev:?}");
                 log::error!(
                     "[page:{}] illegal PageLifecycle transition {cur:?} + {ev:?} — write refused, state unchanged",
                     self.id
@@ -471,9 +467,7 @@ impl PageInner {
         }
 
         let result = crate::runtime_bridge::evaluate_js_via_node_realm_with_timeout(
-            webview_id,
-            script,
-            timeout,
+            webview_id, script, timeout,
         );
         self.drain_callbacks()?;
 
@@ -686,9 +680,7 @@ impl PageInner {
     pub fn webdriver_take_screenshot(
         &self,
         rect: Option<euclid::Rect<f32, servo::CSSPixel>>,
-        result_sender: crossbeam_channel::Sender<
-            Result<servo::RgbaImage, servo::ScreenshotCaptureError>,
-        >,
+        result_sender: bao_ipc::Sender<Result<servo::RgbaImage, servo::ScreenshotCaptureError>>,
     ) {
         self.webview
             .take_screenshot(rect.map(|rect| rect.to_box2d().into()), move |result| {
@@ -699,9 +691,7 @@ impl PageInner {
     /// Viewport in device-independent pixels (bao renders at hidpi 1.0 — the
     /// physical viewport is the device-independent viewport).
     #[cfg(feature = "webdriver")]
-    pub fn webdriver_viewport_size(
-        &self,
-    ) -> euclid::Size2D<f32, servo::DeviceIndependentPixel> {
+    pub fn webdriver_viewport_size(&self) -> euclid::Size2D<f32, servo::DeviceIndependentPixel> {
         euclid::Size2D::new(self.viewport.width as f32, self.viewport.height as f32)
     }
 
@@ -712,10 +702,7 @@ impl PageInner {
     pub fn webdriver_window_rect(&self) -> servo::DeviceIndependentIntRect {
         euclid::Box2D::from_origin_and_size(
             euclid::Point2D::zero(),
-            euclid::Size2D::new(
-                self.viewport.width as i32,
-                self.viewport.height as i32,
-            ),
+            euclid::Size2D::new(self.viewport.width as i32, self.viewport.height as i32),
         )
     }
 
@@ -871,8 +858,7 @@ impl PageInner {
         let site_data = sdm.site_data(StorageType::Cookies);
         for sd in site_data {
             let site_name = sd.name();
-            let url_str = if site_name.starts_with("http://") || site_name.starts_with("https://")
-            {
+            let url_str = if site_name.starts_with("http://") || site_name.starts_with("https://") {
                 site_name.clone()
             } else {
                 format!("https://{site_name}")
@@ -1718,8 +1704,7 @@ impl PageHandle {
             let (loaded, url_now) = self
                 .with_inner_opt(|inner| {
                     Some((
-                        inner.webview_state.borrow().load_status
-                            == servo::LoadStatus::Complete,
+                        inner.webview_state.borrow().load_status == servo::LoadStatus::Complete,
                         inner.current_url(),
                     ))
                 })
@@ -1729,8 +1714,7 @@ impl PageHandle {
                     (Some(a), Some(b)) => a != b,
                     _ => false,
                 };
-                let held_long_enough =
-                    complete_since.is_some_and(|t| t.elapsed() >= COMMIT_GRACE);
+                let held_long_enough = complete_since.is_some_and(|t| t.elapsed() >= COMMIT_GRACE);
                 if url_moved || held_long_enough {
                     break;
                 }
@@ -1858,8 +1842,7 @@ impl PageHandle {
             )));
         };
         Ok(servo::unregister_embedder_new_document_script(
-            webview_id,
-            script_id,
+            webview_id, script_id,
         ))
     }
 
@@ -2368,9 +2351,7 @@ impl PageHandle {
     pub fn webdriver_take_screenshot(
         &self,
         rect: Option<euclid::Rect<f32, servo::CSSPixel>>,
-        result_sender: crossbeam_channel::Sender<
-            Result<servo::RgbaImage, servo::ScreenshotCaptureError>,
-        >,
+        result_sender: bao_ipc::Sender<Result<servo::RgbaImage, servo::ScreenshotCaptureError>>,
     ) {
         self.with_inner_opt(|inner| {
             inner.webdriver_take_screenshot(rect, result_sender);
@@ -2379,9 +2360,7 @@ impl PageHandle {
     }
 
     #[cfg(feature = "webdriver")]
-    pub fn webdriver_viewport_size(
-        &self,
-    ) -> euclid::Size2D<f32, servo::DeviceIndependentPixel> {
+    pub fn webdriver_viewport_size(&self) -> euclid::Size2D<f32, servo::DeviceIndependentPixel> {
         self.with_inner_opt(|inner| Some(inner.webdriver_viewport_size()))
             .unwrap_or_default()
     }
@@ -2628,16 +2607,48 @@ mod tests {
     /// (from, event, to) for every legal cell — keep in lockstep with
     /// `transition` and the SPEC 02-SYSTEM PageLifecycle JSON-LD.
     const LEGAL_TRANSITIONS: &[(PageState, PageEvent, PageState)] = &[
-        (PageState::Created, PageEvent::Navigate, PageState::Navigating),
+        (
+            PageState::Created,
+            PageEvent::Navigate,
+            PageState::Navigating,
+        ),
         (PageState::Created, PageEvent::Close, PageState::Closing), // G3
-        (PageState::Navigating, PageEvent::LoadComplete, PageState::Interactive),
-        (PageState::Navigating, PageEvent::CloseDuringLoad, PageState::Closing),
-        (PageState::Interactive, PageEvent::Navigate, PageState::Navigating),
-        (PageState::Interactive, PageEvent::HandleDropped, PageState::Idle),
+        (
+            PageState::Navigating,
+            PageEvent::LoadComplete,
+            PageState::Interactive,
+        ),
+        (
+            PageState::Navigating,
+            PageEvent::CloseDuringLoad,
+            PageState::Closing,
+        ),
+        (
+            PageState::Interactive,
+            PageEvent::Navigate,
+            PageState::Navigating,
+        ),
+        (
+            PageState::Interactive,
+            PageEvent::HandleDropped,
+            PageState::Idle,
+        ),
         (PageState::Interactive, PageEvent::Close, PageState::Closing),
-        (PageState::Idle, PageEvent::HandleReacquired, PageState::Interactive),
-        (PageState::Idle, PageEvent::IdleTtlExpired, PageState::Closing),
-        (PageState::Closing, PageEvent::CleanupComplete, PageState::Closed),
+        (
+            PageState::Idle,
+            PageEvent::HandleReacquired,
+            PageState::Interactive,
+        ),
+        (
+            PageState::Idle,
+            PageEvent::IdleTtlExpired,
+            PageState::Closing,
+        ),
+        (
+            PageState::Closing,
+            PageEvent::CleanupComplete,
+            PageState::Closed,
+        ),
     ];
 
     #[test]

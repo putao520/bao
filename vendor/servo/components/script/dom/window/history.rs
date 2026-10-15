@@ -10,10 +10,8 @@ use js::context::JSContext;
 use js::jsapi::Heap;
 use js::jsval::{JSVal, NullValue, UndefinedValue};
 use js::rust::{HandleValue, MutableHandleValue};
-use net_traits::CoreResourceMsg;
 use profile_traits::generic_channel;
 use script_bindings::reflector::{Reflector, reflect_dom_object};
-use servo_base::generic_channel::GenericSend;
 use servo_base::id::HistoryStateId;
 use servo_constellation_traits::{
     HistoryTraversalSource, ScriptToConstellationMessage, SessionHistoryTraversalRequest,
@@ -113,16 +111,11 @@ impl History {
         let state_changed = state_id != self.state_id.get();
         self.state_id.set(state_id);
         let serialized_data = match state_id {
-            Some(state_id) => {
-                let (tx, rx) =
-                    generic_channel::channel(self.global().time_profiler_chan().clone()).unwrap();
-                let _ = self
-                    .window
-                    .as_global_scope()
-                    .resource_threads()
-                    .send(CoreResourceMsg::GetHistoryState(state_id, tx));
-                rx.recv().unwrap()
-            },
+            Some(state_id) => self
+                .window
+                .as_global_scope()
+                .resource_threads()
+                .history_state(state_id, self.global().time_profiler_chan().clone()),
             None => None,
         };
 
@@ -183,7 +176,7 @@ impl History {
             .window
             .as_global_scope()
             .resource_threads()
-            .send(CoreResourceMsg::RemoveHistoryStates(states));
+            .remove_history_states(states);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-history-pushstate>
@@ -267,9 +260,11 @@ impl History {
             },
         };
 
-        let _ = self.window.as_global_scope().resource_threads().send(
-            CoreResourceMsg::SetHistoryState(state_id, serialized_data.serialized.clone()),
-        );
+        let _ = self
+            .window
+            .as_global_scope()
+            .resource_threads()
+            .set_history_state(state_id, serialized_data.serialized.clone());
 
         // TODO: Step 9 Update current entry to represent a GET request
         // https://github.com/servo/servo/issues/19156

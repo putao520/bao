@@ -17,8 +17,7 @@ use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::request::{
     CorsSettings, CredentialsMode, Destination, ParserMetadata, Referrer, RequestClient,
 };
-use net_traits::{CoreResourceMsg, FetchChannels, ReferrerPolicy, ResourceThreads};
-use servo_base::generic_channel::GenericSend;
+use net_traits::{FetchChannels, ReferrerPolicy, ResourceThreads};
 use servo_base::id::{PipelineId, WebViewId};
 use servo_url::ServoUrl;
 
@@ -150,7 +149,7 @@ impl TokenSink for PrefetchSink {
                     .pipeline_id(Some(self.pipeline_id));
                     let _ = self
                         .resource_threads
-                        .send(CoreResourceMsg::Fetch(request, FetchChannels::Prefetch));
+                        .fetch(request, FetchChannels::Prefetch);
                 }
                 TokenSinkResult::RawData(RawKind::ScriptData)
             },
@@ -171,7 +170,7 @@ impl TokenSink for PrefetchSink {
 
                     let _ = self
                         .resource_threads
-                        .send(CoreResourceMsg::Fetch(request, FetchChannels::Prefetch));
+                        .fetch(request, FetchChannels::Prefetch);
                 }
                 TokenSinkResult::Continue
             },
@@ -205,7 +204,7 @@ impl TokenSink for PrefetchSink {
 
                     let _ = self
                         .resource_threads
-                        .send(CoreResourceMsg::Fetch(request, FetchChannels::Prefetch));
+                        .fetch(request, FetchChannels::Prefetch);
                 }
                 TokenSinkResult::Continue
             },

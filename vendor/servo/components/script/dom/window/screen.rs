@@ -35,7 +35,8 @@ impl Screen {
     fn screen_metrics(&self) -> ScreenMetrics {
         let (sender, receiver) = generic_channel::channel().expect("Failed to create IPC channel!");
 
-        self.window.send_to_embedder(EmbedderMsg::GetScreenMetrics(
+        self.window
+            .send_window_geometry_message_to_embedder(EmbedderMsg::GetScreenMetrics(
             self.window.webview_id(),
             sender,
         ));

@@ -126,10 +126,9 @@ impl VirtualMethods for HTMLBodyElement {
         let window = self.owner_window();
         window.prevent_layout_until_load_event();
         if window.is_top_level() {
-            window.send_to_embedder(EmbedderMsg::NotifyLoadStatusChanged(
-                window.webview_id(),
-                LoadStatus::HeadParsed,
-            ));
+            window.send_chrome_notification_message_to_embedder(
+                EmbedderMsg::NotifyLoadStatusChanged(window.webview_id(), LoadStatus::HeadParsed),
+            );
         }
     }
 

@@ -1,11 +1,11 @@
 use super::*;
 
+use bao_ipc::{Receiver, Sender};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 
 use dpi::PhysicalSize;
 use servo::{
@@ -151,10 +151,9 @@ impl SharedWorkerPortChannel {
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
     pub fn new(shared_worker_id: SharedWorkerId) -> (Self, SharedWorkerPortEndpoints) {
-        let (page_to_worker_tx, page_to_worker_rx) =
-            std::sync::mpsc::channel::<StructuredClonePayload>();
+        let (page_to_worker_tx, page_to_worker_rx) = bao_ipc::unbounded::<StructuredClonePayload>();
         let (worker_to_page_tx, worker_to_page_rx) =
-            std::sync::mpsc::channel::<WorkerStructuredMessage>();
+            bao_ipc::unbounded::<WorkerStructuredMessage>();
 
         let port = SharedWorkerPortChannel {
             shared_worker_id: shared_worker_id.clone(),
@@ -177,7 +176,7 @@ impl SharedWorkerPortChannel {
     pub fn post_message_to_worker(
         &self,
         payload: StructuredClonePayload,
-    ) -> Result<(), std::sync::mpsc::SendError<StructuredClonePayload>> {
+    ) -> Result<(), bao_ipc::SendError<StructuredClonePayload>> {
         self.page_to_worker_tx.send(payload)
     }
 
@@ -824,7 +823,7 @@ mod tests {
 
     #[test]
     fn test_forward_shared_worker_connect_event() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         let state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),

@@ -9,7 +9,16 @@
 // Why channels: servo's WebView is !Send (Rc<RefCell<>>),
 // so all WebView operations must happen on the main thread.
 
-use std::sync::mpsc::{self, Receiver, Sender};
+// REQ-ARCH-3 (wave F2b): the channel substrate is bao_ipc — the unified MPMC
+// facade over crossbeam-channel. The public API (bridge_channel / send /
+// send_fire_and_forget / is_alive / recv_and_process / try_process / drain) is
+// frozen; only the plumbing underneath swapped. The request channel is
+// unbounded (byte-parity with the previous std::sync::mpsc async channel);
+// each per-request responder is a capacity-1 bounded channel (exactly one
+// response ever flows on it, so `send` never blocks; a requester that timed
+// out dropped its responder half and the response `send` fails with
+// Disconnected, which every call site already ignores — same face as std).
+use bao_ipc::{channel, unbounded, Receiver, Sender};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -616,33 +625,52 @@ pub struct BridgeResponse {
     pub result: Result<Value, BridgeError>,
 }
 
-/// Internal request structure used for channel communication.
-struct BridgeRequest {
+/// Internal request structure used for channel communication. The responder
+/// is a capacity-1 bao_ipc channel — one response per request, never blocks.
+///
+/// Public but opaque (fields stay private) so the pump face can name the
+/// channel's message type: `BridgeReceiver::select_receiver` exposes the raw
+/// receiver for a `bao_ipc::Select` registration, and a request consumed
+/// there is handed back through [`BridgeReceiver::process_request`]
+/// (REQ-ARCH-3 wave F2c).
+pub struct BridgeRequest {
     command: BridgeCommand,
     responder: Sender<BridgeResponse>,
 }
 
 /// Handle for the CDP server to send commands to the main thread.
+///
+/// Channel substrate: bao_ipc (crossbeam) — REQ-ARCH-3.
 pub struct BridgeSender {
     tx: Sender<BridgeRequest>,
     timeout: Duration,
 }
 
 /// Handle for the main thread to receive and process commands from CDP.
+///
+/// Channel substrate: bao_ipc (crossbeam) — REQ-ARCH-3.
 pub struct BridgeReceiver {
     rx: Receiver<BridgeRequest>,
 }
 
 /// Create a new bridge channel pair.
+///
+/// The request channel is the bao_ipc (crossbeam) unbounded MPMC channel
+/// (@trace REQ-ARCH-3), byte-parity with the previous `std::sync::mpsc` async
+/// channel: multi-producer, no backpressure, closes when the last half drops.
 pub fn bridge_channel(timeout: Duration) -> (BridgeSender, BridgeReceiver) {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = unbounded();
     (BridgeSender { tx, timeout }, BridgeReceiver { rx })
 }
 
 impl BridgeSender {
     /// Send a command to the main thread and wait for the response.
     pub fn send(&self, command: BridgeCommand) -> BridgeResponse {
-        let (resp_tx, resp_rx) = mpsc::channel();
+        // Capacity-1 responder: exactly one response flows per request, so
+        // `send` never blocks; after this requester times out and drops its
+        // half, the late response surfaces as Err(Disconnected) receiver-side
+        // (ignored — `let _`), matching the previous std async channel.
+        let (resp_tx, resp_rx) = channel(1);
         if self
             .tx
             .send(BridgeRequest {
@@ -665,7 +693,9 @@ impl BridgeSender {
 
     /// Send a command without waiting for response (fire-and-forget).
     pub fn send_fire_and_forget(&self, command: BridgeCommand) {
-        let (resp_tx, _) = mpsc::channel();
+        // The responder half dies here, so the eventual response `send`
+        // fails with Disconnected and is dropped — the fire-and-forget face.
+        let (resp_tx, _) = channel(1);
         let _ = self.tx.send(BridgeRequest {
             command,
             responder: resp_tx,
@@ -678,7 +708,7 @@ impl BridgeSender {
             .tx
             .send(BridgeRequest {
                 command: BridgeCommand::ListTargets,
-                responder: mpsc::channel().0,
+                responder: channel(1).0,
             })
             .is_err()
     }
@@ -728,6 +758,30 @@ impl BridgeReceiver {
         }
         count
     }
+
+    /// The raw receiver handle for a `bao_ipc::Select` registration
+    /// (REQ-ARCH-3 wave F2c): the pump's tail parks on BOTH the servo event
+    /// queue and this bridge queue, waking on whichever message lands first
+    /// instead of waiting out the deadline for the next iteration's head
+    /// drain. The same reference must be passed back to
+    /// `SelectedOperation::recv` (crossbeam asserts pointer identity), and
+    /// the consumed request goes through [`Self::process_request`].
+    pub fn select_receiver(&self) -> &Receiver<BridgeRequest> {
+        &self.rx
+    }
+
+    /// Process a request consumed outside the standard drain faces — the
+    /// `bao_ipc::Select` wake path (REQ-ARCH-3 wave F2c): run the command
+    /// through `handler` and route the response back to the waiting sender.
+    /// Same body as [`Self::drain`]'s per-command handling, one request.
+    pub fn process_request(
+        &self,
+        request: BridgeRequest,
+        handler: impl FnOnce(BridgeCommand) -> BridgeResponse,
+    ) {
+        let response = handler(request.command);
+        let _ = request.responder.send(response);
+    }
 }
 
 impl std::clone::Clone for BridgeSender {
@@ -743,7 +797,9 @@ impl std::clone::Clone for BridgeSender {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     const TIMEOUT: Duration = Duration::from_millis(100);
 
@@ -1301,5 +1357,100 @@ mod tests {
         assert_eq!(regs.len(), 1);
         assert_eq!(regs[0]["state"], "activated");
         assert_eq!(regs[0]["fetchInterceptActive"], true);
+    }
+
+    // ─── REQ-ARCH-3 F2b discrimination: bao_ipc substrate behaviour ──────
+
+    // While the receiver is parked inside recv_and_process (10s window), a
+    // cross-thread send must reach the handler through the bao_ipc substrate
+    // with bounded wake latency: 100 rounds, max send→handler wall time
+    // < 2ms. crossbeam's futex wake is µs-scale; a polling-substrate
+    // regression (or accidental backpressure) blows past this bound.
+    // @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:unit]
+    #[test]
+    fn recv_and_process_wake_latency_max_under_2ms() {
+        const ROUNDS: usize = 100;
+        let (sender, receiver) = bridge_channel(Duration::from_secs(10));
+        let t0_slot = Arc::new(Mutex::new(Instant::now()));
+        let max_us = Arc::new(AtomicU64::new(0));
+        let handled_count = Arc::new(AtomicUsize::new(0));
+        let worker = {
+            let t0_slot = Arc::clone(&t0_slot);
+            let max_us = Arc::clone(&max_us);
+            let handled_count = Arc::clone(&handled_count);
+            std::thread::spawn(move || loop {
+                let handled = receiver.recv_and_process(Duration::from_secs(10), |cmd| {
+                    let t0 = *t0_slot.lock().unwrap();
+                    max_us.fetch_max(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
+                    handled_count.fetch_add(1, Ordering::Relaxed);
+                    match cmd {
+                        BridgeCommand::GetTitle { .. } => ok_response(Value::String("t".into())),
+                        _ => err_response("unexpected"),
+                    }
+                });
+                if !handled {
+                    break;
+                }
+            })
+        };
+        // Warm-up: one untimed round guarantees the worker has entered
+        // recv_and_process and is parked on the substrate before timing.
+        let warm = sender.send(BridgeCommand::GetTitle {
+            target_id: TID.into(),
+        });
+        assert!(warm.result.is_ok());
+        std::thread::sleep(Duration::from_millis(1));
+        for _ in 0..ROUNDS {
+            *t0_slot.lock().unwrap() = Instant::now();
+            let resp = sender.send(BridgeCommand::GetTitle {
+                target_id: TID.into(),
+            });
+            assert!(resp.result.is_ok());
+        }
+        assert_eq!(
+            handled_count.load(Ordering::Relaxed),
+            ROUNDS + 1,
+            "warm-up plus every timed round must reach the handler"
+        );
+        let max = max_us.load(Ordering::Relaxed);
+        println!("max send→handler wake latency: {max}µs over {ROUNDS} rounds");
+        assert!(
+            max < 2_000,
+            "max send→handler wake latency {max}µs >= 2ms over {ROUNDS} rounds"
+        );
+        drop(sender);
+        worker.join().unwrap();
+    }
+
+    // drain consumes exactly the queued commands across cloned
+    // multi-producer senders (the MPMC face of the bao_ipc substrate) and
+    // reports 0 on the follow-up drain — no loss, no duplication.
+    // @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:unit]
+    #[test]
+    fn drain_counts_multi_producer_queue_exactly() {
+        let (sender, receiver) = bridge_channel(TIMEOUT);
+        let producer_a = sender.clone();
+        let producer_b = sender.clone();
+        for _ in 0..3 {
+            sender.send_fire_and_forget(BridgeCommand::GetTitle {
+                target_id: TID.into(),
+            });
+        }
+        producer_a.send_fire_and_forget(BridgeCommand::GetUrl {
+            target_id: TID.into(),
+        });
+        producer_b.send_fire_and_forget(BridgeCommand::GetTitle {
+            target_id: TID.into(),
+        });
+        assert_eq!(
+            receiver.drain(noop_handler),
+            5,
+            "drain must consume all 5 queued commands"
+        );
+        assert_eq!(
+            receiver.drain(noop_handler),
+            0,
+            "follow-up drain must observe an empty queue"
+        );
     }
 }

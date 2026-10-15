@@ -20,6 +20,9 @@ members = [
     "src/bao_native_stubs",
     "src/bao_uloop",
     "src/bao_lints",
+    # REQ-ARCH-3 (F1): unified MPMC message substrate — single import point
+    # over the in-tree crossbeam-channel.
+    "src/bao_ipc",
     "src/bun_sm",
     "src/jsc_macros",
     "src/opaque",

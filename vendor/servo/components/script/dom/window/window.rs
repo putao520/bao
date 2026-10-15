@@ -1232,7 +1232,10 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
             message: String::from(message),
             response_sender: sender,
         };
-        self.send_to_embedder(EmbedderMsg::ShowSimpleDialog(self.webview_id(), dialog));
+        self.send_dialog_permission_message_to_embedder(EmbedderMsg::ShowSimpleDialog(
+            self.webview_id(),
+            dialog,
+        ));
         receiver.recv().unwrap_or_else(|_| {
             // If the receiver is closed, we assume the dialog was cancelled.
             debug!("Alert dialog was cancelled or failed to show.");
@@ -1271,7 +1274,10 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
             message: String::from(message),
             response_sender: sender,
         };
-        self.send_to_embedder(EmbedderMsg::ShowSimpleDialog(self.webview_id(), dialog));
+        self.send_dialog_permission_message_to_embedder(EmbedderMsg::ShowSimpleDialog(
+            self.webview_id(),
+            dialog,
+        ));
 
         // Step 5: Let userPromptHandler be WebDriver BiDi user prompt opened with this,
         // "confirm", and message.
@@ -1323,7 +1329,10 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
             default: String::from(default),
             response_sender: sender,
         };
-        self.send_to_embedder(EmbedderMsg::ShowSimpleDialog(self.webview_id(), dialog));
+        self.send_dialog_permission_message_to_embedder(EmbedderMsg::ShowSimpleDialog(
+            self.webview_id(),
+            dialog,
+        ));
 
         // Step 6: Let userPromptHandler be WebDriver BiDi user prompt opened with this,
         // "prompt", and message.
@@ -2152,7 +2161,10 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
 
         let dpr = self.device_pixel_ratio();
         let size = Size2D::new(width, height).to_f32() * dpr;
-        self.send_to_embedder(EmbedderMsg::ResizeTo(self.webview_id(), size.to_i32()));
+        self.send_window_geometry_message_to_embedder(EmbedderMsg::ResizeTo(
+            self.webview_id(),
+            size.to_i32(),
+        ));
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-window-resizeby>
@@ -2169,7 +2181,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         let dpr = self.device_pixel_ratio();
         let point = Point2D::new(x, y).to_f32() * dpr;
         let msg = EmbedderMsg::MoveTo(self.webview_id(), point.to_i32());
-        self.send_to_embedder(msg);
+        self.send_window_geometry_message_to_embedder(msg);
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-window-moveby>
@@ -2608,7 +2620,10 @@ impl Window {
     fn client_window(&self) -> DeviceIndependentIntRect {
         let (sender, receiver) = generic_channel::channel().expect("Failed to create IPC channel!");
 
-        self.send_to_embedder(EmbedderMsg::GetWindowRect(self.webview_id(), sender));
+        self.send_window_geometry_message_to_embedder(EmbedderMsg::GetWindowRect(
+            self.webview_id(),
+            sender,
+        ));
 
         receiver.recv().unwrap_or_default()
     }
@@ -3682,6 +3697,37 @@ impl Window {
             .script_to_embedder_chan()
             .send(msg)
             .unwrap();
+    }
+
+    // Family senders for `EmbedderMsg` production sites (REQ-ARCH-3 F4-W2),
+    // mirroring the consumer-side family handlers in `servo.rs`
+    // (`handle_<family>_message`). Every family sender forwards verbatim to
+    // [`Window::send_to_embedder`]; message payloads, ordering, and timing are
+    // unchanged. The gamepad family is feature-gated like the corresponding
+    // `EmbedderMsg` variants and their production sites.
+    pub(crate) fn send_chrome_notification_message_to_embedder(&self, message: EmbedderMsg) {
+        self.send_to_embedder(message);
+    }
+
+    pub(crate) fn send_window_geometry_message_to_embedder(&self, message: EmbedderMsg) {
+        self.send_to_embedder(message);
+    }
+
+    pub(crate) fn send_dialog_permission_message_to_embedder(&self, message: EmbedderMsg) {
+        self.send_to_embedder(message);
+    }
+
+    pub(crate) fn send_clipboard_message_to_embedder(&self, message: EmbedderMsg) {
+        self.send_to_embedder(message);
+    }
+
+    pub(crate) fn send_embedder_control_message_to_embedder(&self, message: EmbedderMsg) {
+        self.send_to_embedder(message);
+    }
+
+    #[cfg(feature = "gamepad")]
+    pub(crate) fn send_gamepad_message_to_embedder(&self, message: EmbedderMsg) {
+        self.send_to_embedder(message);
     }
 
     pub(crate) fn send_to_constellation(&self, msg: ScriptToConstellationMessage) {

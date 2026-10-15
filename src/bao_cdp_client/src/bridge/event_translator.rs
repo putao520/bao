@@ -19,7 +19,7 @@
 //!   事件产生线程(embedder 适配层 / 测试 harness)
 //!       ↓ on_* 回调
 //!   EventSubscriber::on_*  (本模块)
-//!       ↓ bounded mpsc(drop-on-full,容量 1024)
+//!       ↓ bounded channel(drop-on-full,容量 1024)
 //!   InMemoryTransport::recv_event  (translate 转换)
 //!       ↓ CdpEvent
 //!   CDP Client
@@ -36,7 +36,7 @@
 //! ## 线程模型(DEC-CDP-002)
 //!
 //! 事件产生线程调用 `on_console_message` 等方法时,`try_send` 到物理有界
-//! channel;`mpsc::SyncSender` 可克隆、可跨线程投递,持有方可位于任意线程。
+//! channel;`bao_ipc::Sender` 可克隆、可跨线程投递,持有方可位于任意线程。
 //! InMemoryTransport 在 client 线程 `recv_event`,translate 后返回。
 //!
 //! @trace REQ-BAO-API-003 [level:library]
@@ -48,12 +48,12 @@
 //! @trace REQ-BAO-API-003 [event:FrameInfo]
 //! @trace REQ-BAO-API-003 [event:TimelineMarker]
 
+use bao_ipc::{channel, Receiver, Sender, TrySendError};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::transport::CdpEvent;
 
@@ -124,7 +124,7 @@ impl ConsoleLevel {
 /// servo 推送给 CDP client 的所有事件类型(REQ-BAO-API-003 的 7 类
 /// + REQ-CDP-006 请求拦截 2 类)。
 ///
-/// 由 [`EventSubscriber`] 在 servo delegate 回调中构造,push 到 mpsc channel,
+/// 由 [`EventSubscriber`] 在 servo delegate 回调中构造,push 到有界 channel,
 /// 由 `InMemoryTransport::recv_event` 调用 [`translate`] 转换为 [`CdpEvent`]。
 ///
 /// # 字段命名规范
@@ -943,17 +943,18 @@ const SATURATION_WARN_INTERVAL: usize = 1024;
 ///
 /// # 有界契约(bounded · drop-on-full)
 ///
-/// 底层是 `mpsc::sync_channel` **物理有界** channel:`new()` 以容量 1024 构造
+/// 底层是 `bao_ipc::channel` **物理有界** channel:`new()` 以容量 1024 构造
 /// `with_capacity`,至多缓冲 `capacity` 个未消费事件。满容后投递一律
 /// **drop-newest**(丢弃本次新事件,已缓冲事件原样保留),永不阻塞调用
 /// 线程;消费方排空后自动恢复投递。两条 sender 面共享同一物理容量:
 ///
 /// - `on_*` 回调:`try_send` 满容即丢弃,累计 [`EventSubscriber::dropped_count`]
 ///   并记饱和 warn(首次 + 每 `SATURATION_WARN_INTERVAL` 条节流);
-/// - [`EventSubscriber::sender`] 派生的 `SyncSender` 克隆(外部直推面):
+/// - [`EventSubscriber::sender`] 派生的 `Sender` 克隆(外部直推面):
 ///   与 on_* 共享同一有界缓冲,**同样受限**——满容时 `try_send` 同步返回
 ///   `TrySendError::Full`,丢弃决策归调用方。(production 不经此面:
-///   `set_event_channel` 消费 `Sender`,与本面类型不兼容,误传编译期报错。)
+///   `set_event_channel` 消费 unbounded `Sender`,与本面类型不同但同族,
+///   误传编译期报错。)
 ///
 /// # 关闭语义
 ///
@@ -963,15 +964,15 @@ const SATURATION_WARN_INTERVAL: usize = 1024;
 ///
 /// # 线程安全
 ///
-/// `mpsc::SyncSender` 可克隆、可跨线程投递,持有方可位于任意线程。
+/// `bao_ipc::Sender` 可克隆、可跨线程投递,持有方可位于任意线程。
 /// `EventSubscriber` 不 `Clone`(避免多 sender 混淆事件源);
 /// 如需多 sender,显式调 [`EventSubscriber::sender`] 拿到
-/// `SyncSender<ServoEvent>`。
+/// `Sender<ServoEvent>`。
 ///
 /// @trace REQ-BAO-API-003 [level:library]
 pub struct EventSubscriber {
     /// 物理有界 channel 的 sender(on_* push 与 `sender()` 克隆同源)。
-    egress_tx: SyncSender<ServoEvent>,
+    egress_tx: Sender<ServoEvent>,
     /// 容量,用于饱和日志与 Debug 输出(容量真源在 channel 本身)。
     egress_capacity: usize,
     /// 因满容被丢弃(drop-newest)的事件累计数(on_* push 面)。
@@ -1000,7 +1001,7 @@ impl EventSubscriber {
     ///
     /// @trace REQ-BAO-API-003 [level:library]
     pub fn with_capacity(capacity: usize) -> (Self, Receiver<ServoEvent>) {
-        let (egress_tx, egress_rx) = mpsc::sync_channel::<ServoEvent>(capacity);
+        let (egress_tx, egress_rx) = channel::<ServoEvent>(capacity);
         (
             EventSubscriber {
                 egress_tx,
@@ -1014,19 +1015,19 @@ impl EventSubscriber {
 
     /// 获取底层 sender(供复杂场景使用,如多 sender 模式)。
     ///
-    /// `SyncSender` 克隆与 `on_*` push 共享同一物理有界缓冲,**同样受限**:
+    /// `Sender` 克隆与 `on_*` push 共享同一物理有界缓冲,**同样受限**:
     /// 满容时 `try_send` 返回 `TrySendError::Full`(丢弃决策归调用方,不计入
     /// [`EventSubscriber::dropped_count`]);接收端已 drop 时返回 `Disconnected`。
     ///
     /// @trace REQ-BAO-API-003 [level:library]
-    pub fn sender(&self) -> SyncSender<ServoEvent> {
+    pub fn sender(&self) -> Sender<ServoEvent> {
         self.egress_tx.clone()
     }
 
     /// 因 channel 满容被丢弃(drop-newest)的事件累计数。
     ///
     /// 观测用途:消费方停滞/过慢时此值增长;只增不减,回落不表示恢复。
-    /// 计数域为 `on_*` push 面;`sender()` 派生的 `SyncSender` 克隆的满容
+    /// 计数域为 `on_*` push 面;`sender()` 派生的 `Sender` 克隆的满容
     /// 丢弃以 `TrySendError::Full` 同步返回给调用方,不进本计数。
     ///
     /// @trace REQ-BAO-API-003 [level:library]
@@ -1348,7 +1349,7 @@ impl std::fmt::Debug for EventSubscriber {
         f.debug_struct("EventSubscriber")
             .field(
                 "channel",
-                &"mpsc::sync_channel (bounded, drop-newest at capacity)",
+                &"bao_ipc channel (bounded, drop-newest at capacity)",
             )
             .field("capacity", &self.egress_capacity)
             .field("dropped", &self.dropped.load(Ordering::Relaxed))
@@ -1590,7 +1591,7 @@ struct TapWaiter {
     /// 事件参数谓词(纯 JSON 检查,在 tap 锁内执行 — 禁任何回调重入)。
     predicate: Box<dyn Fn(&Value) -> bool + Send>,
     /// 一次性投递通道(容量 1;`observe` try_send 非阻塞投递)。
-    tx: mpsc::SyncSender<Value>,
+    tx: Sender<Value>,
 }
 
 /// CDP 事件等待面 — `translate` 产出的事件流的旁路 tap。
@@ -1685,7 +1686,7 @@ impl CdpEventTap {
                 "CdpEventTap::wait: empty method set".into(),
             ));
         }
-        let (tx, rx) = mpsc::sync_channel::<Value>(1);
+        let (tx, rx) = channel::<Value>(1);
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         {
             let mut waiters = self.waiters.lock().unwrap_or_else(|p| p.into_inner());
@@ -2894,8 +2895,15 @@ mod tests {
             )
         });
         std::thread::sleep(std::time::Duration::from_millis(50));
-        tap.observe("1", "Network.loadingFinished", &json!({ "requestId": "r9" }));
-        let params = waiter.join().unwrap().expect("set-member event must arrive");
+        tap.observe(
+            "1",
+            "Network.loadingFinished",
+            &json!({ "requestId": "r9" }),
+        );
+        let params = waiter
+            .join()
+            .unwrap()
+            .expect("set-member event must arrive");
         assert_eq!(params["requestId"], "r9");
     }
 
@@ -2906,7 +2914,11 @@ mod tests {
     #[test]
     fn cdp_event_tap_pre_registration_event_is_not_replayed() {
         let tap = CdpEventTap::new();
-        tap.observe("1", "Network.requestWillBeSent", &json!({ "requestId": "early" }));
+        tap.observe(
+            "1",
+            "Network.requestWillBeSent",
+            &json!({ "requestId": "early" }),
+        );
         let r = tap.wait(
             "1",
             &["Network.requestWillBeSent"],

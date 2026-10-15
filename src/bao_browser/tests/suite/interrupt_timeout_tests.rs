@@ -237,8 +237,6 @@ fn explicit_none_timeout_preserves_normal_evaluation() {
 
 #[test]
 fn w3b_console_counters_per_realm_across_pages() {
-    use std::sync::mpsc;
-
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     // Console observation window = the ServoEvent path (Path B). Since the
     // run()/pump_cdp event-channel wiring (REQ-LIB-003) every runtime owns an
@@ -248,7 +246,7 @@ fn w3b_console_counters_per_realm_across_pages() {
     // channel BEFORE create_page so both pages inherit it, then count from
     // the ServoEvent::Console texts (same message body Path A used to
     // deliver).
-    let (event_tx, event_rx) = mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    let (event_tx, event_rx) = bao_ipc::unbounded::<bao_cdp_client::bridge::ServoEvent>();
     runtime.set_event_channel(event_tx);
 
     let pool: &PagePool = runtime.page_pool();
@@ -285,8 +283,8 @@ fn w3b_console_counters_per_realm_across_pages() {
                 }
             },
             Ok(_) => {},
-            Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(50)),
-            Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(bao_ipc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(50)),
+            Err(bao_ipc::TryRecvError::Disconnected) => break,
         }
         if texts.len() >= 3 {
             break;

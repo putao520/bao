@@ -489,10 +489,9 @@ impl Document {
         if editing_context.copying_enabled() &&
             let Some(selection) = editing_context.selection_content(cx)
         {
-            self.send_to_embedder(embedder_traits::EmbedderMsg::SetClipboardText(
-                self.webview_id(),
-                selection,
-            ));
+            self.send_clipboard_message_to_embedder(
+                embedder_traits::EmbedderMsg::SetClipboardText(self.webview_id(), selection),
+            );
         }
         if is_cut {
             editing_context.remove_the_contents_of_the_selection(cx);

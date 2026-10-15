@@ -9,8 +9,7 @@ use std::{fs, ptr, slice, str};
 use encoding_rs::{Encoding, UTF_8};
 use http::HeaderMap;
 use http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
-use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
-use ipc_channel::router::ROUTER;
+use bao_ipc::{Receiver, Sender, unbounded};
 use js::context::JSContext;
 use js::jsapi::{Heap, JSObject, Value as JSValue};
 use js::jsval::{JSVal, UndefinedValue};
@@ -100,17 +99,17 @@ enum StopReading {
     Done,
 }
 
-/// The IPC route handler
+/// The request body pump handler
 /// for <https://fetch.spec.whatwg.org/#concept-request-transmit-body>.
-/// This route runs in the script process,
+/// This handler runs on the body control channel's pump thread,
 /// and will queue tasks to perform operations
-/// on the stream and transmit body chunks over IPC.
+/// on the stream and transmit body chunks over the in-process channels.
 #[derive(Clone)]
 struct TransmitBodyConnectHandler {
     stream: Trusted<ReadableStream>,
     task_source: SendableTaskSource,
-    bytes_sender: Option<IpcSender<BodyChunkResponse>>,
-    control_sender: Option<IpcSender<BodyChunkRequest>>,
+    bytes_sender: Option<Sender<BodyChunkResponse>>,
+    control_sender: Option<Sender<BodyChunkRequest>>,
     in_memory: Option<GenericSharedMemory>,
     in_memory_done: bool,
     source: BodySource,
@@ -120,7 +119,7 @@ impl TransmitBodyConnectHandler {
     pub(crate) fn new(
         stream: Trusted<ReadableStream>,
         task_source: SendableTaskSource,
-        control_sender: IpcSender<BodyChunkRequest>,
+        control_sender: Sender<BodyChunkRequest>,
         in_memory: Option<GenericSharedMemory>,
         source: BodySource,
     ) -> TransmitBodyConnectHandler {
@@ -143,35 +142,36 @@ impl TransmitBodyConnectHandler {
 
     /// Re-extract the source to support streaming it again for a re-direct.
     /// TODO: actually re-extract the source, instead of just cloning data, to support Blob.
-    fn re_extract(&mut self, chunk_request_receiver: IpcReceiver<BodyChunkRequest>) {
+    fn re_extract(&mut self, chunk_request_receiver: Receiver<BodyChunkRequest>) {
         let mut body_handler = self.clone();
         body_handler.reset_in_memory_done();
 
-        ROUTER.add_typed_route(
-            chunk_request_receiver,
-            Box::new(move |message| {
-                let request = message.unwrap();
-                match request {
-                    BodyChunkRequest::Connect(sender) => {
-                        body_handler.start_reading(sender);
-                    },
-                    BodyChunkRequest::Extract(receiver) => {
-                        body_handler.re_extract(receiver);
-                    },
-                    BodyChunkRequest::Chunk => body_handler.transmit_source(),
-                    // Note: this is actually sent from this process
-                    // by the TransmitBodyPromiseHandler when reading stops.
-                    BodyChunkRequest::Done => {
-                        body_handler.stop_reading(StopReading::Done);
-                    },
-                    // Note: this is actually sent from this process
-                    // by the TransmitBodyPromiseHandler when the stream errors.
-                    BodyChunkRequest::Error => {
-                        body_handler.stop_reading(StopReading::Error);
-                    },
+        std::thread::Builder::new()
+            .name("RequestBodyReextract".to_string())
+            .spawn(move || {
+                while let Ok(request) = chunk_request_receiver.recv() {
+                    match request {
+                        BodyChunkRequest::Connect(sender) => {
+                            body_handler.start_reading(sender);
+                        },
+                        BodyChunkRequest::Extract(receiver) => {
+                            body_handler.re_extract(receiver);
+                        },
+                        BodyChunkRequest::Chunk => body_handler.transmit_source(),
+                        // Note: this is actually sent from this process
+                        // by the TransmitBodyPromiseHandler when reading stops.
+                        BodyChunkRequest::Done => {
+                            body_handler.stop_reading(StopReading::Done);
+                        },
+                        // Note: this is actually sent from this process
+                        // by the TransmitBodyPromiseHandler when the stream errors.
+                        BodyChunkRequest::Error => {
+                            body_handler.stop_reading(StopReading::Error);
+                        },
+                    }
                 }
-            }),
-        );
+            })
+            .expect("Spawning the request body re-extract pump failed.");
     }
 
     /// In case of re-direct, and of a source available in memory,
@@ -206,7 +206,7 @@ impl TransmitBodyConnectHandler {
 
     /// Take the IPC sender sent by `net`, so we can send body chunks with it.
     /// Also the entry point to <https://fetch.spec.whatwg.org/#concept-request-transmit-body>
-    fn start_reading(&mut self, sender: IpcSender<BodyChunkResponse>) {
+    fn start_reading(&mut self, sender: Sender<BodyChunkResponse>) {
         self.bytes_sender = Some(sender);
 
         // If we're using an actual ReadableStream, acquire a reader for it.
@@ -228,10 +228,10 @@ impl TransmitBodyConnectHandler {
         }
     }
 
-    /// Drop the IPC sender sent by `net`
+    /// Drop the sender sent by `net`
     /// It is important to drop the control_sender as this will allow us to clean ourselves up.
     /// Otherwise, the following cycle will happen: The control sender is owned by us which keeps the control receiver
-    /// alive in the router which keeps us alive.
+    /// alive in its pump thread which keeps us alive.
     fn stop_reading(&mut self, reason: StopReading) {
         let bytes_sender = self
             .bytes_sender
@@ -312,10 +312,10 @@ impl TransmitBodyConnectHandler {
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 struct TransmitBodyPromiseHandler {
     #[no_trace]
-    bytes_sender: IpcSender<BodyChunkResponse>,
+    bytes_sender: Sender<BodyChunkResponse>,
     stream: Dom<ReadableStream>,
     #[no_trace]
-    control_sender: IpcSender<BodyChunkRequest>,
+    control_sender: Sender<BodyChunkRequest>,
 }
 
 impl js::gc::Rootable for TransmitBodyPromiseHandler {}
@@ -366,10 +366,10 @@ impl Callback for TransmitBodyPromiseHandler {
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 struct TransmitBodyPromiseRejectionHandler {
     #[no_trace]
-    bytes_sender: IpcSender<BodyChunkResponse>,
+    bytes_sender: Sender<BodyChunkResponse>,
     stream: Dom<ReadableStream>,
     #[no_trace]
-    control_sender: IpcSender<BodyChunkRequest>,
+    control_sender: Sender<BodyChunkRequest>,
 }
 
 impl js::gc::Rootable for TransmitBodyPromiseRejectionHandler {}
@@ -420,7 +420,7 @@ impl ExtractedBody {
 
         // First, setup some infra to be used to transmit body
         //  from `components::script` to `components::net`.
-        let (chunk_request_sender, chunk_request_receiver) = ipc::channel().unwrap();
+        let (chunk_request_sender, chunk_request_receiver) = unbounded();
 
         let trusted_stream = Trusted::new(&*stream);
 
@@ -451,30 +451,32 @@ impl ExtractedBody {
             source,
         );
 
-        ROUTER.add_typed_route(
-            chunk_request_receiver,
-            Box::new(move |message| {
-                match message.unwrap() {
-                    BodyChunkRequest::Connect(sender) => {
-                        body_handler.start_reading(sender);
-                    },
-                    BodyChunkRequest::Extract(receiver) => {
-                        body_handler.re_extract(receiver);
-                    },
-                    BodyChunkRequest::Chunk => body_handler.transmit_body_chunk(),
-                    // Note: this is actually sent from this process
-                    // by the TransmitBodyPromiseHandler when reading stops.
-                    BodyChunkRequest::Done => {
-                        body_handler.stop_reading(StopReading::Done);
-                    },
-                    // Note: this is actually sent from this process
-                    // by the TransmitBodyPromiseHandler when the stream errors.
-                    BodyChunkRequest::Error => {
-                        body_handler.stop_reading(StopReading::Error);
-                    },
+        std::thread::Builder::new()
+            .name("RequestBodyPump".to_string())
+            .spawn(move || {
+                while let Ok(request) = chunk_request_receiver.recv() {
+                    match request {
+                        BodyChunkRequest::Connect(sender) => {
+                            body_handler.start_reading(sender);
+                        },
+                        BodyChunkRequest::Extract(receiver) => {
+                            body_handler.re_extract(receiver);
+                        },
+                        BodyChunkRequest::Chunk => body_handler.transmit_body_chunk(),
+                        // Note: this is actually sent from this process
+                        // by the TransmitBodyPromiseHandler when reading stops.
+                        BodyChunkRequest::Done => {
+                            body_handler.stop_reading(StopReading::Done);
+                        },
+                        // Note: this is actually sent from this process
+                        // by the TransmitBodyPromiseHandler when the stream errors.
+                        BodyChunkRequest::Error => {
+                            body_handler.stop_reading(StopReading::Error);
+                        },
+                    }
                 }
-            }),
-        );
+            })
+            .expect("Spawning the request body pump failed.");
 
         // Return `components::net` view into this request body,
         // which can be used by `net` to transmit it over the network.

@@ -246,7 +246,7 @@ impl GamepadHapticActuatorMethods<crate::DomTypeHolder> for GamepadHapticActuato
             embedder_traits::GamepadHapticEffectType::DualRumble(params),
             callback,
         );
-        self.global().as_window().send_to_embedder(event);
+        self.global().as_window().send_gamepad_message_to_embedder(event);
 
         playing_effect_promise
     }
@@ -300,7 +300,7 @@ impl GamepadHapticActuatorMethods<crate::DomTypeHolder> for GamepadHapticActuato
             self.gamepad_index as usize,
             callback,
         );
-        self.global().as_window().send_to_embedder(event);
+        self.global().as_window().send_gamepad_message_to_embedder(event);
 
         promise
     }
@@ -390,6 +390,6 @@ impl GamepadHapticActuator {
             self.gamepad_index as usize,
             callback,
         );
-        self.global().as_window().send_to_embedder(event);
+        self.global().as_window().send_gamepad_message_to_embedder(event);
     }
 }

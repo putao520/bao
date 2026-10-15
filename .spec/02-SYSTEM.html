@@ -7210,7 +7210,24 @@ Permission 配置:
   "chosen": "uWS C++ 保留(链接复用 C++ 二进制)",
   "rationale": "hyper 需 Tokio runtime,与 bao 的 FilePoll/uloop event loop 架构根本冲突,且违反 CLAUDE.md 铁律「uWS 链接复用 C++ 二进制」。Commander 用户决策:推翻原 SPEC,uWS 保留。衍生需求(bao_cdp 用 bun_uws 替换自写 ws_codec)已转 REQ-CDP-UWS-001 跟踪。本 DEC 由 REQ-PURE-009 转档归档(2026-08-22 grounding 终波:REQ 元素形态删除,决策语义与推翻记录全量保留)。",
   "dimension": "technical"
-}</script></section><section data-groundedin="PRD-REQ-MAINTAINABILITY" data-req-category="architecture" data-req-domain="ARCH" data-req-status="unknown" data-req="REQ-ARCH-1" id="req-arch-1"><h3>REQ-ARCH-1 代码卫生工程红线与存量深嵌套收敛</h3><p>工程红线(嵌套≤5/圈复杂度≤10/参数≤5)对 bao 自有代码层(src/ 非 vendor)全量适用。存量深嵌套(LSP 审计 nest≥7 残量,e164/e181 已清大头)按批次收敛:①每波清偿以纯结构变换落地(函数提取/卫语句化/表驱动),禁语义重写②触及 crate 的 suite/单测全绿为每波验收③算法性嵌套等不可收敛处逐处登记豁免理由④新增代码由 commit 门持续约束。用户裁决链:2026-10-10 LSP 审计指令+2026-10-12 四项呈报「立法后做」。</p><div data-criterion-id="REQ-ARCH-1-AC01" data-criterion="重构为纯结构变换:行为零变化(触及 crate suite/单测全绿),每次清偿波以行为不变式验收">重构为纯结构变换:行为零变化(触及 crate suite/单测全绿),每次清偿波以行为不变式验收</div><div data-criterion-id="REQ-ARCH-1-AC02" data-criterion="新增代码遵守工程红线(嵌套≤5/圈复杂度≤10):commit 门持续约束,存量逐波消解">新增代码遵守工程红线(嵌套≤5/圈复杂度≤10):commit 门持续约束,存量逐波消解</div><a data-xref-id="test-arch-1" data-xref-type="test" href="11-TESTING.html#test-arch-1">TEST-ARCH-1</a></section></main>
+}</script></section><section data-groundedin="PRD-REQ-MAINTAINABILITY" data-req-category="architecture" data-req-domain="ARCH" data-req-status="unknown" data-req="REQ-ARCH-1" id="req-arch-1"><h3>REQ-ARCH-1 代码卫生工程红线与存量深嵌套收敛</h3><p>工程红线(嵌套≤5/圈复杂度≤10/参数≤5)对 bao 自有代码层(src/ 非 vendor)全量适用。存量深嵌套(LSP 审计 nest≥7 残量,e164/e181 已清大头)按批次收敛:①每波清偿以纯结构变换落地(函数提取/卫语句化/表驱动),禁语义重写②触及 crate 的 suite/单测全绿为每波验收③算法性嵌套等不可收敛处逐处登记豁免理由④新增代码由 commit 门持续约束。用户裁决链:2026-10-10 LSP 审计指令+2026-10-12 四项呈报「立法后做」。</p><div data-criterion-id="REQ-ARCH-1-AC01" data-criterion="重构为纯结构变换:行为零变化(触及 crate suite/单测全绿),每次清偿波以行为不变式验收">重构为纯结构变换:行为零变化(触及 crate suite/单测全绿),每次清偿波以行为不变式验收</div><div data-criterion-id="REQ-ARCH-1-AC02" data-criterion="新增代码遵守工程红线(嵌套≤5/圈复杂度≤10):commit 门持续约束,存量逐波消解">新增代码遵守工程红线(嵌套≤5/圈复杂度≤10):commit 门持续约束,存量逐波消解</div><a data-xref-id="test-arch-1" data-xref-type="test" href="11-TESTING.html#test-arch-1">TEST-ARCH-1</a></section><section data-groundedin="PRD-REQ-PROC-MODEL" data-req-category="architecture" data-req-domain="arch" data-req-status="implemented" data-req="REQ-ARCH-2" id="req-arch-2"><h3>REQ-ARCH-2 PROCESS=ScriptThread/JSContext 对应与库形态单进程约束</h3><p>PROCESS 隔离单元=ScriptThread 及其线程局部 JSContext(RustRuntime::get() thread-local slot;同一 Context 内多 Realm 共存,页面 realm 与 Node realm 双 realm REQ-SEC-002 形态)。页面/DedicatedWorker/SharedWorker/ServiceWorker/AudioWorklet 各由独立 ScriptThread(或 worklet 专用 realm 载体)承载。浏览器架构面禁真多进程:servo multiprocess feature 恒关闭,库嵌入零 content 进程派生;browser context 隔离=进程内逻辑隔离(ContextPartitionId 资源分区,REQ-CDS-009 C6 形态),非进程边界。child_process API 保留 spawn 真 OS 外部进程能力(uv_spawn),属 API 契约面,不在浏览器多进程禁令内。本条为现状确认型立法:代码形态已达成,验收=不变量守护。修正 DEC-002 陈旧措辞:单进程多线程成立,但 JSContext 非共享——per-ScriptThread 线程局部(BCE-20260621-001 修订版)。</p><div data-criterion-id="REQ-ARCH-2-AC01" data-criterion="PROCESS 隔离单元=ScriptThread+线程局部 JSContext;同一 Context 内多 Realm(Page/Node 双 realm)共存;跨线程禁传 JSObject 裸指针(铁律保持)">PROCESS 隔离单元=ScriptThread+线程局部 JSContext;同一 Context 内多 Realm(Page/Node 双 realm)共存;跨线程禁传 JSObject 裸指针(铁律保持)</div><div data-criterion-id="REQ-ARCH-2-AC02" data-criterion="servo multiprocess feature 恒关闭:全仓无 content 进程派生路径,库嵌入单进程">servo multiprocess feature 恒关闭:全仓无 content 进程派生路径,库嵌入单进程</div><div data-criterion-id="REQ-ARCH-2-AC03" data-criterion="browser context 隔离=进程内逻辑隔离(ContextPartitionId 资源分区),两 browser context 互不可见">browser context 隔离=进程内逻辑隔离(ContextPartitionId 资源分区),两 browser context 互不可见</div><div data-criterion-id="REQ-ARCH-2-AC04" data-criterion="child_process API spawn 真 OS 外部进程(uv_spawn 形态),与浏览器多进程禁令互斥不冲突">child_process API spawn 真 OS 外部进程(uv_spawn 形态),与浏览器多进程禁令互斥不冲突</div><a data-xref-id="test-arch-2" data-xref-type="test" href="11-TESTING.html#test-arch-2">TEST-ARCH-2</a></section><section data-groundedin="PRD-REQ-IPC-SUBSTRATE" data-req-category="architecture" data-req-domain="arch" data-req-status="approved" data-req="REQ-ARCH-3" id="req-arch-3"><h3>REQ-ARCH-3 IPC/PROCESS 对象抽象重写:协程+MPMC 统一底座</h3><p>消息/IPC 面与 PROCESS 对象抽象重写到协程+无锁 MPMC 统一底座(PRD-REQ-IPC-SUBSTRATE)。现役形态勘察基线(2026-10-15 五层盘点):L1 原语(ipc-channel serde 通道/std mpsc/ThreadPool 无锁 MPMC Queue src/threading/ThreadPool.rs)、L2 通道中枢(RouterProxy shared/base/ipc_router.rs;ResourceChannelManager 五通道)、L3 巨型枚举(CoreResourceMsg ~800 行 shared/net/lib.rs;EmbedderMsg ~470 行 shared/embedder/lib.rs;script_thread.rs handle_msgs 三大 match)、L4 bao 桥面(PagePool Rc/RefCell、bridge_channel、ServoEvent mpsc、BaoNetworkTap)、L5 PROCESS 对象(bun_api process 对象/child_process uv_spawn)。迁移序与层界以 LSP 勘察清单(REQ-ARCH-3 验收物)定界;DEC-002(单进程多线程)保持成立,DEC-WK-005(跨线程仅序列化)保持为不变量——MPMC 零拷贝仅适用非 JS 数据面,跨 Context JS 数据仍走 StructuredSerializedData。</p><div data-criterion-id="REQ-ARCH-3-AC01" data-criterion="IPC/PROCESS 对象抽象的重写修改升级面以 LSP 勘察清单定界,五层(L1 原语/L2 通道中枢/L3 巨型枚举/L4 桥面/L5 PROCESS 对象)零遗漏登记入 SPEC">IPC/PROCESS 对象抽象的重写修改升级面以 LSP 勘察清单定界,五层(L1 原语/L2 通道中枢/L3 巨型枚举/L4 桥面/L5 PROCESS 对象)零遗漏登记入 SPEC</div><div data-criterion-id="REQ-ARCH-3-AC02" data-criterion="通用无锁 MPMC 消息底座以仓内既有 Queue(ThreadPool)为基泛化为独立原语;进程内同线程域消息传递零序列化拷贝">通用无锁 MPMC 消息底座以仓内既有 Queue(ThreadPool)为基泛化为独立原语;进程内同线程域消息传递零序列化拷贝</div><div data-criterion-id="REQ-ARCH-3-AC03" data-criterion="协程化消息平面:阻塞 recv 桥面迁移后,泵线程无事件时可挂起/恢复;事件响应延迟不回归(基线对照验收)">协程化消息平面:阻塞 recv 桥面迁移后,泵线程无事件时可挂起/恢复;事件响应延迟不回归(基线对照验收)</div><div data-criterion-id="REQ-ARCH-3-AC04" data-criterion="JSObject 跨线程铁律保持:跨 Context JS 数据仍仅 StructuredSerializedData;MPMC 零拷贝仅适用非 JS 数据面">JSObject 跨线程铁律保持:跨 Context JS 数据仍仅 StructuredSerializedData;MPMC 零拷贝仅适用非 JS 数据面</div><div data-criterion-id="REQ-ARCH-3-AC05" data-criterion="迁移全程浏览器行为零回归:触及 crate suite 全绿+波末全量 V 门">迁移全程浏览器行为零回归:触及 crate suite 全绿+波末全量 V 门</div><a data-xref-id="test-arch-3" data-xref-type="test" href="11-TESTING.html#test-arch-3">TEST-ARCH-3</a></section><section data-decision-status="accepted" data-decision-dimension="technical" data-decision="DEC-ARCH-001" id="dec-arch-001"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-ARCH-001",
+  "title": "IPC 底座统一演进拓扑:五层勘定面+分波迁移序+八不变量",
+  "context": "REQ-ARCH-3 迁移拓扑裁决(2026-10-15,证据=e-surv-f3f5/e-surv-f4/e-surv-l4rest 三勘察;分波表详录 .plans/roadmap-20261003.md §Z.4)",
+  "options": [
+    {
+      "name": "全量重写消息面"
+    },
+    {
+      "name": "分波渐进"
+    }
+  ],
+  "chosen": "分波渐进(F2a/F2b/F2c/F3/F5/R1/R2/R3/W1-W5)",
+  "rationale": "五层勘定:①L1 原语=ThreadPool intrusive Queue 留(Task* 特化不可泛用);vendor ipc-channel 活流量仅 fetch body chunk 流族(F3 换底),其余全为 use_ipc() 死臂/generic_channel(单进程已 crossbeam,留);②L2 通道中枢=RouterProxy 孤儿(e99 洗出,F3 清算);ResourceChannelManager 五通道底座已 crossbeam=留;③L3 巨枚举按 W1-W5 表驱动(CoreResourceMsg 35 变体/EmbedderMsg 31 变体 23 vendor 消费文件,勘误:原 35 系子串污染);④L4 桥面=bao_browser(F2a/F2c)+bao_cdp(F2b 已落)+bao_cdp_client(R1)+bao_runtime worker(R2)+cdp-server console 跨 crate(R3,锚=bao_browser lib.rs:937 deferral);⑤L5 PROCESS 对象=child_process push 翻转(F5),uv_spawn/stdio fd/Node IPC 字节流契约冻结留。八不变量:serde derive 禁删/Partition 信封最外层禁重排/两巨枚举单类型禁拆/臂→delegate 回调语义禁下推/相邻枚举圈界禁扩/FileManagerThreadMsg 嵌套黑箱/IntoStaticStr 禁改名/每波 patch 锚 grep 零溶解。附裁:GenericEmbedderProxy 签名 F4 全波冻结;InputEventsHandled 同语义双载体登记后续架构问题 F4 内禁归一;W2 域助方法落点由 receiver profile 证据定。",
+  "dimension": "technical",
+  "status": "accepted"
+}</script></section></main>
     <section id="testing" data-tests-section="">
       <h2>测试用例</h2>
       <div id="test-pure-001" data-test="TEST-PURE-001" data-req-ref="REQ-PURE-001" data-test-categories="unit">
@@ -7629,7 +7646,7 @@ Permission 配置:
       </script>
     </div>
     <div id="dec-002" data-decision="DEC-002" data-decision-dimension="technical" data-decision-status="accepted" data-decision-context="Architecture" data-delivery="D42">
-      <h3>DEC-002: 单进程多线程（共享 JSContext）</h3>
+      <h3>DEC-002: 单进程多线程(per-ScriptThread 线程局部 JSContext)</h3>
       <table>
         <tr>
           <th>决策</th>
@@ -7637,8 +7654,8 @@ Permission 配置:
           <th>状态</th>
         </tr>
         <tr>
-          <td>单进程、JS 线程 + servo 渲染线程</td>
-          <td>JSContext 融合要求共享地址空间</td>
+          <td>单进程、JS 线程(ScriptThread×N,各持线程局部 JSContext,多 Realm 同 Context)+ servo 渲染线程;措辞修正 2026-10-15(REQ-ARCH-2):「共享 JSContext」为陈旧表述,BCE-20260621-001 起为 per-thread 模型</td>
+          <td>JSContext 融合要求共享地址空间;JSContext 归属线程不共享(thread-local),跨线程仅序列化数据(DEC-WK-005 不变量)</td>
           <td>accepted</td>
         </tr>
       </table>

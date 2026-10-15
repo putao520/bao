@@ -159,7 +159,10 @@ impl ScreencastManager {
         let cfg = SessionConfig::from_params(params)?;
 
         let id = self.next_session_id.fetch_add(1, Ordering::Relaxed);
-        let mut map = self.sessions.lock().map_err(|_| "screencast state poisoned")?;
+        let mut map = self
+            .sessions
+            .lock()
+            .map_err(|_| "screencast state poisoned")?;
         let entry = map.entry(target_id.to_string()).or_default();
         // Same-face restart replaces the previous stream (Chrome: a second
         // startScreencast on the same session restarts the stream).
@@ -541,7 +544,10 @@ fn deliver(
                     continue;
                 };
                 if sender
-                    .send(bao_cdp_client::transport::CdpEvent::new(FRAME_EVENT, params))
+                    .send(bao_cdp_client::transport::CdpEvent::new(
+                        FRAME_EVENT,
+                        params,
+                    ))
                     .is_err()
                 {
                     dead_origins.push(origin);

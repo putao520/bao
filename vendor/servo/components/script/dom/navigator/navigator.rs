@@ -305,13 +305,22 @@ impl Navigator {
         let global = self.global();
         let window = global.as_window();
         let (sender, _) = generic_channel::channel().unwrap();
-        let _ = global
-            .script_to_embedder_chan()
-            .send(EmbedderMsg::AllowProtocolHandlerRequest(
+        self.send_dialog_permission_message_to_embedder(
+            EmbedderMsg::AllowProtocolHandlerRequest(
                 window.webview_id(),
                 registration,
                 sender,
-            ));
+            ),
+        );
+    }
+
+    /// Family sender for `EmbedderMsg` dialog/permission traffic (REQ-ARCH-3
+    /// F4-W2), mirroring the consumer-side family handler in `servo.rs`
+    /// (`handle_dialog_permission_message`). Forwards verbatim over the
+    /// script-to-embedder channel; unlike the DOM hosts' `send_to_embedder`
+    /// this preserves this family's non-panicking send-error semantics.
+    fn send_dialog_permission_message_to_embedder(&self, message: EmbedderMsg) {
+        let _ = self.global().script_to_embedder_chan().send(message);
     }
 }
 

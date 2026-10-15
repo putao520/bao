@@ -27,7 +27,7 @@ use net_traits::{
 use rustc_hash::FxHashMap;
 use script_bindings::cformat;
 use serde::{Deserialize, Serialize};
-use servo_base::generic_channel::GenericCallback;
+use servo_base::generic_channel::{GenericCallback, SendResult};
 use servo_base::id::WebViewId;
 use servo_url::ServoUrl;
 use timers::TimerEventRequest;
@@ -888,6 +888,21 @@ pub(crate) trait CspViolationsProcessor {
     fn process_csp_violations(&self, cx: &mut JSContext, violations: Vec<Violation>);
 }
 
+/// Family sender for the `CoreResourceMsg::Fetch` variant on a bare
+/// core-resource channel (REQ-ARCH-3 F4-W5): the single construction point
+/// for fetches riding the channel-implied attribution face (no envelope
+/// stamp — the fetch family self-attributes via
+/// `RequestBuilder::target_webview_id`, resolved by `resolve_partition`'s
+/// pre-match). The page-attributed face is `ResourceThreads::fetch`.
+/// Payloads and timing are unchanged.
+pub(crate) fn send_fetch(
+    core_resource_thread: &CoreResourceThread,
+    request: RequestBuilder,
+    channels: FetchChannels,
+) -> SendResult {
+    core_resource_thread.send(CoreResourceMsg::Fetch(request, channels))
+}
+
 /// Convenience function for synchronously loading a whole resource.
 pub(crate) fn load_whole_resource(
     request: RequestBuilder,
@@ -898,12 +913,12 @@ pub(crate) fn load_whole_resource(
 ) -> Result<(Metadata, Vec<u8>, bool), NetworkError> {
     let (action_sender, action_receiver) = GenericCallback::new_blocking().unwrap();
     let url = request.url.url();
-    core_resource_thread
-        .send(CoreResourceMsg::Fetch(
-            request,
-            FetchChannels::ResponseMsg(action_sender),
-        ))
-        .unwrap();
+    send_fetch(
+        core_resource_thread,
+        request,
+        FetchChannels::ResponseMsg(action_sender),
+    )
+    .unwrap();
 
     let mut buf = vec![];
     let mut metadata = None;

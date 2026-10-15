@@ -3,9 +3,8 @@ use super::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 
 use dpi::PhysicalSize;
 use servo::{

@@ -22,6 +22,7 @@ use mime::Mime;
 use parking_lot::RwLock;
 use profile_traits::generic_callback::GenericCallback as ProfileGenericCallback;
 use profile_traits::mem::ReportsChan;
+use profile_traits::time::ProfilerChan;
 use rand::{Rng, rng};
 use request::RequestId;
 use rustc_hash::FxHashMap;
@@ -637,32 +638,26 @@ impl ResourceThreads {
 
     pub fn cookies(&self) -> Vec<SiteDescriptor> {
         let (sender, receiver) = generic_channel::channel().unwrap();
-        let _ = self.core_thread.send(CoreResourceMsg::ListCookies(sender));
+        let _ = self.send(CoreResourceMsg::ListCookies(sender));
         receiver.recv().unwrap()
     }
 
     pub fn clear_cookies_for_sites(&self, sites: &[&str]) {
         let sites = sites.iter().map(|site| site.to_string()).collect();
         let (sender, receiver) = generic_channel::channel().unwrap();
-        let _ = self
-            .core_thread
-            .send(CoreResourceMsg::DeleteCookiesForSites(sites, sender));
+        let _ = self.send(CoreResourceMsg::DeleteCookiesForSites(sites, sender));
         let _ = receiver.recv();
     }
 
     pub fn clear_cookies(&self) {
         let (sender, receiver) = generic_channel::channel().unwrap();
-        let _ = self
-            .core_thread
-            .send(CoreResourceMsg::DeleteCookies(None, Some(sender)));
+        let _ = self.send(CoreResourceMsg::DeleteCookies(None, Some(sender)));
         let _ = receiver.recv();
     }
 
     pub fn cookies_for_url(&self, url: ServoUrl, source: CookieSource) -> Vec<Cookie<'static>> {
         let (sender, receiver) = generic_channel::channel().unwrap();
-        let _ = self
-            .core_thread
-            .send(CoreResourceMsg::GetCookiesForUrl(url, sender, source));
+        let _ = self.send(CoreResourceMsg::GetCookiesForUrl(url, sender, source));
         receiver
             .recv()
             .unwrap()
@@ -673,14 +668,12 @@ impl ResourceThreads {
 
     pub fn clear_session_cookies(&self) {
         let (sender, receiver) = generic_channel::channel().unwrap();
-        let _ = self
-            .core_thread
-            .send(CoreResourceMsg::DeleteSessionCookies(sender));
+        let _ = self.send(CoreResourceMsg::DeleteSessionCookies(sender));
         let _ = receiver.recv();
     }
 
     pub fn set_cookie_for_url(&self, url: ServoUrl, cookie: Cookie<'static>, source: CookieSource) {
-        let _ = self.core_thread.send(CoreResourceMsg::SetCookieForUrl(
+        let _ = self.send(CoreResourceMsg::SetCookieForUrl(
             url,
             Serde(cookie),
             source,
@@ -695,7 +688,7 @@ impl ResourceThreads {
         source: CookieSource,
     ) {
         let (sender, receiver) = generic_channel::channel().unwrap();
-        let _ = self.core_thread.send(CoreResourceMsg::SetCookieForUrl(
+        let _ = self.send(CoreResourceMsg::SetCookieForUrl(
             url,
             Serde(cookie),
             source,
@@ -739,9 +732,176 @@ impl ResourceThreads {
     }
 
     pub fn clear_session_cookies_async(&self, id: CookieOperationId) {
+        // BAO PATCH (REQ-ARCH-3 F4-W3): the embedder async face keeps the bare
+        // channel (servo.rs `site_data_manager` response-chain domain, W1);
+        // the page-attributed family senders below stamp through
+        // [`GenericSend::send`].
         let _ = self
             .core_thread
             .send(CoreResourceMsg::EmbedderClearSessionCookies(id));
+    }
+
+    // Family senders for the `CoreResourceMsg` cookie family (REQ-ARCH-3
+    // F4-W3), mirroring the consumer-side family handler in
+    // `resource_thread.rs` (`handle_cookie_message`). Every family sender
+    // forwards verbatim through `GenericSend::send`, so page-attributed
+    // handles keep stamping these messages with their webview identity
+    // (REQ-CDS-009 C6); payloads, ordering, and timing are unchanged.
+    pub fn cookie_string_for_url(&self, url: ServoUrl, source: CookieSource) -> Option<String> {
+        let (sender, receiver) = generic_channel::channel().unwrap();
+        let _ = self.send(CoreResourceMsg::GetCookieStringForUrl(url, sender, source));
+        receiver.recv().unwrap()
+    }
+
+    pub fn set_cookies_for_url(
+        &self,
+        url: ServoUrl,
+        cookies: Vec<Cookie<'static>>,
+        source: CookieSource,
+    ) -> SendResult {
+        self.send(CoreResourceMsg::SetCookiesForUrl(
+            url,
+            cookies.into_iter().map(Serde).collect(),
+            source,
+        ))
+    }
+
+    pub fn clear_cookies_for_url(&self, url: ServoUrl) -> SendResult {
+        self.send(CoreResourceMsg::DeleteCookies(Some(url), None))
+    }
+
+    pub fn delete_cookie_for_url(&self, url: ServoUrl, name: String) -> SendResult {
+        self.send(CoreResourceMsg::DeleteCookie(url, name))
+    }
+
+    pub fn cookie_store_register_listener(
+        &self,
+        id: CookieStoreId,
+        callback: GenericCallback<CookieAsyncResponse>,
+        url: ServoUrl,
+    ) -> SendResult {
+        self.send(CoreResourceMsg::NewCookieListener(id, callback, url))
+    }
+
+    pub fn cookie_store_unregister_listener(&self, id: CookieStoreId) -> SendResult {
+        self.send(CoreResourceMsg::RemoveCookieListener(id))
+    }
+
+    pub fn cookie_store_get(
+        &self,
+        id: CookieStoreId,
+        url: ServoUrl,
+        name: Option<String>,
+    ) -> SendResult {
+        self.send(CoreResourceMsg::GetCookieDataForUrlAsync(id, url, name))
+    }
+
+    pub fn cookie_store_get_all(
+        &self,
+        id: CookieStoreId,
+        url: ServoUrl,
+        name: Option<String>,
+    ) -> SendResult {
+        self.send(CoreResourceMsg::GetAllCookieDataForUrlAsync(id, url, name))
+    }
+
+    pub fn cookie_store_set(
+        &self,
+        id: CookieStoreId,
+        url: ServoUrl,
+        cookie: Cookie<'static>,
+        source: CookieSource,
+    ) -> SendResult {
+        self.send(CoreResourceMsg::SetCookieForUrlAsync(id, url, Serde(cookie), source))
+    }
+
+    pub fn cookie_store_delete(
+        &self,
+        id: CookieStoreId,
+        url: ServoUrl,
+        name: String,
+    ) -> SendResult {
+        self.send(CoreResourceMsg::DeleteCookieAsync(id, url, name))
+    }
+
+    // Family senders for the `CoreResourceMsg` history / cache-file / infra
+    // families (REQ-ARCH-3 F4-W4), mirroring the consumer-side family
+    // handlers in `resource_thread.rs` (`handle_history_message` /
+    // `handle_cache_message` / `handle_file_manager_message` /
+    // `handle_keep_alive_message` / `handle_exit_message`). Every family
+    // sender forwards verbatim through `GenericSend::send`, so
+    // page-attributed handles keep stamping these messages with their
+    // webview identity (REQ-CDS-009 C6) — except
+    // `total_size_of_in_flight_keep_alive_records`, which keeps the bare
+    // channel of its pre-wave shape; this wave is parity-preserving
+    // (message flow unchanged).
+
+    /// Reads the structured-clone state stored for a history state id
+    /// (History face). Blocks on the net thread's reply.
+    pub fn history_state(
+        &self,
+        state_id: HistoryStateId,
+        time_profile_chan: ProfilerChan,
+    ) -> Option<Vec<u8>> {
+        let (sender, receiver) =
+            profile_traits::generic_channel::channel(time_profile_chan).unwrap();
+        let _ = self.send(CoreResourceMsg::GetHistoryState(state_id, sender));
+        receiver.recv().unwrap()
+    }
+
+    pub fn set_history_state(&self, state_id: HistoryStateId, serialized: Vec<u8>) -> SendResult {
+        self.send(CoreResourceMsg::SetHistoryState(state_id, serialized))
+    }
+
+    pub fn remove_history_states(&self, states: Vec<HistoryStateId>) -> SendResult {
+        self.send(CoreResourceMsg::RemoveHistoryStates(states))
+    }
+
+    /// Forwards a file-manager command opaquely (BlobFile face). The nested
+    /// `FileManagerThreadMsg` is a black box at this seam (DEC-ARCH-001 ⑥).
+    pub fn to_file_manager(&self, msg: FileManagerThreadMsg) -> SendResult {
+        self.send(CoreResourceMsg::ToFileManager(msg))
+    }
+
+    /// Infra: total size of in-flight keep-alive records. Keeps the bare
+    /// channel of the pre-wave shape (`GlobalScope::core_resource_thread`);
+    /// send failures degrade to `u64::MAX` exactly as before, so a dead
+    /// resource thread never blocks keep-alive requests.
+    pub fn total_size_of_in_flight_keep_alive_records(&self, pipeline_id: PipelineId) -> u64 {
+        let (sender, receiver) = generic_channel::channel().unwrap();
+        if self
+            .core_thread
+            .send(CoreResourceMsg::TotalSizeOfInFlightKeepAliveRecords(
+                pipeline_id, sender,
+            ))
+            .is_err()
+        {
+            return u64::MAX;
+        }
+        receiver.recv().unwrap_or(u64::MAX)
+    }
+
+    /// Asks the core resource thread to persist its state and exit. The
+    /// oneshot sender is answered by the net thread's Exit arm before the
+    /// thread stops.
+    pub fn exit(&self, sender: GenericOneshotSender<()>) -> SendResult {
+        self.send(CoreResourceMsg::Exit(sender))
+    }
+
+    // Family sender for the `CoreResourceMsg` fetch family (REQ-ARCH-3
+    // F4-W5), mirroring the consumer-side family handler in
+    // `resource_thread.rs` (`handle_fetch_message`). Forwards verbatim
+    // through `GenericSend::send`, so page-attributed handles keep stamping
+    // fetches with their webview identity (REQ-CDS-009 C6); the fetch
+    // variant additionally self-attributes via
+    // `RequestBuilder::target_webview_id` (`resolve_partition` pre-match).
+    // Payloads and timing are unchanged. The bare-channel face of this
+    // family sender lives in `script::fetch::fetch::send_fetch`.
+
+    /// Sends a fetch to the core resource thread through this handle's
+    /// registered send face (envelope-stamped for page-attributed handles).
+    pub fn fetch(&self, request: RequestBuilder, channels: FetchChannels) -> SendResult {
+        self.send(CoreResourceMsg::Fetch(request, channels))
     }
 }
 

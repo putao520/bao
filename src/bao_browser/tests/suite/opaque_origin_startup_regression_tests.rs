@@ -208,7 +208,7 @@ fn cdp_answers_on_opaque_origin_page() {
     );
 
     let (bridge_tx, bridge_rx) = bridge_channel(std::time::Duration::from_secs(30));
-    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    let (event_tx, servo_event_rx) = bao_ipc::unbounded::<bao_cdp_client::bridge::ServoEvent>();
     runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(bao_browser::BaoWsRegistry::new(bridge_tx.clone()));

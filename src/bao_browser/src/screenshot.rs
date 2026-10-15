@@ -133,9 +133,16 @@ mod tests {
         let img = red_image(200, 200);
         // A noise-free solid frame can compress to identical size at both
         // qualities, but a LOWER quality must never inflate the output.
-        let hi = encode_image_with_quality(&img, ScreenshotFormat::Jpeg, 95).unwrap().len();
-        let lo = encode_image_with_quality(&img, ScreenshotFormat::Jpeg, 20).unwrap().len();
-        assert!(lo <= hi, "quality 20 ({lo}B) must not exceed quality 95 ({hi}B)");
+        let hi = encode_image_with_quality(&img, ScreenshotFormat::Jpeg, 95)
+            .unwrap()
+            .len();
+        let lo = encode_image_with_quality(&img, ScreenshotFormat::Jpeg, 20)
+            .unwrap()
+            .len();
+        assert!(
+            lo <= hi,
+            "quality 20 ({lo}B) must not exceed quality 95 ({hi}B)"
+        );
     }
 
     #[test]

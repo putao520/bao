@@ -244,6 +244,24 @@ impl BlobTokenCommunicator {
             refresh_token_sender: generic_channel::channel().unwrap().0,
         }))
     }
+
+    // BAO PATCH (REQ-ARCH-3 F4-W4): family senders for the BlobFile token
+    // faces. The two channels are bare `GenericSender`s captured at
+    // token-creation time, and this struct's serde shape must not change
+    // (`BlobToken` round-trips through serialization) — the senders only
+    // give the family a seam; send-failure semantics (unwrap on refresh,
+    // ignore on revoke) are the pre-wave shapes.
+    fn revoke_token_for_file(&self, request: BlobTokenRevocationRequest) {
+        let _ = self
+            .revoke_sender
+            .send(CoreResourceMsg::RevokeTokenForFile(request));
+    }
+
+    fn refresh_token_for_file(&self, request: BlobTokenRefreshRequest) {
+        self.refresh_token_sender
+            .send(CoreResourceMsg::RefreshTokenForFile(request))
+            .unwrap();
+    }
 }
 
 impl BlobToken {
@@ -255,9 +273,7 @@ impl BlobToken {
         };
         self.communicator
             .lock()
-            .refresh_token_sender
-            .send(CoreResourceMsg::RefreshTokenForFile(refresh_request))
-            .unwrap();
+            .refresh_token_for_file(refresh_request);
         let new_token = new_token_receiver.recv().unwrap();
 
         BlobToken {
@@ -285,9 +301,7 @@ impl<'a> BlobResolver<'a> {
             .ok()?;
         let (sender, receiver) = generic_channel::channel().unwrap();
         self.resource_threads
-            .send(CoreResourceMsg::ToFileManager(
-                FileManagerThreadMsg::GetTokenForFile(file_id, sender),
-            ))
+            .to_file_manager(FileManagerThreadMsg::GetTokenForFile(file_id, sender))
             .ok()?;
         let reply = receiver.recv().ok()?;
         reply.token.map(|token_id| {
@@ -319,11 +333,9 @@ impl Drop for BlobToken {
             token: self.token,
             blob_id: self.file_id,
         };
-        let _ = self
-            .communicator
+        self.communicator
             .lock()
-            .revoke_sender
-            .send(CoreResourceMsg::RevokeTokenForFile(revocation_request));
+            .revoke_token_for_file(revocation_request);
     }
 }
 

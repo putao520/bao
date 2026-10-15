@@ -4747,19 +4747,28 @@ impl ScriptThread {
     ) {
         let Some(document) = self.documents.borrow().find_document(pipeline_id) else {
             warn!("Input event sent to closed pipeline {pipeline_id}.");
-            let _ = self
-                .senders
-                .pipeline_to_embedder_sender
-                .send(EmbedderMsg::InputEventsHandled(
+            self.send_chrome_notification_message_to_embedder(
+                EmbedderMsg::InputEventsHandled(
                     webview_id,
                     vec![InputEventOutcome {
                         id: event.event.id,
                         result: Default::default(),
                     }],
-                ));
+                ),
+            );
             return;
         };
         document.event_handler().note_pending_input_event(event);
+    }
+
+    /// Family sender for `EmbedderMsg` chrome-notification traffic
+    /// (REQ-ARCH-3 F4-W2), mirroring the consumer-side family handler in
+    /// `servo.rs` (`handle_chrome_notification_message`). Forwards verbatim to
+    /// the pipeline-to-embedder sender; unlike the DOM hosts'
+    /// `send_to_embedder` this preserves the non-panicking send-error
+    /// semantics of this path.
+    fn send_chrome_notification_message_to_embedder(&self, message: EmbedderMsg) {
+        let _ = self.senders.pipeline_to_embedder_sender.send(message);
     }
 
     /// See the docs for [`ScriptThreadMessage::SetAccessibilityActive`].

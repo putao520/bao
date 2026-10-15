@@ -490,6 +490,7 @@ dependencies = [
  "bao_cdp",
  "bao_cdp_client",
  "bao_engine",
+ "bao_ipc",
  "bao_stealth",
  "base64 0.22.1",
  "bun_boringssl_sys",
@@ -502,7 +503,6 @@ dependencies = [
  "bun_uws",
  "cdp-server",
  "cookie 0.18.1",
- "crossbeam-channel",
  "dashmap",
  "dpi",
  "euclid",
@@ -1612,6 +1612,7 @@ dependencies = [
  "bao-servo-tracing",
  "bao-servo-url",
  "bao_boringssl_bridge",
+ "bao_ipc",
  "bao_stealth",
  "base64 0.23.1",
  "bun_boringssl_sys",
@@ -1687,6 +1688,7 @@ dependencies = [
  "bao-servo-pixels",
  "bao-servo-profile-traits",
  "bao-servo-url",
+ "bao_ipc",
  "bytes",
  "content-security-policy",
  "cookie 0.18.1",
@@ -1879,6 +1881,7 @@ dependencies = [
  "bao-servo-webvtt",
  "bao-servo-xpath",
  "bao-stylo",
+ "bao_ipc",
  "base64 0.23.1",
  "base64ct",
  "bitflags 2.11.1",
@@ -2331,6 +2334,7 @@ version = "0.3.15"
 dependencies = [
  "bao-browser",
  "bao_engine",
+ "bao_ipc",
  "bun_uws",
  "cdp-protocol",
  "cdp-server",
@@ -2346,6 +2350,7 @@ version = "0.4.5"
 dependencies = [
  "bao_cdp",
  "bao_engine",
+ "bao_ipc",
  "bun_base64",
  "bun_event_loop",
  "bun_url",
@@ -2412,6 +2417,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "bao_ipc"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
 ]
 
 [[package]]
@@ -3718,6 +3730,7 @@ dependencies = [
  "bao_cdp_client",
  "bao_crypto",
  "bao_engine",
+ "bao_ipc",
  "bao_stealth",
  "bao_uloop",
  "bao_workflow_host",
@@ -4336,6 +4349,7 @@ dependencies = [
 name = "cdp-server"
 version = "0.1.3"
 dependencies = [
+ "bao_ipc",
  "log",
  "serde",
  "serde_json",

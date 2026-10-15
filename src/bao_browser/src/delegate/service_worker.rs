@@ -3,9 +3,8 @@ use super::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 
 use dpi::PhysicalSize;
 use servo::{
@@ -708,11 +707,9 @@ mod tests {
         assert_eq!(found.unwrap().script_url, "sw.js");
 
         // Not found for URLs outside scope
-        assert!(
-            delegate
-                .find_service_worker_for_url("/other/page")
-                .is_none()
-        );
+        assert!(delegate
+            .find_service_worker_for_url("/other/page")
+            .is_none());
     }
 
     #[test]

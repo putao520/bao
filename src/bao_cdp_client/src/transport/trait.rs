@@ -11,7 +11,8 @@
 //!
 //! Plan MD 明确要求"**不引入 tokio**"。`Transport` trait 使用同步方法,
 //! 由调用方决定调度策略(`bun_event_loop` 任务 / std::thread)。
-//! - InMemoryTransport:`std::sync::mpsc` channel + `recv_timeout`(避免无限阻塞)
+//! - InMemoryTransport:`bao_ipc` unbounded channel(REQ-ARCH-3 统一底座)
+//!   + `recv_timeout`(避免无限阻塞)
 //! - WebSocketTransport:`std::net::TcpStream` 设置 `set_read_timeout` 后阻塞读
 //!
 //! 这种模式与 `bao_cdp::servo_bridge::BridgeSender` 完全一致(DEC-CDP-002)。

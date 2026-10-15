@@ -154,7 +154,10 @@ mod tests {
     #[test]
     fn list_contexts_returns_explicit_only_sorted() {
         let mut reg = BrowserContextRegistry::new();
-        assert!(reg.list_contexts().is_empty(), "default is implicit, never listed");
+        assert!(
+            reg.list_contexts().is_empty(),
+            "default is implicit, never listed"
+        );
         let a = reg.create_context(ContextPartitionId::new());
         let b = reg.create_context(ContextPartitionId::new());
         assert_eq!(reg.list_contexts(), vec![a, b]); // mint order == sorted order

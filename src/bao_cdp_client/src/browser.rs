@@ -94,16 +94,18 @@ pub fn process_memory_bridge() -> Option<Arc<dyn InMemoryBridge>> {
 // synthesized CdpEvents through [`process_memory_event_sender`].
 //
 // Lifecycle: no teardown — a sender whose client dropped is detected by the
-// pusher via the send error (mpsc receiver gone) and treated as "client
+// pusher via the send error (channel receiver gone) and treated as "client
 // vanished" (fail-closed upstream), and any newer connect replaces the slot.
-
+// Substrate: bao_ipc Sender (REQ-ARCH-3 unified MPMC substrate, wave R1) —
+// Clone + Send + Sync, same send/Err-on-disconnect shape as the former
+// std::sync::mpsc Sender.
 static PROCESS_MEMORY_EVENT_SENDER: std::sync::Mutex<
-    Option<std::sync::mpsc::Sender<crate::transport::CdpEvent>>,
+    Option<bao_ipc::Sender<crate::transport::CdpEvent>>,
 > = std::sync::Mutex::new(None);
 
 /// Register (replace) the process-global memory event sender. Called by the
 /// eager memory:// connect paths with the fresh transport's event sender.
-fn set_process_memory_event_sender(sender: std::sync::mpsc::Sender<crate::transport::CdpEvent>) {
+fn set_process_memory_event_sender(sender: bao_ipc::Sender<crate::transport::CdpEvent>) {
     *PROCESS_MEMORY_EVENT_SENDER.lock().unwrap() = Some(sender);
 }
 
@@ -111,7 +113,7 @@ fn set_process_memory_event_sender(sender: std::sync::mpsc::Sender<crate::transp
 /// synthesized CDP events such as `Page.screencastFrame`).
 ///
 /// @trace REQ-CDP-009 [interface:Transport]
-pub fn process_memory_event_sender() -> Option<std::sync::mpsc::Sender<crate::transport::CdpEvent>> {
+pub fn process_memory_event_sender() -> Option<bao_ipc::Sender<crate::transport::CdpEvent>> {
     PROCESS_MEMORY_EVENT_SENDER
         .lock()
         .unwrap()
@@ -721,5 +723,40 @@ mod tests {
         let b = Browser::connect_with_bridge("memory://bao", bridge).unwrap();
         let s = b.to_string();
         assert!(s.contains("connected=true"), "got: {}", s);
+    }
+
+    // ─── process memory event sender(REQ-CDP-009 判别)────────────────────
+
+    /// Eager push 面的断连判别:slot 里的 sender 在接收端 drop 后 `send`
+    /// 返回 Err——这正是 bao_browser screencast 消费侧的"client vanished"
+    /// fail-closed 退役观测(bao_browser 行为面归波末 V,此处 pin 载体)。
+    /// 存活面同时 pin:注册后推送可被接收端收到(roundtrip)。
+    #[test]
+    fn process_memory_event_sender_push_roundtrip_and_dead_receiver_fail_closed() {
+        let (tx, rx) = bao_ipc::unbounded::<CdpEvent>();
+
+        // 存活面:注册 → getter 取回 → 推送可达接收端。
+        set_process_memory_event_sender(tx);
+        let sender = process_memory_event_sender().expect("slot holds the registered sender");
+        sender
+            .send(CdpEvent::new(
+                "Page.screencastFrame",
+                serde_json::json!({ "sessionId": "S1" }),
+            ))
+            .expect("live receiver accepts the eager push");
+        let ev = rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .expect("push reaches the registered receiver");
+        assert_eq!(ev.method, "Page.screencastFrame");
+
+        // 断连面:接收端 drop 后 send 返回 Err(fail-closed 观测面)。
+        drop(rx);
+        let sender = process_memory_event_sender().expect("slot still holds the sender");
+        assert!(
+            sender
+                .send(CdpEvent::new("Page.screencastFrame", serde_json::json!({})))
+                .is_err(),
+            "send must fail once the client receiver is gone (fail-closed pin)"
+        );
     }
 }

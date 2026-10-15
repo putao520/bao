@@ -9,8 +9,9 @@
 //! ```
 //!
 //! servo ScriptThread `!Send`(持有 `Rc<RefCell<...>>`),不可跨线程直调。
-//! 通过 `InMemoryBridge` trait 抽象桥接逻辑,TASK-2 提供基于 `std::sync::mpsc`
-//! 的可测试实现,TASK-3 替换为真实的 servo `CDPRdpBridge`。
+//! 通过 `InMemoryBridge` trait 抽象桥接逻辑,TASK-2 提供基于 `bao_ipc`
+//! unbounded channel(REQ-ARCH-3 统一底座)的可测试实现,TASK-3 替换为真实的
+//! servo `CDPRdpBridge`。
 //!
 //! ## 同步语义
 //!
@@ -21,7 +22,7 @@
 //!
 //! @trace REQ-BAO-API-002 [interface:Transport]
 
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use bao_ipc::{unbounded, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -124,7 +125,7 @@ impl InMemoryTransport {
     ///
     /// @trace REQ-BAO-API-002 [interface:Transport]
     pub fn new(bridge: Arc<dyn InMemoryBridge>) -> Self {
-        let (event_tx, event_rx) = mpsc::channel::<CdpEvent>();
+        let (event_tx, event_rx) = unbounded::<CdpEvent>();
         Self {
             bridge,
             event_tx,
@@ -194,7 +195,7 @@ impl InMemoryTransport {
         params: Value,
         session_id: Option<&str>,
     ) -> Result<Value> {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = unbounded();
         let bridge = Arc::clone(&self.bridge);
         let worker_method = method.to_string();
         let session_id = session_id.map(|s| s.to_string());

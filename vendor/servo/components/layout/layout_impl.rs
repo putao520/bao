@@ -962,6 +962,15 @@ impl LayoutThread {
         }
     }
 
+    /// Family sender for `EmbedderMsg` chrome-notification traffic
+    /// (REQ-ARCH-3 F4-W2), mirroring the consumer-side family handler in
+    /// `servo.rs` (`handle_chrome_notification_message`). Forwards verbatim to
+    /// the layout-embedded channel; unlike the DOM hosts' `send_to_embedder`
+    /// this preserves the non-panicking send-error semantics of this path.
+    fn send_chrome_notification_message_to_embedder(&self, message: EmbedderMsg) {
+        let _ = self.embedder_chan.send(message);
+    }
+
     fn handle_accessibility_tree_update(
         &self,
         root_element: &ServoLayoutNode,
@@ -1011,13 +1020,13 @@ impl LayoutThread {
             // FIXME: Handle send error. Could have a method on accessibility tree to
             // finalise after sending, removing accessibility damage? On fail, retain damage
             // for next reflow, as well as retaining document.needs_accessibility_update.
-            let _ = self
-                .embedder_chan
-                .send(EmbedderMsg::AccessibilityTreeUpdate(
+            self.send_chrome_notification_message_to_embedder(
+                EmbedderMsg::AccessibilityTreeUpdate(
                     self.webview_id,
                     tree_update,
                     accessibility_tree.embedder_epoch(),
-                ));
+                ),
+            );
         }
 
         reflow_statistics.nodes_updated_from_dom = counters.nodes_updated_from_dom;

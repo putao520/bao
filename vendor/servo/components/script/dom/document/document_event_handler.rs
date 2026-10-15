@@ -413,7 +413,7 @@ impl DocumentEventHandler {
             .dom_manipulation_task_source()
             .queue_unconditionally(task!(notify_webdriver_input_event_completed: move || {
                 let window = trusted_window.root();
-                window.send_to_embedder(
+                window.send_chrome_notification_message_to_embedder(
                     EmbedderMsg::InputEventsHandled(window.webview_id(), input_event_outcomes));
             }));
     }
@@ -450,10 +450,11 @@ impl DocumentEventHandler {
             return;
         }
         self.current_cursor.set(cursor);
-        self.window.send_to_embedder(EmbedderMsg::SetCursor(
-            self.window.webview_id(),
-            cursor.unwrap_or_default(),
-        ));
+        self.window
+            .send_chrome_notification_message_to_embedder(EmbedderMsg::SetCursor(
+                self.window.webview_id(),
+                cursor.unwrap_or_default(),
+            ));
     }
 
     fn handle_mouse_left_viewport_event(
@@ -515,7 +516,10 @@ impl DocumentEventHandler {
             // text is, but if this mouse leave event is leaving the WebView entirely,
             // then clear it.
             self.window
-                .send_to_embedder(EmbedderMsg::Status(self.window.webview_id(), None));
+                .send_chrome_notification_message_to_embedder(EmbedderMsg::Status(
+                    self.window.webview_id(),
+                    None,
+                ));
             self.set_cursor(None);
         } else {
             self.current_cursor.set(None);
@@ -821,7 +825,10 @@ impl DocumentEventHandler {
                 .full_href_url_for_user_interface(no_gc)
                 .map(|url| url.to_string());
             self.window
-                .send_to_embedder(EmbedderMsg::Status(self.window.webview_id(), status));
+                .send_chrome_notification_message_to_embedder(EmbedderMsg::Status(
+                    self.window.webview_id(),
+                    status,
+                ));
             return;
         }
 
@@ -836,7 +843,10 @@ impl DocumentEventHandler {
                 .any(|node| node.is::<HTMLAnchorElement>())
         }) {
             self.window
-                .send_to_embedder(EmbedderMsg::Status(self.window.webview_id(), None));
+                .send_chrome_notification_message_to_embedder(EmbedderMsg::Status(
+                    self.window.webview_id(),
+                    None,
+                ));
         }
     }
 

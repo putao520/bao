@@ -10,10 +10,10 @@ use dpi::PhysicalSize;
 use servo::{CreateNewWebViewRequest, Servo};
 
 use crate::config::{BaoConfig, PageConfig};
-use crate::permission::Permission;
 use crate::delegate::BaoServoDelegate;
 use crate::error::BrowserError;
 use crate::page::PageHandle;
+use crate::permission::Permission;
 
 pub struct PoolStats {
     pub active: usize,
@@ -126,11 +126,7 @@ impl PagePool {
         // to find browser context") instead of leaking a page into the wrong
         // context. The default context is implicit and always valid.
         if let Some(ctx) = &config.browser_context_id {
-            if !self
-                .browser_contexts
-                .borrow()
-                .context_exists(ctx)
-            {
+            if !self.browser_contexts.borrow().context_exists(ctx) {
                 return Err(BrowserError::Init(format!(
                     "Failed to find browser context: {ctx}"
                 )));
@@ -456,9 +452,9 @@ impl PagePool {
                 // pipeline swap is in flight. Re-queue within the retry
                 // window; anything else — or an expired window — stays
                 // fail-closed.
-                const WAIT_RETRY_WINDOW: std::time::Duration =
-                    std::time::Duration::from_secs(5);
-                let transient = matches!(&e, BrowserError::JavaScript(msg) if msg == "WebViewNotReady");
+                const WAIT_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+                let transient =
+                    matches!(&e, BrowserError::JavaScript(msg) if msg == "WebViewNotReady");
                 let first_seen = *self
                     .init_retries
                     .borrow_mut()
@@ -492,9 +488,9 @@ impl PagePool {
                 // The retry window is wall-clock (not a retry count): pump
                 // cadence varies (test pumps, page-load stalls), so a count
                 // would translate to an unpredictable real-world window.
-                const INJECT_RETRY_WINDOW: std::time::Duration =
-                    std::time::Duration::from_secs(5);
-                let transient = matches!(&e, BrowserError::JavaScript(msg) if msg == "WebViewNotReady");
+                const INJECT_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+                let transient =
+                    matches!(&e, BrowserError::JavaScript(msg) if msg == "WebViewNotReady");
                 let first_seen = *self
                     .init_retries
                     .borrow_mut()
@@ -724,7 +720,12 @@ impl PagePool {
     /// enumerator regressed exactly this way: after the first window close
     /// the 1..=count range silently missed live pages with higher ids).
     pub fn live_page_ids(&self) -> Vec<usize> {
-        let active = self.active_pages.borrow().keys().copied().collect::<Vec<_>>();
+        let active = self
+            .active_pages
+            .borrow()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         let idle = self.idle_pages.borrow().keys().copied().collect::<Vec<_>>();
         active.into_iter().chain(idle).collect()
     }
@@ -759,9 +760,7 @@ impl PagePool {
     /// IndexedDB / CacheStorage group on the storage side.
     pub fn create_browser_context(&self) -> String {
         let partition = self.servo.create_context_partition();
-        self.browser_contexts
-            .borrow_mut()
-            .create_context(partition)
+        self.browser_contexts.borrow_mut().create_context(partition)
     }
 
     /// Target.disposeBrowserContext — destroy the context and close every

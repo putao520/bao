@@ -204,7 +204,7 @@ fn puppeteer_real_lifecycle_e2e() {
         .expect("create_page");
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
-    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    let (event_tx, servo_event_rx) = bao_ipc::unbounded::<bao_cdp_client::bridge::ServoEvent>();
     runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));

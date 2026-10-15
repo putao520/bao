@@ -587,7 +587,7 @@ fn c19_sub2_cdp_network_observability_of_sw_intercepted_fetch_live() {
     use cdp_server::{CdpServer, EventSender, ServerConfig};
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
-    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    let (event_tx, servo_event_rx) = bao_ipc::unbounded::<bao_cdp_client::bridge::ServoEvent>();
     runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));

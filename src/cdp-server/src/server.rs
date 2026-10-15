@@ -33,8 +33,11 @@ pub struct CdpServer {
     stop_flag: Arc<AtomicBool>,
     /// Receiver for typed console messages forwarded from servo delegates.
     /// Each message is either a structured CDP event (ConsoleMessage::Event)
-    /// or a plain log (ConsoleMessage::Log).
-    console_rx: Option<std::sync::mpsc::Receiver<ConsoleMessage>>,
+    /// or a plain log (ConsoleMessage::Log). Carried on the unified MPMC
+    /// substrate (REQ-ARCH-3, wave R3) — the paired sender lives in
+    /// bao_browser's delegates.
+    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    console_rx: Option<bao_ipc::Receiver<ConsoleMessage>>,
 }
 
 impl CdpServer {
@@ -79,8 +82,12 @@ impl CdpServer {
     }
 
     /// Set the typed console message receiver. Messages are ConsoleMessage
-    /// variants forwarded from servo's show_console_message callbacks.
-    pub fn set_console_receiver(&mut self, rx: std::sync::mpsc::Receiver<ConsoleMessage>) {
+    /// variants forwarded from servo's show_console_message callbacks. The
+    /// channel pair lives on the unified MPMC substrate (REQ-ARCH-3, wave
+    /// R3): pair with `bao_ipc::unbounded()` — std-mpsc's unbounded channel
+    /// maps to the substrate's unbounded constructor one-to-one.
+    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    pub fn set_console_receiver(&mut self, rx: bao_ipc::Receiver<ConsoleMessage>) {
         self.console_rx = Some(rx);
     }
 
@@ -152,18 +159,7 @@ impl CdpServer {
             // Drain typed console messages from servo delegates and broadcast as CDP events.
             // ConsoleMessage::Event variants are routed to domain-specific events via BaoEvent::broadcast().
             // ConsoleMessage::Log variants are forwarded as Runtime.consoleAPICalled + Log.entryAdded.
-            if let Some(ref rx) = self.console_rx {
-                while let Ok(msg) = rx.try_recv() {
-                    match msg {
-                        ConsoleMessage::Event(event) => {
-                            event.broadcast(&*self.broadcaster);
-                        }
-                        ConsoleMessage::Log { level, text } => {
-                            self.broadcast_console_log(level, text);
-                        }
-                    }
-                }
-            }
+            self.drain_console_messages();
 
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -186,6 +182,27 @@ impl CdpServer {
             }
         }
         Ok(())
+    }
+
+    /// The run loop's console consumption face (REQ-ARCH-3, wave R3): drain
+    /// the `console_rx` substrate channel and broadcast each message. Extracted
+    /// as a named seam so the latency-parity test drives the exact face `run()`
+    /// drives each iteration — the substrate swap (std mpsc → bao_ipc) must
+    /// leave this drain's semantics (drain-to-empty, FIFO order) byte-identical.
+    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    fn drain_console_messages(&mut self) {
+        if let Some(ref rx) = self.console_rx {
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    ConsoleMessage::Event(event) => {
+                        event.broadcast(&*self.broadcaster);
+                    }
+                    ConsoleMessage::Log { level, text } => {
+                        self.broadcast_console_log(level, text);
+                    }
+                }
+            }
+        }
     }
 
     /// ConsoleMessage::Log face: forward the servo console text as
@@ -560,7 +577,7 @@ mod tests {
     #[test]
     fn cdp_server_set_console_receiver_stores_receiver() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
         server.set_console_receiver(rx);
         assert!(server.console_rx.is_some());
         // Send a Log message through the channel
@@ -582,7 +599,7 @@ mod tests {
     #[test]
     fn cdp_server_console_rx_drain_multiple_messages() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
         server.set_console_receiver(rx);
         tx.send(ConsoleMessage::Log {
             level: "info".into(),
@@ -610,7 +627,7 @@ mod tests {
     #[test]
     fn cdp_server_console_rx_event_variant() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
         server.set_console_receiver(rx);
         tx.send(ConsoleMessage::Event(BaoEvent::PageLoadEventFired {
             timestamp: 12345.0,
@@ -628,7 +645,7 @@ mod tests {
     #[test]
     fn cdp_server_console_rx_debugger_script_parsed_event() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
         server.set_console_receiver(rx);
         tx.send(ConsoleMessage::Event(BaoEvent::DebuggerScriptParsed {
             script_id: "1".into(),
@@ -650,7 +667,7 @@ mod tests {
     #[test]
     fn cdp_server_console_rx_debugger_paused_event() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
         server.set_console_receiver(rx);
         tx.send(ConsoleMessage::Event(BaoEvent::DebuggerPaused {
             call_frames: serde_json::json!([]),
@@ -670,7 +687,7 @@ mod tests {
     #[test]
     fn cdp_server_console_rx_runtime_exception_event() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
         server.set_console_receiver(rx);
         tx.send(ConsoleMessage::Event(BaoEvent::RuntimeExceptionThrown {
             timestamp: 100.0,
@@ -693,7 +710,7 @@ mod tests {
     #[test]
     fn cdp_server_console_rx_all_event_variants() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
         server.set_console_receiver(rx);
         let events = vec![
             ConsoleMessage::Event(BaoEvent::FetchRequestPaused {
@@ -759,5 +776,92 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 8);
+    }
+
+    // REQ-ARCH-3 wave R3 latency-parity discriminator (AC5 行为零回归): a
+    // console message handed across threads — the same handoff shape as the
+    // servo ScriptThread callback → CdpServer run-loop thread — must reach
+    // the run loop's consumption face (the try_recv drain inside
+    // `drain_console_messages`) in <2ms, 100 rounds, in send order. The
+    // std-mpsc → bao_ipc substrate swap must not regress delivery latency
+    // (send never blocks: the unbounded constructor preserves the
+    // fire-and-forget contract the lossy-by-design send sites rely on) or
+    // FIFO ordering.
+    // @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:unit]
+    #[test]
+    fn cdp_server_console_end_to_end_delivery_latency_and_order_parity() {
+        const ROUNDS: usize = 100;
+        const BUDGET: Duration = Duration::from_millis(2);
+        let mut server = CdpServer::new(ServerConfig::default());
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
+        server.set_console_receiver(rx);
+
+        // ScriptThread stand-in: cross-thread producer firing one console
+        // message per round and waiting for the consumer's round ack
+        // (rendezvous channel), so each latency sample is one in-flight
+        // message — no queueing backlog inflating later rounds.
+        let t_send = Arc::new(Mutex::new(None::<std::time::Instant>));
+        let (ack_tx, ack_rx) = bao_ipc::channel::<()>(0);
+        let producer = {
+            let tx = tx.clone();
+            let t_send = Arc::clone(&t_send);
+            std::thread::spawn(move || {
+                for round in 0..ROUNDS {
+                    tx.send(ConsoleMessage::Log {
+                        level: "info".into(),
+                        text: format!("round-{round}"),
+                    })
+                    .unwrap();
+                    *t_send.lock().unwrap() = Some(std::time::Instant::now());
+                    ack_tx.send(()).unwrap();
+                }
+            })
+        };
+
+        for round in 0..ROUNDS {
+            ack_rx.recv().unwrap();
+            let sent = t_send.lock().unwrap().expect("producer stamped send time");
+            // The run loop's consumption expression, verbatim: the try_recv
+            // drain `drain_console_messages` executes each iteration.
+            let msg = loop {
+                match server.console_rx.as_ref().unwrap().try_recv() {
+                    Ok(msg) => break msg,
+                    Err(bao_ipc::TryRecvError::Empty) => std::thread::yield_now(),
+                    Err(bao_ipc::TryRecvError::Disconnected) => {
+                        panic!("console channel closed mid-run at round {round}")
+                    }
+                }
+            };
+            let elapsed = sent.elapsed();
+            assert!(
+                elapsed < BUDGET,
+                "console delivery round {round} took {elapsed:?} (budget {BUDGET:?})"
+            );
+            match msg {
+                ConsoleMessage::Log { text, .. } => assert_eq!(
+                    text,
+                    format!("round-{round}"),
+                    "console delivery must preserve FIFO order"
+                ),
+                ConsoleMessage::Event(_) => panic!("expected Log at round {round}"),
+            }
+        }
+        producer.join().unwrap();
+
+        // The named run-loop face consumes to empty: seed a backlog, drive
+        // `drain_console_messages` (what `run()` calls each iteration), and
+        // assert the substrate channel reports Empty afterwards.
+        for round in 0..3 {
+            tx.send(ConsoleMessage::Log {
+                level: "info".into(),
+                text: format!("tail-{round}"),
+            })
+            .unwrap();
+        }
+        server.drain_console_messages();
+        assert!(matches!(
+            server.console_rx.as_ref().unwrap().try_recv(),
+            Err(bao_ipc::TryRecvError::Empty)
+        ));
     }
 }

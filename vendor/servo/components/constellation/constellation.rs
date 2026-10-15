@@ -2752,10 +2752,9 @@ where
             generic_channel::channel().expect("Failed to create generic channel!");
 
         debug!("Exiting core resource threads.");
-        if let Err(e) = self
-            .public_resource_threads
-            .send(net_traits::CoreResourceMsg::Exit(core_ipc_sender))
-        {
+        // REQ-ARCH-3 F4-W4: Exit 构造点收敛到 ResourceThreads facade;关停
+        // 语义(e134 收口与 net 侧 ExitRouter)逐字未动。
+        if let Err(e) = self.public_resource_threads.exit(core_ipc_sender) {
             warn!("Exit resource thread failed ({})", e);
         }
 

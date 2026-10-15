@@ -2,8 +2,8 @@
 // Runs on the main thread during the event loop to process CDP commands.
 
 use bao_cdp::servo_bridge::{
-    BridgeCommand, BridgeError, BridgeErrorKind, BridgeResponse, FetchPattern, FetchResolveAction,
-    main_frame_id_for_target,
+    main_frame_id_for_target, BridgeCommand, BridgeError, BridgeErrorKind, BridgeResponse,
+    FetchPattern, FetchResolveAction,
 };
 use bao_cdp_client::bridge::ServoEvent;
 use base64::Engine;
@@ -17,17 +17,17 @@ use std::str::FromStr;
 
 use crate::config::PageConfig;
 use crate::delegate::{
-    FetchResolveOutcome, ServiceWorkerHandle, ServiceWorkerRegistrationId,
-    ServiceWorkerRegistrationState, send_servo_event,
+    send_servo_event, FetchResolveOutcome, ServiceWorkerHandle, ServiceWorkerRegistrationId,
+    ServiceWorkerRegistrationState,
 };
 use crate::error::BrowserError;
 use crate::overlay::{
-    BoxQuads, HighlightColor, HighlightSpec, HighlightState, OverlayNodeRef, OverlayQuad,
-    draw_highlight,
+    draw_highlight, BoxQuads, HighlightColor, HighlightSpec, HighlightState, OverlayNodeRef,
+    OverlayQuad,
 };
 use crate::page::PageHandle;
 use crate::page_pool::PagePool;
-use crate::screenshot::{ScreenshotFormat, encode_image};
+use crate::screenshot::{encode_image, ScreenshotFormat};
 
 /// Process a single bridge command by dispatching to the appropriate page in the pool.
 pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeResponse {
@@ -697,7 +697,11 @@ fn sw_registration_to_json(handle: ServiceWorkerHandle) -> Value {
     })
 }
 
-fn cmd_create_target(pool: &PagePool, url: &str, context_id: Option<&str>) -> Result<Value, String> {
+fn cmd_create_target(
+    pool: &PagePool,
+    url: &str,
+    context_id: Option<&str>,
+) -> Result<Value, String> {
     let config = PageConfig {
         url: if url.is_empty() {
             None
@@ -985,7 +989,7 @@ fn cmd_navigate(page: &PageHandle, url: &str) -> Result<Value, String> {
 /// bridge error that buries the diagnostics in its message text.
 fn evaluate_by_value_envelope_js(expr_json: &str) -> String {
     format!(
-            r#"(function() {{
+        r#"(function() {{
                 try {{
                     var r = eval({expr_json});
                     return JSON.stringify({{ result: {{ value: r === undefined ? null : r, undefined_result: r === undefined }}, exceptionDetails: null }});
@@ -1048,7 +1052,7 @@ fn normalize_by_value_envelope(mut envelope: Value) -> Value {
 /// RemoteObject carries a registry-pinned objectId.
 fn evaluate_handle_wrapper_js(expr_json: &str) -> String {
     format!(
-            r#"(function() {{
+        r#"(function() {{
                 try {{
                     var r = eval({expr_json});
                     return JSON.stringify({{ result: window.__bao_cdp.wrap(r, false, ''), exceptionDetails: null }});
@@ -1295,9 +1299,7 @@ fn overlay_node_ref_from_parts(
     match (node_id, object_id) {
         (Some(id), _) => Ok(OverlayNodeRef::NodeId(id)),
         (None, Some(oid)) if !oid.is_empty() => Ok(OverlayNodeRef::ObjectId(oid)),
-        _ => Err(
-            "Overlay.highlightNode: missing required parameter: nodeId or objectId".into(),
-        ),
+        _ => Err("Overlay.highlightNode: missing required parameter: nodeId or objectId".into()),
     }
 }
 
@@ -1349,9 +1351,7 @@ pub(crate) fn draw_page_highlight(page: &PageHandle, image: &mut image::RgbaImag
     };
     match overlay_box_quads(page, &hl.node) {
         Ok(quads) => draw_highlight(image, &quads, &hl.spec),
-        Err(e) => log::debug!(
-            "[overlay] highlight draw skipped (node no longer resolvable): {e}"
-        ),
+        Err(e) => log::debug!("[overlay] highlight draw skipped (node no longer resolvable): {e}"),
     }
 }
 
@@ -1508,8 +1508,7 @@ fn cmd_key_event(
     // "char": the Down half alone leaves the synthetic key pressed — pair it
     // with a release so key-state bookkeeping stays honest.
     if event_type == "char" {
-        page
-            .dispatch_key_event_full(KeyState::Up, key, code, location, modifiers, repeat)
+        page.dispatch_key_event_full(KeyState::Up, key, code, location, modifiers, repeat)
             .map_err(to_browser_error)?;
     }
     Ok(serde_json::json!({}))
@@ -3248,7 +3247,7 @@ fn ok_empty() -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use crate::delegate::{ServiceWorkerHandle, ServiceWorkerRegistrationState};
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
 
     #[test]
     fn json_type_null_returns_undefined() {
@@ -3775,10 +3774,7 @@ mod tests {
             servo::Key::Character("B".into())
         );
         // No text: the key string itself is the payload.
-        assert_eq!(
-            super::cdp_key("x", None),
-            servo::Key::Character("x".into())
-        );
+        assert_eq!(super::cdp_key("x", None), servo::Key::Character("x".into()));
         // Empty text is treated as absent.
         assert_eq!(
             super::cdp_key("x", Some("")),
@@ -4327,8 +4323,7 @@ mod tests {
         // digest and build_frame's downscale.
         let source = include_str!("cdp_handler.rs");
         assert!(
-            source
-                .contains("let mut image = page.capture_frame().map_err(to_browser_error)?;"),
+            source.contains("let mut image = page.capture_frame().map_err(to_browser_error)?;"),
             "cmd_screenshot must capture the raw RGBA frame to keep a draw seam"
         );
         assert!(
@@ -4365,14 +4360,17 @@ mod tests {
             "page.go_back().map_err(to_browser_error)?;",
             "page.go_forward().map_err(to_browser_error)?;",
         ] {
-            let at = source.find(needle).unwrap_or_else(|| {
-                panic!("navigation entry site missing: {needle}")
-            });
+            let at = source
+                .find(needle)
+                .unwrap_or_else(|| panic!("navigation entry site missing: {needle}"));
             let clear_at = source[at..]
                 .find("clear_page_highlight(page);")
                 .unwrap_or_else(|| panic!("{needle} must clear the highlight slot"));
             assert!(
-                clear_at < source[at..].find("Ok(serde_json::json!({").unwrap_or(usize::MAX),
+                clear_at
+                    < source[at..]
+                        .find("Ok(serde_json::json!({")
+                        .unwrap_or(usize::MAX),
                 "{needle} must clear the slot on the success path"
             );
         }

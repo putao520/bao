@@ -267,10 +267,12 @@ impl Notification {
             // TODO: step 6.1: Append notification to the list of notifications.
             // step 6.2: Display notification on the device
             self.global()
-                .send_to_embedder(EmbedderMsg::ShowNotification(
-                    self.global().webview_id(),
-                    self.to_embedder_notification(),
-                ));
+                .send_chrome_notification_message_to_embedder(
+                    EmbedderMsg::ShowNotification(
+                        self.global().webview_id(),
+                        self.to_embedder_notification(),
+                    ),
+                );
         }
 
         // TODO: step 7: If shown is false or oldNotification is non-null,

@@ -123,7 +123,7 @@ impl Document {
         // TODO(#42064): Implement fullscreen options, and ensure that this is spec compliant for all embedder.
         if !error {
             let event = EmbedderMsg::NotifyFullscreenStateChanged(self.webview_id(), true);
-            self.send_to_embedder(event);
+            self.send_chrome_notification_message_to_embedder(event);
         }
 
         // Step 7
@@ -181,7 +181,7 @@ impl Document {
         // > If resize is true, resize doc’s viewport to its "normal" dimensions.
         // TODO(#21600): Improve spec compliance of steps 8-15 paralelism.
         let event = EmbedderMsg::NotifyFullscreenStateChanged(self.webview_id(), false);
-        self.send_to_embedder(event);
+        self.send_chrome_notification_message_to_embedder(event);
 
         // Step 8
         // > Return promise, and run the remaining steps in parallel.

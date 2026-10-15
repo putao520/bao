@@ -93,7 +93,6 @@ use http_body_util::{BodyExt, StreamBody};
 use hyper::Response as HyperResponse;
 use hyper::body::Frame;
 use hyper::ext::ReasonPhrase;
-use ipc_channel::ipc::IpcSender;
 use net_traits::NetworkError;
 use net_traits::ResourceAttribute;
 use net_traits::request::{BodyChunkRequest, Destination};
@@ -1587,7 +1586,7 @@ struct RequestBodyFeeder {
     receiver: UnboundedReceiver<BodyChunk>,
     /// Pull channel to the script-side body stream (requests the next chunk
     /// once the network accepted the previous one).
-    chunk_requester: StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>,
+    chunk_requester: StdArc<Mutex<Option<bao_ipc::Sender<BodyChunkRequest>>>>,
     /// The request's id (shared with `BunCancelHandle`) for the write/abort
     /// schedules.
     async_http_id: StdArc<AtomicU32>,
@@ -1606,7 +1605,7 @@ impl RequestBodyFeeder {
     /// build the feeder + the handle for `fetch_core`.
     fn setup(
         devtools_bytes: StdArc<Mutex<Vec<u8>>>,
-        chunk_requester: StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>,
+        chunk_requester: StdArc<Mutex<Option<bao_ipc::Sender<BodyChunkRequest>>>>,
         fetch_terminated: UnboundedSender<bool>,
         async_http_id: StdArc<AtomicU32>,
         content_length_known: bool,
@@ -1850,7 +1849,7 @@ pub(crate) async fn obtain_response_bun(
     url: &ServoUrl,
     method: &Method,
     request_headers: &mut HeaderMap,
-    body_sender: Option<StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>>,
+    body_sender: Option<StdArc<Mutex<Option<bao_ipc::Sender<BodyChunkRequest>>>>>,
     pipeline_id: &Option<PipelineId>,
     target_webview_id: Option<WebViewId>,
     request_id: Option<&str>,

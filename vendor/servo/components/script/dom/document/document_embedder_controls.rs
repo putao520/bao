@@ -148,7 +148,11 @@ impl DocumentEmbedderControls {
             EmbedderControlRequest::InputMethod(..) |
             EmbedderControlRequest::ContextMenu(..) => self
                 .window
-                .send_to_embedder(EmbedderMsg::ShowEmbedderControl(id, rect, request)),
+                .send_embedder_control_message_to_embedder(EmbedderMsg::ShowEmbedderControl(
+                    id,
+                    rect,
+                    request,
+                )),
             EmbedderControlRequest::FilePicker(file_picker_request) => {
                 let main_thread_sender = self.window.main_thread_script_chan().clone();
                 let callback =
@@ -191,7 +195,9 @@ impl DocumentEmbedderControls {
                     index: index.0,
                 };
                 self.window
-                    .send_to_embedder(EmbedderMsg::HideEmbedderControl(id));
+                    .send_embedder_control_message_to_embedder(EmbedderMsg::HideEmbedderControl(
+                        id,
+                    ));
                 false
             });
     }
@@ -258,7 +264,9 @@ impl DocumentEmbedderControls {
                         index: index.0,
                     };
                     self.window
-                        .send_to_embedder(EmbedderMsg::HideEmbedderControl(id));
+                        .send_embedder_control_message_to_embedder(
+                            EmbedderMsg::HideEmbedderControl(id),
+                        );
                     false
                 } else {
                     true
@@ -426,7 +434,10 @@ impl ContextMenuNodes {
             if string.is_empty() {
                 return;
             }
-            window.send_to_embedder(EmbedderMsg::SetClipboardText(window.webview_id(), string));
+            window.send_clipboard_message_to_embedder(EmbedderMsg::SetClipboardText(
+                window.webview_id(),
+                string,
+            ));
         };
 
         let open_url_in_new_webview = |cx: &mut JSContext, url: ServoUrl| {

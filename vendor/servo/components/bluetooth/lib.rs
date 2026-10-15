@@ -256,6 +256,13 @@ pub struct BluetoothManager {
 }
 
 impl BluetoothManager {
+    /// Family sender for `EmbedderMsg` dialog/permission traffic (REQ-ARCH-3
+    /// F4-W2), mirroring the consumer-side family handler in `servo.rs`
+    /// (`handle_dialog_permission_message`). Forwards verbatim to the embedder.
+    fn send_dialog_permission_message_to_embedder(&self, message: EmbedderMsg) {
+        self.embedder_proxy.send(message);
+    }
+
     pub fn new(
         adapter: Option<BluetoothAdapter>,
         embedder_proxy: EmbedderProxy,
@@ -493,12 +500,9 @@ impl BluetoothManager {
 
         let (ipc_sender, ipc_receiver) =
             generic_channel::channel().expect("Failed to create IPC channel!");
-        self.embedder_proxy
-            .send(EmbedderMsg::GetSelectedBluetoothDevice(
-                webview_id,
-                device_descriptions,
-                ipc_sender,
-            ));
+        self.send_dialog_permission_message_to_embedder(
+            EmbedderMsg::GetSelectedBluetoothDevice(webview_id, device_descriptions, ipc_sender),
+        );
 
         match ipc_receiver.recv() {
             Ok(result) => result,

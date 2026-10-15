@@ -18,6 +18,7 @@ doctest = false
 test-util = []
 
 [dependencies]
+bao_ipc = {path = "../../../../../src/bao_ipc", version = "0.1.0"}
 bytes = {version = "1.0", features = ["serde"]}
 content-security-policy = {version = "0.9", features = ["serde"]}
 cookie = {package = "cookie", version = "0.18"}

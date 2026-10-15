@@ -8,14 +8,12 @@ use std::rc::Rc;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::rust::HandleObject;
-use net_traits::CoreResourceMsg;
 use net_traits::blob_url_store::parse_blob_url;
 use net_traits::filemanager_thread::FileManagerThreadMsg;
 use profile_traits::generic_channel;
 use script_bindings::cell::DomRefCell;
 use script_bindings::cformat;
 use script_bindings::reflector::{Reflector, reflect_weak_referenceable_dom_object_with_proto};
-use servo_base::generic_channel::GenericSend;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use url::Url;
 use uuid::Uuid;
@@ -213,10 +211,10 @@ impl URLMethods<crate::DomTypeHolder> for URL {
             url.fragment().is_none() &&
             let Ok(id) = parse_blob_url(&url)
         {
-            let resource_threads = global.resource_threads();
             let (tx, rx) = generic_channel::channel(global.time_profiler_chan().clone()).unwrap();
-            let msg = FileManagerThreadMsg::RevokeBlobURL(id, origin, tx);
-            let _ = resource_threads.send(CoreResourceMsg::ToFileManager(msg));
+            let _ = global.resource_threads().to_file_manager(
+                FileManagerThreadMsg::RevokeBlobURL(id, origin, tx),
+            );
 
             let _ = rx.recv().unwrap();
         }

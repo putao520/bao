@@ -3,9 +3,8 @@ use super::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 
 use dpi::PhysicalSize;
 use servo::{
@@ -17,13 +16,15 @@ use servo::{
 
 use bao_cdp::servo_bridge::main_frame_id_for_target;
 use bao_cdp::{BaoEvent, ConsoleMessage};
-use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent, translate};
+use bao_cdp_client::bridge::{translate, ConsoleLevel, ServoEvent};
+use bao_ipc::{Receiver, Sender};
 
-use crate::drain_servo_events;
+use crate::{drain_servo_events_starting, park_for_event};
 
 // ─── ServoEvent real 路径可靠投递(REQ-CDP-004 / REQ-CDP-006) ───────
 //
-// 通道形态:**无界可靠队列**(`std::sync::mpsc::channel`)——`send` 永不
+// 通道形态:**无界可靠队列**(`bao_ipc::unbounded`,REQ-ARCH-3 统一 MPMC
+// 底座;迁移自 std::sync::mpsc,语义零变)——`send` 永不
 // 阻塞、永不丢弃(drop-newest 已根除),单队列 FIFO 天然保序。
 //
 // 为什么不是「有界 + 满时阻塞泵侧」:producer(delegate 回调)与 consumer
@@ -76,9 +77,13 @@ pub(crate) fn send_servo_event(tx: &Sender<ServoEvent>, event: ServoEvent) {
 pub struct BaoServoDelegate {
     last_error: RefCell<Option<String>>,
     /// Channel for forwarding console messages to CDP Log domain.
-    /// Set via `set_console_log_tx` when CDP server starts.
-    console_log_tx: RefCell<Option<std::sync::mpsc::Sender<ConsoleMessage>>>,
-    /// Real event queue sender (Path B): reliable unbounded mpsc to the pump.
+    /// Set via `set_console_log_tx` when CDP server starts. On the unified
+    /// MPMC substrate (REQ-ARCH-3, wave R3 — same channel pair the CdpServer
+    /// consumes, so both sides took the substrate in the same wave).
+    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    console_log_tx: RefCell<Option<Sender<ConsoleMessage>>>,
+    /// Real event queue sender (Path B): reliable unbounded queue (bao_ipc,
+    /// REQ-ARCH-3) to the pump.
     /// When set, console/url/load callbacks also push structured events here.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     event_tx: RefCell<Option<Sender<ServoEvent>>>,
@@ -139,19 +144,21 @@ impl BaoServoDelegate {
 
     /// Set the channel for forwarding console messages to CDP.
     /// Called when CDP server starts.
-    pub fn set_console_log_tx(&self, tx: std::sync::mpsc::Sender<ConsoleMessage>) {
+    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    pub fn set_console_log_tx(&self, tx: Sender<ConsoleMessage>) {
         *self.console_log_tx.borrow_mut() = Some(tx);
     }
 
     /// Get a clone of the console log sender, if one has been set.
     /// Used to propagate the channel to per-webview state.
-    pub fn console_log_tx(&self) -> Option<std::sync::mpsc::Sender<ConsoleMessage>> {
+    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    pub fn console_log_tx(&self) -> Option<Sender<ConsoleMessage>> {
         self.console_log_tx.borrow().clone()
     }
 
     /// Set the channel for forwarding structured ServoEvent to the real CDP
-    /// event queue (Path B: unbounded reliable mpsc, drained by the
-    /// `run_with_bridge` pump — not the bao_cdp_client `EventSubscriber`).
+    /// event queue (Path B: unbounded reliable bao_ipc queue, drained by
+    /// the `run_with_bridge` pump — not the bao_cdp_client `EventSubscriber`).
     /// Called when CDP server starts alongside set_console_log_tx.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     pub fn set_event_tx(&self, tx: Sender<ServoEvent>) {
@@ -191,6 +198,15 @@ impl BaoServoDelegate {
     /// caller-owned receiver is drained by its own pump face, one truth).
     /// @trace REQ-LIB-002 [req:REQ-LIB-002]
     pub fn drain_runtime_events(&self) {
+        self.drain_runtime_events_starting(None);
+    }
+
+    /// [`Self::drain_runtime_events`] with one already-received event spliced
+    /// in front of the queue drain — the pump-tail park face (REQ-ARCH-3):
+    /// `recv_timeout` consumed the first event to wake, and the same
+    /// translate→tap path sees every event in FIFO order.
+    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3]
+    pub(crate) fn drain_runtime_events_starting(&self, first: Option<ServoEvent>) {
         let tap = self.event_tap.borrow().clone();
         let rx = self.event_rx.borrow();
         let Some(rx) = rx.as_ref() else { return };
@@ -198,15 +214,39 @@ impl BaoServoDelegate {
             // No CDP client face: still MUST drain (the queue is unbounded;
             // draining without a tap drops nothing that was awaited — no
             // waiter exists — but frees the buffered events).
-            drain_servo_events(rx, |_| {});
+            drain_servo_events_starting(rx, first, |_| {});
             return;
         };
-        drain_servo_events(rx, move |servo_event| {
+        drain_servo_events_starting(rx, first, move |servo_event| {
             let target_id = servo_event.target_id().to_string();
             for cdp_event in translate(servo_event) {
                 tap.observe(&target_id, &cdp_event.method, &cdp_event.params);
             }
         });
+    }
+
+    /// Park the pump tail on the runtime-owned event queue (REQ-ARCH-3): block
+    /// up to `budget` for the next ServoEvent, then drain everything that
+    /// arrived — the waker plus whatever queued behind it — through the same
+    /// translate→tap path as [`Self::drain_runtime_events`]. The 1ms deadline
+    /// is the servo spin cadence contract; a cross-thread `send` during the
+    /// park wakes the drain immediately instead of waiting out the budget.
+    ///
+    /// Disconnected (channel replaced by an embedder's `set_event_channel` /
+    /// teardown) and no-installed-receiver degrade to a plain `budget` sleep:
+    /// a dead queue returns from `recv_timeout` instantly, which would
+    /// resurrect the full-core spin the bounded tail exists to prevent (e26
+    /// evidence 2026-10-03).
+    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3]
+    /// @trace REQ-LIB-002 [req:REQ-LIB-002]
+    pub fn park_runtime_events(&self, budget: std::time::Duration) {
+        // Clone the receiver (cheap — the bao_ipc substrate's receiver is an
+        // arc handle) so the park runs WITHOUT holding the RefCell borrow
+        // across the drain below.
+        let rx = self.event_rx.borrow().clone();
+        let first = park_for_event(rx.as_ref(), budget);
+        drop(rx);
+        self.drain_runtime_events_starting(first);
     }
 
     // ─── SharedWorker Global Registry (REQ-BRW-004 / DF-WK-7) ────────
@@ -591,7 +631,7 @@ mod tests {
     #[test]
     fn test_notify_error_certificate_error_emits_security_event() {
         let delegate = BaoServoDelegate::new();
-        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
         delegate.set_console_log_tx(tx);
 
         // Simulate a certificate error by sending the same message notify_error would send
@@ -641,7 +681,7 @@ mod tests {
     fn test_servo_delegate_console_log_channel_set_and_get() {
         let delegate = BaoServoDelegate::new();
         assert!(delegate.console_log_tx().is_none());
-        let (tx, _rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, _rx) = bao_ipc::unbounded::<ConsoleMessage>();
         delegate.set_console_log_tx(tx);
         assert!(delegate.console_log_tx().is_some());
     }
@@ -649,7 +689,7 @@ mod tests {
     #[test]
     fn test_servo_delegate_console_log_tx_clones() {
         let delegate = BaoServoDelegate::new();
-        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
         delegate.set_console_log_tx(tx);
         // Get a clone and send through it
         let cloned = delegate.console_log_tx().unwrap();
@@ -671,7 +711,7 @@ mod tests {
 
     #[test]
     fn test_webview_state_console_log_tx_propagation() {
-        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
         let mut state = BaoWebViewState::default();
         state.console_log_tx = Some(tx);
         // Simulate what show_console_message does
@@ -701,7 +741,7 @@ mod tests {
     #[test]
     fn test_console_log_all_level_mappings() {
         let delegate = BaoServoDelegate::new();
-        let (tx, _rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, _rx) = bao_ipc::unbounded::<ConsoleMessage>();
         delegate.set_console_log_tx(tx);
 
         // Verify all ConsoleLogLevel variants map correctly via the delegate's show_console_message
@@ -735,7 +775,7 @@ mod tests {
 
     #[test]
     fn test_webview_delegate_console_log_forwarding() {
-        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
         let state = Rc::new(RefCell::new(BaoWebViewState {
             console_log_tx: Some(tx),
             ..Default::default()
@@ -768,7 +808,7 @@ mod tests {
     fn test_servo_delegate_event_tx_set_and_get() {
         let delegate = BaoServoDelegate::new();
         assert!(delegate.event_tx().is_none());
-        let (tx, _rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, _rx) = bao_ipc::unbounded::<ServoEvent>();
         delegate.set_event_tx(tx);
         assert!(delegate.event_tx().is_some());
     }
@@ -778,7 +818,7 @@ mod tests {
         // REQ-CDP-004 real 路径可靠投递:远超旧有界容量(1024)的突发负载下
         // 零丢弃——send_servo_event 每发必达,且保序(探针 delta == 消费数,
         // 消费序 == 发射序)。
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         const BURST: usize = 5000;
         let emitted_before = servo_event_emitted_total();
 
@@ -818,7 +858,7 @@ mod tests {
     fn test_event_tx_send_survives_dropped_receiver() {
         // Disconnected(接收端已 drop)是 teardown 面:send 不 panic,
         // 探针不计数(未进入通道 ≠ 已投递)。
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         drop(rx);
         let emitted_before = servo_event_emitted_total();
         send_servo_event(
@@ -838,7 +878,7 @@ mod tests {
     #[test]
     fn test_servo_delegate_event_tx_sends_console_event() {
         let delegate = BaoServoDelegate::new();
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         delegate.set_event_tx(tx);
 
         // When event_tx is set, show_console_message pushes ServoEvent::Console
@@ -872,7 +912,7 @@ mod tests {
 
     #[test]
     fn test_webview_state_event_tx_propagation() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         let mut state = BaoWebViewState::default();
         state.event_tx = Some(tx);
         state.cdp_target_id = Some("7".to_string());
@@ -940,7 +980,7 @@ mod tests {
         // the delegate should emit ServoEvent::FrameStartedLoading —
         // tagged with the page's real CDP target and its per-target main
         // frame id (REQ-CDP-004).
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         let state = Rc::new(RefCell::new(BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -986,7 +1026,7 @@ mod tests {
             colno: 2,
         };
 
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         let mut state = BaoWebViewState::default();
         state.event_tx = Some(tx);
         state.cdp_target_id = Some("42".to_string());
@@ -996,7 +1036,7 @@ mod tests {
             other => panic!("expected PageError, got {other:?}"),
         }
 
-        let (tx2, rx2) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx2, rx2) = bao_ipc::unbounded::<ServoEvent>();
         let mut unstamp = BaoWebViewState::default();
         unstamp.event_tx = Some(tx2);
         unstamp.forward_worker_error_event(worker_error);

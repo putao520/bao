@@ -87,6 +87,7 @@ app_units = {version = "0.7"}
 argon2 = {version = "0.6", features = ["alloc"], optional = true}
 arrayvec = {version = "0.7"}
 atomic_refcell = {version = "0.1.14"}
+bao_ipc = {path = "../../../../src/bao_ipc", version = "0.1.0"}
 aws-lc-rs = {version = "1.17", default-features = false, features = ["aws-lc-sys"]}
 backtrace = {version = "0.3"}
 base64 = {version = "0.23.0"}

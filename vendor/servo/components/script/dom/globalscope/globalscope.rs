@@ -46,7 +46,7 @@ use net_traits::request::{
     InsecureRequestsPolicy, Origin as RequestOrigin, Referrer, RequestBuilder, RequestClient,
     ServiceWorkersMode,
 };
-use net_traits::{CoreResourceMsg, CoreResourceThread, ReferrerPolicy, ResourceThreads};
+use net_traits::{CoreResourceThread, ReferrerPolicy, ResourceThreads};
 use profile_traits::{
     generic_callback as profile_generic_callback, generic_channel as profile_generic_channel,
     mem as profile_mem, time as profile_time,
@@ -57,7 +57,6 @@ use script_bindings::cell::{DomRefCell, RefMut};
 use script_bindings::interfaces::GlobalScopeHelpers;
 use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
-use servo_base::generic_channel;
 use servo_base::generic_channel::{GenericCallback, GenericSend};
 use servo_base::id::{
     BlobId, BroadcastChannelRouterId, MessagePortId, MessagePortRouterId, PipelineId,
@@ -1891,8 +1890,7 @@ impl GlobalScope {
     }
 
     fn send_to_file_manager(&self, msg: FileManagerThreadMsg) {
-        let resource_threads = self.resource_threads();
-        let _ = resource_threads.send(CoreResourceMsg::ToFileManager(msg));
+        let _ = self.resource_threads().to_file_manager(msg);
     }
 
     fn read_file(&self, id: Uuid) -> Result<Vec<u8>, ()> {
@@ -1972,10 +1970,9 @@ impl GlobalScope {
         id: Uuid,
         chan: profile_generic_callback::GenericCallback<FileManagerResult<ReadFileProgress>>,
     ) {
-        let resource_threads = self.resource_threads();
         let origin = self.origin().immutable().clone();
         let msg = FileManagerThreadMsg::ReadFile(chan, id, origin);
-        let _ = resource_threads.send(CoreResourceMsg::ToFileManager(msg));
+        self.send_to_file_manager(msg);
     }
 
     fn read_msg(
@@ -2212,6 +2209,19 @@ impl GlobalScope {
         self.script_to_embedder_chan().send(msg).unwrap();
     }
 
+    // Family senders for `EmbedderMsg` production sites (REQ-ARCH-3 F4-W2):
+    // each producer declares its message family, mirroring the consumer-side
+    // family handlers in `servo.rs` (`handle_<family>_message`). Every family
+    // sender forwards verbatim to [`GlobalScope::send_to_embedder`]; message
+    // payloads, ordering, and timing are unchanged.
+    pub(crate) fn send_chrome_notification_message_to_embedder(&self, message: EmbedderMsg) {
+        self.send_to_embedder(message);
+    }
+
+    pub(crate) fn send_dialog_permission_message_to_embedder(&self, message: EmbedderMsg) {
+        self.send_to_embedder(message);
+    }
+
     /// Get the `PipelineId` for this global scope.
     pub(crate) fn pipeline_id(&self) -> PipelineId {
         if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
@@ -2331,18 +2341,8 @@ impl GlobalScope {
     /// we want to initiate a keep alive request and the thread doesn't communicate,
     /// we block additional keep alive requests.
     pub(crate) fn total_size_of_in_flight_keep_alive_records(&self) -> u64 {
-        let (sender, receiver) = generic_channel::channel().unwrap();
-        if self
-            .core_resource_thread()
-            .send(CoreResourceMsg::TotalSizeOfInFlightKeepAliveRecords(
-                self.pipeline_id(),
-                sender,
-            ))
-            .is_err()
-        {
-            return u64::MAX;
-        }
-        receiver.recv().unwrap_or(u64::MAX)
+        self.resource_threads()
+            .total_size_of_in_flight_keep_alive_records(self.pipeline_id())
     }
 
     /// Part of <https://fetch.spec.whatwg.org/#populate-request-from-client>
@@ -2514,7 +2514,7 @@ impl GlobalScope {
         error_info: ErrorInfo,
         value: HandleValue,
     ) {
-        self.send_to_embedder(EmbedderMsg::ShowConsoleApiMessage(
+        self.send_chrome_notification_message_to_embedder(EmbedderMsg::ShowConsoleApiMessage(
             self.webview_id(),
             ConsoleLogLevel::Error,
             format!(

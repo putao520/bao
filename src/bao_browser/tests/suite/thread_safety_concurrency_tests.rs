@@ -40,13 +40,17 @@ const _: () = {
 const _: () = {
     #[allow(dead_code)]
     fn assert_send<T: Send>() {}
+    #[allow(dead_code)]
+    fn assert_sync<T: Sync>() {}
     fn _proof() {
         assert_send::<BridgeReceiver>();
+        assert_sync::<BridgeReceiver>();
     }
 };
 
-// BridgeReceiver intentionally does NOT implement Sync (mpsc::Receiver is !Sync),
-// so we only verify Send.
+// REQ-ARCH-3 (bao_ipc substrate): BridgeReceiver is Send + Sync — the
+// substrate's Receiver is an arc handle, unlike the old std mpsc Receiver
+// (!Sync) this bridge used to wrap.
 
 #[test]
 fn test_bridge_channel_send_sync_bounds() {
@@ -301,7 +305,7 @@ fn test_is_alive_cross_thread_visibility() {
     );
     assert!(!tx.is_alive());
 
-    // rx shares the same Arc<AtomicBool>, verify on main thread (rx is !Sync).
+    // rx shares the same Arc<AtomicBool>, verify on main thread.
     assert!(
         !rx.is_alive(),
         "rx must also see is_alive=false after close"
@@ -468,7 +472,8 @@ fn test_arc_atomic_bool_alive_flag_sharing() {
     let dead_seen = Arc::new(AtomicUsize::new(0));
 
     // Spawn reader threads that observe tx's alive flag via Arc<BridgeChannel>.
-    // BridgeReceiver is !Sync so we verify its alive flag on main thread only.
+    // BridgeReceiver alive-flag check stays on the main thread (the shared
+    // flag, not the receiver, is the state under test).
     let mut handles = Vec::with_capacity(n_readers);
     for _ in 0..n_readers {
         let tx_c = Arc::clone(&tx);

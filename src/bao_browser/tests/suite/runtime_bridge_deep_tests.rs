@@ -528,7 +528,7 @@ fn channel_close_idempotent() {
 
 #[test]
 fn channel_close_does_not_break_transport() {
-    // close() only toggles the alive flag — the underlying mpsc channel
+    // close() only toggles the alive flag — the underlying bao_ipc channel
     // remains connected so an active worker can still process commands.
     let (ch, rx) = BridgeChannel::new();
     let _w = spawn_echo(rx);
@@ -711,7 +711,7 @@ fn bridge_close_does_not_block_fire_and_forget() {
     let (br, rx) = RuntimeBridge::new();
     let _w = spawn_echo(rx);
     br.close();
-    // fire_and_forget targets the mpsc channel which is still live.
+    // fire_and_forget targets the bao_ipc channel which is still live.
     assert!(
         br.fire_and_forget(BridgeCommand::GetTitle).is_ok(),
         "fire_and_forget should still work after close()",

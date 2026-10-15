@@ -57,7 +57,7 @@ fn real_path_delivery_probe_emitted_equals_pumped_under_high_load() {
     // CDP target identity per page (the same id the frame events carry).
     let targets: Vec<String> = pages.iter().map(|p| p.id().to_string()).collect();
     // Real event queue (the production wiring shape — unbounded reliable mpsc).
-    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<ServoEvent>();
+    let (event_tx, servo_event_rx) = bao_ipc::unbounded::<ServoEvent>();
     runtime.set_event_channel(event_tx);
 
     // Warmup: each page's initial about:blank load fires its Started before

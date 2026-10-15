@@ -30,13 +30,9 @@ use http::{
         WWW_AUTHENTICATE,
     },
 };
+use bao_ipc::{SendError, unbounded};
 use http_body_util::{BodyExt, Full};
 use hyper::{ext::ReasonPhrase, header::HeaderName};
-use ipc_channel::{
-    IpcError,
-    ipc::{self, IpcSender},
-    router::ROUTER,
-};
 use log::{debug, error, info, log_enabled, warn};
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use net_traits::{
@@ -714,7 +710,7 @@ fn request_body_stream_closed_error(action: &str) -> NetworkError {
     ))
 }
 
-fn log_request_body_stream_closed(action: &str, error: Option<&IpcError>) {
+fn log_request_body_stream_closed(action: &str, error: Option<&SendError<BodyChunkRequest>>) {
     match error {
         Some(error) => {
             error!("Request body stream has already been closed while trying to {action}: {error}")
@@ -747,11 +743,11 @@ pub(crate) const FRAGMENT: &AsciiSet = &CONTROLS.add(b'|').add(b'{').add(b'}');
 /// killed the streaming upload e2e; see the a4a3a218 replay note below).
 pub(crate) fn obtain_response_setup_router_callback(
     devtools_bytes: StdArc<Mutex<Vec<u8>>>,
-    chunk_requester: StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>,
+    chunk_requester: StdArc<Mutex<Option<bao_ipc::Sender<BodyChunkRequest>>>>,
     sink: BodySink,
     fetch_terminated: UnboundedSender<bool>,
 ) -> Result<(), NetworkError> {
-    let (body_chan, body_port) = ipc::channel().unwrap();
+    let (body_chan, body_port) = unbounded();
 
     {
         let mut lock = chunk_requester.lock();
@@ -784,11 +780,17 @@ pub(crate) fn obtain_response_setup_router_callback(
 
     let mut sink = Some(sink);
 
-    ROUTER.add_typed_route(
-        body_port,
-        Box::new(move |message| {
+    std::thread::Builder::new()
+        .name("RequestBodyForwarder".to_string())
+        .spawn(move || loop {
+            let Ok(message) = body_port.recv() else {
+                // Every sender of the body channel is gone: the pump is over,
+                // same lifetime as the ipc-router route this thread replaces
+                // (REQ-ARCH-3).
+                break;
+            };
             info!("Received message");
-            let bytes = match message.unwrap() {
+            let bytes = match message {
                 BodyChunkResponse::Chunk(bytes) => bytes,
                 BodyChunkResponse::Done => {
                     // Step 2.2.2. If fetchParams’s process request end-of-body is non-null,
@@ -815,7 +817,7 @@ pub(crate) fn obtain_response_setup_router_callback(
                         let _ = sink.send(BodyChunk::Done);
                     }
 
-                    return;
+                    continue;
                 },
                 BodyChunkResponse::Error => {
                     // Step 4 and/or 5.
@@ -838,7 +840,7 @@ pub(crate) fn obtain_response_setup_router_callback(
                         let _ = sink.send(BodyChunk::Error);
                     }
 
-                    return;
+                    continue;
                 },
             };
 
@@ -857,12 +859,12 @@ pub(crate) fn obtain_response_setup_router_callback(
             // streaming upload e2e leg-2 death / 17min ScriptThread wedge).
             {
                 let Some(sink) = sink.as_ref() else {
-                    return;
+                    continue;
                 };
                 sink.transmit_bytes(bytes);
             }
-        }),
-    );
+        })
+        .expect("Spawning the request body forwarder failed.");
 
     Ok(())
 }

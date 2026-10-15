@@ -12,7 +12,7 @@
 // @trace REQ-CDP-003 [req:REQ-CDP-003] [level:e2e]
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bao_browser::{handle_bridge_command, BaoConfig, BrowserRuntime, BaoWsRegistry, PageConfig};
@@ -582,9 +582,9 @@ fn debugger_breakpoint_real_frames_and_locations_e2e() {
         .expect("initial page");
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
-    let (console_tx, console_rx) = mpsc::channel::<cdp_server::ConsoleMessage>();
+    let (console_tx, console_rx) = bao_ipc::unbounded::<cdp_server::ConsoleMessage>();
     runtime.set_console_log_channel(console_tx);
-    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    let (event_tx, servo_event_rx) = bao_ipc::unbounded::<bao_cdp_client::bridge::ServoEvent>();
     runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
@@ -656,9 +656,9 @@ fn live_extensions_exception_objectid_bootstrap_e2e() {
         .expect("initial page");
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
-    let (console_tx, console_rx) = mpsc::channel::<cdp_server::ConsoleMessage>();
+    let (console_tx, console_rx) = bao_ipc::unbounded::<cdp_server::ConsoleMessage>();
     runtime.set_console_log_channel(console_tx);
-    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    let (event_tx, servo_event_rx) = bao_ipc::unbounded::<bao_cdp_client::bridge::ServoEvent>();
     runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));

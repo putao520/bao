@@ -20,7 +20,7 @@ use net_traits::request::{
     ServiceWorkersMode,
 };
 use net_traits::{
-    CoreResourceMsg, FetchChannels, MessageData, WebSocketDomAction, WebSocketNetworkEvent,
+    FetchChannels, MessageData, WebSocketDomAction, WebSocketNetworkEvent,
 };
 use profile_traits::generic_callback::GenericCallback as ProfileGenericCallback;
 use script_bindings::cell::DomRefCell;
@@ -48,7 +48,7 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::messageevent::MessageEvent;
 use crate::dom::window::Window;
-use crate::fetch::fetch::RequestWithGlobalScope;
+use crate::fetch::fetch::{RequestWithGlobalScope, send_fetch};
 use crate::tasks::task::TaskOnce;
 use crate::tasks::task_source::SendableTaskSource;
 
@@ -334,9 +334,7 @@ impl WebSocketMethods<crate::DomTypeHolder> for WebSocket {
             event_sender: resource_event_sender,
             action_receiver: resource_action_receiver,
         };
-        let _ = global
-            .core_resource_thread()
-            .send(CoreResourceMsg::Fetch(request, channels));
+        let _ = send_fetch(&global.core_resource_thread(), request, channels);
 
         Ok(ws)
     }

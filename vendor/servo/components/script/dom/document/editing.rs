@@ -243,13 +243,13 @@ impl Document {
                     // Implementations should create alternate text/html and text/plain
                     // clipboard formats when content in a web page is selected.
                     if let Some(selection) = editing_context.selection_content(cx) {
-                        self.send_to_embedder(EmbedderMsg::SetClipboardText(
+                        self.send_clipboard_message_to_embedder(EmbedderMsg::SetClipboardText(
                             self.webview_id(),
                             selection,
                         ));
                         // The alternate text/html format of the same selection.
                         if let Some(selection_html) = editing_context.selection_html_content(cx) {
-                            self.send_to_embedder(EmbedderMsg::SetClipboardHtml(
+                            self.send_clipboard_message_to_embedder(EmbedderMsg::SetClipboardHtml(
                                 self.webview_id(),
                                 selection_html,
                             ));
@@ -275,13 +275,13 @@ impl Document {
                         // Step 3.1.1. Copy the selected contents, if any, to the clipboard.
                         // Implementations should create alternate text/html and text/plain
                         // clipboard formats when content in a web page is selected.
-                        self.send_to_embedder(EmbedderMsg::SetClipboardText(
+                        self.send_clipboard_message_to_embedder(EmbedderMsg::SetClipboardText(
                             self.webview_id(),
                             selection,
                         ));
                         // The alternate text/html format of the same selection.
                         if let Some(selection_html) = editing_context.selection_html_content(cx) {
-                            self.send_to_embedder(EmbedderMsg::SetClipboardHtml(
+                            self.send_clipboard_message_to_embedder(EmbedderMsg::SetClipboardHtml(
                                 self.webview_id(),
                                 selection_html,
                             ));
@@ -316,7 +316,7 @@ impl Document {
                     let mut text_content = clipboard_event.text_content();
                     let (callback, receiver) =
                         GenericCallback::new_blocking().expect("Could not create callback");
-                    self.send_to_embedder(EmbedderMsg::GetClipboardText(
+                    self.send_clipboard_message_to_embedder(EmbedderMsg::GetClipboardText(
                         self.webview_id(),
                         callback,
                     ));
@@ -652,7 +652,9 @@ impl Document {
             ClipboardEventType::Paste => {
                 let (callback, receiver) =
                     GenericCallback::new_blocking().expect("Could not create callback");
-                self.send_to_embedder(EmbedderMsg::GetClipboardText(self.webview_id(), callback));
+                self.send_clipboard_message_to_embedder(
+                    EmbedderMsg::GetClipboardText(self.webview_id(), callback),
+                );
                 let text_contents = receiver
                     .recv()
                     .map(Result::unwrap_or_default)
@@ -660,7 +662,7 @@ impl Document {
                 // The clipboard's HTML representation, empty when it has none.
                 let (html_callback, html_receiver) =
                     GenericCallback::new_blocking().expect("Could not create callback");
-                self.send_to_embedder(EmbedderMsg::GetClipboardHtml(
+                self.send_clipboard_message_to_embedder(EmbedderMsg::GetClipboardHtml(
                     self.webview_id(),
                     html_callback,
                 ));
@@ -723,7 +725,9 @@ impl Document {
         // Step 1
         if drag_data_store.list_len() > 0 {
             // Step 1.1 Clear the clipboard.
-            self.send_to_embedder(EmbedderMsg::ClearClipboard(self.webview_id()));
+            self.send_clipboard_message_to_embedder(EmbedderMsg::ClearClipboard(
+                self.webview_id(),
+            ));
             // Step 1.2
             for item in drag_data_store.iter_item_list() {
                 match item {
@@ -734,12 +738,12 @@ impl Document {
                         // format matching its type: `text/html` parts go to the clipboard's
                         // HTML representation, everything else to the text one.
                         if type_.str() == "text/html" {
-                            self.send_to_embedder(EmbedderMsg::SetClipboardHtml(
+                            self.send_clipboard_message_to_embedder(EmbedderMsg::SetClipboardHtml(
                                 self.webview_id(),
                                 data.to_string(),
                             ));
                         } else {
-                            self.send_to_embedder(EmbedderMsg::SetClipboardText(
+                            self.send_clipboard_message_to_embedder(EmbedderMsg::SetClipboardText(
                                 self.webview_id(),
                                 data.to_string(),
                             ));
@@ -756,7 +760,9 @@ impl Document {
             // Step 2.1
             if drag_data_store.clear_was_called {
                 // Step 2.1.1 If types-to-clear list is empty, clear the clipboard
-                self.send_to_embedder(EmbedderMsg::ClearClipboard(self.webview_id()));
+                self.send_clipboard_message_to_embedder(EmbedderMsg::ClearClipboard(
+                self.webview_id(),
+            ));
                 // Step 2.1.2 Else remove the types in the list from the clipboard
                 // As of now this can't be done with Arboard, and it's possible that will be removed from the spec
             }

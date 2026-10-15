@@ -48,20 +48,109 @@ use bun_sys::FdExt;
 
 use crate::require::cache_builtin;
 
-// ─── Shared state for async child process pipe data ────────────────────────
-// The polling thread and JS thread both access the same AsyncChildState via
-// Arc<Mutex<...>>.  Data written by the polling thread is visible to the JS
-// thread — unlike the old thread_local! approach where each thread got its own
-// independent copy and async output was permanently lost.
+// ─── Async child state: bao_ipc push model (wave F5) ───────────────────────
+// @trace REQ-ARCH-3 [entity:ChildProcess] [api:__cp_drain/__cp_poll_exit/peek_output/poll_exit_info]
+// The fd drain face is unchanged (per-child `cp-poll-{pid}` OS thread, ruling
+// 2026-10-15 ③: IO stream face stays). What flipped is the PUBLICATION face:
+// the old `Arc<Mutex<AsyncChildState>>` cross-thread shared struct — drain
+// thread writing `stdout_data`/`stderr_data`/`exit_info` fields under the
+// state lock, JS natives polling those fields — is replaced by a per-child
+// bao_ipc channel. The drain thread now PUSHES `CpEvent`s; every consumer
+// entry point (`__cp_drain` / `__cp_poll_exit` / `peek_output` /
+// `poll_exit_info` / `has_live_async_children` / the drop sweep) pumps the
+// channel non-blockingly (`try_recv` loop) into its own side's state before
+// answering. JS-visible API signatures and return shapes are unchanged.
+//
+// Capacity ruling (pinned): the channel is UNBOUNDED (`bao_ipc::unbounded`).
+// A bounded channel would reintroduce exactly the failure forms the old
+// model didn't have: `try_send` on full = silent data loss (AC5 violation),
+// blocking `send` on full = the drain thread stalls → the child's pipe
+// buffer fills → the child blocks on write — a NEW deadlock form
+// (stop-condition ① of the F5 contract). Unbounded mirrors the old model's
+// backpressure profile exactly: the old `stdout_data`/`stderr_data` Vecs
+// grew without bound too; memory growth, never loss or block.
+//
+// Exit-push cadence: the drain loop's exit-only tail (pipes fully drained,
+// child not yet observed exiting) re-probes at [`CP_EXIT_TAIL_POLL_MS`] —
+// the pre-flip loop's 10ms empty-branch sleep made exit latency
+// quantum-bound, which the <5ms push contract forbids.
+//
+// drain-before-publish invariant (task #21/#22 tuition) is rebuilt on the
+// channel by ORDERING, not by gating: the drain thread is the channel's
+// single producer, crossbeam channels are FIFO per producer, and `Exit` is
+// enqueued only after BOTH pipes hit EOF (`CpDrainState::try_push_exit`) —
+// so every data chunk is ordered before `Exit`, and a consumer reading in
+// order has all data in its buffers by the time `exit_info` becomes
+// observable. The old model had to gate publication on cross-thread EOF
+// flags; the channel makes the gate a protocol property.
 
-/// Global registry: pid → shared state for that child process.
-/// Used by __cp_drain / __cp_poll_exit to look up the Arc<Mutex<AsyncChildState>>
-/// created during spawn.
-static CP_ASYNC_STATES: LazyLock<Mutex<HashMap<i32, Arc<Mutex<AsyncChildState>>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// One published event for an async child process. `Exit` is always the
+/// FINAL message on a child's channel (drain-before-publish — see the module
+/// comment above).
+enum CpEvent {
+    /// A chunk read from the child's stdout pipe, in stream order.
+    Stdout(Vec<u8>),
+    /// A chunk read from the child's stderr pipe, in stream order.
+    Stderr(Vec<u8>),
+    /// Terminal status `(exit_code, signal)` — same encoding the old
+    /// `exit_info` field carried (signal deaths → code = -signal).
+    Exit(i32, i32),
+}
 
-/// Shared state between the polling thread and the JS thread for a single child process.
-struct AsyncChildState {
+/// Consumer-side per-child state — the registry entry the JS-thread natives
+/// reach by pid. Only consumers touch it (post-flip the drain thread never
+/// locks it): `cp_pump_rx` folds channel events into the buffers/exit slot,
+/// and the readers clone/take from there.
+struct CpRxState {
+    /// B1 (用户裁决 2026-09-17 A): creating NodeRuntime's cleanup token,
+    /// stamped at spawn-registration via
+    /// `crate::runtime::current_runtime_token()`. `0` = created outside any
+    /// runtime = process-shared, exempt from the drop-time sweep. See
+    /// `cleanup_for_token`. Read-only after registration.
+    owner: u64,
+    rx: bao_ipc::Receiver<CpEvent>,
+    /// stdout bytes received from the channel and not yet swapped out by
+    /// `__cp_drain` (the old `stdout_data` field's consumer-side half).
+    stdout_buf: Vec<u8>,
+    /// stderr bytes received from the channel and not yet swapped out.
+    stderr_buf: Vec<u8>,
+    /// Published exit info (exit_code, signal) — sticked once an `Exit`
+    /// event is pumped. `__cp_poll_exit` takes it (once);
+    /// `poll_exit_info` clones it (repeatable) — the old field's exact
+    /// consumption split.
+    exit_info: Option<(i32, i32)>,
+    /// Sticky liveness latch: set the moment an `Exit` is published into
+    /// this state (by pump or sweep). `has_live_async_children` reads THIS,
+    /// not `exit_info` — `__cp_poll_exit`'s take() must not resurrect a
+    /// phantom live child (the old model's `child_exited` field was never
+    /// cleared by the take; without the latch the keepalive branch would
+    /// spin on a consumed exit).
+    exit_seen: bool,
+    /// windows only: the spawn face's `*mut Process` (intrusive refcount),
+    /// registered at spawn for the cluster kill face
+    /// (`cp_process_for_pid`). Registration-time read-only.
+    #[cfg(windows)]
+    process: Option<*mut Process>,
+}
+
+// SAFETY (windows): the raw pointer in CpRxState is the spawn face's
+// intrusive `*mut Process` — a kernel-adjacent pointer with no thread
+// affinity, only dereferenced through the spawn face's own methods (the
+// same cross-thread contract ipc_channel's IpcStream declares; carried over
+// verbatim from the old AsyncChildState contract). The registry entry is
+// reachable from any JS thread.
+#[cfg(windows)]
+unsafe impl Send for CpRxState {}
+
+/// Drain-thread-side per-child state — owned OUTRIGHT by the `cp-poll-{pid}`
+/// thread (no lock, no sharing): fds/handles, EOF flags, reaped status. The
+/// old model kept these in the shared struct under the state Mutex; the flip
+/// removes every lock round-trip from the drain thread. The thread is also
+/// the SOLE owner of the pipe ends: it closes them at EOF/exit (and when the
+/// consumer side disappeared — `send` failing — it exits instead of
+/// spinning; the old sweep-vs-thread take-then-close fd protocol is
+/// obsolete because the sweep no longer touches fds).
+struct CpDrainState {
     pid: i32,
     // Platform pipe ends for the JS-observed stdio (unix: parent-side read
     // fd, -1 = not piped; windows: parent-side pipe HANDLE, null = not
@@ -74,76 +163,113 @@ struct AsyncChildState {
     stdout_handle: HANDLE, // null if not piped
     #[cfg(windows)]
     stderr_handle: HANDLE, // null if not piped
-    /// B1 (用户裁决 2026-09-17 A): creating NodeRuntime's cleanup token,
-    /// stamped at spawn-registration via
-    /// `crate::runtime::current_runtime_token()`. `0` = created outside any
-    /// runtime = process-shared, exempt from the drop-time sweep. See
-    /// `cleanup_for_token`. Read-only after registration — no lock protocol
-    /// change for the polling thread.
-    owner: u64,
-    #[allow(dead_code)]
+    /// Parent-side stdin write end (the drain thread never writes it — the
+    /// real stdin registry is the JS thread's `CP_STDIN_FDS`; kept here for
+    /// the exit-only-registration decision only).
     #[cfg(unix)]
+    #[allow(dead_code)]
     stdin_fd: c_int, // -1 if not piped
-    /// windows: parent-side stdin write end (null = not piped). Written via
-    /// WriteFile from `__cp_stdin_write`; ownership stays with the registry.
     #[cfg(windows)]
+    #[allow(dead_code)]
     stdin_handle: HANDLE,
-    /// windows only: the spawn face's `*mut Process` (intrusive refcount,
-    /// `WindowsSpawnResult.process_`). Exit observation on windows goes
-    /// through `Process::update_status_on_windows` + the `Status` read —
-    /// there is no waitpid to probe.
+    /// windows only: the spawn face's `*mut Process` — the exit oracle
+    /// (there is no waitpid on windows).
     #[cfg(windows)]
     process: Option<*mut Process>,
+    tx: bao_ipc::Sender<CpEvent>,
     stdout_eof: bool,
     stderr_eof: bool,
     child_exited: bool,
-    /// Buffered stdout data accumulated by the polling thread.
-    stdout_data: Vec<u8>,
-    /// Buffered stderr data accumulated by the polling thread.
-    stderr_data: Vec<u8>,
-    /// Reaped status (exit_code, signal) — stashed by waitpid the moment the
-    /// child is reaped, PUBLISHED into `exit_info` only once both pipes are
-    /// drained. Publishing early let JS observe 'exit' before the final
-    /// buffered bytes reached the drain (stderr data intermittently lost).
+    /// Reaped status (exit_code, signal) — stashed by waitpid / the Status
+    /// read the moment the child is reaped, PUSHED as `CpEvent::Exit` only
+    /// once both pipes are drained (drain-before-publish — module comment).
     reaped: Option<(i32, i32)>,
-    /// Exit info (exit_code, signal) set when the child exits AND its pipes
-    /// are fully drained — the JS poll chain consumes this once.
-    exit_info: Option<(i32, i32)>,
+    /// Whether the `Exit` event has been pushed (push once).
+    exit_pushed: bool,
 }
 
-// SAFETY (windows): the raw pointers in AsyncChildState are kernel/process
+// SAFETY (windows): the raw pointers in CpDrainState are kernel/process
 // handles with no thread affinity — a Win32 HANDLE is usable from any thread,
 // and the intrusive `*mut Process` is only dereferenced through the spawn
 // face's own methods (the same cross-thread contract ipc_channel's IpcStream
-// declares). The drain thread and the JS thread serialize through the state
-// Mutex.
+// declares). The struct moves once, from the registering JS thread into the
+// drain thread at spawn, and never comes back.
 #[cfg(windows)]
-unsafe impl Send for AsyncChildState {}
+unsafe impl Send for CpDrainState {}
+
+impl CpDrainState {
+    /// Pipes are drained when every piped end hit EOF; unpiped slots (fd < 0 /
+    /// null HANDLE) count as drained immediately.
+    #[cfg(unix)]
+    fn pipes_drained(&self) -> bool {
+        (self.stdout_eof || self.stdout_fd < 0) && (self.stderr_eof || self.stderr_fd < 0)
+    }
+
+    #[cfg(windows)]
+    fn pipes_drained(&self) -> bool {
+        (self.stdout_eof || self.stdout_handle.is_null())
+            && (self.stderr_eof || self.stderr_handle.is_null())
+    }
+
+    /// Push the reaped status as `CpEvent::Exit` — only once the pipes are
+    /// drained. Pushing at reap time would let JS observe 'exit' before the
+    /// final buffered bytes were readable, intermittently losing
+    /// stderr/stdout tails (task #21: drain-before-publish invariant). FIFO
+    /// ordering on the single-producer channel places every already-pushed
+    /// data chunk before this `Exit`.
+    fn try_push_exit(&mut self) {
+        if let (false, Some((code, signal))) = (self.exit_pushed, self.reaped) {
+            if self.pipes_drained() {
+                self.exit_pushed = true;
+                // Receiver gone (registry entry swept) — the consumer side is
+                // dead; the poll loop's next send observes the same and exits.
+                let _ = self.tx.send(CpEvent::Exit(code, signal));
+            }
+        }
+    }
+}
+
+/// Global registry: pid → consumer-side state for that child process.
+/// Reached by `__cp_drain` / `__cp_poll_exit` / `peek_output` /
+/// `poll_exit_info` / the drop sweep. Post-flip this is the RX half only —
+/// producers push through their channel `Sender` and never lock it.
+static CP_ASYNC_STATES: LazyLock<Mutex<HashMap<i32, Arc<Mutex<CpRxState>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // CpCleanup (RAII全清 CP_ASYNC_STATES + CP_STDIN_FDS) 已删除:全树零实例化的
 // 死代码,其全清能力由 `close_stdin_fds_for_current_thread()`(runtime drop 统一
 // 清扫)与 `cleanup_for_token`(per-token sweep)取代 — B1 残留收编,
 // 用户裁决 2026-09-17 A。
 
-/// Pipes are drained when every piped end hit EOF; unpiped slots (fd < 0 /
-/// null HANDLE) count as drained immediately.
-#[cfg(unix)]
-fn cp_pipes_drained(s: &AsyncChildState) -> bool {
-    (s.stdout_eof || s.stdout_fd < 0) && (s.stderr_eof || s.stderr_fd < 0)
+/// Registry lookup: the consumer-side state for `pid`, if registered.
+fn cp_rx_state_for_pid(pid: i32) -> Option<Arc<Mutex<CpRxState>>> {
+    CP_ASYNC_STATES
+        .lock()
+        .ok()
+        .and_then(|registry| registry.get(&pid).cloned())
 }
 
-#[cfg(windows)]
-fn cp_pipes_drained(s: &AsyncChildState) -> bool {
-    (s.stdout_eof || s.stdout_handle.is_null()) && (s.stderr_eof || s.stderr_handle.is_null())
-}
-
-/// Publish the reaped status into `exit_info` — only once the pipes are
-/// drained. Publishing at reap time let the JS poll chain observe 'exit'
-/// (and stop) before the final buffered bytes were readable, intermittently
-/// losing stderr/stdout tails (task #21: drain-before-publish invariant).
-fn cp_try_publish(s: &mut AsyncChildState) {
-    if s.exit_info.is_none() && s.reaped.is_some() && cp_pipes_drained(s) {
-        s.exit_info = s.reaped;
+/// Fold every channel event currently queued into the consumer-side state
+/// (non-blocking `try_recv` loop — the poll→push flip's consumer half). Data
+/// chunks accumulate in the buffers; `Exit` sticks into `exit_info`. By
+/// channel FIFO ordering (single producer, `Exit` enqueued last), once
+/// `exit_info` is set every byte published before the exit is already in the
+/// buffers — the drain-before-publish invariant, consumer-side.
+fn cp_pump_rx(s: &mut CpRxState) {
+    loop {
+        match s.rx.try_recv() {
+            Ok(CpEvent::Stdout(chunk)) => s.stdout_buf.extend_from_slice(&chunk),
+            Ok(CpEvent::Stderr(chunk)) => s.stderr_buf.extend_from_slice(&chunk),
+            Ok(CpEvent::Exit(code, signal)) => {
+                s.exit_seen = true;
+                if s.exit_info.is_none() {
+                    s.exit_info = Some((code, signal));
+                }
+            }
+            // Empty (nothing queued) or Disconnected (queue drained and the
+            // sender dropped — exit-only registrations): nothing more to fold.
+            Err(_) => break,
+        }
     }
 }
 
@@ -326,8 +452,7 @@ fn cp_stdio_pipe_close_child_ends(pairs: [&mut Option<CpStdioPipe>; 3]) {
 /// JS thread — both legal loop owners. This mirrors the unix twin's
 /// read-and-stash.
 #[cfg(windows)]
-fn cp_detect_exit_windows(state: &Arc<Mutex<AsyncChildState>>) {
-    let mut s = state.lock().unwrap();
+fn cp_detect_exit_windows(s: &mut CpDrainState) {
     if !s.child_exited {
         if let Some(process) = s.process {
             // SAFETY: read-only clone of the POD Status field; the
@@ -347,39 +472,32 @@ fn cp_detect_exit_windows(state: &Arc<Mutex<AsyncChildState>>) {
             }
         }
     }
-    cp_try_publish(&mut s);
+    s.try_push_exit();
 }
 
-/// One read from `handle` into `buf`: data lands in the named pipe's buffer
+/// One read from `handle` into `buf`: data is pushed onto the child's channel
 /// (returns true = progress); EOF (broken pipe / zero-byte read) marks that
-/// pipe's EOF (with publish); transient errors retry on the next tick.
+/// pipe's EOF (with exit push); transient errors retry on the next tick.
 #[cfg(windows)]
-fn cp_service_pipe_windows(
-    state: &Arc<Mutex<AsyncChildState>>,
-    is_stdout: bool,
-    handle: HANDLE,
-    buf: &mut [u8],
-) -> bool {
+fn cp_service_pipe_windows(s: &mut CpDrainState, is_stdout: bool, handle: HANDLE, buf: &mut [u8]) -> bool {
     match cp_pipe_read(handle, buf) {
         Ok(n) if n > 0 => {
-            let data = &buf[..n];
-            let mut s = state.lock().unwrap();
-            if is_stdout {
-                s.stdout_data.extend_from_slice(data);
+            let data = buf[..n].to_vec();
+            let _ = s.tx.send(if is_stdout {
+                CpEvent::Stdout(data)
             } else {
-                s.stderr_data.extend_from_slice(data);
-            }
+                CpEvent::Stderr(data)
+            });
             true
         }
         Ok(_) => {
             // EOF (broken pipe / zero-byte read).
-            let mut s = state.lock().unwrap();
             if is_stdout {
                 s.stdout_eof = true;
             } else {
                 s.stderr_eof = true;
             }
-            cp_try_publish(&mut s);
+            s.try_push_exit();
             false
         }
         Err(_) => {
@@ -390,24 +508,14 @@ fn cp_service_pipe_windows(
 }
 
 #[cfg(windows)]
-fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
+fn pipe_poll_thread(mut s: CpDrainState) {
     const DRAIN_CHUNK: usize = 4096;
     let mut buf = vec![0u8; DRAIN_CHUNK];
     loop {
-        let (stdout_handle, stderr_handle, child_exited, stdout_eof, stderr_eof) = {
-            let s = state.lock().unwrap();
-            (
-                s.stdout_handle,
-                s.stderr_handle,
-                s.child_exited,
-                s.stdout_eof,
-                s.stderr_eof,
-            )
-        };
-        let pipes_drained =
-            (stdout_eof || stdout_handle.is_null()) && (stderr_eof || stderr_handle.is_null());
+        let child_exited = s.child_exited;
+        let pipes_drained = s.pipes_drained();
 
-        cp_detect_exit_windows(&state);
+        cp_detect_exit_windows(&mut s);
 
         if child_exited && pipes_drained {
             break;
@@ -416,17 +524,17 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
         // Readiness via PeekNamedPipe; a failed peek (broken pipe) is routed
         // through the read so the EOF arm records it.
         let mut ready: Vec<(HANDLE, bool)> = Vec::new(); // (handle, is_stdout)
-        if !stdout_eof && !stdout_handle.is_null() {
-            let _ = cp_pipe_peek(stdout_handle);
-            ready.push((stdout_handle, true));
+        if !s.stdout_eof && !s.stdout_handle.is_null() {
+            let _ = cp_pipe_peek(s.stdout_handle);
+            ready.push((s.stdout_handle, true));
         }
-        if !stderr_eof && !stderr_handle.is_null() {
-            let _ = cp_pipe_peek(stderr_handle);
-            ready.push((stderr_handle, false));
+        if !s.stderr_eof && !s.stderr_handle.is_null() {
+            let _ = cp_pipe_peek(s.stderr_handle);
+            ready.push((s.stderr_handle, false));
         }
 
         if ready.is_empty() {
-            if child_exited {
+            if s.child_exited {
                 break;
             }
             ::std::thread::sleep(::std::time::Duration::from_millis(10));
@@ -435,7 +543,7 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
 
         let mut made_progress = false;
         for (handle, is_stdout) in ready {
-            made_progress |= cp_service_pipe_windows(&state, is_stdout, handle, &mut buf);
+            made_progress |= cp_service_pipe_windows(&mut s, is_stdout, handle, &mut buf);
         }
 
         if !made_progress {
@@ -443,37 +551,28 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
         }
     }
 
-    // Take-then-close the handles — identical ownership protocol to the unix
-    // exit path (whoever swaps the field owns the close).
-    let taken = {
-        let mut s = state.lock().unwrap();
-        (
-            ::std::mem::replace(&mut s.stdout_handle, ::std::ptr::null_mut()),
-            ::std::mem::replace(&mut s.stderr_handle, ::std::ptr::null_mut()),
-        )
-    };
-    for handle in [taken.0, taken.1] {
+    // The drain thread is the pipe ends' sole owner (post-flip the sweep no
+    // longer touches them) — close unconditionally at exit.
+    for handle in [s.stdout_handle, s.stderr_handle] {
         if !handle.is_null() {
-            // SAFETY: HANDLE we own under the registry take-then-close
-            // protocol.
+            // SAFETY: HANDLE we own; the drain thread is the sole closer.
             unsafe { w::CloseHandle(handle) };
         }
     }
 }
 
-/// Background polling thread: reads from stdout/stderr pipes into shared AsyncChildState.
-/// Non-blocking waitpid under the state lock: when the child has exited,
-/// stash its status (`reaped`); `cp_try_publish` lifts it into exit_info
-/// once the pipes are drained.
+/// Background polling thread: reads from stdout/stderr pipes and pushes the
+/// bytes onto the child's channel. Non-blocking waitpid: when the child has
+/// exited, stash its status (`reaped`); `try_push_exit` lifts it into an
+/// `Exit` event once the pipes are drained.
 #[cfg(unix)]
-fn cp_detect_exit_unix(state: &Arc<Mutex<AsyncChildState>>) {
-    let mut s = state.lock().unwrap();
+fn cp_detect_exit_unix(s: &mut CpDrainState) {
     if !s.child_exited {
         let mut wstatus: c_int = 0;
         let ret = unsafe { libc::waitpid(s.pid, &mut wstatus, libc::WNOHANG) };
         if ret == s.pid {
-            // Child has exited — stash the status; cp_try_publish
-            // lifts it into exit_info once the pipes are drained.
+            // Child has exited — stash the status; try_push_exit
+            // lifts it into an Exit event once the pipes are drained.
             let exit_code = if libc::WIFEXITED(wstatus) {
                 libc::WEXITSTATUS(wstatus)
             } else {
@@ -488,12 +587,12 @@ fn cp_detect_exit_unix(state: &Arc<Mutex<AsyncChildState>>) {
             s.reaped = Some((exit_code, signal));
         }
     }
-    cp_try_publish(&mut s);
+    s.try_push_exit();
 }
 
 /// Mark the named pipe's EOF (`which` is "stdout" / "stderr").
 #[cfg(unix)]
-fn cp_mark_eof(s: &mut AsyncChildState, which: &str) {
+fn cp_mark_eof(s: &mut CpDrainState, which: &str) {
     if which == "stdout" {
         s.stdout_eof = true;
     } else {
@@ -501,63 +600,54 @@ fn cp_mark_eof(s: &mut AsyncChildState, which: &str) {
     }
 }
 
-/// One read from `fd` into `buf`: data lands in the named pipe's buffer;
-/// EOF (or a non-EAGAIN error) marks that pipe's EOF (with publish);
+/// One read from `fd` into `buf`: bytes are pushed onto the child's channel;
+/// EOF (or a non-EAGAIN error) marks that pipe's EOF (with exit push);
 /// EAGAIN-family errors retry on the next tick.
 #[cfg(unix)]
-fn cp_service_fd(
-    state: &Arc<Mutex<AsyncChildState>>,
-    which: &str,
-    fd: i32,
-    buf: &mut [u8],
-) {
+fn cp_service_fd(s: &mut CpDrainState, which: &str, fd: i32, buf: &mut [u8]) {
     match unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, buf.len()) } {
         n if n > 0 => {
-            let data = &buf[..n as usize];
-            let mut s = state.lock().unwrap();
-            if which == "stdout" {
-                s.stdout_data.extend_from_slice(data);
+            let data = buf[..n as usize].to_vec();
+            let _ = s.tx.send(if which == "stdout" {
+                CpEvent::Stdout(data)
             } else {
-                s.stderr_data.extend_from_slice(data);
-            }
+                CpEvent::Stderr(data)
+            });
         }
         0 => {
             // EOF.
-            let mut s = state.lock().unwrap();
-            cp_mark_eof(&mut s, which);
-            cp_try_publish(&mut s);
+            cp_mark_eof(s, which);
+            s.try_push_exit();
         }
         _ => {
             // EAGAIN or error.
             let errno = unsafe { *libc::__errno_location() };
             if errno != libc::EAGAIN && errno != libc::EWOULDBLOCK {
                 // Real error — treat as EOF.
-                let mut s = state.lock().unwrap();
-                cp_mark_eof(&mut s, which);
-                cp_try_publish(&mut s);
+                cp_mark_eof(s, which);
+                s.try_push_exit();
             }
         }
     }
 }
 
-/// Uses Arc<Mutex<AsyncChildState>> for shared state with the JS thread.
+/// Exit-publication service cadence for the exit-only tail (pipes fully
+/// drained, child not yet observed exiting): the drain thread re-probes
+/// waitpid/Status every 1ms so the `Exit` push tracks reapability instead of
+/// a sleep quantum. Publication-face cadence (F5) — the fd READ face keeps
+/// poll(2)/100ms; windows keeps its PeekNamedPipe throttle.
+const CP_EXIT_TAIL_POLL_MS: u64 = 1;
+
+/// Owns the child's pipe fds outright (post-flip: no sweep can take them —
+/// the sweep stops at the registry entry) and pushes read bytes onto the
+/// child's channel.
 #[cfg(unix)]
-fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
+fn pipe_poll_thread(mut s: CpDrainState) {
     let mut buf = [0u8; 65536]; // 64 KiB read buffer
 
     loop {
-        let (stdout_fd, stderr_fd, child_exited, stdout_eof, stderr_eof) = {
-            let s = state.lock().unwrap();
-            (
-                s.stdout_fd,
-                s.stderr_fd,
-                s.child_exited,
-                s.stdout_eof,
-                s.stderr_eof,
-            )
-        };
-        let pipes_drained =
-            (stdout_eof || stdout_fd < 0) && (stderr_eof || stderr_fd < 0);
+        let child_exited = s.child_exited;
+        let pipes_drained = s.pipes_drained();
 
         // Exit detection runs EVERY iteration, decoupled from pipe EOF. This
         // used to sit at the loop bottom (after fd processing), so the
@@ -567,7 +657,7 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
         // zombified, and exit/data events never reached JS (task #21 root
         // cause; strace "passed" only because syscall overhead let waitpid
         // win the race in the last fd-processing iteration).
-        cp_detect_exit_unix(&state);
+        cp_detect_exit_unix(&mut s);
 
         // If child has exited and the pipes are drained, we're done.
         if child_exited && pipes_drained {
@@ -576,19 +666,19 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
 
         // Build poll array for remaining open fds.
         let mut poll_fds: Vec<libc::pollfd> = Vec::new();
-        let mut fd_map: Vec<&'static str> = Vec::new(); // "stdout" or "stderr"
+        let mut fd_map: Vec<&'static str> = Vec::new(); // "stdout" / "stderr"
 
-        if !stdout_eof && stdout_fd >= 0 {
+        if !s.stdout_eof && s.stdout_fd >= 0 {
             poll_fds.push(libc::pollfd {
-                fd: stdout_fd,
+                fd: s.stdout_fd,
                 events: libc::POLLIN as i16,
                 revents: 0,
             });
             fd_map.push("stdout");
         }
-        if !stderr_eof && stderr_fd >= 0 {
+        if !s.stderr_eof && s.stderr_fd >= 0 {
             poll_fds.push(libc::pollfd {
-                fd: stderr_fd,
+                fd: s.stderr_fd,
                 events: libc::POLLIN as i16,
                 revents: 0,
             });
@@ -597,11 +687,17 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
 
         if poll_fds.is_empty() {
             // No fds to poll — wait for child to exit or just break.
-            if child_exited {
+            if s.child_exited {
                 break;
             }
-            // Sleep briefly and re-check.
-            ::std::thread::sleep(::std::time::Duration::from_millis(10));
+            // Exit-only tail (both pipes EOF'd or unpiped): re-probe at the
+            // exit-tail cadence, not the old 10ms quantum — the Exit push
+            // must not lag a sleep quantum behind the child's reapability
+            // (F5 AC3: exit push observable <5ms; EOF-before-reap is a real
+            // kernel window — files close during do_exit BEFORE the task is
+            // reapable — and a 10ms sleep multiplied it into the common case
+            // under load).
+            ::std::thread::sleep(::std::time::Duration::from_millis(CP_EXIT_TAIL_POLL_MS));
             continue;
         }
 
@@ -629,22 +725,15 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
             let which = fd_map[i];
             let fd = pfd.fd;
 
-            cp_service_fd(&state, which, fd, &mut buf);
+            cp_service_fd(&mut s, which, fd, &mut buf);
         }
     }
 
-    // Close pipe fds that we own — take-then-close under the state lock so a
-    // concurrent runtime-drop sweep (`cleanup_for_token`) can never close the
-    // same fd number twice (a recycled number closed twice hits a foreign
-    // resource). The sweep uses the identical protocol.
-    let taken = {
-        let mut s = state.lock().unwrap();
-        (
-            ::std::mem::replace(&mut s.stdout_fd, -1),
-            ::std::mem::replace(&mut s.stderr_fd, -1),
-        )
-    };
-    for fd in [taken.0, taken.1] {
+    // The drain thread is the pipe fds' sole owner (post-flip the sweep no
+    // longer touches them) — close unconditionally at exit. The old
+    // take-then-close protocol existed because the drop sweep closed the
+    // same fds; that double-close hazard is gone with the shared struct.
+    for fd in [s.stdout_fd, s.stderr_fd] {
         if fd >= 0 {
             unsafe {
                 libc::close(fd);
@@ -655,8 +744,12 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
 
 /// Register a spawned child in `CP_ASYNC_STATES` and start its
 /// `pipe_poll_thread`. Single constructor shared by every async spawn site
-/// (cp_spawn, cluster fork, Bun.spawn in bun_api) so they all get the same
-/// drain-before-publish exit semantics.
+/// (cp_spawn, cp_fork, cluster fork, Bun.spawn in bun_api) so they all get
+/// the same channel-push exit semantics.
+///
+/// The channel pair is created here: the `Sender` moves into the drain
+/// thread's [`CpDrainState`], the `Receiver` into the registry entry. The
+/// channel is unbounded — see the capacity ruling in the module comment.
 ///
 /// fd ownership: `stdout_fd`/`stderr_fd` (parent-side read ends) transfer to
 /// the pump thread, which closes them at EOF. Pass `-1` for unpiped slots.
@@ -665,30 +758,36 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
 /// runtime drop).
 #[cfg(unix)]
 pub(crate) fn register_async_child(pid: i32, stdout_fd: c_int, stderr_fd: c_int, stdin_fd: c_int) -> bool {
-    let async_state = Arc::new(Mutex::new(AsyncChildState {
+    let (tx, rx) = bao_ipc::unbounded::<CpEvent>();
+    let rx_state = Arc::new(Mutex::new(CpRxState {
+        // Stamp the creating runtime's token (0 = process-shared when no
+        // NodeRuntime is alive on this thread); see CpRxState::owner.
+        owner: crate::runtime::current_runtime_token().unwrap_or(0),
+        rx,
+        stdout_buf: Vec::new(),
+        stderr_buf: Vec::new(),
+        exit_info: None,
+        exit_seen: false,
+    }));
+    if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
+        registry.insert(pid, Arc::clone(&rx_state));
+    }
+    let drain = CpDrainState {
         pid,
         stdout_fd,
         stderr_fd,
         stdin_fd,
-        // Stamp the creating runtime's token (0 = process-shared when no
-        // NodeRuntime is alive on this thread); see AsyncChildState::owner.
-        owner: crate::runtime::current_runtime_token().unwrap_or(0),
+        tx,
         stdout_eof: stdout_fd < 0,
         stderr_eof: stderr_fd < 0,
         child_exited: false,
-        stdout_data: Vec::new(),
-        stderr_data: Vec::new(),
         reaped: None,
-        exit_info: None,
-    }));
-    if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
-        registry.insert(pid, Arc::clone(&async_state));
-    }
-    let state_clone = Arc::clone(&async_state);
+        exit_pushed: false,
+    };
     match ::std::thread::Builder::new()
         .name(format!("cp-poll-{}", pid))
         .stack_size(128 * 1024)
-        .spawn(move || pipe_poll_thread(state_clone))
+        .spawn(move || pipe_poll_thread(drain))
     {
         Ok(_) => true,
         Err(e) => {
@@ -704,21 +803,30 @@ pub(crate) fn register_async_child(pid: i32, stdout_fd: c_int, stderr_fd: c_int,
     }
 }
 
-/// Whether any async child is still alive (exit not yet observed). Windows
+/// Whether any async child is still alive (exit not yet published). Windows
 /// exit observation is loop-driven (`on_exit_uv` consumes the IOCP
 /// completion for the process handle), so a JS thread with NO pending
 /// timers/servers/fs-crypto would otherwise never tick the loop and the
 /// child's termination would sit unprocessed forever — the fork-test shape
 /// (disconnect, all short timers fired, waiting only on the child's exit).
-/// Cross-platform body: `child_exited` exists on both faces; on unix the
-/// extra loop tick a caller takes is a cheap no-op (waitpid drives exits).
+/// Post-flip "live" = no `Exit` event pumped yet, which keeps ticking the
+/// loop through the whole reap+drain window (the old `child_exited` probe
+/// went false at reap time, before publication — strictly weaker than the
+/// keepalive contract needs). On unix the extra loop tick a caller takes is
+/// a cheap no-op (waitpid drives exits).
 pub(crate) fn has_live_async_children() -> bool {
     CP_ASYNC_STATES
         .lock()
         .map(|registry| {
-            registry
-                .values()
-                .any(|state| state.lock().map(|s| !s.child_exited).unwrap_or(false))
+            registry.values().any(|state| {
+                state
+                    .lock()
+                    .map(|mut s| {
+                        cp_pump_rx(&mut s);
+                        !s.exit_seen
+                    })
+                    .unwrap_or(false)
+            })
         })
         .unwrap_or(false)
 }
@@ -727,10 +835,7 @@ pub(crate) fn has_live_async_children() -> bool {
 /// cluster kill face calls uv_process_kill through it).
 #[cfg(windows)]
 pub(crate) fn cp_process_for_pid(pid: i32) -> Option<*mut ::std::ffi::c_void> {
-    CP_ASYNC_STATES
-        .lock()
-        .ok()
-        .and_then(|registry| registry.get(&pid).cloned())
+    cp_rx_state_for_pid(pid)
         .and_then(|state| state.lock().ok().and_then(|s| s.process.map(|p| p as *mut _)))
 }
 
@@ -740,7 +845,8 @@ pub(crate) fn cp_process_for_pid(pid: i32) -> Option<*mut ::std::ffi::c_void> {
 /// Exit-only registration (all-null ends + `None` process — e.g. the
 /// Bun.spawn face at its registered drain gap): registers the state but does
 /// NOT spawn a poll thread (nothing to drain, no oracle to poll — a thread
-/// would spin forever). `poll_exit_info` stays `None`, matching the
+/// would spin forever). The `Sender` drops with this call, so the channel is
+/// closed and empty: `poll_exit_info` stays `None`, matching the
 /// pre-windows-arm semantics until the Bun.spawn stdio rework lands.
 #[cfg(windows)]
 pub(crate) fn register_async_child(
@@ -750,26 +856,22 @@ pub(crate) fn register_async_child(
     stdin_handle: HANDLE,
     process: Option<*mut Process>,
 ) -> bool {
-    let async_state = Arc::new(Mutex::new(AsyncChildState {
-        pid,
-        stdout_handle,
-        stderr_handle,
-        stdin_handle,
-        process,
+    let (tx, rx) = bao_ipc::unbounded::<CpEvent>();
+    let rx_state = Arc::new(Mutex::new(CpRxState {
         owner: crate::runtime::current_runtime_token().unwrap_or(0),
-        stdout_eof: stdout_handle.is_null(),
-        stderr_eof: stderr_handle.is_null(),
-        child_exited: false,
-        stdout_data: Vec::new(),
-        stderr_data: Vec::new(),
-        reaped: None,
+        rx,
+        stdout_buf: Vec::new(),
+        stderr_buf: Vec::new(),
         exit_info: None,
+        exit_seen: false,
+        process,
     }));
     if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
-        registry.insert(pid, Arc::clone(&async_state));
+        registry.insert(pid, Arc::clone(&rx_state));
     }
     // Exit-only registration: no drain face and no exit oracle — a poll
-    // thread would spin forever. See the fn doc.
+    // thread would spin forever. See the fn doc. The dropped `tx` closes the
+    // channel: no event can ever arrive, `poll_exit_info` stays `None`.
     if stdout_handle.is_null()
         && stderr_handle.is_null()
         && stdin_handle.is_null()
@@ -777,11 +879,23 @@ pub(crate) fn register_async_child(
     {
         return true;
     }
-    let state_clone = Arc::clone(&async_state);
+    let drain = CpDrainState {
+        pid,
+        stdout_handle,
+        stderr_handle,
+        stdin_handle,
+        process,
+        tx,
+        stdout_eof: stdout_handle.is_null(),
+        stderr_eof: stderr_handle.is_null(),
+        child_exited: false,
+        reaped: None,
+        exit_pushed: false,
+    };
     match ::std::thread::Builder::new()
         .name(format!("cp-poll-{}", pid))
         .stack_size(128 * 1024)
-        .spawn(move || pipe_poll_thread(state_clone))
+        .spawn(move || pipe_poll_thread(drain))
     {
         Ok(_) => true,
         Err(e) => {
@@ -799,14 +913,13 @@ pub(crate) fn register_async_child(
 
 /// Published exit info for an async child: `Some((exit_code, signal))` once
 /// the child was reaped AND its pipes fully drained (drain-before-publish —
-/// see `cp_try_publish`). `None` while running. Cross-module read for
-/// Bun.spawn's `_pollExitInfo` native.
+/// see `CpDrainState::try_push_exit`). `None` while running. Cross-module
+/// read for Bun.spawn's `_pollExitInfo` native and `proc.wait()`.
 pub(crate) fn poll_exit_info(pid: i32) -> Option<(i32, i32)> {
-    CP_ASYNC_STATES
-        .lock()
-        .ok()
-        .and_then(|registry| registry.get(&pid).cloned())
-        .and_then(|state| state.lock().ok().and_then(|s| s.exit_info))
+    let state = cp_rx_state_for_pid(pid)?;
+    let mut s = state.lock().ok()?;
+    cp_pump_rx(&mut s);
+    s.exit_info
 }
 
 /// Clone the bytes accumulated so far on a child's pipe WITHOUT consuming
@@ -814,19 +927,14 @@ pub(crate) fn poll_exit_info(pid: i32) -> Option<(i32, i32)> {
 /// chunk once). Capture-at-exit readers (Bun.spawn's text()/data events) read
 /// repeatedly and must see the full buffer every time.
 pub(crate) fn peek_output(pid: i32, stdout: bool) -> Option<Vec<u8>> {
-    CP_ASYNC_STATES
-        .lock()
-        .ok()
-        .and_then(|registry| registry.get(&pid).cloned())
-        .and_then(|state| {
-            state.lock().ok().map(|s| {
-                if stdout {
-                    s.stdout_data.clone()
-                } else {
-                    s.stderr_data.clone()
-                }
-            })
-        })
+    let state = cp_rx_state_for_pid(pid)?;
+    let mut s = state.lock().ok()?;
+    cp_pump_rx(&mut s);
+    Some(if stdout {
+        s.stdout_buf.clone()
+    } else {
+        s.stderr_buf.clone()
+    })
 }
 
 // ── Runtime-drop sweep (B1, 用户裁决 2026-09-17 A — "drop 时未 close 资源必须 close")
@@ -902,8 +1010,15 @@ enum CpReap {
 
 /// One `waitpid(WNOHANG)` probe. `None` = still alive (or a transient probe
 /// error — retry within the window); `Some` = terminal outcome.
+///
+/// Post-flip the sweep is itself the consumer side (it runs on the JS
+/// thread): it wins `waitpid` when the drain thread's own waitpid can never
+/// observe the exit (ECHILD forever — the drain thread will never push an
+/// `Exit` event), so the sweep publishes into the registry state directly:
+/// pump first (fold any in-flight data chunks — ordering), then set
+/// `exit_info` if not already set.
 #[cfg(unix)]
-fn cp_try_reap(pid: i32, state: &Mutex<AsyncChildState>) -> Option<CpReap> {
+fn cp_try_reap(pid: i32, state: &Mutex<CpRxState>) -> Option<CpReap> {
     let mut wstatus: c_int = 0;
     let ret = unsafe { libc::waitpid(pid, &mut wstatus, libc::WNOHANG) };
     if ret == 0 {
@@ -911,7 +1026,9 @@ fn cp_try_reap(pid: i32, state: &Mutex<AsyncChildState>) -> Option<CpReap> {
     }
     if ret == pid {
         if let Ok(mut s) = state.lock() {
-            if !s.child_exited {
+            cp_pump_rx(&mut s);
+            s.exit_seen = true;
+            if s.exit_info.is_none() {
                 let exit_code = if libc::WIFEXITED(wstatus) {
                     libc::WEXITSTATUS(wstatus)
                 } else {
@@ -922,10 +1039,8 @@ fn cp_try_reap(pid: i32, state: &Mutex<AsyncChildState>) -> Option<CpReap> {
                 } else {
                     0
                 };
-                s.child_exited = true;
-                s.reaped = Some((exit_code, signal));
+                s.exit_info = Some((exit_code, signal));
             }
-            cp_try_publish(&mut s);
         }
         return Some(CpReap::Reaped);
     }
@@ -939,11 +1054,12 @@ fn cp_try_reap(pid: i32, state: &Mutex<AsyncChildState>) -> Option<CpReap> {
 }
 
 /// windows twin: no waitpid — the spawn face's `Process` is the exit
-/// oracle. `update_status_on_windows` lifts an observed uv exit into
+/// oracle. `update_status_on_windows` lifts an same-arm-shaped exit into
 /// `Status`; `Running` = still alive (retry within the window). The
-/// poll-thread bookkeeping mirror matches the unix arms.
+/// sweep's publication mirrors the drain thread's arms (pump, then set
+/// `exit_info` if not already set).
 #[cfg(windows)]
-fn cp_try_reap(_pid: i32, state: &Mutex<AsyncChildState>) -> Option<CpReap> {
+fn cp_try_reap(_pid: i32, state: &Mutex<CpRxState>) -> Option<CpReap> {
     let mut s = state.lock().ok()?;
     if let Some(process) = s.process {
         // SAFETY: live intrusive `*mut Process` owned by the registry state;
@@ -952,73 +1068,29 @@ fn cp_try_reap(_pid: i32, state: &Mutex<AsyncChildState>) -> Option<CpReap> {
         // SAFETY: same liveness contract as above.
         let status = unsafe { (*process).status.clone() };
         match status {
-            Status::Exited(_) | Status::Signaled(_) if s.child_exited => {
+            Status::Exited(_) | Status::Signaled(_) if s.exit_info.is_some() => {
                 return Some(CpReap::AlreadyReaped);
             }
             Status::Exited(exited) => {
-                s.child_exited = true;
-                s.reaped = Some((exited.code as i32, exited.signal as i32));
-                cp_try_publish(&mut s);
+                cp_pump_rx(&mut s);
+                s.exit_seen = true;
+                if s.exit_info.is_none() {
+                    s.exit_info = Some((exited.code as i32, exited.signal as i32));
+                }
                 return Some(CpReap::Reaped);
             }
             Status::Signaled(sig) => {
-                s.child_exited = true;
-                s.reaped = Some((-1, sig as i32));
-                cp_try_publish(&mut s);
+                cp_pump_rx(&mut s);
+                s.exit_seen = true;
+                if s.exit_info.is_none() {
+                    s.exit_info = Some((-1, sig as i32));
+                }
                 return Some(CpReap::Reaped);
             }
             _ => return None, // Running / Err — probe again
         }
     }
     None
-}
-
-/// Take (swap to -1) and close a state's stdout/stderr read-end fds.
-///
-/// Take-then-close under the state lock is the fd-ownership protocol shared
-/// with `pipe_poll_thread`'s exit path: whichever party swaps a field owns
-/// that close; the other observes -1 and can never close a recycled fd
-/// number (a double `close` hits whatever reused the number).
-#[cfg(unix)]
-fn cp_take_and_close_pipe_fds(state: &Mutex<AsyncChildState>) {
-    let taken = match state.lock() {
-        Ok(mut s) => (
-            ::std::mem::replace(&mut s.stdout_fd, -1),
-            ::std::mem::replace(&mut s.stderr_fd, -1),
-        ),
-        // Poisoned state = a poll thread panicked holding the lock; fd
-        // ownership is unknowable, so refuse to guess (never double-close).
-        Err(_) => return,
-    };
-    for fd in [taken.0, taken.1] {
-        if fd >= 0 {
-            unsafe {
-                libc::close(fd);
-            }
-        }
-    }
-}
-
-/// windows twin: take-then-close on HANDLEs (same ownership protocol).
-#[cfg(windows)]
-fn cp_take_and_close_pipe_fds(state: &Mutex<AsyncChildState>) {
-    let taken = match state.lock() {
-        Ok(mut s) => (
-            ::std::mem::replace(&mut s.stdout_handle, ::std::ptr::null_mut()),
-            ::std::mem::replace(&mut s.stderr_handle, ::std::ptr::null_mut()),
-        ),
-        // Poisoned state = a poll thread panicked holding the lock; handle
-        // ownership is unknowable, so refuse to guess (never double-close).
-        Err(_) => return,
-    };
-    for handle in [taken.0, taken.1] {
-        if !handle.is_null() {
-            // SAFETY: HANDLE we own under the take-then-close protocol.
-            unsafe {
-                w::CloseHandle(handle);
-            }
-        }
-    }
 }
 
 /// Terminate every child process owned by the runtime `token`.
@@ -1035,11 +1107,15 @@ fn cp_take_and_close_pipe_fds(state: &Mutex<AsyncChildState>) {
 /// 2. bounded `waitpid(WNOHANG)` reap — [`CP_REAP_TERM_WINDOW`], then a
 ///    SIGKILL escalation with [`CP_REAP_KILL_WINDOW`]; a child that survives
 ///    both (D state) is reported loudly and its entry is KEPT (sweeping it
-///    would break double-reap/double-kill semantics; its poll thread keeps
+///    would break double-reap/double-kill semantics; its drain thread keeps
 ///    owning the fds and the exit observation),
-/// 3. the pipe read-end fds are taken and closed via the take-then-close
-///    protocol shared with the poll thread, and the same-spawn stdin write
-///    end is taken out of `CP_STDIN_FDS` and closed the same way,
+/// 3. the same-spawn stdin write end is taken out of `CP_STDIN_FDS` and
+///    closed. Post-flip the stdout/stderr pipe ends are the DRAIN thread's
+///    sole property — no sweep-side close exists (and no take-then-close
+///    protocol is needed: the double-close hazard class died with the
+///    shared struct). Removing the registry entry drops the channel
+///    `Receiver`; the drain thread's next `send` fails and it closes the
+///    fds and exits — prompt, bounded reclamation without a second closer.
 /// 4. the registry entry is removed and the same-pid `CP_IPC_CHANNELS` entry
 ///    is dropped — the IPC channel is created by the same spawn and dies with
 ///    the child, so dropping the `Arc` closes the parent socketpair end (no
@@ -1060,7 +1136,7 @@ pub(crate) fn cleanup_for_token(token: u64) -> usize {
     // Collect this token's children under a minimal registry lock; no
     // re-registration can race the sweep — the JS thread, the only spawner,
     // is the caller inside Drop.
-    let owned: Vec<(i32, Arc<Mutex<AsyncChildState>>)> = match CP_ASYNC_STATES.lock() {
+    let owned: Vec<(i32, Arc<Mutex<CpRxState>>)> = match CP_ASYNC_STATES.lock() {
         Ok(registry) => registry
             .iter()
             .filter(|(_, state)| state.lock().map(|s| s.owner == token).unwrap_or(false))
@@ -1093,7 +1169,6 @@ pub(crate) fn cleanup_for_token(token: u64) -> usize {
         };
         match outcome {
             CpReap::Reaped | CpReap::AlreadyReaped => {
-                cp_take_and_close_pipe_fds(&state);
                 // stdin write end dies with the child too — the JS poll chain
                 // may never have observed the exit before this sweep ran (Drop
                 // is the last consumer), so the same take-then-close applies.
@@ -1109,7 +1184,7 @@ pub(crate) fn cleanup_for_token(token: u64) -> usize {
             }
             CpReap::Unkillable => {
                 // Loud, honest residual — keep the entry so no phantom sweep
-                // can double-kill, and the poll thread keeps its fds.
+                // can double-kill, and the drain thread keeps its fds.
                 log::warn!(
                     "[bao] runtime-drop sweep: child {} (token {}) survived SIGTERM+SIGKILL — registry entry kept",
                     pid, token
@@ -3114,22 +3189,21 @@ unsafe extern "C" fn cp_drain(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         return true;
     }
 
-    // Look up shared state by pid, then drain the requested buffer.
-    let data: Vec<u8> = CP_ASYNC_STATES
-        .lock()
-        .ok()
-        .and_then(|registry| registry.get(&pid).cloned())
+    // Look up shared state by pid, pump the channel (fold every queued chunk
+    // — in FIFO order every byte published before an Exit event is already
+    // here), then drain the requested buffer.
+    let data: Vec<u8> = cp_rx_state_for_pid(pid)
         .and_then(|state| {
-            let mut s = state.lock().unwrap();
-            if which == 0 {
+            state.lock().ok().map(|mut s| {
+                cp_pump_rx(&mut s);
                 let mut swap = Vec::new();
-                ::std::mem::swap(&mut s.stdout_data, &mut swap);
-                Some(swap)
-            } else {
-                let mut swap = Vec::new();
-                ::std::mem::swap(&mut s.stderr_data, &mut swap);
-                Some(swap)
-            }
+                if which == 0 {
+                    ::std::mem::swap(&mut s.stdout_buf, &mut swap);
+                } else {
+                    ::std::mem::swap(&mut s.stderr_buf, &mut swap);
+                }
+                swap
+            })
         })
         .unwrap_or_default();
 
@@ -3190,15 +3264,16 @@ unsafe extern "C" fn cp_poll_exit(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         return true;
     }
 
-    // Look up shared state by pid, then take the exit_info if present.
-    let exit_info = CP_ASYNC_STATES
-        .lock()
-        .ok()
-        .and_then(|registry| registry.get(&pid).cloned())
+    // Look up shared state by pid, pump the channel, then take the published
+    // exit info if present (consume-once, same as the old field take).
+    let exit_info = cp_rx_state_for_pid(pid)
         .and_then(|state| {
-            let mut s = state.lock().unwrap();
-            s.exit_info.take()
-        });
+            state.lock().ok().map(|mut s| {
+                cp_pump_rx(&mut s);
+                s.exit_info.take()
+            })
+        })
+        .flatten();
 
     // JS-thread death observation: the terminal status was just consumed
     // here (child exited AND pipes drained — the publish invariant), so the
@@ -5325,43 +5400,23 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
                 let pid = posix_result.pid;
                 drop(posix_result);
 
-                // Build shared state and register it globally for __cp_drain / __cp_poll_exit.
-                let async_state = Arc::new(Mutex::new(AsyncChildState {
-                    pid,
-                    stdout_fd: stdout_pipe[0],
-                    stderr_fd: stderr_pipe[0],
-                    stdin_fd: stdin_pipe[1],
-                    // Same owner stamp as register_async_child (this fork site
-                    // builds its state inline); see AsyncChildState::owner.
-                    owner: crate::runtime::current_runtime_token().unwrap_or(0),
-                    stdout_eof: false,
-                    stderr_eof: false,
-                    child_exited: false,
-                    stdout_data: Vec::new(),
-                    stderr_data: Vec::new(),
-                    reaped: None,
-                    exit_info: None,
-                }));
-
-                // Register in global registry so __cp_drain / __cp_poll_exit can find it.
-                if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
-                    registry.insert(pid, Arc::clone(&async_state));
-                }
-
+                // Register via the shared constructor — the exact same
+                // channel-push state + cp-poll thread as cp_spawn (this fork
+                // site previously built its AsyncChildState inline; the flip
+                // folds it in so both faces can't diverge again).
                 // Parent holds the write end (stdin_pipe[1]) to write to child's stdin.
+                let _ = register_async_child(
+                    pid,
+                    stdout_pipe[0],
+                    stderr_pipe[0],
+                    stdin_pipe[1],
+                );
                 CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[1]));
-                {
-                    let state_clone = Arc::clone(&async_state);
-                    let _ = ::std::thread::Builder::new()
-                        .name(format!("cp-fork-{}", pid))
-                        .stack_size(128 * 1024)
-                        .spawn(move || pipe_poll_thread(state_clone));
-                }
                 pid
             };
 
             // windows arm (#18): HANDLE ends + the Process exit oracle —
-            // same face as cp_spawn (state built inline, cp-fork-* thread).
+            // same face as cp_spawn (registered via register_async_child).
             #[cfg(windows)]
             let pid = {
                 let mut posix_result = posix_result;
@@ -5396,32 +5451,17 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
                     .as_ref()
                     .map(|p| p.parent)
                     .unwrap_or(::std::ptr::null_mut());
-                let async_state = Arc::new(Mutex::new(AsyncChildState {
+                // Register via the shared constructor — same channel-push
+                // state + cp-poll thread as cp_spawn (this fork site built
+                // its state inline pre-flip).
+                let _ = register_async_child(
                     pid,
                     stdout_handle,
                     stderr_handle,
                     stdin_handle,
-                    process: posix_result.process_,
-                    owner: crate::runtime::current_runtime_token().unwrap_or(0),
-                    stdout_eof: false,
-                    stderr_eof: false,
-                    child_exited: false,
-                    stdout_data: Vec::new(),
-                    stderr_data: Vec::new(),
-                    reaped: None,
-                    exit_info: None,
-                }));
-                if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
-                    registry.insert(pid, Arc::clone(&async_state));
-                }
+                    posix_result.process_,
+                );
                 CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_handle));
-                {
-                    let state_clone = Arc::clone(&async_state);
-                    let _ = ::std::thread::Builder::new()
-                        .name(format!("cp-fork-{}", pid))
-                        .stack_size(128 * 1024)
-                        .spawn(move || pipe_poll_thread(state_clone));
-                }
                 pid
             };
 
@@ -6072,3 +6112,259 @@ mod tests {
     }
 }
 
+
+/// F5 discriminating tests (REQ-ARCH-3): the push-model publication face.
+/// In-crate `#[cfg(test)]` (not tests/suite) — these drive the registry
+/// directly (`pub(crate)` items) and need no JS engine; nextest runs each in
+/// its own process so the engine-singleton lock discipline is untouched.
+#[cfg(all(test, unix))]
+mod cp_async_push_tests {
+    use super::*;
+
+    /// Spawn `/bin/sh -c <script>` with piped stdout/stderr and register it
+    /// on the async face. Pipe-wrapper + Child ownership transfer mirrors
+    /// bun_api's Bun.spawn face: the wrappers are forgotten (fd ownership
+    /// moves to the drain thread, which closes at EOF; its waitpid reaps).
+    fn spawn_piped(script: &str) -> i32 {
+        use ::std::process::{Command, Stdio};
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn sh");
+        let pid = child.id() as i32;
+        let stdout_pipe = child.stdout.take().expect("stdout piped");
+        let stderr_pipe = child.stderr.take().expect("stderr piped");
+        use ::std::os::fd::AsRawFd;
+        let stdout_fd = stdout_pipe.as_raw_fd();
+        let stderr_fd = stderr_pipe.as_raw_fd();
+        assert!(register_async_child(pid, stdout_fd, stderr_fd, -1));
+        ::std::mem::forget(stdout_pipe);
+        ::std::mem::forget(stderr_pipe);
+        ::std::mem::forget(child);
+        pid
+    }
+
+    /// The `__cp_drain` native's body, state half: pump + take.
+    fn take_drain(pid: i32, which: i32) -> Vec<u8> {
+        cp_rx_state_for_pid(pid)
+            .and_then(|state| {
+                state.lock().ok().map(|mut s| {
+                    cp_pump_rx(&mut s);
+                    let mut swap = Vec::new();
+                    if which == 0 {
+                        ::std::mem::swap(&mut s.stdout_buf, &mut swap);
+                    } else {
+                        ::std::mem::swap(&mut s.stderr_buf, &mut swap);
+                    }
+                    swap
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    /// Exit push immediacy (AC3): from the child's last output (it is
+    /// between its final write(2) and exit) to `poll_exit_info` observably
+    /// Some — under 5ms, 100 runs.
+    #[test]
+    fn cp_async_push_exit_latency_100x() {
+        for i in 0..100 {
+            let pid = spawn_piped("echo x");
+            let t0 = ::std::time::Instant::now();
+            let sentinel_at = loop {
+                let b = peek_output(pid, true).unwrap_or_default();
+                if !b.is_empty() {
+                    break t0.elapsed();
+                }
+                assert!(
+                    t0.elapsed() < ::std::time::Duration::from_secs(10),
+                    "iter {i}: sentinel never arrived"
+                );
+                ::std::thread::sleep(::std::time::Duration::from_micros(100));
+            };
+            let exit_at = loop {
+                if poll_exit_info(pid).is_some() {
+                    break t0.elapsed();
+                }
+                assert!(
+                    t0.elapsed() < ::std::time::Duration::from_secs(10),
+                    "iter {i}: exit never published"
+                );
+                ::std::thread::sleep(::std::time::Duration::from_micros(100));
+            };
+            assert!(
+                exit_at - sentinel_at < ::std::time::Duration::from_millis(5),
+                "iter {i}: exit push latency {:?} >= 5ms",
+                exit_at - sentinel_at
+            );
+        }
+    }
+
+    /// High-volume stderr (AC5): >=1MB written in shell-sized chunks must
+    /// arrive complete and in order (zero loss, zero reorder) when consumed
+    /// through the channel — the drain-before-publish tuition, volume face.
+    #[test]
+    fn cp_async_push_stderr_1mb_zero_loss() {
+        let pid = spawn_piped("seq 1 200000 >&2");
+        let expected: Vec<u8> = {
+            let mut v: Vec<u8> = (1..=200_000)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into_bytes();
+            v.push(b'\n');
+            v
+        };
+        assert!(expected.len() >= 1_000_000);
+        let deadline = ::std::time::Instant::now() + ::std::time::Duration::from_secs(60);
+        let mut collected: Vec<u8> = Vec::new();
+        let mut quiet = 0u32;
+        loop {
+            let chunk = take_drain(pid, 1);
+            let chunk_had_data = !chunk.is_empty();
+            collected.extend(chunk);
+            let exited = poll_exit_info(pid).is_some();
+            quiet = if !chunk_had_data { quiet + 1 } else { 0 };
+            if exited && quiet >= 3 {
+                break;
+            }
+            assert!(
+                ::std::time::Instant::now() < deadline,
+                "child never finished (collected {} bytes)",
+                collected.len()
+            );
+            ::std::thread::sleep(::std::time::Duration::from_millis(5));
+        }
+        assert_eq!(collected.len(), expected.len(), "stderr byte count");
+        assert_eq!(collected, expected, "stderr byte order/content");
+        assert!(take_drain(pid, 1).is_empty(), "nothing may trail exit");
+    }
+
+    /// Drain-before-publish (task #21/#22 tuition, interleave face): while
+    /// the child is mid-stream (sleeping between writes) the exit must NOT
+    /// be observable; every byte written must arrive before the exit and
+    /// nothing may trail it.
+    #[test]
+    fn cp_async_push_drain_before_publish_interleave() {
+        let pid = spawn_piped("echo first >&2; sleep 0.3; echo last >&2");
+        // Phase 1: "first" arrives while the child is still running.
+        let deadline = ::std::time::Instant::now() + ::std::time::Duration::from_secs(5);
+        let got_first = loop {
+            let b = take_drain(pid, 1);
+            if !b.is_empty() {
+                assert_eq!(b, b"first\n");
+                break true;
+            }
+            assert!(
+                ::std::time::Instant::now() < deadline,
+                "first chunk never arrived"
+            );
+            ::std::thread::sleep(::std::time::Duration::from_millis(5));
+        };
+        assert!(got_first);
+        // Still mid-stream: exit must not be observable (~100ms << 300ms).
+        for _ in 0..20 {
+            assert!(
+                poll_exit_info(pid).is_none(),
+                "exit published while the child was mid-stream — drain-before-publish violated"
+            );
+            ::std::thread::sleep(::std::time::Duration::from_millis(5));
+        }
+        // Phase 2: run to completion, collect in order. The full stream is
+        // phase 1's consumed chunk + everything collected here.
+        let mut collected: Vec<u8> = b"first\n".to_vec();
+        loop {
+            collected.extend(take_drain(pid, 1));
+            if poll_exit_info(pid).is_some() {
+                collected.extend(take_drain(pid, 1));
+                break;
+            }
+            assert!(
+                ::std::time::Instant::now() < deadline,
+                "child never finished"
+            );
+            ::std::thread::sleep(::std::time::Duration::from_millis(5));
+        }
+        assert_eq!(collected, b"first\nlast\n");
+        ::std::thread::sleep(::std::time::Duration::from_millis(50));
+        assert!(take_drain(pid, 1).is_empty(), "nothing may trail exit");
+    }
+
+    /// Unpiped registration (cluster-fork / inherited-stdio shape): no
+    /// buffers, exit published by the drain thread's waitpid cadence, not
+    /// while the child is alive.
+    #[test]
+    fn cp_async_push_unpiped_exit_publish() {
+        use ::std::process::Command;
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("sleep 0.3")
+            .spawn()
+            .expect("spawn sh");
+        let pid = child.id() as i32;
+        ::std::mem::forget(child); // drain thread's waitpid reaps
+        assert!(register_async_child(pid, -1, -1, -1));
+        // While the child sleeps, no exit.
+        for _ in 0..10 {
+            assert!(poll_exit_info(pid).is_none());
+            ::std::thread::sleep(::std::time::Duration::from_millis(10));
+        }
+        let deadline = ::std::time::Instant::now() + ::std::time::Duration::from_secs(5);
+        let info = loop {
+            if let Some(info) = poll_exit_info(pid) {
+                break info;
+            }
+            assert!(
+                ::std::time::Instant::now() < deadline,
+                "unpiped child exit never published"
+            );
+            ::std::thread::sleep(::std::time::Duration::from_millis(2));
+        };
+        assert_eq!(info, (0, 0));
+    }
+
+    /// Registry-miss shape bun_api depends on: unknown pid → `None` (never
+    /// `Some(empty)`), registered-but-quiet → `Some(empty)`.
+    #[test]
+    fn cp_async_push_registry_miss_vs_empty() {
+        let ghost = 0x7fff_ffff;
+        assert_eq!(peek_output(ghost, true), None);
+        assert_eq!(poll_exit_info(ghost), None);
+        let pid = spawn_piped("sleep 0.2");
+        assert_eq!(peek_output(pid, true), Some(Vec::new()));
+    }
+    /// Liveness latch regression pin: after `__cp_poll_exit` consumes the
+    /// published exit, `has_live_async_children` must stay false — the take
+    /// must not resurrect a phantom live child (keepalive busy-spin class).
+    #[test]
+    fn cp_async_push_liveness_not_resurrected_after_exit_take() {
+        let pid = spawn_piped("echo x");
+        let deadline = ::std::time::Instant::now() + ::std::time::Duration::from_secs(5);
+        let info = loop {
+            if let Some(info) = poll_exit_info(pid) {
+                break info;
+            }
+            assert!(
+                ::std::time::Instant::now() < deadline,
+                "exit never published"
+            );
+            ::std::thread::sleep(::std::time::Duration::from_millis(2));
+        };
+        // Consume exactly like the __cp_poll_exit native body.
+        let taken = cp_rx_state_for_pid(pid)
+            .and_then(|state| {
+                state.lock().ok().map(|mut s| {
+                    cp_pump_rx(&mut s);
+                    s.exit_info.take()
+                })
+            })
+            .flatten();
+        assert_eq!(taken, Some(info));
+        assert!(
+            !has_live_async_children(),
+            "consumed exit resurrected a phantom live child"
+        );
+    }
+}

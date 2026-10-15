@@ -1,11 +1,11 @@
 use super::*;
 
+use bao_ipc::{Receiver, Sender};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 
 use dpi::PhysicalSize;
 use servo::{
@@ -135,8 +135,14 @@ pub struct BaoWebViewState {
     /// evaluate_js checks this flag and refreshes stale DOM proxies before executing scripts.
     pub dom_proxies_dirty: bool,
     /// Channel for forwarding per-webview console messages to CDP Log domain.
-    pub console_log_tx: Option<std::sync::mpsc::Sender<ConsoleMessage>>,
-    /// Real event queue sender (Path B): reliable unbounded mpsc to the pump.
+    /// Unified MPMC substrate (REQ-ARCH-3, wave R3) — this is the same
+    /// channel pair the servo delegate and `CdpServer::set_console_receiver`
+    /// share (propagated at page creation), so all holders took the
+    /// substrate in the same wave.
+    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    pub console_log_tx: Option<Sender<ConsoleMessage>>,
+    /// Real event queue sender (Path B): reliable unbounded queue (bao_ipc,
+    /// REQ-ARCH-3) to the pump.
     /// When set, events are also pushed here in addition to console_log_tx.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     pub event_tx: Option<Sender<ServoEvent>>,
@@ -186,7 +192,7 @@ pub struct BaoWebViewState {
     /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope]
     pub(super) shared_worker_scopes: HashMap<SharedWorkerId, SharedWorkerGlobalScopeState>,
     /// Worker channel bridges for page↔worker structured-clone communication.
-    /// Keyed by WorkerId for O(1) lookup. Each bridge holds the mpsc channel
+    /// Keyed by WorkerId for O(1) lookup. Each bridge holds the bao_ipc channel
     /// endpoints for bidirectional postMessage (DF-WK-4 / DF-WK-5).
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
     pub(super) worker_channels: HashMap<WorkerId, WorkerChannelBridge>,
@@ -1482,10 +1488,12 @@ impl BaoWebViewState {
                 status_message,
                 response_headers,
                 body,
-            } => match prepare_fulfillment(*response_code, status_message, response_headers, body) {
-                Ok(fulfillment) => Some(fulfillment),
-                Err(reason) => return FetchResolveOutcome::Rejected(reason),
-            },
+            } => {
+                match prepare_fulfillment(*response_code, status_message, response_headers, body) {
+                    Ok(fulfillment) => Some(fulfillment),
+                    Err(reason) => return FetchResolveOutcome::Rejected(reason),
+                }
+            }
         };
         let load = self
             .pending_intercepted_loads
@@ -1565,7 +1573,11 @@ pub(crate) fn prepare_fulfillment(
     }
     let status_code = match http::StatusCode::from_u16(response_code as u16) {
         Ok(code) => code,
-        Err(e) => return Err(format!("invalid fulfill status code: {response_code} ({e})")),
+        Err(e) => {
+            return Err(format!(
+                "invalid fulfill status code: {response_code} ({e})"
+            ))
+        }
     };
     let body = match body_base64 {
         Some(text) => {
@@ -1980,11 +1992,9 @@ mod tests {
         state.reap_terminated_workers();
         // worker1's scope should be reaped, worker2's should remain
         assert_eq!(state.dedicated_worker_scope_count(), 1);
-        assert!(
-            state
-                .dedicated_worker_scope(&WorkerId("worker2.js".to_string()))
-                .is_some()
-        );
+        assert!(state
+            .dedicated_worker_scope(&WorkerId("worker2.js".to_string()))
+            .is_some());
     }
 
     #[test]
@@ -2068,7 +2078,7 @@ mod tests {
 
     #[test]
     fn test_webview_state_drain_and_forward_shared_worker_messages() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         let mut state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -2229,14 +2239,12 @@ mod tests {
             id.clone(),
             SharedWorkerGlobalScopeState::new(id.clone(), &config),
         );
-        assert!(
-            state
-                .shared_worker_scope(&id)
-                .unwrap()
-                .navigator()
-                .user_agent
-                .is_empty()
-        );
+        assert!(state
+            .shared_worker_scope(&id)
+            .unwrap()
+            .navigator()
+            .user_agent
+            .is_empty());
         let new_config = SharedWorkerScopeConfig {
             stealth_profile: None,
             user_agent: "Bao/1.0".to_string(),
@@ -2672,7 +2680,9 @@ mod tests {
         assert!(prepare_fulfillment_errors(200, None, Some(&headers), None).is_none());
         let bad_headers = serde_json::json!({"x-num": 7});
         assert!(prepare_fulfillment_errors(200, None, Some(&bad_headers), None).is_some());
-        assert!(prepare_fulfillment_errors(200, None, Some(&serde_json::json!([])), None).is_some());
+        assert!(
+            prepare_fulfillment_errors(200, None, Some(&serde_json::json!([])), None).is_some()
+        );
     }
 
     /// `prepare_fulfillment` 的 Err 投影(status_code 恒 200,聚焦载荷校验)。

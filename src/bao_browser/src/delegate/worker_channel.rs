@@ -1,11 +1,11 @@
 use super::*;
 
+use bao_ipc::{Receiver, Sender};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 
 use dpi::PhysicalSize;
 use servo::{
@@ -331,7 +331,7 @@ impl WorkerStructuredMessage {
 
 /// Bidirectional channel bridge for a single Worker's postMessage channel.
 ///
-/// Holds the mpsc channel endpoints for page↔worker communication.
+/// Holds the bao_ipc channel endpoints for page↔worker communication.
 /// The bridge does NOT hold JSObject references — only channel endpoints
 /// and serialized data. This is safe to store across threads.
 ///
@@ -367,11 +367,10 @@ impl WorkerChannelBridge {
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
     pub fn new(worker_id: WorkerId) -> (Self, WorkerChannelEndpoints) {
         // DF-WK-4: page→worker channel
-        let (page_to_worker_tx, page_to_worker_rx) =
-            std::sync::mpsc::channel::<StructuredClonePayload>();
+        let (page_to_worker_tx, page_to_worker_rx) = bao_ipc::unbounded::<StructuredClonePayload>();
         // DF-WK-5: worker→page channel
         let (worker_to_page_tx, worker_to_page_rx) =
-            std::sync::mpsc::channel::<WorkerStructuredMessage>();
+            bao_ipc::unbounded::<WorkerStructuredMessage>();
 
         let bridge = WorkerChannelBridge {
             worker_id: worker_id.clone(),
@@ -401,7 +400,7 @@ impl WorkerChannelBridge {
     pub fn post_message_to_worker(
         &self,
         payload: StructuredClonePayload,
-    ) -> Result<(), std::sync::mpsc::SendError<StructuredClonePayload>> {
+    ) -> Result<(), bao_ipc::SendError<StructuredClonePayload>> {
         self.page_to_worker_tx.send(payload)
     }
 
@@ -458,8 +457,8 @@ pub(super) fn try_recv_worker_msg(
 ) -> Result<Option<WorkerStructuredMessage>, ()> {
     match rx.try_recv() {
         Ok(msg) => Ok(Some(msg)),
-        Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
-        Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(()),
+        Err(bao_ipc::TryRecvError::Empty) => Ok(None),
+        Err(bao_ipc::TryRecvError::Disconnected) => Err(()),
     }
 }
 
@@ -475,8 +474,8 @@ pub(super) fn drain_worker_rx(rx: &Receiver<WorkerStructuredMessage>) -> WorkerD
     loop {
         match rx.try_recv() {
             Ok(msg) => messages.push(msg),
-            Err(std::sync::mpsc::TryRecvError::Empty) => break,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            Err(bao_ipc::TryRecvError::Empty) => break,
+            Err(bao_ipc::TryRecvError::Disconnected) => {
                 disconnected = true;
                 break;
             }
@@ -673,7 +672,7 @@ mod tests {
 
     #[test]
     fn test_webview_state_forward_worker_message_to_event_tx() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         let state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -753,7 +752,7 @@ mod tests {
 
     #[test]
     fn test_webview_state_forward_worker_error_to_event_tx() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         let state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -1047,11 +1046,9 @@ mod tests {
         state.reap_terminated_workers();
         // worker1's channel should be reaped, worker2's should remain
         assert_eq!(state.worker_channel_count(), 1);
-        assert!(
-            state
-                .worker_channel(&WorkerId("worker2.js".to_string()))
-                .is_some()
-        );
+        assert!(state
+            .worker_channel(&WorkerId("worker2.js".to_string()))
+            .is_some());
     }
 
     #[test]
@@ -1067,7 +1064,7 @@ mod tests {
 
     #[test]
     fn test_forward_worker_structured_message_with_payload() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         let state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -1095,7 +1092,7 @@ mod tests {
 
     #[test]
     fn test_forward_worker_structured_message_metadata_only() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         let state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -1117,7 +1114,7 @@ mod tests {
 
     #[test]
     fn test_drain_and_forward_worker_messages() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = bao_ipc::unbounded::<ServoEvent>();
         let mut state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),

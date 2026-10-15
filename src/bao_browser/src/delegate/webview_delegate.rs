@@ -1,11 +1,11 @@
 use super::*;
 
+use bao_ipc::{Receiver, Sender};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 
 use dpi::PhysicalSize;
 use servo::{
@@ -70,7 +70,9 @@ impl WebViewDelegate for BaoWebViewDelegate {
         // per-target main frame id derived from it (v7 path B) — a state
         // without CDP identity has no route, so the event is dropped.
         let Some(target_id) = self.state.borrow().cdp_target() else {
-            self.state.borrow().log_unroutable_event("Page.frameNavigated");
+            self.state
+                .borrow()
+                .log_unroutable_event("Page.frameNavigated");
             return;
         };
         let frame_id = main_frame_id_for_target(&target_id);
@@ -344,9 +346,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
         // REQ-CDS-009: the popup inherits its opener's browser context
         // alongside the fingerprint/permission config — an auxiliary of a
         // context-2 page must not silently land in the default context.
-        let browser_context_id = opener
-            .as_ref()
-            .map(|page| pool.page_context_id(page.id()));
+        let browser_context_id = opener.as_ref().map(|page| pool.page_context_id(page.id()));
         if pool
             .create_popup_page(
                 request,
@@ -490,7 +490,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
     //
     // 事件序(设计 §4):Network.requestWillBeSent 由 C19-② net tap 在
     // main_fetch step 1 发出(methods.rs:429),先于 intercept_request 往返
-    // (methods.rs:563)—— 两者先后进入同一无界 mpsc 事件通道,FIFO 保序,
+    // (methods.rs:563)—— 两者先后进入同一无界 bao_ipc 事件通道,FIFO 保序,
     // pause 事件恒在 requestWillBeSent 之后,无需重排。
     fn load_web_resource(&self, _webview: WebView, load: WebResourceLoad) {
         let matched = {
@@ -626,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_notify_url_changed_emits_frame_navigated() {
-        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let (tx, rx) = bao_ipc::unbounded::<ConsoleMessage>();
         let state = Rc::new(RefCell::new(BaoWebViewState {
             console_log_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -640,9 +640,8 @@ mod tests {
         let url = url::Url::parse("https://example.com").unwrap();
         let url_str = url.to_string();
         let loader_id = format!("{:016x}", url_str.len() as u64);
-        let frame_id = main_frame_id_for_target(
-            &state.borrow().cdp_target().expect("stamped target"),
-        );
+        let frame_id =
+            main_frame_id_for_target(&state.borrow().cdp_target().expect("stamped target"));
         if let Some(ref tx) = state.borrow().console_log_tx {
             tx.send(ConsoleMessage::Event(BaoEvent::PageFrameNavigated {
                 frame_id: frame_id.clone(),
@@ -685,7 +684,7 @@ mod tests {
         };
         assert!(pause_event_route(&state).is_none());
 
-        let (tx, _rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, _rx) = bao_ipc::unbounded::<ServoEvent>();
         let state = BaoWebViewState {
             cdp_target_id: Some("7".to_string()),
             event_tx: Some(tx),

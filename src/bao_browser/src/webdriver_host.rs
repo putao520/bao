@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
-use crossbeam_channel::{Receiver, Sender};
+use bao_ipc::{Receiver, Sender};
 use servo::{
     EmbedderControl, EmbedderControlId, EventLoopWaker, GenericSender, InputEvent, InputEventId,
     NewWindowTypeHint, Preferences, SimpleDialog, TraversalId, WebDriverCommandMsg,
@@ -94,7 +94,10 @@ static WEBDRIVER_BRIDGE: LazyLock<Mutex<WebdriverBridge>> =
 /// callback panicked — the session is dead anyway, dropping the command is
 /// the honest degradation).
 fn with_bridge<R>(f: impl FnOnce(&mut WebdriverBridge) -> R) -> Option<R> {
-    WEBDRIVER_BRIDGE.lock().ok().map(|mut bridge| f(&mut bridge))
+    WEBDRIVER_BRIDGE
+        .lock()
+        .ok()
+        .map(|mut bridge| f(&mut bridge))
 }
 
 // ─── Delegate hook faces (called from delegate.rs on script threads) ───────
@@ -106,17 +109,17 @@ fn with_bridge<R>(f: impl FnOnce(&mut WebdriverBridge) -> R) -> Option<R> {
 /// [`WebdriverBridge::completed_loads`] for the livelock this closes): the
 /// waiter's registration site replays it.
 pub fn notify_load_complete(webview_id: WebViewId) {
-    with_bridge(|bridge| {
-        match bridge.load_status_senders.remove(&webview_id) {
+    with_bridge(
+        |bridge| match bridge.load_status_senders.remove(&webview_id) {
             Some(sender) => {
                 let _ = sender.send(WebDriverLoadStatus::Complete);
                 bridge.completed_loads.remove(&webview_id);
-            },
+            }
             None => {
                 bridge.completed_loads.insert(webview_id);
-            },
-        }
-    });
+            }
+        },
+    );
 }
 
 /// Register a load-status waiter for `webview_id`, resolving immediately if
@@ -320,7 +323,9 @@ fn webdriver_register_traversal(
     load_status_sender: GenericSender<WebDriverLoadStatus>,
 ) {
     with_bridge(|bridge| {
-        bridge.pending_traversals.insert(traversal_id, load_status_sender);
+        bridge
+            .pending_traversals
+            .insert(traversal_id, load_status_sender);
     });
 }
 
@@ -342,7 +347,9 @@ fn webdriver_handle_input_event(
                     if bridge.handled_input_events.remove(&event_id) {
                         let _ = response_sender.send(());
                     } else {
-                        bridge.pending_input_events.insert(event_id, response_sender);
+                        bridge
+                            .pending_input_events
+                            .insert(event_id, response_sender);
                     }
                 });
             }
@@ -480,9 +487,7 @@ mod signal_exit {
                 while start.elapsed() < EXIT_GRACE {
                     std::thread::sleep(POLL);
                 }
-                log::error!(
-                    "[webdriver] signal-initiated exit exceeded the 5s bound — hard exit"
-                );
+                log::error!("[webdriver] signal-initiated exit exceeded the 5s bound — hard exit");
                 eprintln!("bao: webdriver signal exit exceeded the 5s bound — hard exit");
                 // SAFETY: liveness last resort — skips atexit/teardown exactly
                 // like the SIGKILL this replaces.
@@ -513,13 +518,8 @@ impl WebDriverHost {
         #[cfg(unix)]
         signal_exit::install();
         let preferences = servo::prefs::get().clone();
-        let (embedder_sender, receiver) = crossbeam_channel::unbounded();
-        webdriver_server::start_server(
-            port,
-            embedder_sender,
-            Box::new(SpinLoopWaker),
-            preferences,
-        );
+        let (embedder_sender, receiver) = bao_ipc::unbounded();
+        webdriver_server::start_server(port, embedder_sender, Box::new(SpinLoopWaker), preferences);
         Self { receiver }
     }
 
@@ -595,11 +595,7 @@ impl WebDriverHost {
                         .unwrap_or_default();
                     let _ = response_sender.send(rect);
                 }
-                WebDriverCommandMsg::SetWindowRect(
-                    webview_id,
-                    requested_rect,
-                    response_sender,
-                ) => {
+                WebDriverCommandMsg::SetWindowRect(webview_id, requested_rect, response_sender) => {
                     let rect = runtime
                         .page_for_webview(webview_id)
                         .map(|(_, page)| page.webdriver_set_window_rect(requested_rect))
@@ -616,7 +612,8 @@ impl WebDriverHost {
                 // Only received at session start: the focused webview is the
                 // initial page's webview.
                 WebDriverCommandMsg::GetFocusedWebView(response_sender) => {
-                    let _ = response_sender.send(runtime.webdriver_webview_ids().into_iter().next());
+                    let _ =
+                        response_sender.send(runtime.webdriver_webview_ids().into_iter().next());
                 }
                 WebDriverCommandMsg::LoadUrl(webview_id, url, load_status_sender) => {
                     if let Some((_, page)) = runtime.page_for_webview(webview_id) {
@@ -678,10 +675,7 @@ impl WebDriverHost {
                     // interrupt face; Add/RemoveLoadStatusSender move the
                     // load-status plumbing.
                     match script_command {
-                        WebDriverScriptCommand::ExecuteScriptWithCallback(
-                            _,
-                            response_sender,
-                        ) => {
+                        WebDriverScriptCommand::ExecuteScriptWithCallback(_, response_sender) => {
                             with_bridge(|bridge| {
                                 bridge.script_interrupt = Some(response_sender.clone());
                             });
@@ -715,9 +709,10 @@ impl WebDriverHost {
                 }
                 WebDriverCommandMsg::CurrentUserPrompt(webview_id, response_sender) => {
                     let current = with_bridge(|bridge| {
-                        bridge.embedder_controls.get(&webview_id).and_then(|controls| {
-                            current_active_dialog_webdriver_type(controls)
-                        })
+                        bridge
+                            .embedder_controls
+                            .get(&webview_id)
+                            .and_then(|controls| current_active_dialog_webdriver_type(controls))
                     });
                     let _ = response_sender.send(current.unwrap_or(None));
                 }
@@ -778,8 +773,8 @@ impl WebDriverHost {
                 // interaction is the initial page's webview (same answer as
                 // GetFocusedWebView above).
                 WebDriverCommandMsg::GetWebViewSelectedForInteraction(response_sender) => {
-                    let _ = response_sender
-                        .send(runtime.webdriver_webview_ids().into_iter().next());
+                    let _ =
+                        response_sender.send(runtime.webdriver_webview_ids().into_iter().next());
                 }
             }
         }

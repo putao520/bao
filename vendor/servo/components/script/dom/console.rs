@@ -148,7 +148,7 @@ impl Console {
     }
 
     fn send_to_embedder(global: &GlobalScope, level: ConsoleLogLevel, message: String) {
-        global.send_to_embedder(EmbedderMsg::ShowConsoleApiMessage(
+        global.send_chrome_notification_message_to_embedder(EmbedderMsg::ShowConsoleApiMessage(
             global.webview_id(),
             level,
             message,

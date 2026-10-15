@@ -3,9 +3,8 @@ use super::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 
 use dpi::PhysicalSize;
 use servo::{
@@ -467,12 +466,10 @@ mod tests {
         assert!(bao_stealth::engine_props::canvas_seed_for_test(fake_addr2).is_none());
         // All workers should be closing and terminated
         assert!(state.active_workers.iter().all(|g| g.handle().is_closing()));
-        assert!(
-            state
-                .active_workers
-                .iter()
-                .all(|g| g.handle().is_terminated())
-        );
+        assert!(state
+            .active_workers
+            .iter()
+            .all(|g| g.handle().is_terminated()));
     }
 
     #[test]

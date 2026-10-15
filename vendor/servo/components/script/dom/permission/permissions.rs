@@ -359,7 +359,7 @@ fn prompt_user_from_embedder(name: PermissionName, global_scope: &GlobalScope) -
         return PermissionState::Denied;
     };
     let (sender, receiver) = generic_channel::channel().expect("Failed to create IPC channel!");
-    global_scope.send_to_embedder(EmbedderMsg::PromptPermission(
+    global_scope.send_dialog_permission_message_to_embedder(EmbedderMsg::PromptPermission(
         webview_id,
         name.convert(),
         sender,

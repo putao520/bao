@@ -18,12 +18,12 @@ use crate::error::BrowserError;
 use crate::page::PageHandle;
 // NOTE: bao_engine::WebWorker bypass removed per DEC-WK-001 BCE-20260627-008.
 // Workers now route through servo's native Worker::Constructor.
+use bao_ipc;
 use dashmap::DashMap;
 use mozjs::rooted;
 use std::cell::RefCell;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 
 use std::time::Duration;
@@ -578,9 +578,8 @@ pub unsafe fn evaluate_in_node_realm(
             let raw_cx = realm.raw_cx();
             unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)) }
         };
-        let message = take_pending_exception_text(&mut exception_cx).unwrap_or_else(|| {
-            "evaluate_script returned Err (JS exception thrown)".into()
-        });
+        let message = take_pending_exception_text(&mut exception_cx)
+            .unwrap_or_else(|| "evaluate_script returned Err (JS exception thrown)".into());
         return EvaluateResult {
             value: None,
             error: Some(message),
@@ -658,8 +657,7 @@ fn take_pending_exception_text(cx: &mut mozjs::context::JSContext) -> Option<Str
     }
     // Error info must be read from the live pending state (see
     // error_info_from_exception_stack), so clear only afterwards.
-    let error_info =
-        mozjs::rust::error_info_from_exception_stack(cx, exception_value.handle_mut());
+    let error_info = mozjs::rust::error_info_from_exception_stack(cx, exception_value.handle_mut());
     // SAFETY: the exception value has been read above; clear it so it cannot
     // leak into later evaluations.
     unsafe { JS_ClearPendingException(cx) };
@@ -681,7 +679,10 @@ fn take_pending_exception_text(cx: &mut mozjs::context::JSContext) -> Option<Str
 
 /// The `name` property of an Error object ("Error"/"SyntaxError"/…), if the
 /// exception is an object carrying a string name.
-fn exception_name(cx: &mut mozjs::context::JSContext, value: &mozjs::jsval::JSVal) -> Option<String> {
+fn exception_name(
+    cx: &mut mozjs::context::JSContext,
+    value: &mozjs::jsval::JSVal,
+) -> Option<String> {
     use mozjs::jsval::UndefinedValue;
     use mozjs::rust::wrappers2::JS_GetProperty;
 
@@ -692,7 +693,14 @@ fn exception_name(cx: &mut mozjs::context::JSContext, value: &mozjs::jsval::JSVa
     rooted!(&in(cx) let mut name_value = UndefinedValue());
     // SAFETY: object is a live JSObject rooted above; c"name" is
     // NUL-terminated as the JSAPI C string convention requires.
-    if unsafe { !JS_GetProperty(cx, object.handle(), c"name".as_ptr(), name_value.handle_mut()) } {
+    if unsafe {
+        !JS_GetProperty(
+            cx,
+            object.handle(),
+            c"name".as_ptr(),
+            name_value.handle_mut(),
+        )
+    } {
         return None;
     }
     js_string_value_to_string(cx, &name_value)
@@ -809,25 +817,22 @@ pub fn evaluate_js_via_node_realm_with_timeout(
                 Some(timeout) => {
                     let control =
                         bao_engine::execution_control::ExecutionControl::for_context(raw_cx);
-                    let (eval_result, state) =
-                        bao_engine::execution_control::run_raw_with_control(
-                            raw_cx,
-                            &control,
-                            Some(timeout),
-                            || unsafe {
-                                evaluate_in_node_realm(cx_ptr, node_global, &script_owned)
-                            },
-                        );
+                    let (eval_result, state) = bao_engine::execution_control::run_raw_with_control(
+                        raw_cx,
+                        &control,
+                        Some(timeout),
+                        || unsafe { evaluate_in_node_realm(cx_ptr, node_global, &script_owned) },
+                    );
                     match state {
                         bao_engine::execution_control::TerminalState::TimedOut
                         | bao_engine::execution_control::TerminalState::Cancelled => {
-                            EvaluateResult::err(
-                                bao_engine::execution_control::terminal_message(state),
-                            )
-                        },
+                            EvaluateResult::err(bao_engine::execution_control::terminal_message(
+                                state,
+                            ))
+                        }
                         _ => eval_result,
                     }
-                },
+                }
             };
             let _ = result_clone.set(eval_result);
         },
@@ -1745,9 +1750,7 @@ fn register_native_host_functions(
 /// source — REQ-STL-001/002; consumed by the keyed registration below and by
 /// `install_all_native`'s process-global fallback write). Two identical
 /// structs in different crates — servo net cannot depend on bao_stealth.
-fn stealth_servo_wire_config(
-    profile: &bao_stealth::StealthProfile,
-) -> servo::StealthTlsWireConfig {
+fn stealth_servo_wire_config(profile: &bao_stealth::StealthProfile) -> servo::StealthTlsWireConfig {
     let stc = bao_stealth::StealthTlsWireConfig::from_profile(profile);
     servo::StealthTlsWireConfig {
         tls12_cipher_suites: stc.tls12_cipher_suites,
@@ -1781,11 +1784,7 @@ pub(crate) fn register_stealth_keyed_config_for_webview(
     profile: &bao_stealth::StealthProfile,
 ) {
     let wire = stealth_servo_wire_config(profile);
-    servo::set_stealth_wire_config_for_webview(
-        webview_id,
-        Some(wire),
-        Some(profile.http2.clone()),
-    );
+    servo::set_stealth_wire_config_for_webview(webview_id, Some(wire), Some(profile.http2.clone()));
     servo::set_canvas_noise_for_webview(
         webview_id,
         profile.canvas.seed(),
@@ -3048,7 +3047,7 @@ impl BridgeResponse {
 /// to obtain commands and their optional response channels, executes them against
 /// the page, and sends back [`BridgeResponse`] values.
 pub struct BridgeReceiver {
-    rx: mpsc::Receiver<(BridgeCommand, Option<mpsc::Sender<BridgeResponse>>)>,
+    rx: bao_ipc::Receiver<(BridgeCommand, Option<bao_ipc::Sender<BridgeResponse>>)>,
     alive: Arc<AtomicBool>,
 }
 
@@ -3062,7 +3061,7 @@ impl std::fmt::Debug for BridgeReceiver {
 
 impl BridgeReceiver {
     /// Block until a command arrives or the channel is disconnected.
-    pub fn recv(&self) -> Result<(BridgeCommand, Option<mpsc::Sender<BridgeResponse>>), String> {
+    pub fn recv(&self) -> Result<(BridgeCommand, Option<bao_ipc::Sender<BridgeResponse>>), String> {
         self.rx.recv().map_err(|_| "channel closed".to_string())
     }
 
@@ -3070,7 +3069,7 @@ impl BridgeReceiver {
     pub fn recv_timeout(
         &self,
         timeout: Duration,
-    ) -> Result<(BridgeCommand, Option<mpsc::Sender<BridgeResponse>>), String> {
+    ) -> Result<(BridgeCommand, Option<bao_ipc::Sender<BridgeResponse>>), String> {
         self.rx.recv_timeout(timeout).map_err(|e| format!("{}", e))
     }
 
@@ -3088,7 +3087,7 @@ impl BridgeReceiver {
 /// @trace REQ-BRW-003 [entity:BridgeChannel]
 #[derive(Debug)]
 pub struct BridgeChannel {
-    tx: mpsc::Sender<(BridgeCommand, Option<mpsc::Sender<BridgeResponse>>)>,
+    tx: bao_ipc::Sender<(BridgeCommand, Option<bao_ipc::Sender<BridgeResponse>>)>,
     alive: Arc<AtomicBool>,
     /// Bound [`BridgeChannel::send`] applies while waiting for the worker's
     /// response. Defaults to [`BridgeChannel::DEFAULT_RESPONSE_TIMEOUT`].
@@ -3112,7 +3111,7 @@ impl BridgeChannel {
     /// Returns `(sender, receiver)` where commands flow sender → receiver and
     /// responses flow back via per-command one-shot channels.
     pub fn new() -> (Self, BridgeReceiver) {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = bao_ipc::unbounded();
         let alive = Arc::new(AtomicBool::new(true));
         let channel = BridgeChannel {
             tx,
@@ -3131,17 +3130,19 @@ impl BridgeChannel {
     /// forever. The fast path (response arrives in time) and the
     /// disconnected-responder error are unchanged.
     pub fn send(&self, cmd: BridgeCommand) -> Result<BridgeResponse, String> {
-        let (resp_tx, resp_rx) = mpsc::channel();
+        let (resp_tx, resp_rx) = bao_ipc::unbounded();
         self.tx
             .send((cmd, Some(resp_tx)))
             .map_err(|_| "bridge closed".to_string())?;
         match resp_rx.recv_timeout(self.response_timeout) {
             Ok(resp) => Ok(resp),
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(format!(
+            Err(bao_ipc::RecvTimeoutError::Timeout) => Err(format!(
                 "bridge response timed out after {:?} (worker pump stalled or not draining)",
                 self.response_timeout
             )),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err("response channel closed".to_string()),
+            Err(bao_ipc::RecvTimeoutError::Disconnected) => {
+                Err("response channel closed".to_string())
+            }
         }
     }
 
@@ -3151,7 +3152,7 @@ impl BridgeChannel {
         cmd: BridgeCommand,
         timeout: Duration,
     ) -> Result<BridgeResponse, String> {
-        let (resp_tx, resp_rx) = mpsc::channel();
+        let (resp_tx, resp_rx) = bao_ipc::unbounded();
         self.tx
             .send((cmd, Some(resp_tx)))
             .map_err(|_| "bridge closed".to_string())?;
@@ -3688,7 +3689,7 @@ mod tests {
         // hanging forever. The bound is tightened via the channel literal
         // (same-file test, private field) to keep this test fast; production
         // `new()` pins it to DEFAULT_RESPONSE_TIMEOUT (30s).
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = bao_ipc::unbounded();
         let channel = super::BridgeChannel {
             tx,
             alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),

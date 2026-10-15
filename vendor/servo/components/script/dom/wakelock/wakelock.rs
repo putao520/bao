@@ -85,7 +85,7 @@ impl WakeLockMethods<crate::DomTypeHolder> for WakeLock {
         let task_manager = global.task_manager();
         let task_source = task_manager.dom_manipulation_task_source();
         let callback = callback_promise(&promise, self, task_source);
-        global.send_to_embedder(EmbedderMsg::RequestWakeLockPermission(
+        global.send_dialog_permission_message_to_embedder(EmbedderMsg::RequestWakeLockPermission(
             webview_id,
             callback,
             self.type_.get().convert(),

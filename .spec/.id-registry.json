@@ -295,9 +295,11 @@
           "deleted": []
         },
         "ARCH": {
-          "nextN": 2,
+          "nextN": 4,
           "allocated": [
-            1
+            1,
+            2,
+            3
           ],
           "deleted": []
         }
@@ -3782,9 +3784,11 @@
           "deleted": []
         },
         "ARCH": {
-          "nextN": 2,
+          "nextN": 4,
           "allocated": [
-            1
+            1,
+            2,
+            3
           ],
           "deleted": []
         }
@@ -3947,6 +3951,13 @@
           "allocated": [
             1,
             2
+          ],
+          "deleted": []
+        },
+        "ARCH": {
+          "nextN": 2,
+          "allocated": [
+            1
           ],
           "deleted": []
         }

@@ -3,11 +3,21 @@
 // run_browser performs). Asserts the Playwright-direct-connect minimal face:
 // Target.getTargets / Target.attachToTarget(flatten) / Page.navigate /
 // Runtime.evaluate all reach the real servo PagePool via the bridge.
+//
+// Fetch contract era note (stale-sweep closure, the 3bb2e3665 follow-up):
+// C1 (46e8615a3) realized REQ-CDP-006 C6 — Fetch.enable became a real bridge
+// command with the interception slot living browser-side — retiring the
+// former "no request interception facility" -32000 canned error. That wave's
+// 107-assertion stale refresh stopped at bao_cdp and missed this file's two
+// pins; this file now pins the post-C1 law: the -32602 handleAuthRequests
+// boundary, the real enable → disable round-trip through the live bridge,
+// and the registry passthrough of the domain-classified bridge failure
+// (-32000, e234/e236 BridgeErrorKind::DomainError).
 // @trace REQ-CDP-001 [entity:CdpServer]
 // @trace REQ-CDP-005 [req:REQ-CDP-005] [level:e2e]
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bao_browser::{handle_bridge_command, BaoConfig, BrowserRuntime, BaoWsRegistry, PageConfig};
@@ -212,17 +222,33 @@ fn client_phase(ws_url: String, page_id: usize, done: Arc<AtomicBool>) {
         "sessionId routing reaches the page"
     );
 
-    // 5. Explicit-error contract through the WS face: Fetch.enable must
-    //    surface the no-interception-facility error, never a canned ok.
-    let resp = cdp.send("Fetch.enable", json!({ "patterns": [{ "urlPattern": "*" }] }));
+    // 5. REQ-CDP-006 C6 (46e8615a3): Fetch.enable is a real bridge command —
+    //    the interception slot lives browser-side — so the former
+    //    "no request interception facility" canned error is dead. What stays
+    //    law on the live WS face is the explicit-error boundary (protocol.rs
+    //    handle_fetch "enable" arm): handleAuthRequests=true is -32602, never
+    //    a canned ok — plus the real enable → disable round-trip through the
+    //    live bridge.
+    let resp = cdp.send("Fetch.enable", json!({ "handleAuthRequests": true }));
     let err = resp["error"]
         .as_object()
-        .expect("Fetch.enable must fail explicitly");
-    assert_eq!(err["code"], -32000);
+        .expect("Fetch.enable(handleAuthRequests) must fail explicitly");
+    assert_eq!(err["code"], -32602);
     assert!(err["message"]
         .as_str()
         .unwrap()
-        .contains("no request interception facility"));
+        .contains("handleAuthRequests"));
+
+    let resp = cdp.send("Fetch.enable", json!({ "patterns": [{ "urlPattern": "*" }] }));
+    assert!(
+        resp.get("error").is_none(),
+        "Fetch.enable must arm the interception slot: {resp}"
+    );
+    let resp = cdp.send("Fetch.disable", json!({}));
+    assert!(
+        resp.get("error").is_none(),
+        "Fetch.disable must clear the interception slot: {resp}"
+    );
 
     done.store(true, Ordering::Relaxed);
 }
@@ -436,7 +462,7 @@ fn ws_command_face_page_navigate_and_evaluate_roundtrip() {
         .expect("initial page");
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
-    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    let (event_tx, servo_event_rx) = bao_ipc::unbounded::<bao_cdp_client::bridge::ServoEvent>();
     runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
@@ -502,7 +528,7 @@ fn ws_runtime_object_protocol_roundtrip() {
         .expect("initial page");
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
-    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    let (event_tx, servo_event_rx) = bao_ipc::unbounded::<bao_cdp_client::bridge::ServoEvent>();
     runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
@@ -556,9 +582,14 @@ fn ws_runtime_object_protocol_roundtrip() {
     );
 }
 
-/// Regression for the ws_registry unit face: the bridge-less dispatch of a
-/// Fetch command stays an explicit error and page-session commands carry the
-/// WS session's target (also covered by ws_registry unit tests).
+/// Regression for the ws_registry unit face: the Fetch domain dispatches as a
+/// real bridge command (46e8615a3 C6 — the interception slot lives
+/// browser-side), whose domain-classified bridge failure stays an explicit
+/// -32000 through the registry passthrough (e234/e236
+/// BridgeErrorKind::DomainError → CdpError; transport-class faces stay
+/// -32603, pinned by ws_registry's in-file fetch_domain_is_explicit_error),
+/// and page-session commands carry the WS session's target (also covered by
+/// ws_registry unit tests).
 #[test]
 fn ws_registry_fetch_explicit_error_and_target_routing_unit() {
     let (tx, rx) = bridge_channel(Duration::from_millis(200));
@@ -572,6 +603,13 @@ fn ws_registry_fetch_explicit_error_and_target_routing_unit() {
                         result: Ok(json!({
                             "result": { "type": "number", "value": 7 }
                         })),
+                    }
+                }
+                bao_cdp::servo_bridge::BridgeCommand::FetchEnable { .. } => {
+                    bao_cdp::servo_bridge::BridgeResponse {
+                        result: Err(bao_cdp::servo_bridge::BridgeError::domain(
+                            "interception slot refused: target has no live page",
+                        )),
                     }
                 }
                 _ => bao_cdp::servo_bridge::BridgeResponse {
@@ -615,7 +653,7 @@ fn ws_registry_fetch_explicit_error_and_target_routing_unit() {
         .expect("Fetch domain is served")
         .expect_err("Fetch.enable must fail");
     assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert!(err.message.contains("interception slot refused"));
 }
 
 /// ISSUE #20 (B: "CDP page evaluate 默认遵循 Page Realm 权限"): a
@@ -636,7 +674,7 @@ fn ws_cdp_evaluate_stays_in_page_realm() {
         .expect("initial page");
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
-    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    let (event_tx, servo_event_rx) = bao_ipc::unbounded::<bao_cdp_client::bridge::ServoEvent>();
     runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
@@ -795,7 +833,7 @@ fn multi_page_target_routing_phantom_frame_probe() {
         })
         .expect("page b");
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
-    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    let (event_tx, servo_event_rx) = bao_ipc::unbounded::<bao_cdp_client::bridge::ServoEvent>();
     runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));

@@ -42,7 +42,6 @@ use layout_api::{
 use malloc_size_of::MallocSizeOfOps;
 use metrics::{InteractiveFlag, InteractiveWindow, ProgressiveWebMetrics};
 use net_traits::CookieSource::NonHTTP;
-use net_traits::CoreResourceMsg::{GetCookieStringForUrl, SetCookiesForUrl};
 use net_traits::image_cache::ImageCache;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::pub_domains::is_pub_domain;
@@ -53,8 +52,8 @@ use net_traits::{ReferrerPolicy, ResourceFetchTiming};
 use paint_api::display_list::PaintTimingInfo;
 use percent_encoding::percent_decode;
 use profile_traits::mem::{Report, ReportKind};
+use profile_traits::path;
 use profile_traits::time::TimerMetadataFrameType;
-use profile_traits::{generic_channel as profile_generic_channel, path};
 use regex::bytes::Regex;
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use script_bindings::callback::{RootedCallback, ThisReflector};
@@ -65,7 +64,6 @@ use script_bindings::trace::CustomTraceable;
 use script_traits::{DocumentActivity, ProgressiveWebMetricType};
 use servo_arc::Arc;
 use servo_base::cross_process_instant::CrossProcessInstant;
-use servo_base::generic_channel::GenericSend;
 use servo_base::id::{LCPCandidateID, PipelineId, WebViewId};
 use servo_base::{Epoch, generic_channel};
 use servo_config::pref;
@@ -1540,10 +1538,9 @@ impl Document {
 
     pub(crate) fn notify_embedder_of_load_completion(&self) {
         if self.window().is_top_level() {
-            self.send_to_embedder(EmbedderMsg::NotifyLoadStatusChanged(
-                self.webview_id(),
-                LoadStatus::Complete,
-            ));
+            self.send_chrome_notification_message_to_embedder(
+                EmbedderMsg::NotifyLoadStatusChanged(self.webview_id(), LoadStatus::Complete),
+            );
         }
     }
 
@@ -1566,11 +1563,13 @@ impl Document {
 
         if self.window.is_top_level() {
             let webview_id = self.webview_id();
-            self.send_to_embedder(EmbedderMsg::NotifyLoadStatusChanged(
+            self.send_chrome_notification_message_to_embedder(
+                EmbedderMsg::NotifyLoadStatusChanged(webview_id, LoadStatus::Started),
+            );
+            self.send_chrome_notification_message_to_embedder(EmbedderMsg::Status(
                 webview_id,
-                LoadStatus::Started,
+                None,
             ));
-            self.send_to_embedder(EmbedderMsg::Status(webview_id, None));
         }
 
         self.ready_state.set(DocumentReadyState::Loading);
@@ -1687,13 +1686,33 @@ impl Document {
         let window = self.window();
         if window.is_top_level() {
             let title = self.title().map(String::from);
-            self.send_to_embedder(EmbedderMsg::ChangePageTitle(self.webview_id(), title));
+            self.send_chrome_notification_message_to_embedder(EmbedderMsg::ChangePageTitle(
+                self.webview_id(),
+                title,
+            ));
         }
     }
 
     pub(crate) fn send_to_embedder(&self, msg: EmbedderMsg) {
         let window = self.window();
         window.send_to_embedder(msg);
+    }
+
+    // Family senders for `EmbedderMsg` production sites (REQ-ARCH-3 F4-W2),
+    // mirroring the consumer-side family handlers in `servo.rs`
+    // (`handle_<family>_message`). Every family sender forwards verbatim to
+    // [`Document::send_to_embedder`]; message payloads, ordering, and timing
+    // are unchanged.
+    pub(crate) fn send_chrome_notification_message_to_embedder(&self, message: EmbedderMsg) {
+        self.send_to_embedder(message);
+    }
+
+    pub(crate) fn send_dialog_permission_message_to_embedder(&self, message: EmbedderMsg) {
+        self.send_to_embedder(message);
+    }
+
+    pub(crate) fn send_clipboard_message_to_embedder(&self, message: EmbedderMsg) {
+        self.send_to_embedder(message);
     }
 
     pub(crate) fn dirty_all_nodes(&self, no_gc: &NoGC) {
@@ -2336,7 +2355,7 @@ impl Document {
         if default_prevented || return_value_not_empty {
             let (chan, port) = generic_channel::channel().expect("Failed to create IPC channel!");
             let msg = EmbedderMsg::AllowUnload(self.webview_id(), chan);
-            self.send_to_embedder(msg);
+            self.send_dialog_permission_message_to_embedder(msg);
             can_unload = port.recv().unwrap() == AllowOrDeny::Allow;
         }
         // Step 9
@@ -5355,7 +5374,10 @@ impl Document {
 
     pub(crate) fn notify_embedder_favicon(&self) {
         if let Some(ref image) = *self.favicon.borrow() {
-            self.send_to_embedder(EmbedderMsg::NewFavicon(self.webview_id(), image.clone()));
+            self.send_chrome_notification_message_to_embedder(EmbedderMsg::NewFavicon(
+                self.webview_id(),
+                image.clone(),
+            ));
         }
     }
 
@@ -6651,14 +6673,11 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         }
 
         let url = self.url();
-        let (tx, rx) =
-            profile_generic_channel::channel(self.global().time_profiler_chan().clone()).unwrap();
-        let _ = self
+        let cookies = self
             .window
             .as_global_scope()
             .resource_threads()
-            .send(GetCookieStringForUrl(url, tx, NonHTTP));
-        let cookies = rx.recv().unwrap();
+            .cookie_string_for_url(url, NonHTTP);
         Ok(cookies.map_or(DOMString::new(), DOMString::from))
     }
 
@@ -6676,17 +6695,16 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             return Ok(());
         }
 
-        let cookies = if let Some(cookie) = Cookie::parse(cookie.to_string()).ok().map(Serde) {
-            vec![cookie]
-        } else {
-            vec![]
+        let cookies = match Cookie::parse(cookie.to_string()).ok() {
+            Some(cookie) => vec![cookie],
+            None => vec![],
         };
 
         let _ = self
             .window
             .as_global_scope()
             .resource_threads()
-            .send(SetCookiesForUrl(self.url(), cookies, NonHTTP));
+            .set_cookies_for_url(self.url(), cookies, NonHTTP);
         Ok(())
     }
 

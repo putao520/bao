@@ -19,6 +19,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 # Bao ecosystem dependencies (Bun 适配 Servo; 不引入 tokio)
+# REQ-ARCH-3 (wave R1): in-memory transport / EventSubscriber / CdpEventTap
+# channel substrate = bao_ipc, the unified MPMC import point — never touch the
+# underlying engine (crossbeam-channel) directly, so the substrate stays
+# swappable at exactly one place.
+bao_ipc = { path = "../bao_ipc", version = "0.1.0" }
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }
 bao_cdp = { path = "../bao_cdp", version = "0.3.15" }
 bun_base64 = { path = "../base64", version = "0.2.0" }
