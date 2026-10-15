@@ -73,7 +73,7 @@ bao_stealth = { path = "../bao_stealth", version = "^0.4.0" }
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }
 bun_runtime.workspace = true
 bun_http.workspace = true
-cdp-server = { path = "../cdp-server", version = "0.2.0" }
+cdp-server = { path = "../cdp-server", version = "0.2.1" }
 bun_core.workspace = true
 bun_sys.workspace = true
 mozjs = { path = "../../vendor/mozjs/mozjs", package = "bao-mozjs", version = "^0.24" }

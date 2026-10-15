@@ -4347,7 +4347,7 @@ dependencies = [
 
 [[package]]
 name = "cdp-server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bao_ipc",
  "log",

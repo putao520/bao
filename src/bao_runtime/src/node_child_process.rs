@@ -4153,6 +4153,160 @@ unsafe extern "C" fn cp_exec(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     true
 }
 
+// ─── Sync-face output carrier (node parity, oracle-pinned) ─────────────────
+// node v24 (.200 oracle): spawnSync/execSync/execFileSync put stdout/stderr
+// up as a Buffer of the child's RAW bytes when `encoding` is ABSENT, and as a
+// decoded String when `encoding` is explicitly set ('buffer' selects Buffer).
+// The old always-`String::from_utf8_lossy` shape corrupted non-utf8 output
+// (U+FFFD substitution) and broke `Buffer.isBuffer(stdout)`. The ASYNC
+// exec/execFile callback faces stay String-by-default in node (their stream
+// faces decode) — they keep the old path.
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SyncOutputCarrier {
+    Buffer,
+    Utf8,
+    Latin1,
+    Ascii,
+    Utf16Le,
+}
+
+/// Read `options.encoding` off the sync options value (may be undefined).
+/// `Err(())` = a JS error was already reported (unsupported encoding —
+/// fail-closed: no silent utf8 substitution for node's full encoding table).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn parse_sync_output_carrier(
+    cx: *mut JSContext,
+    opts_val: JSVal,
+) -> ::std::result::Result<SyncOutputCarrier, ()> {
+    if !opts_val.is_object() {
+        return Ok(SyncOutputCarrier::Buffer);
+    }
+    let opts_obj = opts_val.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let opts_r = opts_obj);
+    let mut enc = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        opts_r.handle().into(),
+        c"encoding".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut enc,
+        },
+    );
+    if !enc.is_string() {
+        // absent / null / non-string → node's default face: Buffer
+        return Ok(SyncOutputCarrier::Buffer);
+    }
+    let name = crate::js_to_rust_string(cx, enc);
+    match name.to_ascii_lowercase().as_str() {
+        "buffer" => Ok(SyncOutputCarrier::Buffer),
+        "utf8" | "utf-8" => Ok(SyncOutputCarrier::Utf8),
+        "latin1" | "binary" => Ok(SyncOutputCarrier::Latin1),
+        "ascii" => Ok(SyncOutputCarrier::Ascii),
+        "utf16le" | "utf-16le" | "ucs2" | "ucs-2" => Ok(SyncOutputCarrier::Utf16Le),
+        other => {
+            let msg = format!(
+                "child_process sync face: unsupported encoding \"{}\" (supported: buffer, utf8, latin1, binary, ascii, utf16le, ucs2)",
+                other
+            );
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            Err(())
+        }
+    }
+}
+
+/// Whether `v` is the args-ARRAY form of the middle spawnSync/execFileSync
+/// argument (numeric `length` present) rather than the options object.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn is_args_array_value(cx: *mut JSContext, v: JSVal) -> bool {
+    if !v.is_object() {
+        return false;
+    }
+    let o = v.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let or = o);
+    let mut len = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        or.handle().into(),
+        c"length".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut len,
+        },
+    );
+    len.is_number()
+}
+
+/// Build the JS value for one output face (stdout/stderr) in the requested
+/// carrier: a raw-bytes Buffer, or the decoded String form.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sync_output_jsval(
+    cx: *mut JSContext,
+    bytes: &[u8],
+    carrier: SyncOutputCarrier,
+) -> JSVal {
+    match carrier {
+        SyncOutputCarrier::Buffer => {
+            let buf_obj = crate::globals::create_buffer_object(cx, bytes);
+            if buf_obj.is_null() {
+                UndefinedValue()
+            } else {
+                ObjectValue(buf_obj)
+            }
+        }
+        SyncOutputCarrier::Utf8 => {
+            let s = String::from_utf8_lossy(bytes).into_owned();
+            let c_s = ZBox::from_bytes(s.as_bytes());
+            let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
+            if js_str.is_null() {
+                UndefinedValue()
+            } else {
+                StringValue(&*js_str)
+            }
+        }
+        SyncOutputCarrier::Latin1 => {
+            let s: String = bytes.iter().map(|&b| b as char).collect();
+            let c_s = ZBox::from_bytes(s.as_bytes());
+            let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
+            if js_str.is_null() {
+                UndefinedValue()
+            } else {
+                StringValue(&*js_str)
+            }
+        }
+        SyncOutputCarrier::Ascii => {
+            let s: String = bytes.iter().map(|&b| (b & 0x7F) as char).collect();
+            let c_s = ZBox::from_bytes(s.as_bytes());
+            let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
+            if js_str.is_null() {
+                UndefinedValue()
+            } else {
+                StringValue(&*js_str)
+            }
+        }
+        SyncOutputCarrier::Utf16Le => {
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|p| u16::from_le_bytes([p[0], p[1]]))
+                .collect();
+            let s = String::from_utf16_lossy(&units);
+            let c_s = ZBox::from_bytes(s.as_bytes());
+            let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
+            if js_str.is_null() {
+                UndefinedValue()
+            } else {
+                StringValue(&*js_str)
+            }
+        }
+    }
+}
+
 // ─── cp_exec_sync ──────────────────────────────────────────────────────────
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -4184,6 +4338,17 @@ unsafe extern "C" fn cp_exec_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     }
 
     let sync_opts = shell_sync_opts(&cmd);
+
+    // node parity: `options.encoding` selects the stdout/stderr carrier —
+    // absent/'buffer' → Buffer of raw bytes, an explicit decoding → String.
+    let mut carrier = SyncOutputCarrier::Buffer;
+    if argc > 1 {
+        let opts_val = *args.get(1).ptr;
+        match parse_sync_output_carrier(cx, opts_val) {
+            Ok(c) => carrier = c,
+            Err(()) => return false,
+        }
+    }
 
     let spawn_result = match spawn_sync::spawn(&sync_opts) {
         Ok(Ok(r)) => r,
@@ -4217,7 +4382,6 @@ unsafe extern "C" fn cp_exec_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         rooted!(&in(cx_ref) let err_r = err_obj);
         let err_h = err_r.handle().into();
 
-        let stderr_str = String::from_utf8_lossy(&spawn_result.stderr).into_owned();
         let msg = format!("Command failed: {}", cmd);
         let c_msg = ZBox::from_bytes(msg.as_bytes());
         {
@@ -4266,25 +4430,16 @@ unsafe extern "C" fn cp_exec_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         rooted!(&in(cx_ref) let sigv = signal_val);
         JS_SetProperty(cx, err_h, c"signal".as_ptr(), sigv.handle().into());
 
-        let stdout_str = String::from_utf8_lossy(&spawn_result.stdout).into_owned();
-        let c_stdout = ZBox::from_bytes(stdout_str.as_bytes());
         {
-            let js_str = JS_NewStringCopyZ(cx, c_stdout.as_ptr());
-            if !js_str.is_null() {
-                let v = StringValue(&*js_str);
-                rooted!(&in(cx_ref) let rv = v);
-                JS_SetProperty(cx, err_h, c"stdout".as_ptr(), rv.handle().into());
-            }
+            let out_val = sync_output_jsval(cx, &spawn_result.stdout, carrier);
+            rooted!(&in(cx_ref) let rv = out_val);
+            JS_SetProperty(cx, err_h, c"stdout".as_ptr(), rv.handle().into());
         }
 
-        let c_stderr = ZBox::from_bytes(stderr_str.as_bytes());
         {
-            let js_str = JS_NewStringCopyZ(cx, c_stderr.as_ptr());
-            if !js_str.is_null() {
-                let v = StringValue(&*js_str);
-                rooted!(&in(cx_ref) let rv = v);
-                JS_SetProperty(cx, err_h, c"stderr".as_ptr(), rv.handle().into());
-            }
+            let err_val = sync_output_jsval(cx, &spawn_result.stderr, carrier);
+            rooted!(&in(cx_ref) let rv = err_val);
+            JS_SetProperty(cx, err_h, c"stderr".as_ptr(), rv.handle().into());
         }
 
         let output_arr_obj = w2::NewArrayObject1(cx_ref, 3);
@@ -4352,16 +4507,7 @@ unsafe extern "C" fn cp_exec_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         return false;
     }
 
-    let stdout_str = String::from_utf8_lossy(&spawn_result.stdout).into_owned();
-    let c_out = ZBox::from_bytes(stdout_str.as_bytes());
-    {
-        let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
-        if !js_str.is_null() {
-            args.rval().set(StringValue(&*js_str));
-            return true;
-        }
-    }
-    args.rval().set(UndefinedValue());
+    args.rval().set(sync_output_jsval(cx, &spawn_result.stdout, carrier));
     true
 }
 
@@ -4649,6 +4795,29 @@ unsafe extern "C" fn cp_exec_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
         }
     }
 
+    // node parity: `options.encoding` selects the stdout/stderr carrier
+    // (absent/'buffer' → Buffer, explicit decoding → String). Options are the
+    // LAST object argument: execFileSync(file, args?, options?) — the args
+    // array form carries a numeric `length`, the options object does not.
+    let carrier = if argc > 2 {
+        match parse_sync_output_carrier(cx, *args.get(2).ptr) {
+            Ok(c) => c,
+            Err(()) => return false,
+        }
+    } else if argc == 2 {
+        let v = *args.get(1).ptr;
+        if v.is_object() && !is_args_array_value(cx, v) {
+            match parse_sync_output_carrier(cx, v) {
+                Ok(c) => c,
+                Err(()) => return false,
+            }
+        } else {
+            SyncOutputCarrier::Buffer
+        }
+    } else {
+        SyncOutputCarrier::Buffer
+    };
+
     let spawn_result = match spawn_sync::spawn(&sync_opts) {
         Ok(Ok(r)) => r,
         Ok(Err(sys_err)) => {
@@ -4681,7 +4850,6 @@ unsafe extern "C" fn cp_exec_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
         rooted!(&in(cx_ref) let err_r = err_obj);
         let err_h = err_r.handle().into();
 
-        let stderr_str = String::from_utf8_lossy(&spawn_result.stderr).into_owned();
         let msg = format!("execFileSync failed with status {}", exit_code);
         let c_msg = ZBox::from_bytes(msg.as_bytes());
         {
@@ -4730,25 +4898,16 @@ unsafe extern "C" fn cp_exec_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
         rooted!(&in(cx_ref) let sigv = signal_val);
         JS_SetProperty(cx, err_h, c"signal".as_ptr(), sigv.handle().into());
 
-        let stdout_str = String::from_utf8_lossy(&spawn_result.stdout).into_owned();
-        let c_stdout = ZBox::from_bytes(stdout_str.as_bytes());
         {
-            let js_str = JS_NewStringCopyZ(cx, c_stdout.as_ptr());
-            if !js_str.is_null() {
-                let v = StringValue(&*js_str);
-                rooted!(&in(cx_ref) let rv = v);
-                JS_SetProperty(cx, err_h, c"stdout".as_ptr(), rv.handle().into());
-            }
+            let out_val = sync_output_jsval(cx, &spawn_result.stdout, carrier);
+            rooted!(&in(cx_ref) let rv = out_val);
+            JS_SetProperty(cx, err_h, c"stdout".as_ptr(), rv.handle().into());
         }
 
-        let c_stderr = ZBox::from_bytes(stderr_str.as_bytes());
         {
-            let js_str = JS_NewStringCopyZ(cx, c_stderr.as_ptr());
-            if !js_str.is_null() {
-                let v = StringValue(&*js_str);
-                rooted!(&in(cx_ref) let rv = v);
-                JS_SetProperty(cx, err_h, c"stderr".as_ptr(), rv.handle().into());
-            }
+            let err_val = sync_output_jsval(cx, &spawn_result.stderr, carrier);
+            rooted!(&in(cx_ref) let rv = err_val);
+            JS_SetProperty(cx, err_h, c"stderr".as_ptr(), rv.handle().into());
         }
 
         let err_val = ObjectValue(err_r.get());
@@ -4760,16 +4919,7 @@ unsafe extern "C" fn cp_exec_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
         );
         return false;
     }
-    let stdout_str = String::from_utf8_lossy(&spawn_result.stdout).into_owned();
-    let c_out = ZBox::from_bytes(stdout_str.as_bytes());
-    {
-        let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
-        if !js_str.is_null() {
-            args.rval().set(StringValue(&*js_str));
-            return true;
-        }
-    }
-    args.rval().set(UndefinedValue());
+    args.rval().set(sync_output_jsval(cx, &spawn_result.stdout, carrier));
     true
 }
 
@@ -4868,6 +5018,26 @@ unsafe extern "C" fn cp_spawn_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         }
     }
 
+    // node parity: `options.encoding` selects the stdout/stderr carrier
+    // (absent/'buffer' → Buffer, explicit decoding → String). Options are the
+    // LAST object argument: spawnSync(cmd, args?, options?) — the args array
+    // form carries a numeric `length`, the options object does not.
+    let mut carrier = SyncOutputCarrier::Buffer;
+    if argc > 2 {
+        match parse_sync_output_carrier(cx, *args.get(2).ptr) {
+            Ok(c) => carrier = c,
+            Err(()) => return false,
+        }
+    } else if argc == 2 {
+        let v = *args.get(1).ptr;
+        if v.is_object() && !is_args_array_value(cx, v) {
+            match parse_sync_output_carrier(cx, v) {
+                Ok(c) => carrier = c,
+                Err(()) => return false,
+            }
+        }
+    }
+
     let spawn_result = match spawn_sync::spawn(&sync_opts) {
         Ok(Ok(r)) => r,
         Ok(Err(sys_err)) => {
@@ -4934,38 +5104,28 @@ unsafe extern "C" fn cp_spawn_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         JSPROP_ENUMERATE as u32,
     );
 
-    let stdout_str = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    let c_out = ZBox::from_bytes(stdout_str.as_bytes());
     {
-        let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
-        if !js_str.is_null() {
-            let out_val = StringValue(&*js_str);
-            rooted!(&in(cx_ref) let ov = out_val);
-            JS_DefineProperty(
-                cx,
-                result_r.handle().into(),
-                c"stdout".as_ptr(),
-                ov.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
+        let out_val = sync_output_jsval(cx, &stdout_bytes, carrier);
+        rooted!(&in(cx_ref) let ov = out_val);
+        JS_DefineProperty(
+            cx,
+            result_r.handle().into(),
+            c"stdout".as_ptr(),
+            ov.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
-    let stderr_str = String::from_utf8_lossy(&stderr_bytes).into_owned();
-    let c_err = ZBox::from_bytes(stderr_str.as_bytes());
     {
-        let js_str = JS_NewStringCopyZ(cx, c_err.as_ptr());
-        if !js_str.is_null() {
-            let err_val = StringValue(&*js_str);
-            rooted!(&in(cx_ref) let ev = err_val);
-            JS_DefineProperty(
-                cx,
-                result_r.handle().into(),
-                c"stderr".as_ptr(),
-                ev.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
+        let err_val = sync_output_jsval(cx, &stderr_bytes, carrier);
+        rooted!(&in(cx_ref) let ev = err_val);
+        JS_DefineProperty(
+            cx,
+            result_r.handle().into(),
+            c"stderr".as_ptr(),
+            ev.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     let pid = Int32Value(spawn_result.pid as i32);

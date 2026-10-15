@@ -125,7 +125,8 @@ fn test_child_process_vm_module_zlib_deep_body() {
         r#"
         var cp = require('child_process');
         var out = cp.execSync('echo hello_world');
-        out.trim()
+        // node v24 default carrier is a Buffer — decode before string ops
+        out.toString().trim()
     "#,
     );
     assert!(
@@ -145,7 +146,7 @@ fn test_child_process_vm_module_zlib_deep_body() {
         var isWin = process.platform === 'win32';
         var out = isWin ? cp.execFileSync('cmd.exe', ['/C', 'echo', 'file_test'])
                         : cp.execFileSync('echo', ['file_test']);
-        out.trim()
+        out.toString().trim()
     "#,
     );
     assert!(

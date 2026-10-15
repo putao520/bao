@@ -38,6 +38,7 @@ mod bun_sqlite_backup_tests;
 mod bun_test_deep_tests;
 mod bun_wave_a_surface_tests;
 mod cdp_server_tests;
+mod child_process_carrier_tests;
 mod child_process_deep_tests;
 mod child_process_spawn_events_tests;
 mod child_process_vm_module_tests;
