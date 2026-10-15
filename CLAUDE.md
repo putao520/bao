@@ -211,7 +211,7 @@ make bce-check
 
 **凡新增 `#[cfg(windows)]` / `#[cfg(target_os=…)]` 条件编译面、或 windows-only 代码路径的改动,合并前必须过一次 Windows 交叉编译**(`cargo build --target x86_64-pc-windows-msvc -p bao_bin`,隔离项目 bao-winx,配方见 memory win-cross-env-rebuild-recipe——**容器内必先 `source scripts/win-cross-env.sh`**,缺之 boringssl_sys 炸 stdlib.h not found 系 env 未注入非工具链缺陷)。依据:交叉面不在 CI(手动 farm),纯纪律;node_os.rs netif seam 即 2026-09-26 后新增、从未交叉暴露、潜伏至 2026-10-14 才炸的样本(X.12)。
 
-StyleThread 栈 8MiB(上游 parity):bao 不走上游 mach,`.cargo/config.toml` [env] 持久化 `SERVO_STYLE_THREAD_STACK_SIZE_KB=8192`(上游 PR #43888 于 command_base.py:441 编译期注入 8MiB,"match the recursion depth of Chromium");缺省 512KB(vendor/stylo/parallel.rs:40)使 layout 2020 box-tree 深度成比例递归(dom_traversal.rs↔flow/construct.rs,每 DOM 层 8-13 帧)在 StyleThread worker 溢出——WPT scope-deep/inline-crash/outline-scrollIntoView 三条即此。option_env! 无 rebuild 追踪:改值后必须 `cargo clean -p bao-stylo`。
+StyleThread 栈 16MiB(bao 裁决 2026-10-15,原 8MiB 上游 parity):bao 不走上游 mach,`.cargo/config.toml` [env] 持久化 `SERVO_STYLE_THREAD_STACK_SIZE_KB=16384`(上游 PR #43888 于 command_base.py:441 编译期注入 8MiB,"match the recursion depth of Chromium");缺省 512KB(vendor/stylo/parallel.rs:40)使 layout 2020 box-tree 深度成比例递归(dom_traversal.rs↔flow/construct.rs,每 DOM 层 8-13 帧)在 StyleThread worker 溢出——WPT scope-deep/inline-crash/outline-scrollIntoView 三条即此。**8MiB 在 Windows msvc 不足(2026-10-15 WINRED-III 真机归因):msvc /GS 帧形态 ~4.5KB/DOM 层(opt)/~11.2KB(dev),8MiB 仅撑 opt ~1850 层即 0xC00000FD 栈溢出(死亡站点=layout box-tree 递归,无 StackLimitChecker 护栏;style recalc 有护栏幸免;Linux gcc 帧小 ~1.5×+WPT fixture 深度低于界故上游全绿);16MiB 边界 2.1× 线性上移(opt 推算 ~3700>2000 探测向量),env 线性已 A/B 实证**。option_env! 无 rebuild 追踪:改值后必须 `cargo clean -p bao-stylo`(或 touch vendor/stylo/parallel.rs)。
 
 ### cargo 宇宙拓扑(2026-09-21 归一后,用户裁决「全部立即归一」)
 
