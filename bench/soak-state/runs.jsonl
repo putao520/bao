@@ -42,3 +42,4 @@
 {"date":"2026-10-13","started_at":"2026-10-13T08:36:57Z","duration_mins":60,"verdict":"completed","zero_hang":true,"counts_toward_entry":true,"streak_after":12,"note":"zero-hang 60min — entry condition 12/3"}
 {"date":"2026-10-13","started_at":"2026-10-13T16:08:20Z","duration_mins":60,"verdict":"completed","zero_hang":true,"counts_toward_entry":true,"streak_after":13,"note":"zero-hang 60min — entry condition 13/3"}
 {"date":"2026-10-14","started_at":"2026-10-14T16:08:20Z","duration_mins":60,"verdict":"completed","zero_hang":true,"counts_toward_entry":true,"streak_after":14,"note":"zero-hang 60min — entry condition 14/3"}
+{"date":"2026-10-15","started_at":"2026-10-15T16:13:20Z","duration_mins":60,"verdict":"completed","zero_hang":true,"counts_toward_entry":true,"streak_after":15,"note":"zero-hang 60min — entry condition 15/3"}

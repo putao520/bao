@@ -1,0 +1,9 @@
+libEGL warning: DRI3 error: Could not get DRI3 device
+libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
+[soak] segment 0 closed: 4724 cycles, rss 275476→618476 KiB (growth +343000 KiB)
+[soak] segment 1 closed: 5717 cycles, rss 619908→724944 KiB (growth +105036 KiB)
+[soak] segment 2 closed: 5696 cycles, rss 724836→829440 KiB (growth +104604 KiB)
+[soak] segment 3 closed: 6002 cycles, rss 829116→922672 KiB (growth +93556 KiB)
+[soak] segment 4 closed: 6026 cycles, rss 922768→1013824 KiB (growth +91056 KiB)
+[soak] segment 5 closed: 6012 cycles, rss 1013844→1113632 KiB (growth +99788 KiB)
+[bench-harness] result written to bench/results/2026-10-15-b5dca9b37/soak.run-1.json
