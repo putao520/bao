@@ -1765,11 +1765,23 @@ unsafe fn tls_event_tasklet(ptr: *mut ServerShared) {
                     let socket_val =
                         TLS_CONNS.with(|m| m.borrow().get(&conn_id).and_then(|e| e.socket_root.as_ref().map(|g| g.get(0))));
                     let Some(socket_val) = socket_val else { continue };
-                    let payload = tls_bytes_to_array_buffer(cx, &bytes);
+                    // Root the socket before building the payload: buffer
+                    // construction allocates (GC may run and move the socket)
+                    // and the fetched JSVal is a copy, not a root.
+                    let mut sock_cx =
+                        mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                    let sock_cx_ref = &mut sock_cx;
+                    rooted!(&in(sock_cx_ref) let sock_r = socket_val.to_object());
+                    // @trace REQ-ENG-011 [api:TLSSocket.data] — node parity:
+                    // socket 'data' payloads are Buffers, the same carrier
+                    // net.Socket hands out (NET_JS `Buffer.from(buf)`), so
+                    // consumers get auto-stringify / toString('utf8') /
+                    // Buffer.* without an explicit decode step.
+                    let payload = crate::globals::create_buffer_object(cx, &bytes);
                     if payload.is_null() {
                         continue;
                     }
-                    tls_emit_js(cx, socket_val.to_object(), "data", &[ObjectValue(payload)]);
+                    tls_emit_js(cx, sock_r.get(), "data", &[ObjectValue(payload)]);
                 }
                 TlsEvent::End { conn_id } => {
                     let socket_val =
@@ -2024,30 +2036,6 @@ unsafe fn tls_build_error_js(cx: *mut JSContext, message: &str) -> *mut JSObject
     }
     tls_define_str_prop(cx, err_obj.get(), "message", message);
     err_obj.get()
-}
-
-/// Build an ArrayBuffer payload from bytes (house pattern from
-/// node_net::net_read — ownership transfers to the ArrayBuffer).
-unsafe fn tls_bytes_to_array_buffer(cx: *mut JSContext, bytes: &[u8]) -> *mut JSObject {
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    let len = bytes.len();
-    let layout = ::std::alloc::Layout::from_size_align(len.max(1), 1)
-        .unwrap_or_else(|_| ::std::alloc::Layout::from_size_align(1, 1).unwrap());
-    // SAFETY: layout has non-zero size (clamped above).
-    let alloc = unsafe { ::std::alloc::alloc(layout) };
-    if alloc.is_null() {
-        return ::std::ptr::null_mut();
-    }
-    // SAFETY: alloc is len bytes; source is a live slice.
-    unsafe { ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), alloc, len) };
-    let ab = w2::NewArrayBufferWithContents(cx_ref, len, alloc.cast::<core::ffi::c_void>());
-    if ab.is_null() {
-        // SAFETY: same layout used for alloc.
-        unsafe { ::std::alloc::dealloc(alloc, layout) };
-        return ::std::ptr::null_mut();
-    }
-    ab
 }
 
 /// Call `obj.emit(name, args...)` via the EventEmitter native on `emit`.

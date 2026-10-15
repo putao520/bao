@@ -173,6 +173,12 @@ pub unsafe fn install_node_apis(
     crate::node_util::install_assert(cx);
     crate::node_child_process::install(cx);
     crate::node_stream::install(cx);
+    // @trace REQ-ENG-011 [api:child_process.stdout] — node parity: stdio
+    // stream chunks are Buffers. Wrap the `__cp_drain` ArrayBuffer bridge
+    // once at install so every consumer face (the ChildProcess poll pump and
+    // the Readable-backed stdio streams) emits Buffers, mirroring net.Socket
+    // (see node_stream::install_cp_drain_buffer_carrier_parity).
+    crate::node_stream::install_cp_drain_buffer_carrier_parity(cx);
     crate::node_zlib::install(cx);
     crate::node_net::install(cx);
     crate::node_dns::install(cx);

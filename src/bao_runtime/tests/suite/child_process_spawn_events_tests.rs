@@ -182,3 +182,91 @@ fn child_process_spawn_once_stderr_and_throw_isolation_body() {
         "stderr data must be delivered, got: {log}"
     );
 }
+
+/// @trace REQ-ENG-011 [req:REQ-ENG-011] [level:integration] — data-carrier
+/// parity: stdout/stderr 'data' chunks are Buffers, the node carrier form
+/// (auto-stringify via `'' + chunk`, `toString('utf8')`, `Buffer.isBuffer`,
+/// `util.inspect` `<Buffer …>` form). The old ArrayBuffer carrier forced an
+/// explicit `new TextDecoder().decode(...)` and turned `'' + chunk` into
+/// '[object ArrayBuffer]'. Chunks are accumulated (a pipe may split the
+/// write) and judged per-chunk plus on the joined payload.
+#[test]
+fn child_process_stdout_data_carrier_is_buffer() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout(
+        "child_process_spawn_events_tests::child_process_stdout_data_carrier_is_buffer",
+        child_process_stdout_data_carrier_is_buffer_body,
+    );
+}
+
+fn child_process_stdout_data_carrier_is_buffer_body() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("JsContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+    ctx.set_post_eval_hook(bounded_drain_hook);
+
+    let setup = eval_str(
+        &mut ctx,
+        r#"
+        var cp = require('child_process');
+        globalThis.__done = false;
+        globalThis.__parts = [];
+
+        var child = cp.spawn('/bin/sh', ['-c', 'printf abc123; exit 0']);
+        child.stdout.on('data', function(d) {
+            globalThis.__parts.push({
+                isBuffer: Buffer.isBuffer(d),
+                isUint8: d instanceof Uint8Array,
+                s: d.toString('utf8'),
+                concat: '' + d,
+                len: d.length,
+                inspectOk: require('util').inspect(d).indexOf('<Buffer') === 0
+            });
+        });
+        child.on('close', function() {
+            globalThis.__joined = globalThis.__parts.map(function(p) { return p.s; }).join('');
+            globalThis.__done = true;
+        });
+        'setup-ok'
+        "#,
+    );
+    assert_eq!(setup, "setup-ok");
+
+    let done = wait_until(&mut ctx, "globalThis.__done === true ? 'y' : 'n'", 50);
+    let parts = eval_str(&mut ctx, "JSON.stringify(globalThis.__parts)");
+    assert!(done, "child must close; parts: {parts}");
+
+    let count: usize = eval_str(&mut ctx, "String(globalThis.__parts.length)")
+        .parse()
+        .expect("parts.length");
+    assert!(count >= 1, "at least one stdout chunk must arrive, got: {parts}");
+    let joined = eval_str(&mut ctx, "globalThis.__joined");
+    assert_eq!(joined, "abc123", "toString('utf8') parts must join to the child output");
+
+    // Per-chunk node-carrier truth: every chunk is a real Buffer usable as
+    // node consumers use them — no explicit decode step anywhere.
+    for i in 0..count {
+        let p = eval_str(&mut ctx, &format!("JSON.stringify(globalThis.__parts[{i}])"));
+        assert!(p.contains("\"isBuffer\":true"), "chunk {i} must be a Buffer (Buffer.isBuffer), got: {p}");
+        assert!(p.contains("\"isUint8\":true"), "chunk {i} must be a Uint8Array, got: {p}");
+        assert!(
+            p.contains("\"inspectOk\":true"),
+            "chunk {i} must inspect as the node <Buffer …> form, got: {p}"
+        );
+        assert!(
+            p.contains("\"concat\":\"") && !p.contains("[object ArrayBuffer]"),
+            "chunk {i} must auto-stringify to its bytes ('' + chunk), got: {p}"
+        );
+        // toString('utf8') === '' + chunk === byte decode, per node semantics.
+        let s = eval_str(&mut ctx, &format!("globalThis.__parts[{i}].s"));
+        let concat = eval_str(&mut ctx, &format!("globalThis.__parts[{i}].concat"));
+        assert_eq!(s, concat, "chunk {i}: toString('utf8') must equal '' + chunk");
+        let len: usize = eval_str(&mut ctx, &format!("String(globalThis.__parts[{i}].len)"))
+            .parse()
+            .expect("len");
+        assert_eq!(len, s.as_bytes().len(), "chunk {i}: length must be the byte count");
+    }
+}

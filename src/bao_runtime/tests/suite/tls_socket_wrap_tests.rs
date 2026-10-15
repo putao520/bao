@@ -240,8 +240,10 @@ fn wrap_c1_upgrade_over_existing_conn() {
                 t.on('close', function () { __note('closed'); });
                 t.on('secureConnect', function () { __note('secureConnect'); t.write('POST-UPGRADE'); });
                 t.on('data', function (c) {
-                    // TLSSocket 'data' delivers ArrayBuffer payloads (native
-                    // tls_bytes_to_array_buffer) — decode before matching.
+                    // REQ-ENG-011: TLSSocket 'data' delivers Buffer payloads
+                    // (node carrier parity with net.Socket) — toString()
+                    // decodes directly; Buffer.from(c) keeps working on a
+                    // Buffer so this form stays carrier-agnostic.
                     if (Buffer.from(c).toString().indexOf('TLS-ECHO') !== -1) {
                         globalThis.__wrapRes = t.getProtocol() || '';
                         globalThis.__wrapDone = true;

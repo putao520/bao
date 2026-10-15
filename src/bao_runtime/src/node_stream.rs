@@ -883,3 +883,57 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         cache_builtin(cx, "stream", mod_obj.get());
     }
 }
+
+// ─── child_process stdio data-carrier parity (REQ-ENG-011) ─────────────────
+//
+// Node.js semantics: child_process stdout/stderr stream chunks are Buffers —
+// `'' + chunk` stringifies via utf8, `chunk.toString('utf8')` decodes,
+// `Buffer.isBuffer(chunk)` is true. bao's `__cp_drain` bridge (node_child_process)
+// returns a raw ArrayBuffer, so both consumer faces (the ChildProcess poll pump
+// and the Readable-backed stdio streams) handed users ArrayBuffers that needed
+// an explicit `new TextDecoder().decode(...)`. Wrap the bridge once at install
+// time so every consumer face hands out real Buffers — the existing Buffer
+// implementation, reused (no new wrapper type) — mirroring net.Socket's
+// NET_JS `Buffer.from(buf)` emit.
+//
+// Called from globals::install_all right after node_child_process::install.
+// Idempotent: a second install sees `_baoOriginal` on the wrapper and returns.
+// A failed install logs loudly (parity degradation must be observable, not
+// silent) but leaves the runtime alive.
+pub(crate) fn install_cp_drain_buffer_carrier_parity(cx: &mut mozjs::context::JSContext) {
+    const WRAP_SRC: &str = r#"(function() {
+  var cp = require('child_process');
+  var cur = cp && cp.__cp_drain;
+  if (typeof cur !== 'function' || cur._baoOriginal) return;
+  var wrapped = function(pid, which) {
+    var chunk = cur(pid, which);
+    if (chunk === null || chunk === undefined) return chunk;
+    // typedArray overload: copies the drained bytes into a real Buffer
+    // (Buffer.isBuffer === true), leaving the source ArrayBuffer unaliased.
+    return Buffer.from(new Uint8Array(chunk));
+  };
+  Object.defineProperty(wrapped, '_baoOriginal', { value: cur });
+  cp.__cp_drain = wrapped;
+})();
+"#;
+    unsafe {
+        let cx_raw = cx.raw_cx();
+        let c_filename = ZBox::from_bytes("node:stream-cp-drain-carrier-parity".as_bytes());
+        let opts = NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
+        if opts.is_null() {
+            log::error!("[stream] cp-drain carrier parity: NewCompileOptions failed — child_process stdio stays ArrayBuffer");
+            return;
+        }
+        let mut src = mozjs::rust::transform_str_to_source_text(WRAP_SRC);
+        let mut rval = UndefinedValue();
+        let rval_handle = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+        let ok = mozjs_sys::jsapi::JS::Evaluate2(cx_raw, opts, &mut src, rval_handle);
+        mozjs::glue::DeleteCompileOptions(opts);
+        if !ok {
+            log::error!("[stream] cp-drain carrier parity wrap failed to eval — child_process stdio stays ArrayBuffer");
+        }
+    }
+}

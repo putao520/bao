@@ -775,3 +775,126 @@ fn client_connect_rejects_untrusted_server_by_default() {
     eval_string(&mut ctx, "server.close();");
     drive_event_loop(&mut ctx, 10);
 }
+
+// ─── 7. REQ-ENG-011: TLSSocket 'data' carrier is a Buffer ───────────────
+//
+// The client TLSSocket 'data' payload used to be a raw ArrayBuffer (native
+// tls_bytes_to_array_buffer) while net.Socket already emitted Buffers —
+// consumers needed `Buffer.from(c).toString()` and `'' + chunk` yielded
+// '[object ArrayBuffer]'. Node semantics: socket data chunks are Buffers on
+// every stream face. Discriminates the carrier directly on the real
+// tls.connect() path: Buffer.isBuffer, utf8 toString, `'' + chunk`
+// auto-stringify, `util.inspect` <Buffer …> form.
+#[test]
+fn tls_client_data_event_carrier_is_buffer() {
+    bun_runtime::install_exit_handler();
+    bun_core::output::init_test();
+    bun_runtime::bun_api::init_process_start();
+
+    let (cert, key) = generate_self_signed_pem("carrier.local", 365).expect("cert");
+
+    let mut ctx = make_ctx();
+    let setup = format!(
+        r#"
+        var tls = require('tls');
+        globalThis.port = 0;
+        var server = tls.createServer({{
+            key: "{key}",
+            cert: "{cert}"
+        }});
+        server.on('secureConnection', function(s) {{
+            s.on('data', function(d) {{ s.write('pong'); }});
+        }});
+        server.listen(0, '127.0.0.1', function() {{ globalThis.port = server.address().port; }});
+        "ok"
+        "#,
+        key = js_str(&key),
+        cert = js_str(&cert),
+    );
+    let r = eval_string(&mut ctx, &setup);
+    assert_eq!(r, "ok", "server setup failed: {}", r);
+    assert!(
+        drive_event_loop_until(&mut ctx, Duration::from_secs(2), |ctx| {
+            eval_string(ctx, "String(globalThis.port > 0)") == "true"
+        }),
+        "listen callback must fire: port not captured"
+    );
+    let port = match ctx.eval("globalThis.port;", "<p>") {
+        Ok(JsValue::Number(n)) => n as u16,
+        _ => panic!("port not captured after listen"),
+    };
+    assert!(port > 0);
+
+    let connect = format!(
+        r#"
+        tls.connect({{ host: '127.0.0.1', port: {port}, rejectUnauthorized: false }}).then(function(sock) {{
+            globalThis.clientSock = sock;
+            globalThis.parts = [];
+            sock.on('data', function(d) {{
+                globalThis.parts.push({{
+                    isBuffer: Buffer.isBuffer(d),
+                    isUint8: d instanceof Uint8Array,
+                    s: d.toString('utf8'),
+                    concat: '' + d,
+                    len: d.length,
+                    inspectOk: require('util').inspect(d).indexOf('<Buffer') === 0
+                }});
+            }});
+            sock.write('ping');
+        }}, function(err) {{
+            globalThis.clientErr = String(err && err.message || err);
+        }});
+        "connecting"
+        "#,
+        port = port,
+    );
+    let r = eval_string(&mut ctx, &connect);
+    assert_eq!(r, "connecting", "tls.connect eval failed: {}", r);
+
+    // Pump until an echo chunk lands (or the 5s deadline).
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let got = eval_string(&mut ctx, "String(globalThis.parts && globalThis.parts.length > 0)");
+        let err = eval_string(&mut ctx, "String(globalThis.clientErr !== undefined)");
+        if got == "true" || err == "true" || std::time::Instant::now() > deadline {
+            break;
+        }
+        drive_event_loop(&mut ctx, 5);
+    }
+
+    let err = eval_string(&mut ctx, "String(globalThis.clientErr || '')");
+    assert_eq!(err, "", "tls.connect must not reject against a live server, got: {}", err);
+
+    let parts_json = eval_string(&mut ctx, "JSON.stringify(globalThis.parts)");
+    let count: usize = eval_string(&mut ctx, "String(globalThis.parts.length)")
+        .parse()
+        .expect("parts.length");
+    assert!(count >= 1, "at least one client data chunk must arrive, got: {parts_json}");
+    let joined = eval_string(&mut ctx, "globalThis.parts.map(function(p) {{ return p.s; }}).join('')");
+    assert!(joined.contains("pong"), "toString('utf8') parts must contain the echo payload, got: {joined:?}");
+
+    // Per-chunk node-carrier truth on the real TLS path.
+    for i in 0..count {
+        let p = eval_string(&mut ctx, &format!("JSON.stringify(globalThis.parts[{i}])"));
+        assert!(p.contains("\"isBuffer\":true"), "chunk {i} must be a Buffer (Buffer.isBuffer), got: {p}");
+        assert!(p.contains("\"isUint8\":true"), "chunk {i} must be a Uint8Array, got: {p}");
+        assert!(
+            p.contains("\"inspectOk\":true"),
+            "chunk {i} must inspect as the node <Buffer …> form, got: {p}"
+        );
+        assert!(
+            !p.contains("[object ArrayBuffer]"),
+            "chunk {i} must auto-stringify to its bytes ('' + chunk), got: {p}"
+        );
+        let s = eval_string(&mut ctx, &format!("globalThis.parts[{i}].s"));
+        let concat = eval_string(&mut ctx, &format!("globalThis.parts[{i}].concat"));
+        assert_eq!(s, concat, "chunk {i}: toString('utf8') must equal '' + chunk");
+        let len: usize = eval_string(&mut ctx, &format!("String(globalThis.parts[{i}].len)"))
+            .parse()
+            .expect("len");
+        assert_eq!(len, s.as_bytes().len(), "chunk {i}: length must be the byte count");
+    }
+
+    eval_string(&mut ctx, "server.close();");
+    drive_event_loop(&mut ctx, 5);
+}
