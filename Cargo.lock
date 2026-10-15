@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "bao-core"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "bao-browser",
  "bao_cdp",
@@ -553,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "bao-mozjs"
-version = "0.24.2"
+version = "0.24.3"
 dependencies = [
  "bao-mozjs-sys",
  "bindgen",
@@ -689,7 +689,7 @@ version = "153.3.0-0"
 
 [[package]]
 name = "bao-mozjs-src-js"
-version = "153.3.0-0"
+version = "153.3.0-1"
 
 [[package]]
 name = "bao-mozjs-src-python"
@@ -697,7 +697,7 @@ version = "153.3.0-0"
 
 [[package]]
 name = "bao-mozjs-sys"
-version = "153.3.0-2"
+version = "153.3.0-4"
 dependencies = [
  "bao-mozjs-collator-glue",
  "bao-mozjs-locale-glue",
@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo"
-version = "0.5.25"
+version = "0.5.26"
 dependencies = [
  "accesskit",
  "arboard",
@@ -844,7 +844,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-base"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "accesskit",
  "bao-ipc-channel",
@@ -981,7 +981,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation-traits"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "accesskit",
  "bao-servo-base",
@@ -1060,7 +1060,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools-traits"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "bao-servo-base",
  "bao-servo-embedder-traits",
@@ -1329,7 +1329,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-malloc-size-of"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1676,7 +1676,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net-traits"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1835,7 +1835,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.30"
+version = "0.5.31"
 dependencies = [
  "accesskit",
  "aes",
@@ -1982,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-bindings"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "atomic_refcell",
  "bao-mozjs",

@@ -22,7 +22,7 @@ repository = "https://github.com/servo/mozjs/"
 # mozjs-source-3b49a449 (FIREFOX_153_3_0esr_RELEASE), wrapper/tooling anchor
 # upstream 29ba7198 (#803); version lineage follows the SM (upstream:
 # mozjs-sys-v153.0.0-x tags; bao pins the newest 153 ESR = 153.3.0).
-version = "153.3.0-2"
+version = "153.3.0-4"
 authors = ["Mozilla", "The Servo Project Developers"]
 links = "mozjs"
 license = "MPL-2.0"
@@ -77,7 +77,7 @@ encoding_c_mem = "0.2.6"
 # virtual mozjs topsrcdir from the three roots + this crate's skeleton
 # (mozjs/{build,config*,mozglue,mfbt,nsprpub,...}). Version-pinned lockstep
 # with this crate (140.14.0-0 lineage) so `cargo package` rewrites cleanly.
-bao-mozjs-src-js = { path = "../src-js", version = "=153.3.0-0" }
+bao-mozjs-src-js = { path = "../src-js", version = "=153.3.0-1" }
 bao-mozjs-src-intl = { path = "../src-intl", version = "=153.3.0-0" }
 bao-mozjs-src-python = { path = "../src-python", version = "=153.3.0-0" }
 # SM153 (upstream 29ba7198 form): the SM tree's rust glue crates are vendored
