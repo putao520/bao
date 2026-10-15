@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-net"
-version = "0.5.37"
+version = "0.5.38"
 publish = true
 autotests = false # Inhibit lookup for tests/*.rs without [[test]] sections
 

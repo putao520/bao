@@ -223,6 +223,18 @@ StyleThread 栈 8MiB(上游 parity):bao 不走上游 mach,`.cargo/config.toml` [
 - 历史记录:本文档 2026-09-21 前的「双 workspace patch 链 / 双侧 lock」叙述为当时机制描述,现行为单侧主根 patch。
 - `vendor/boringssl/rust/` 第五宇宙已灭(`375abb6b`):根 manifest 仅 members+resolver 3 零继承面,无需内联直接删根;考古实证 **bssl-\* rust crate 全仓零消费**(主锁无任何 bssl-\* 包;源码引用全为注释性出处标注;C 构建走 `src/boringssl_sys/csrc` 字节级镜像 + cc crate,CMakeLists.txt 系上游脚手架 bao 从不调用),删根零解析影响。六个 bssl-\* manifest 留作上游 rust bindings 源记录。
 
+### vendor 发布一致性纪律(BCE 2026-10-15,e99 同号漂移族根治)
+
+**vendor 包(servo/mozjs/stylo 面)内容变更 = 发布义务;树内 bump 不构成发布动作。** 发布闭包必须先过**内容级漂移门**(P1):
+
+1. 对每个有 registry 对照的 bao-*/vendor 组件:下载 registry 同名版本 tarball,逐源文件 sha256 与工作树比对(排除 Cargo.toml version 行自身)
+2. 判据三态:树版本==registry 版本且内容 hash 不等 → **同名漂移 RED**;树版本>registry → **树 bump 未重发 RED**;树版本<registry → **树落后 RED**
+3. 禁以版本号相同推定"已发/已同步"(实证反例:bao-servo-net 同名 0.5.37,registry 内容停在上游纯净拷贝,树已叠补丁纪元——http_loader.rs 2922 行 vs 3278 行)
+
+**吸收波收口检查项(P2)**:整树 snapshot swap(如 e99 a7272f163)收口时,换血包强制入待重发队列(记树内新版本+换血基准 rev),并入发布战役;禁以"换血已提交"当作"已发布"。
+
+**链走手法(P4)**:①同号漂移的 publish verify 失败即指向下一环;②自指/环 dev-dep 死锁=临时摘边两相法(发后还原,--allow-dirty);③"符号不存在"(GetJobQueue/safe_to_jsval 类)= registry 组件版本旧而非树缺陷;④发布前删 sparse-index .cache 条目强制重取。
+
 ### 测试运行纪律(集成测试已收敛为单 harness suite)
 
 7 个重引擎 crate(`bao_runtime` / `bao_browser` / `bao_stealth` / `cdp-server` / `bao_engine` / `bao_cdp` / `bao_cdp_client`)的集成测试已结构性收敛:原 `tests/` 顶层每个 `.rs` 都是独立 auto-discovered target(每个全引擎链接,332 个测试二进制、267 个 ≥500M、合计 225G),现全部并入各自 `tests/suite/` 单 harness target(`tests/suite/main.rs` 为聚合根,子目录不被 auto-discover)。**运行时隔离由 cargo-nextest 保证**——每个 `#[test]` 独立进程运行,合并二进制不改变测试隔离语义(这是本结构的成立前提)。

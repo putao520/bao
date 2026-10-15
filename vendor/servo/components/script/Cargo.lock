@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-allocator"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "libc",
  "tikv-jemalloc-sys",
@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-canvas-traits"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "bao-servo-base",
  "bao-servo-fonts-traits",
@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-config"
-version = "0.5.13"
+version = "0.5.14"
 dependencies = [
  "bao-servo-config-macro",
  "num_enum",
@@ -666,6 +666,7 @@ dependencies = [
  "bao-servo-profile-traits",
  "bao-servo-storage-traits",
  "bao-servo-url",
+ "bao-servo-webgpu-traits",
  "base64 0.23.1",
  "content-security-policy",
  "encoding_rs",
@@ -678,6 +679,7 @@ dependencies = [
  "strum",
  "uuid",
  "webrender_api",
+ "wgpu-core",
  "zeroize",
 ]
 
@@ -719,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-embedder-traits"
-version = "0.5.19"
+version = "0.5.20"
 dependencies = [
  "accesskit",
  "bao-servo-base",
@@ -752,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts"
-version = "0.5.19"
+version = "0.5.20"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -810,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts-traits"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -868,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout-api"
-version = "0.5.19"
+version = "0.5.20"
 dependencies = [
  "accesskit",
  "app_units",
@@ -960,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-audio"
-version = "0.5.21"
+version = "0.5.22"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -1050,7 +1052,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-metrics"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -1109,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-paint-api"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "bao-servo-base",
  "bao-servo-embedder-traits",
@@ -1156,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-profile-traits"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-allocator",
@@ -1171,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.31"
+version = "0.5.32"
 dependencies = [
  "accesskit",
  "aes",
@@ -1369,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-traits"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "accesskit",
  "bao-servo-base",
@@ -1404,7 +1406,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-webgpu"
-version = "0.5.30"
+version = "0.5.31"
 dependencies = [
  "arrayvec",
  "bao-mozjs",
@@ -1430,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-storage-traits"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -1462,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-url"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "bao-servo-malloc-size-of",
  "encoding_rs",
@@ -1475,7 +1477,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webgpu-traits"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "arrayvec",
  "bao-servo-base",
@@ -1490,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webvtt"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "html5ever",
  "markup5ever",
@@ -1514,7 +1516,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-xpath"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "bao-servo-malloc-size-of",
  "log",

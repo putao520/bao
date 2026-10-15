@@ -41,7 +41,7 @@ webdriver = ["dep:webdriver_server"]
 servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.25, <0.6.0", default-features = false, features = ["baked-in-resources", "webgl", "webcrypto"] }
 # WebDriver embedder host (feature "webdriver"): the upstream component that
 # owns the whole WebDriver HTTP protocol — bao only pumps the embedder channel.
-webdriver_server = { package = "bao-servo-webdriver-server", path = "../../vendor/servo/components/webdriver_server", version = "=0.5.17", optional = true }
+webdriver_server = { package = "bao-servo-webdriver-server", path = "../../vendor/servo/components/webdriver_server", version = "=0.5.18", optional = true }
 # REQ-ARCH-3 (F2a): the webdriver_server embedder interface channel types
 # (Sender<()> for input events / screenshots and the host receiver) are now
 # spelled through `bao_ipc`'s transparent re-export — `bao_ipc::Sender` IS
