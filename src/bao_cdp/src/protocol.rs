@@ -2786,6 +2786,15 @@ mod tests {
     use crate::CdpEvent;
     use serde_json::json;
 
+    /// REQ-BRW-048 fail-closed contract shared by the CSS style-query faces:
+    /// no bridge + missing required nodeId → explicit -32602 naming the param.
+    fn assert_css_style_query_requires_nodeid(id: i64, method: &str) {
+        let resp = dispatch_no_bridge(id, method, None);
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("nodeId"));
+    }
+
     /// Sessionless CdpMessage fixture — the construction shape every
     /// handle_command test below shares (params passthrough, no session tag).
     fn cdp_msg(id: i64, method: &str, params: Option<Value>) -> CdpMessage {
@@ -3596,10 +3605,7 @@ mod tests {
     //     explicitly.
     #[test]
     fn handle_command_css_get_computed_style() {
-        let resp = dispatch_no_bridge(15, "CSS.getComputedStyleForNode", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
-        assert_eq!(err.code, -32602);
-        assert!(err.message.contains("nodeId"));
+        assert_css_style_query_requires_nodeid(15, "CSS.getComputedStyleForNode");
     }
 
     // 27. handle_command Debugger.setBreakpointByUrl → -32603 (task #10:
@@ -4226,20 +4232,14 @@ mod tests {
     //     → -32602 (required nodeId) — REQ-BRW-048 fail-closed contract.
     #[test]
     fn handle_command_css_get_matched_styles() {
-        let resp = dispatch_no_bridge(55, "CSS.getMatchedStylesForNode", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
-        assert_eq!(err.code, -32602);
-        assert!(err.message.contains("nodeId"));
+        assert_css_style_query_requires_nodeid(55, "CSS.getMatchedStylesForNode");
     }
 
     // 127. handle_command CSS.getInlineStylesForNode (no bridge, no params)
     //     → -32602 (required nodeId) — REQ-BRW-048 fail-closed contract.
     #[test]
     fn handle_command_css_get_inline_styles() {
-        let resp = dispatch_no_bridge(56, "CSS.getInlineStylesForNode", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
-        assert_eq!(err.code, -32602);
-        assert!(err.message.contains("nodeId"));
+        assert_css_style_query_requires_nodeid(56, "CSS.getInlineStylesForNode");
     }
 
     // 127b. REQ-BRW-048: the CSS query methods with a valid nodeId still fail

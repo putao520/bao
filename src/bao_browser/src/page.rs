@@ -3103,76 +3103,54 @@ mod tests {
     // ── PageHandle high-level API existence tests ───────────────────────
     // @trace REQ-LIB-001 [req:REQ-LIB-001] [level:unit]
 
-    #[test]
-    fn page_inner_has_wait_for_selector() {
+    /// Assert `page.rs` textually declares `needle` (a `pub fn ...(` shape)
+    /// on PageInner — the shared shape of every single-method existence check.
+    fn page_inner_declares(needle: &str, label: &str) {
         let source = include_str!("page.rs");
         assert!(
-            source.contains("pub fn wait_for_selector("),
-            "REQ-LIB-001: PageInner must have wait_for_selector method"
+            source.contains(needle),
+            "REQ-LIB-001: PageInner must have {label} method"
         );
+    }
+
+    #[test]
+    fn page_inner_has_wait_for_selector() {
+        page_inner_declares("pub fn wait_for_selector(", "wait_for_selector");
     }
 
     #[test]
     fn page_inner_has_wait_for_navigation() {
-        let source = include_str!("page.rs");
-        assert!(
-            source.contains("pub fn wait_for_navigation("),
-            "REQ-LIB-001: PageInner must have wait_for_navigation method"
-        );
+        page_inner_declares("pub fn wait_for_navigation(", "wait_for_navigation");
     }
 
     #[test]
     fn page_inner_has_wait_for_function() {
-        let source = include_str!("page.rs");
-        assert!(
-            source.contains("pub fn wait_for_function("),
-            "REQ-LIB-001: PageInner must have wait_for_function method"
-        );
+        page_inner_declares("pub fn wait_for_function(", "wait_for_function");
     }
 
     #[test]
     fn page_inner_has_click_element() {
-        let source = include_str!("page.rs");
-        assert!(
-            source.contains("pub fn click_element("),
-            "REQ-LIB-001: PageInner must have click_element method"
-        );
+        page_inner_declares("pub fn click_element(", "click_element");
     }
 
     #[test]
     fn page_inner_has_type_text() {
-        let source = include_str!("page.rs");
-        assert!(
-            source.contains("pub fn type_text("),
-            "REQ-LIB-001: PageInner must have type_text method"
-        );
+        page_inner_declares("pub fn type_text(", "type_text");
     }
 
     #[test]
     fn page_inner_has_fill() {
-        let source = include_str!("page.rs");
-        assert!(
-            source.contains("pub fn fill("),
-            "REQ-LIB-001: PageInner must have fill method"
-        );
+        page_inner_declares("pub fn fill(", "fill");
     }
 
     #[test]
     fn page_inner_has_set_content() {
-        let source = include_str!("page.rs");
-        assert!(
-            source.contains("pub fn set_content("),
-            "REQ-LIB-001: PageInner must have set_content method"
-        );
+        page_inner_declares("pub fn set_content(", "set_content");
     }
 
     #[test]
     fn page_inner_has_content() {
-        let source = include_str!("page.rs");
-        assert!(
-            source.contains("pub fn content("),
-            "REQ-LIB-001: PageInner must have content method"
-        );
+        page_inner_declares("pub fn content(", "content");
     }
 
     #[test]
@@ -3194,20 +3172,12 @@ mod tests {
 
     #[test]
     fn page_inner_has_dispatch_mouse_event() {
-        let source = include_str!("page.rs");
-        assert!(
-            source.contains("pub fn dispatch_mouse_event("),
-            "REQ-LIB-001: PageInner must have dispatch_mouse_event method"
-        );
+        page_inner_declares("pub fn dispatch_mouse_event(", "dispatch_mouse_event");
     }
 
     #[test]
     fn page_inner_has_dispatch_key_event() {
-        let source = include_str!("page.rs");
-        assert!(
-            source.contains("pub fn dispatch_key_event("),
-            "REQ-LIB-001: PageInner must have dispatch_key_event method"
-        );
+        page_inner_declares("pub fn dispatch_key_event(", "dispatch_key_event");
     }
 
     #[test]

@@ -1070,111 +1070,108 @@ mod tests {
         assert!(debug_str.contains("mouseMoved"));
     }
 
+    /// A `BridgeCommand`'s `Debug` output names its variant (the shared
+    /// shape of every construction smoke test below).
+    fn assert_debug_names(cmd: BridgeCommand, variant: &str) {
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains(variant));
+    }
+
     #[test]
     fn dispatch_key_event_construction() {
-        let cmd = BridgeCommand::DispatchKeyEvent {
-            target_id: TID.into(),
-            event_type: "keyDown".into(),
-            key: "Enter".into(),
-            code: "Enter".into(),
-            text: Some("\r".into()),
-            modifiers: 0,
-            location: 0,
-            repeat: false,
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("DispatchKeyEvent"));
+        assert_debug_names(
+            BridgeCommand::DispatchKeyEvent {
+                target_id: TID.into(),
+                event_type: "keyDown".into(),
+                key: "Enter".into(),
+                code: "Enter".into(),
+                text: Some("\r".into()),
+                modifiers: 0,
+                location: 0,
+                repeat: false,
+            },
+            "DispatchKeyEvent",
+        );
     }
 
     #[test]
     fn set_viewport_construction() {
-        let cmd = BridgeCommand::SetViewport {
-            target_id: TID.into(),
-            width: 1920,
-            height: 1080,
-            device_scale_factor: Some(2.0),
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("SetViewport"));
+        assert_debug_names(
+            BridgeCommand::SetViewport {
+                target_id: TID.into(),
+                width: 1920,
+                height: 1080,
+                device_scale_factor: Some(2.0),
+            },
+            "SetViewport",
+        );
     }
 
     #[test]
     fn set_cookie_construction() {
-        let cmd = BridgeCommand::SetCookie {
-            target_id: TID.into(),
-            name: "session".into(),
-            value: "abc123".into(),
-            url: Some("https://example.com".into()),
-            domain: Some(".example.com".into()),
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("SetCookie"));
+        assert_debug_names(
+            BridgeCommand::SetCookie {
+                target_id: TID.into(),
+                name: "session".into(),
+                value: "abc123".into(),
+                url: Some("https://example.com".into()),
+                domain: Some(".example.com".into()),
+            },
+            "SetCookie",
+        );
     }
 
     #[test]
     fn get_response_body_construction() {
-        let cmd = BridgeCommand::GetResponseBody {
-            target_id: TID.into(),
-            request_id: "req-001".into(),
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("GetResponseBody"));
+        assert_debug_names(
+            BridgeCommand::GetResponseBody {
+                target_id: TID.into(),
+                request_id: "req-001".into(),
+            },
+            "GetResponseBody",
+        );
     }
 
     #[test]
     fn add_script_to_evaluate_on_new_document_construction() {
-        let cmd = BridgeCommand::AddScriptToEvaluateOnNewDocument {
-            target_id: TID.into(),
-            source: "console.log('hi')".into(),
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("AddScriptToEvaluateOnNewDocument"));
+        assert_debug_names(
+            BridgeCommand::AddScriptToEvaluateOnNewDocument {
+                target_id: TID.into(),
+                source: "console.log('hi')".into(),
+            },
+            "AddScriptToEvaluateOnNewDocument",
+        );
     }
 
     #[test]
     fn reload_construction() {
-        let cmd = BridgeCommand::Reload {
-            target_id: TID.into(),
-            ignore_cache: true,
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("Reload"));
+        assert_debug_names(
+            BridgeCommand::Reload {
+                target_id: TID.into(),
+                ignore_cache: true,
+            },
+            "Reload",
+        );
     }
 
     #[test]
     fn go_back_construction() {
-        let cmd = BridgeCommand::GoBack {
-            target_id: TID.into(),
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("GoBack"));
+        assert_debug_names(BridgeCommand::GoBack { target_id: TID.into() }, "GoBack");
     }
 
     #[test]
     fn go_forward_construction() {
-        let cmd = BridgeCommand::GoForward {
-            target_id: TID.into(),
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("GoForward"));
+        assert_debug_names(BridgeCommand::GoForward { target_id: TID.into() }, "GoForward");
     }
 
     #[test]
     fn stop_loading_construction() {
-        let cmd = BridgeCommand::StopLoading {
-            target_id: TID.into(),
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("StopLoading"));
+        assert_debug_names(BridgeCommand::StopLoading { target_id: TID.into() }, "StopLoading");
     }
 
     #[test]
     fn close_page_construction() {
-        let cmd = BridgeCommand::ClosePage {
-            target_id: TID.into(),
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("ClosePage"));
+        assert_debug_names(BridgeCommand::ClosePage { target_id: TID.into() }, "ClosePage");
     }
 
     // 16. BridgeSender timeout works (short timeout + slow responder)
@@ -1243,11 +1240,12 @@ mod tests {
 
     #[test]
     fn list_worker_targets_construction() {
-        let cmd = BridgeCommand::ListWorkerTargets {
-            target_id: TID.into(),
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("ListWorkerTargets"));
+        assert_debug_names(
+            BridgeCommand::ListWorkerTargets {
+                target_id: TID.into(),
+            },
+            "ListWorkerTargets",
+        );
     }
 
     #[test]
@@ -1263,11 +1261,12 @@ mod tests {
 
     #[test]
     fn list_service_worker_registrations_construction() {
-        let cmd = BridgeCommand::ListServiceWorkerRegistrations {
-            target_id: TID.into(),
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("ListServiceWorkerRegistrations"));
+        assert_debug_names(
+            BridgeCommand::ListServiceWorkerRegistrations {
+                target_id: TID.into(),
+            },
+            "ListServiceWorkerRegistrations",
+        );
     }
 
     #[test]
@@ -1283,22 +1282,24 @@ mod tests {
 
     #[test]
     fn terminate_service_worker_construction() {
-        let cmd = BridgeCommand::TerminateServiceWorker {
-            target_id: TID.into(),
-            registration_id: "sw-reg-1".into(),
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("TerminateServiceWorker"));
+        assert_debug_names(
+            BridgeCommand::TerminateServiceWorker {
+                target_id: TID.into(),
+                registration_id: "sw-reg-1".into(),
+            },
+            "TerminateServiceWorker",
+        );
     }
 
     #[test]
     fn stop_service_worker_construction() {
-        let cmd = BridgeCommand::StopServiceWorker {
-            target_id: TID.into(),
-            registration_id: "sw-reg-1".into(),
-        };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("StopServiceWorker"));
+        assert_debug_names(
+            BridgeCommand::StopServiceWorker {
+                target_id: TID.into(),
+                registration_id: "sw-reg-1".into(),
+            },
+            "StopServiceWorker",
+        );
     }
 
     #[test]

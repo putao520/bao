@@ -109,19 +109,28 @@ pub(crate) fn require_node_id(params: &Option<Value>) -> Result<i64, CdpError> {
         })
 }
 
-/// Read the required non-empty string `objectId` param (CDP: required for
-/// DOM.getNodeForOwner). Missing → -32602.
-pub(crate) fn require_object_id(params: &Option<Value>) -> Result<String, CdpError> {
+/// Read a required non-empty string param by name; missing/empty → -32602
+/// naming the parameter. Shared core of every single-required-string face.
+pub(crate) fn require_non_empty_str(
+    params: &Option<Value>,
+    key: &str,
+) -> Result<String, CdpError> {
     params
         .as_ref()
-        .and_then(|p| p.get("objectId"))
+        .and_then(|p| p.get(key))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .ok_or_else(|| CdpError {
             code: ERR_INVALID_PARAMS,
-            message: "missing required parameter: objectId".into(),
+            message: format!("missing required parameter: {key}"),
         })
+}
+
+/// Read the required non-empty string `objectId` param (CDP: required for
+/// DOM.getNodeForOwner). Missing → -32602.
+pub(crate) fn require_object_id(params: &Option<Value>) -> Result<String, CdpError> {
+    require_non_empty_str(params, "objectId")
 }
 
 /// Evaluate `body` on the target page (with the identity prelude) and return
@@ -209,7 +218,7 @@ for (var s = 0; s < sheets.length; s++) {
         for (var si = 0; si < selectors.length; si++) {
             var sel = selectors[si].replace(/^\s+|\s+$/g, "");
             if (!sel) continue;
-            try { if (el.matches(sel)) matching.push(si); } catch (e2) {}
+            try { if (el.matches(sel)) matching.push(si); } catch (e2) { /* REQ-ARCH-1: CSSOM Element.matches() throws ("not a valid selector") only on a non-standard/invalid selector token (e.g. a vendor pseudo); registered semantic = that token never matches, so the rule is skipped while the request still succeeds. Swallowing here is the spec-correct "no match", not a hidden failure. */ }
         }
         if (matching.length === 0) continue;
         rules.push({
@@ -333,16 +342,7 @@ pub(crate) fn require_node_ref(params: &Option<Value>) -> Result<NodeRef, CdpErr
 /// Read the required non-empty string `selector` param (querySelector /
 /// querySelectorAll). Missing/empty → -32602.
 pub(crate) fn require_selector(params: &Option<Value>) -> Result<String, CdpError> {
-    params
-        .as_ref()
-        .and_then(|p| p.get("selector"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .ok_or_else(|| CdpError {
-            code: ERR_INVALID_PARAMS,
-            message: "missing required parameter: selector".into(),
-        })
+    require_non_empty_str(params, "selector")
 }
 
 /// JS prelude resolving a [`NodeRef`] into the element variable `el`:

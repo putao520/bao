@@ -281,24 +281,26 @@ mod tests {
         assert_eq!(infos[0]["targetId"], "my-custom-target");
     }
 
+    /// A no-param `*.enable` command against the internal backend succeeds
+    /// with an empty-object result.
+    fn assert_enable_returns_ok(method: &str) {
+        let backend = InternalBackend::new();
+        let result = backend
+            .send_command(method, &None, "test-target")
+            .unwrap();
+        assert_eq!(result, serde_json::json!({}));
+    }
+
     // 10. CSS.enable returns ok
     #[test]
     fn internal_backend_send_command_css_enable_returns_ok() {
-        let backend = InternalBackend::new();
-        let result = backend
-            .send_command("CSS.enable", &None, "test-target")
-            .unwrap();
-        assert_eq!(result, serde_json::json!({}));
+        assert_enable_returns_ok("CSS.enable");
     }
 
     // 11. Log.enable returns ok
     #[test]
     fn internal_backend_send_command_log_enable_returns_ok() {
-        let backend = InternalBackend::new();
-        let result = backend
-            .send_command("Log.enable", &None, "test-target")
-            .unwrap();
-        assert_eq!(result, serde_json::json!({}));
+        assert_enable_returns_ok("Log.enable");
     }
 
     // 12. Fetch.enable (no bridge) → -32603 (REQ-CDP-006 C6: a real bridge

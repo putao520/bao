@@ -4083,22 +4083,23 @@ mod tests {
 
     // ─── Edge case tests ──────────────────────────────────────────────────
 
-    #[test]
-    fn bridge_command_empty_navigate_url() {
-        let cmd = super::BridgeCommand::Navigate("".into());
+    /// A `BridgeCommand` carrying an empty payload string still round-trips
+    /// through `Clone` equality and its `Debug` names the variant.
+    fn assert_empty_payload_command(cmd: super::BridgeCommand, variant: &str) {
         let cloned = cmd.clone();
         assert_eq!(cmd, cloned);
         let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("Navigate"));
+        assert!(debug_str.contains(variant));
+    }
+
+    #[test]
+    fn bridge_command_empty_navigate_url() {
+        assert_empty_payload_command(super::BridgeCommand::Navigate("".into()), "Navigate");
     }
 
     #[test]
     fn bridge_command_empty_evaluate_string() {
-        let cmd = super::BridgeCommand::Evaluate("".into());
-        let cloned = cmd.clone();
-        assert_eq!(cmd, cloned);
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("Evaluate"));
+        assert_empty_payload_command(super::BridgeCommand::Evaluate("".into()), "Evaluate");
     }
 
     #[test]

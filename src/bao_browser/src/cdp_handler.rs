@@ -1912,7 +1912,7 @@ const DEBUGGER_SETUP: &str = r#"
         else if (env.scopeKind === 'function') cdpType = 'local';
         else cdpType = 'closure';
         var cls = 'Object';
-        try { if (env.object) cls = env.object.class || 'Object'; } catch (e) {}
+        try { if (env.object) cls = env.object.class || 'Object'; } catch (e) { /* REQ-ARCH-1: CDP RemoteObject className is optional; reflective read throws -> keep 'Object' default (spec-correct, request still succeeds). */ }
         return { type: cdpType, object: { type: 'object', className: cls } };
     };
 
@@ -1927,11 +1927,11 @@ const DEBUGGER_SETUP: &str = r#"
         try {
             if (f.callee && typeof f.callee.name === 'string' && f.callee.name)
                 info.functionName = f.callee.name;
-        } catch (e) {}
+        } catch (e) { /* REQ-ARCH-1: functionName is best-effort; callee.name read throws -> keep '(anonymous)' default. */ }
         try {
             var s = f.script;
             if (s && f.offset !== undefined) info.location = g.__bao_dbg_cdp_loc(s, f.offset);
-        } catch (e) {}
+        } catch (e) { /* REQ-ARCH-1: location is best-effort; script/offset read throws -> keep zero-location default. */ }
         try {
             var env = f.environment;
             var chain = [];
@@ -1940,8 +1940,8 @@ const DEBUGGER_SETUP: &str = r#"
                 env = env.parent;
             }
             info.scopeChain = chain;
-        } catch (e) {}
-        try { info.this = g.__bao_dbg_val(f.this); } catch (e) {}
+        } catch (e) { /* REQ-ARCH-1: scopeChain is best-effort; environment walk throws -> keep empty-chain default. */ }
+        try { info.this = g.__bao_dbg_val(f.this); } catch (e) { /* REQ-ARCH-1: this-binding reflection throw -> keep undefined default. */ }
         return info;
     };
 
@@ -2027,7 +2027,7 @@ fn cmd_debugger_disable(page: &PageHandle) -> Result<Value, String> {
     // Tear down hooks + all breakpoints this Debugger owns. The debuggee
     // attachment stays (dropping it would force a full JIT recompile cycle
     // for a later re-enable); with no hooks installed, no events fire.
-    let js = "(function() { try { if (__bao_dbg) { var scripts = __bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) { try { scripts[i].clearAllBreakpoints(); } catch (e) {} } __bao_dbg.onNewScript = undefined; __bao_dbg.onDebuggerStatement = undefined; __bao_dbg.onEnterFrame = undefined; __bao_dbg = null; __bao_dbg_active = false; } } catch (e) { throw e; } })()";
+    let js = "(function() { try { if (__bao_dbg) { var scripts = __bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) { try { scripts[i].clearAllBreakpoints(); } catch (e) { /* REQ-ARCH-1: per-script best-effort clearAllBreakpoints during teardown; a stale script must not fail the whole disable. */ } } __bao_dbg.onNewScript = undefined; __bao_dbg.onDebuggerStatement = undefined; __bao_dbg.onEnterFrame = undefined; __bao_dbg = null; __bao_dbg_active = false; } } catch (e) { throw e; } })()";
     let _ = page.evaluate_js(js).map_err(to_browser_error)?;
     Ok(serde_json::json!({}))
 }
@@ -2207,12 +2207,12 @@ fn cmd_debugger_get_environment(page: &PageHandle) -> Result<Value, String> {
     var env = f.environment;
     while (env && envs.length < 50) {
         var e = {type: env.type, scopeKind: null, names: [], namesTruncated: false, variables: {}};
-        try { e.scopeKind = env.scopeKind; } catch (err) {}
+        try { e.scopeKind = env.scopeKind; } catch (err) { /* REQ-ARCH-1: scopeKind is optional; reflective read throws -> null default. */ }
         try {
             var names = env.names() || [];
             if (names.length > 50) { names = names.slice(0, 50); e.namesTruncated = true; }
             e.names = names;
-        } catch (err) {}
+        } catch (err) { /* REQ-ARCH-1: env.names() can throw on a restricted env -> empty-names default; request still succeeds. */ }
         for (var i = 0; i < e.names.length; i++) {
             try {
                 var v = env.getVariable(e.names[i]);
@@ -2563,7 +2563,7 @@ const CDP_REGISTRY_PRELUDE: &str = r#"(function() {
         else if (sub === 'node') { try { desc = v.nodeName.toLowerCase() + (v.id ? '#' + v.id : ''); } catch (e2) { desc = String(v.nodeName); } }
         else { try { desc = String(v); } catch (e2) { desc = 'Object'; } }
         var cn = 'Object';
-        try { if (v.constructor && v.constructor.name) cn = v.constructor.name; } catch (e2) {}
+        try { if (v.constructor && v.constructor.name) cn = v.constructor.name; } catch (e2) { /* REQ-ARCH-1: className is optional; constructor.name read throws -> keep 'Object' default. */ }
         ro = { type: 'object', className: cn, description: desc, objectId: alloc(v, group) };
         if (sub) ro.subtype = sub;
       }

@@ -60,53 +60,45 @@ mod tests {
         RgbaImage::from_pixel(w, h, Rgba([255, 0, 0, 255]))
     }
 
+    /// Encode a solid-red WxH image in `fmt` and assert the output is
+    /// non-empty and begins with `magic` (the container's magic bytes) —
+    /// the shared shape of every encode smoke test below.
+    fn assert_encode_magic(w: u32, h: u32, fmt: ScreenshotFormat, magic: &[u8]) {
+        let img = red_image(w, h);
+        let out = encode_image(&img, fmt).unwrap();
+        assert!(!out.is_empty());
+        assert_eq!(&out[0..magic.len()], magic);
+    }
+
     #[test]
     fn encode_1x1_png_returns_nonempty_with_magic() {
-        let img = red_image(1, 1);
-        let out = encode_image(&img, ScreenshotFormat::Png).unwrap();
-        assert!(!out.is_empty());
-        assert_eq!(&out[0..4], &[0x89, 0x50, 0x4E, 0x47]);
+        assert_encode_magic(1, 1, ScreenshotFormat::Png, &[0x89, 0x50, 0x4E, 0x47]);
     }
 
     #[test]
     fn encode_1x1_jpeg_returns_nonempty_with_magic() {
-        let img = red_image(1, 1);
-        let out = encode_image(&img, ScreenshotFormat::Jpeg).unwrap();
-        assert!(!out.is_empty());
-        assert_eq!(&out[0..2], &[0xFF, 0xD8]);
+        assert_encode_magic(1, 1, ScreenshotFormat::Jpeg, &[0xFF, 0xD8]);
     }
 
     #[test]
     fn encode_100x100_png_produces_valid_data() {
-        let img = red_image(100, 100);
-        let out = encode_image(&img, ScreenshotFormat::Png).unwrap();
-        assert!(!out.is_empty());
-        assert_eq!(&out[0..4], &[0x89, 0x50, 0x4E, 0x47]);
+        assert_encode_magic(100, 100, ScreenshotFormat::Png, &[0x89, 0x50, 0x4E, 0x47]);
     }
 
     #[test]
     fn encode_100x100_jpeg_produces_valid_data() {
-        let img = red_image(100, 100);
-        let out = encode_image(&img, ScreenshotFormat::Jpeg).unwrap();
-        assert!(!out.is_empty());
-        assert_eq!(&out[0..2], &[0xFF, 0xD8]);
+        assert_encode_magic(100, 100, ScreenshotFormat::Jpeg, &[0xFF, 0xD8]);
     }
 
     #[test]
     fn encode_1x1_webp_returns_nonempty_with_riff_magic() {
-        let img = red_image(1, 1);
-        let out = encode_image(&img, ScreenshotFormat::WebP).unwrap();
-        assert!(!out.is_empty());
         // WebP files start with "RIFF" header
-        assert_eq!(&out[0..4], b"RIFF");
+        assert_encode_magic(1, 1, ScreenshotFormat::WebP, b"RIFF");
     }
 
     #[test]
     fn encode_100x100_webp_produces_valid_data() {
-        let img = red_image(100, 100);
-        let out = encode_image(&img, ScreenshotFormat::WebP).unwrap();
-        assert!(!out.is_empty());
-        assert_eq!(&out[0..4], b"RIFF");
+        assert_encode_magic(100, 100, ScreenshotFormat::WebP, b"RIFF");
     }
 
     #[test]
