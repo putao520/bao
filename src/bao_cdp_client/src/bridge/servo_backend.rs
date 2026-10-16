@@ -54,6 +54,11 @@ pub enum BridgeScreenshotFormat {
 impl BridgeScreenshotFormat {
     /// 从 CDP format 字符串解析,默认 Png。
     ///
+    /// REQ-ARCH-1 豁免:与 `types::ScreenshotFormat::from_cdp` 形态同,但
+    /// 二者是**两个独立的公共类型**(bridge 侧 `BridgeScreenshotFormat`
+    /// 与公共 API 面 `ScreenshotFormat`),各自需要解析方法;映射语义相同
+    /// 是设计一致性要求,非重复建设(合并会破坏类型边界或公共 API 面)。
+    ///
     /// @trace REQ-BAO-API-004 [domain:Page]
     pub fn from_cdp(s: Option<&str>) -> Self {
         match s {
@@ -1189,6 +1194,12 @@ impl ServoBackend for MockServoBackend {
         self.log(target_id, "runtime_disable", "");
         Ok(())
     }
+
+    // REQ-ARCH-1 豁免:Mock 的 enable/disable 等方法体形如
+    // `self.log(target_id, "<method>", ""); Ok(())`——相似源于「记录调用 +
+    // 空返回」的 mock 惯例,且 <method> 字面量逐方法不同;参数化会抹掉
+    // 调用日志的方法区分(测试断言依赖逐方法日志),非重复建设。
+    // (runtime_enable/runtime_disable/network_enable/network_disable 同形。)
 
     fn dom_get_document(&self, target_id: &str, depth: i64) -> Result<NodeDescriptor, BridgeError> {
         self.log(target_id, "dom_get_document", &depth.to_string());

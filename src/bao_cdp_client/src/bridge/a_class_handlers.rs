@@ -30,65 +30,12 @@ use super::servo_backend::{
 };
 
 // ────────────────────────────────────────────────────────────────────
-// 通用 JSON 助手 — 集中处理"字段缺失/类型错误"错误。
+// 通用 JSON 助手 — REQ-ARCH-1:单一实现落点 `bridge/mod.rs`,
+// 本模块经 `use super::{...}` 引用(纯结构变换,行为零变化)。
 // ────────────────────────────────────────────────────────────────────
-
-/// 从 params 抽取字符串字段,缺失时返回 InvalidParams。
-fn get_str(params: &Value, key: &str) -> Result<String, BridgeError> {
-    params
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| BridgeError::InvalidParams(format!("missing string field: {key}")))
-}
-
-/// 从 params 抽取可选字符串字段(允许缺失)。
-fn get_opt_str(params: &Value, key: &str) -> Option<String> {
-    params
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-/// 从 params 抽取可选 i64 字段(允许缺失,缺失返回 default)。
-fn get_opt_i64(params: &Value, key: &str, default: i64) -> i64 {
-    params.get(key).and_then(|v| v.as_i64()).unwrap_or(default)
-}
-
-/// 从 params 抽取可选 f64 字段。
-fn get_opt_f64(params: &Value, key: &str, default: f64) -> f64 {
-    params.get(key).and_then(|v| v.as_f64()).unwrap_or(default)
-}
-
-/// 从 params 抽取可选 bool 字段。
-fn get_opt_bool(params: &Value, key: &str, default: bool) -> bool {
-    params.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
-}
-
-/// 从 params 抽取必填 i64。
-fn get_i64(params: &Value, key: &str) -> Result<i64, BridgeError> {
-    params
-        .get(key)
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| BridgeError::InvalidParams(format!("missing int field: {key}")))
-}
-
-/// 从 params 抽取必填 f64。
-#[allow(dead_code)]
-fn get_f64(params: &Value, key: &str) -> Result<f64, BridgeError> {
-    params
-        .get(key)
-        .and_then(|v| v.as_f64())
-        .ok_or_else(|| BridgeError::InvalidParams(format!("missing float field: {key}")))
-}
-
-/// 从 params 抽取 array 字段(返回 Value::Array clone)。
-fn get_array<'a>(params: &'a Value, key: &str) -> Result<&'a Vec<Value>, BridgeError> {
-    params
-        .get(key)
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| BridgeError::InvalidParams(format!("missing array field: {key}")))
-}
+use super::{
+    get_array, get_i64, get_opt_bool, get_opt_f64, get_opt_i64, get_opt_str, get_str, unit_ok,
+};
 
 // ────────────────────────────────────────────────────────────────────
 // Page domain — 11 method
@@ -111,8 +58,7 @@ pub fn page_reload(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.page_reload(target_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.page_reload(target_id))
 }
 
 // @trace REQ-BAO-API-004 [domain:Page]
@@ -155,8 +101,7 @@ pub fn page_navigate_to_history_entry(
     params: &Value,
 ) -> Result<Value, BridgeError> {
     let entry_id = get_i64(params, "entryId")?;
-    backend.page_navigate_to_history_entry(target_id, entry_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.page_navigate_to_history_entry(target_id, entry_id))
 }
 
 // @trace REQ-BAO-API-004 [domain:Page]
@@ -166,8 +111,7 @@ pub fn page_set_content(
     params: &Value,
 ) -> Result<Value, BridgeError> {
     let html = get_str(params, "html")?;
-    backend.page_set_content(target_id, &html)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.page_set_content(target_id, &html))
 }
 
 // @trace REQ-BAO-API-004 [domain:Page]
@@ -176,8 +120,7 @@ pub fn page_close(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.page_close(target_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.page_close(target_id))
 }
 
 // @trace REQ-BAO-API-004 [domain:Page]
@@ -186,8 +129,7 @@ pub fn page_bring_to_front(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.page_bring_to_front(target_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.page_bring_to_front(target_id))
 }
 
 // @trace REQ-BAO-API-004 [domain:Page]
@@ -264,8 +206,7 @@ pub fn runtime_release_object(
     params: &Value,
 ) -> Result<Value, BridgeError> {
     let object_id = get_str(params, "objectId")?;
-    backend.runtime_release_object(target_id, &object_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.runtime_release_object(target_id, &object_id))
 }
 
 // @trace REQ-BAO-API-004 [domain:Runtime]
@@ -274,8 +215,7 @@ pub fn runtime_enable(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.runtime_enable(target_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.runtime_enable(target_id))
 }
 
 // @trace REQ-BAO-API-004 [domain:Runtime]
@@ -284,8 +224,7 @@ pub fn runtime_disable(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.runtime_disable(target_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.runtime_disable(target_id))
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -370,8 +309,7 @@ pub fn dom_set_attribute_value(
     let node_id = get_i64(params, "nodeId")?;
     let name = get_str(params, "name")?;
     let value = get_str(params, "value")?;
-    backend.dom_set_attribute(target_id, node_id, &name, &value)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.dom_set_attribute(target_id, node_id, &name, &value))
 }
 
 // @trace REQ-BAO-API-004 [domain:DOM]
@@ -382,8 +320,7 @@ pub fn dom_remove_attribute(
 ) -> Result<Value, BridgeError> {
     let node_id = get_i64(params, "nodeId")?;
     let name = get_str(params, "name")?;
-    backend.dom_remove_attribute(target_id, node_id, &name)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.dom_remove_attribute(target_id, node_id, &name))
 }
 
 // @trace REQ-BAO-API-004 [domain:DOM]
@@ -405,8 +342,7 @@ pub fn dom_set_outer_html(
 ) -> Result<Value, BridgeError> {
     let node_id = get_i64(params, "nodeId")?;
     let html = get_str(params, "html")?;
-    backend.dom_set_outer_html(target_id, node_id, &html)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.dom_set_outer_html(target_id, node_id, &html))
 }
 
 // @trace REQ-BAO-API-004 [domain:DOM]
@@ -430,8 +366,7 @@ pub fn network_enable(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.network_enable(target_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.network_enable(target_id))
 }
 
 // @trace REQ-BAO-API-004 [domain:Network]
@@ -440,8 +375,7 @@ pub fn network_disable(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.network_disable(target_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.network_disable(target_id))
 }
 
 // @trace REQ-BAO-API-004 [domain:Network]
@@ -462,8 +396,7 @@ pub fn network_set_cache_disabled(
     params: &Value,
 ) -> Result<Value, BridgeError> {
     let disabled = get_opt_bool(params, "cacheDisabled", false);
-    backend.network_set_cache_disabled(target_id, disabled)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.network_set_cache_disabled(target_id, disabled))
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -477,8 +410,7 @@ pub fn input_dispatch_mouse_event(
     params: &Value,
 ) -> Result<Value, BridgeError> {
     let event = parse_mouse_event(params)?;
-    backend.input_dispatch_mouse_event(target_id, event)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.input_dispatch_mouse_event(target_id, event))
 }
 
 // @trace REQ-BAO-API-004 [domain:Input]
@@ -488,8 +420,7 @@ pub fn input_dispatch_key_event(
     params: &Value,
 ) -> Result<Value, BridgeError> {
     let event = parse_key_event(params)?;
-    backend.input_dispatch_key_event(target_id, event)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.input_dispatch_key_event(target_id, event))
 }
 
 // @trace REQ-BAO-API-004 [domain:Input]
@@ -500,8 +431,7 @@ pub fn input_dispatch_touch_event(
 ) -> Result<Value, BridgeError> {
     let event_type = get_str(params, "type")?;
     let touch_points = parse_touch_points(params)?;
-    backend.input_dispatch_touch_event(target_id, &event_type, &touch_points)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.input_dispatch_touch_event(target_id, &event_type, &touch_points))
 }
 
 // @trace REQ-BAO-API-004 [domain:Input]
@@ -511,8 +441,7 @@ pub fn input_set_ignore_input_events(
     params: &Value,
 ) -> Result<Value, BridgeError> {
     let ignore = get_opt_bool(params, "ignore", false);
-    backend.input_set_ignore_input_events(target_id, ignore)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.input_set_ignore_input_events(target_id, ignore))
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -526,8 +455,7 @@ pub fn emulation_set_device_metrics_override(
     params: &Value,
 ) -> Result<Value, BridgeError> {
     let metrics = parse_device_metrics(params)?;
-    backend.emulation_set_device_metrics(target_id, metrics)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.emulation_set_device_metrics(target_id, metrics))
 }
 
 // @trace REQ-BAO-API-004 [domain:Emulation]
@@ -536,8 +464,7 @@ pub fn emulation_clear_device_metrics_override(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.emulation_clear_device_metrics(target_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.emulation_clear_device_metrics(target_id))
 }
 
 // @trace REQ-BAO-API-004 [domain:Emulation]
@@ -547,8 +474,7 @@ pub fn emulation_set_user_agent_override(
     params: &Value,
 ) -> Result<Value, BridgeError> {
     let ua = get_str(params, "userAgent")?;
-    backend.emulation_set_user_agent_override(target_id, &ua)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.emulation_set_user_agent_override(target_id, &ua))
 }
 
 // @trace REQ-BAO-API-004 [domain:Emulation]
@@ -561,8 +487,7 @@ pub fn emulation_set_geolocation_override(
     let latitude = get_opt_f64(params, "latitude", 0.0);
     let longitude = get_opt_f64(params, "longitude", 0.0);
     let accuracy = get_opt_f64(params, "accuracy", 100.0);
-    backend.emulation_set_geolocation_override(target_id, latitude, longitude, accuracy)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.emulation_set_geolocation_override(target_id, latitude, longitude, accuracy))
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -624,8 +549,7 @@ pub fn target_detach_from_target(
         .or_else(|| params.get("targetId"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| BridgeError::InvalidParams("missing sessionId/targetId".into()))?;
-    backend.target_detach_from_target(session_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.target_detach_from_target(session_id))
 }
 
 // @trace REQ-BAO-API-004 [domain:Target]
@@ -636,8 +560,7 @@ pub fn target_set_auto_attach(
 ) -> Result<Value, BridgeError> {
     let auto_attach = get_opt_bool(params, "autoAttach", false);
     let wait = get_opt_bool(params, "waitForDebuggerOnStart", false);
-    backend.target_set_auto_attach(target_id, auto_attach, wait)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.target_set_auto_attach(target_id, auto_attach, wait))
 }
 
 // ────────────────────────────────────────────────────────────────────

@@ -1268,6 +1268,11 @@ impl EventSubscriber {
     }
 
     // ── FrameInfo 类 ─────────────────────────────────────────────────
+    //
+    // REQ-ARCH-1 豁免:on_frame_started/stopped_loading 等事件回调为
+    // 「每 CDP 事件一个 typed emitter」惯例——相似仅因 push 单变体形态;
+    // 参数化会抹掉各事件的类型区分(反 KISS),登记豁免。
+
     /// servo frame 导航完成回调。
     ///
     /// @trace REQ-BAO-API-003 [event:FrameInfo]

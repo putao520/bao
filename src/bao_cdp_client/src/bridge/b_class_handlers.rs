@@ -46,38 +46,10 @@ use super::eval_synthesizer::{build_iife, build_iife_with_args};
 use super::servo_backend::ServoBackend;
 
 // ────────────────────────────────────────────────────────────────────
-// 通用 JSON 助手 — 复用 a_class_handlers 模式(本地拷贝,避免跨模块私有暴露)
+// 通用 JSON 助手 — REQ-ARCH-1:单一实现落点 `bridge/mod.rs`,
+// 本模块经 `use super::{...}` 引用(纯结构变换,行为零变化)。
 // ────────────────────────────────────────────────────────────────────
-
-fn get_str(params: &Value, key: &str) -> Result<String, BridgeError> {
-    params
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| BridgeError::InvalidParams(format!("missing string field: {key}")))
-}
-
-fn get_opt_str(params: &Value, key: &str) -> Option<String> {
-    params
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-fn get_opt_i64(params: &Value, key: &str, default: i64) -> i64 {
-    params.get(key).and_then(|v| v.as_i64()).unwrap_or(default)
-}
-
-fn get_opt_bool(params: &Value, key: &str, default: bool) -> bool {
-    params.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
-}
-
-fn get_i64(params: &Value, key: &str) -> Result<i64, BridgeError> {
-    params
-        .get(key)
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| BridgeError::InvalidParams(format!("missing int field: {key}")))
-}
+use super::{get_i64, get_opt_bool, get_opt_i64, get_opt_str, get_str, unit_ok};
 
 /// 把 backend.runtime_evaluate 的 EvaluateResult 转换为 CDP-compatible JSON 响应。
 ///
@@ -112,6 +84,23 @@ fn eval_iife(
     expression: String,
 ) -> Result<Value, BridgeError> {
     let r = backend.runtime_evaluate(target_id, &expression)?;
+    Ok(evaluate_to_cdp_json(&r))
+}
+
+/// element_*/js_handle_* 无参 callFunctionOn 共享体 —— 从 params 抽
+/// `objectId`,以给定 body 在元素上跑 `Runtime.callFunctionOn`(零参数),
+/// 返回 CDP-compatible JSON。
+///
+/// REQ-ARCH-1:多个 element 谓词 handler 逐字节同形(仅 JS `body` 不同),
+/// 提取为单一 helper;各 handler 仅保留自身 `body` 字面量。
+fn call_function_on_element(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
+    body: &str,
+) -> Result<Value, BridgeError> {
+    let object_id = get_str(params, "objectId")?;
+    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
     Ok(evaluate_to_cdp_json(&r))
 }
 
@@ -198,8 +187,7 @@ pub fn page_set_viewport(
         device_scale_factor,
         mobile,
     };
-    backend.emulation_set_device_metrics(target_id, metrics)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.emulation_set_device_metrics(target_id, metrics))
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1015,10 +1003,8 @@ pub fn element_content_frame(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body = "return (this && this.contentWindow) ? {id:String(this.contentWindow.location.href)} : null;";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 /// ElementHandle.ownerFrame — `el.ownerDocument.defaultView.frameElement`。
@@ -1029,10 +1015,8 @@ pub fn element_owner_frame(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body = "return (this && this.ownerDocument && this.ownerDocument.defaultView) ? {id:String(this.ownerDocument.defaultView.location.href)} : null;";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 /// ElementHandle.getAttribute(name) — 通过 callFunctionOn,参数走 __args。
@@ -1058,11 +1042,9 @@ pub fn element_scroll_into_view(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body =
         "if (this && this.scrollIntoViewIfNeeded) { this.scrollIntoViewIfNeeded(); } return true;";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 /// ElementHandle.innerHTML — callFunctionOn。
@@ -1073,10 +1055,8 @@ pub fn element_inner_html(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body = "return this ? this.innerHTML : null;";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 /// ElementHandle.innerText — callFunctionOn。
@@ -1087,10 +1067,8 @@ pub fn element_inner_text(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body = "return this ? this.innerText : null;";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 /// ElementHandle.textContent — callFunctionOn。
@@ -1101,10 +1079,8 @@ pub fn element_text_content(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body = "return this ? this.textContent : null;";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 /// ElementHandle.isChecked — callFunctionOn。
@@ -1115,10 +1091,8 @@ pub fn element_is_checked(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body = "return !!(this && this.checked);";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 /// ElementHandle.isDisabled — callFunctionOn。
@@ -1129,10 +1103,8 @@ pub fn element_is_disabled(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body = "return !!(this && this.disabled);";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 /// ElementHandle.isEditable — callFunctionOn(!disabled + !readOnly)。
@@ -1143,10 +1115,8 @@ pub fn element_is_editable(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body = "return !!(this && !this.disabled && !this.readOnly);";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 /// ElementHandle.isEnabled — callFunctionOn。
@@ -1157,10 +1127,8 @@ pub fn element_is_enabled(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body = "return !!(this && !this.disabled);";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 /// ElementHandle.isHidden — getBoundingClientRect + visibility check。
@@ -1171,10 +1139,8 @@ pub fn element_is_hidden(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body = "if(!this){return true;} var r=this.getBoundingClientRect(); var s=window.getComputedStyle(this); return (r.width===0||r.height===0)||s.visibility==='hidden'||s.display==='none';";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 /// ElementHandle.isVisible — `!isHidden`。
@@ -1185,10 +1151,8 @@ pub fn element_is_visible(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body = "if(!this){return false;} var r=this.getBoundingClientRect(); var s=window.getComputedStyle(this); return (r.width>0&&r.height>0)&&s.visibility!=='hidden'&&s.display!=='none';";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 /// ElementHandle.waitForElementState — 等待元素进入目标状态(DOM 轮询)。
@@ -1337,7 +1301,8 @@ pub fn js_handle_as_element(
     Ok(json!({ "isElement": false }))
 }
 
-/// JSHandle.dispose — Runtime.releaseObject。
+/// JSHandle.dispose — Runtime.releaseObject(REQ-ARCH-1:直接委托 a_class
+/// 同名 handler,消除逐字节重复实现)。
 ///
 /// @trace REQ-BAO-API-005 [method:JSHandle.dispose]
 pub fn js_handle_dispose(
@@ -1345,9 +1310,27 @@ pub fn js_handle_dispose(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
+    super::a_class_handlers::runtime_release_object(backend, target_id, params)
+}
+
+/// JSHandle.evaluate / evaluateHandle 共享体 — `Runtime.callFunctionOn`。
+///
+/// REQ-ARCH-1:两 handler 逐字节同形,提取为本模块私有 helper(共享
+/// objectId/func/args 抽取 + callFunctionOn + CDP JSON 组装)。
+fn js_handle_call_function(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
+) -> Result<Value, BridgeError> {
     let object_id = get_str(params, "objectId")?;
-    backend.runtime_release_object(target_id, &object_id)?;
-    Ok(Value::Object(Default::default()))
+    let func = get_str(params, "func")?;
+    let args: Vec<Value> = params
+        .get("args")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let r = backend.runtime_call_function_on(target_id, &object_id, &func, &args)?;
+    Ok(evaluate_to_cdp_json(&r))
 }
 
 /// JSHandle.evaluate(fn) — `Runtime.callFunctionOn`,函数声明作为参数走 functionDeclaration(底层处理)。
@@ -1358,15 +1341,7 @@ pub fn js_handle_evaluate(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
-    let func = get_str(params, "func")?;
-    let args: Vec<Value> = params
-        .get("args")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let r = backend.runtime_call_function_on(target_id, &object_id, &func, &args)?;
-    Ok(evaluate_to_cdp_json(&r))
+    js_handle_call_function(backend, target_id, params)
 }
 
 /// JSHandle.evaluateHandle — 同 evaluate,返回 objectId。
@@ -1377,15 +1352,7 @@ pub fn js_handle_evaluate_handle(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
-    let func = get_str(params, "func")?;
-    let args: Vec<Value> = params
-        .get("args")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let r = backend.runtime_call_function_on(target_id, &object_id, &func, &args)?;
-    Ok(evaluate_to_cdp_json(&r))
+    js_handle_call_function(backend, target_id, params)
 }
 
 /// JSHandle.getProperties — `Runtime.getProperties`。
@@ -1435,10 +1402,8 @@ pub fn js_handle_json_value(
     target_id: &str,
     params: &Value,
 ) -> Result<Value, BridgeError> {
-    let object_id = get_str(params, "objectId")?;
     let body = "return this ? JSON.parse(JSON.stringify(this)) : null;";
-    let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
-    Ok(evaluate_to_cdp_json(&r))
+    call_function_on_element(backend, target_id, params, body)
 }
 
 #[cfg(test)]
@@ -1660,6 +1625,11 @@ mod tests {
     }
 
     // ── ElementHandle ──
+    //
+    // REQ-ARCH-1 豁免:下方 element_*_uses_call_function_on / js_handle_*/
+    // screenshot 类测试为「每 handler 一条最小烟测」的测试惯例——相似仅因
+    // 断言形态统一(backend() + 单调用 + assert)。这是逐 handler 覆盖必要
+    // 的测试结构(合并即丧失按 method 的失败定位),非重复建设,登记豁免。
 
     #[test]
     fn element_get_attribute_injection_attempt() {

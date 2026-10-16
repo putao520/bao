@@ -57,23 +57,11 @@ use super::error::BridgeError;
 use super::servo_backend::ServoBackend;
 
 // ────────────────────────────────────────────────────────────────────
-// 通用 JSON 助手(与 a_class_handlers 一致)
+// 通用 JSON 助手 — REQ-ARCH-1:get_str/get_opt_str 单一实现落点
+// `bridge/mod.rs`(本模块经 `use super::{...}` 引用);get_opt_u32
+// 为本模块独有形态,保持本地。
 // ────────────────────────────────────────────────────────────────────
-
-fn get_str(params: &Value, key: &str) -> Result<String, BridgeError> {
-    params
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| BridgeError::InvalidParams(format!("missing string field: {key}")))
-}
-
-fn get_opt_str(params: &Value, key: &str) -> Option<String> {
-    params
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
+use super::{get_opt_str, get_str, unit_ok};
 
 fn get_opt_u32(params: &Value, key: &str, default: u32) -> u32 {
     params
@@ -114,8 +102,7 @@ pub fn debugger_disable(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.debugger_disable(target_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.debugger_disable(target_id))
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -258,8 +245,7 @@ pub fn debugger_remove_breakpoint(
         .parse()
         .unwrap_or(1);
 
-    backend.debugger_remove_breakpoint(target_id, script_id, line, column)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.debugger_remove_breakpoint(target_id, script_id, line, column))
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -281,8 +267,7 @@ pub fn debugger_pause(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.debugger_pause(target_id)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.debugger_pause(target_id))
 }
 
 /// Debugger.resume — 恢复执行(可选单步)。
@@ -302,8 +287,7 @@ pub fn debugger_resume(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.debugger_resume(target_id, None)?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.debugger_resume(target_id, None))
 }
 
 /// Debugger.stepOver — 单步跳过(函数调用整体执行)。
@@ -319,8 +303,7 @@ pub fn debugger_step_over(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.debugger_resume(target_id, Some(super::servo_backend::DebugStepAction::Next))?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.debugger_resume(target_id, Some(super::servo_backend::DebugStepAction::Next)))
 }
 
 /// Debugger.stepInto — 单步进入(进入函数调用)。
@@ -334,8 +317,7 @@ pub fn debugger_step_into(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.debugger_resume(target_id, Some(super::servo_backend::DebugStepAction::Into))?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.debugger_resume(target_id, Some(super::servo_backend::DebugStepAction::Into)))
 }
 
 /// Debugger.stepOut — 单步跳出(执行完当前函数)。
@@ -349,8 +331,7 @@ pub fn debugger_step_out(
     target_id: &str,
     _params: &Value,
 ) -> Result<Value, BridgeError> {
-    backend.debugger_resume(target_id, Some(super::servo_backend::DebugStepAction::Out))?;
-    Ok(Value::Object(Default::default()))
+    unit_ok(backend.debugger_resume(target_id, Some(super::servo_backend::DebugStepAction::Out)))
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -640,6 +621,10 @@ mod tests {
             .iter()
             .any(|(_, m, p)| m == "debugger_resume" && p == "Resume()"));
     }
+
+    // REQ-ARCH-1 豁免:step_over/step_into/step_out 路由测试为「每 step
+    // 动作一条路由钉」的测试惯例——相似仅因断言形态统一(log 含对应
+    // Resume action);合并即丧失按 action 的失败定位,非重复建设。
 
     #[test]
     fn step_over_routes_to_resume_next() {

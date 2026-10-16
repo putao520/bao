@@ -629,6 +629,10 @@ mod tests {
         assert!(!b.has_connection());
     }
 
+    // REQ-ARCH-1 豁免:connect_* 错误路径测试为「每错误变体一条钉」的测试
+    // 惯例——相似仅因断言形态统一(matches! 变体判定),合并即丧失按变体的
+    // 失败定位,非重复建设。
+
     #[test]
     fn connect_invalid_scheme() {
         let err = Browser::connect("ftp://x").unwrap_err();
