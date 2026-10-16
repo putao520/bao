@@ -895,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-canvas"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "bao-servo-base",
  "bao-servo-canvas-traits",
@@ -920,7 +920,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-canvas-traits"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "bao-servo-base",
  "bao-servo-fonts-traits",
@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-config"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "bao-servo-config-macro",
  "bao-stylo-static-prefs",
@@ -1113,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-embedder-traits"
-version = "0.5.20"
+version = "0.5.21"
 dependencies = [
  "accesskit",
  "bao-servo-base",
@@ -1146,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts"
-version = "0.5.20"
+version = "0.5.21"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1204,7 +1204,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts-traits"
-version = "0.5.19"
+version = "0.5.20"
 dependencies = [
  "atomic_refcell",
  "bao-servo-arc",
@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-malloc-size-of"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1617,7 +1617,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.38"
+version = "0.5.39"
 dependencies = [
  "async-compression",
  "async-recursion",
@@ -1702,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net-traits"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-arc",
@@ -1747,7 +1747,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-paint"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "bao-servo-allocator",
  "bao-servo-base",
@@ -1782,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-paint-api"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "bao-servo-base",
  "bao-servo-embedder-traits",
@@ -2008,7 +2008,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-bindings"
-version = "0.5.24"
+version = "0.5.25"
 dependencies = [
  "atomic_refcell",
  "bao-mozjs",
@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-traits"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "accesskit",
  "bao-servo-base",
@@ -2141,7 +2141,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-url"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "bao-servo-arc",
  "bao-servo-malloc-size-of",
@@ -2162,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webdriver-server"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -2421,7 +2421,7 @@ dependencies = [
 
 [[package]]
 name = "bao_bundler"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "bao_engine",
  "bun_alloc",
@@ -2441,7 +2441,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "bao-browser",
  "bao_engine",
@@ -2457,7 +2457,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp_client"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bao_cdp",
  "bao_engine",
@@ -2490,7 +2490,7 @@ dependencies = [
 
 [[package]]
 name = "bao_crypto"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "bun_boringssl_sys",
  "hex",
@@ -2499,7 +2499,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2563,7 +2563,7 @@ dependencies = [
 
 [[package]]
 name = "bao_stealth"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2579,7 +2579,7 @@ dependencies = [
 
 [[package]]
 name = "bao_uloop"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "bao_native_stubs",
  "bun_analytics",
@@ -3831,7 +3831,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",

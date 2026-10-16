@@ -5,7 +5,7 @@
 # carries version 0.5.0 and publish=false; a publishable fork crate must
 # override publish).
 name = "bao-servo-url"
-version = "0.5.11"
+version = "0.5.12"
 publish = true
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"

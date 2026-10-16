@@ -551,6 +551,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao-selectors"
+version = "0.41.0"
+dependencies = [
+ "bao-servo-arc",
+ "bao-to-shmem",
+ "bao-to-shmem-derive",
+ "bitflags 2.13.2",
+ "cssparser",
+ "derive_more",
+ "hashbrown 0.17.1",
+ "log",
+ "new_debug_unreachable",
+ "precomputed-hash",
+ "rustc-hash 2.1.3",
+ "smallvec",
+]
+
+[[package]]
 name = "bao-servo-allocator"
 version = "0.5.3"
 dependencies = [
@@ -558,6 +576,14 @@ dependencies = [
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "bao-servo-arc"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -605,7 +631,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-canvas-traits"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "bao-servo-base",
  "bao-servo-fonts-traits",
@@ -627,14 +653,14 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-config"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "bao-servo-config-macro",
+ "bao-stylo-static-prefs",
  "num_enum",
  "serde",
  "serde_json",
  "strum",
- "stylo_static_prefs 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -721,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-embedder-traits"
-version = "0.5.20"
+version = "0.5.21"
 dependencies = [
  "accesskit",
  "bao-servo-base",
@@ -731,6 +757,7 @@ dependencies = [
  "bao-servo-pixels",
  "bao-servo-url",
  "bao-stylo",
+ "bao-stylo-traits",
  "bitflags 2.13.2",
  "content-security-policy",
  "cookie 0.18.2",
@@ -745,7 +772,6 @@ dependencies = [
  "rustc-hash 2.1.3",
  "serde",
  "strum",
- "stylo_traits 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "url",
  "uuid",
  "webdriver",
@@ -754,11 +780,12 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts"
-version = "0.5.20"
+version = "0.5.21"
 dependencies = [
  "app_units",
  "atomic_refcell",
  "bao-servo-allocator",
+ "bao-servo-arc",
  "bao-servo-base",
  "bao-servo-config",
  "bao-servo-fonts-traits",
@@ -769,6 +796,7 @@ dependencies = [
  "bao-servo-tracing",
  "bao-servo-url",
  "bao-stylo",
+ "bao-stylo-atoms",
  "bitflags 2.13.2",
  "byteorder",
  "content-security-policy",
@@ -796,10 +824,8 @@ dependencies = [
  "read-fonts 0.43.3",
  "rustc-hash 2.1.3",
  "serde",
- "servo_arc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "skrifa 0.46.2",
  "smallvec",
- "stylo_atoms 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "unicode-properties",
  "unicode-script",
  "url",
@@ -812,9 +838,10 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts-traits"
-version = "0.5.19"
+version = "0.5.20"
 dependencies = [
  "atomic_refcell",
+ "bao-servo-arc",
  "bao-servo-base",
  "bao-servo-malloc-size-of",
  "bao-servo-profile-traits",
@@ -829,7 +856,6 @@ dependencies = [
  "parking_lot",
  "read-fonts 0.43.3",
  "serde",
- "servo_arc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "uuid",
  "webrender_api",
 ]
@@ -875,6 +901,8 @@ dependencies = [
  "accesskit",
  "app_units",
  "atomic_refcell",
+ "bao-selectors",
+ "bao-servo-arc",
  "bao-servo-background-hang-monitor-api",
  "bao-servo-base",
  "bao-servo-embedder-traits",
@@ -887,6 +915,7 @@ dependencies = [
  "bao-servo-script-traits",
  "bao-servo-url",
  "bao-stylo",
+ "bao-stylo-traits",
  "bitflags 2.13.2",
  "euclid",
  "html5ever",
@@ -894,23 +923,23 @@ dependencies = [
  "malloc_size_of_derive",
  "parking_lot",
  "rustc-hash 2.1.3",
- "selectors 0.41.0",
  "serde",
- "servo_arc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "stylo_traits 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "uuid",
  "webrender_api",
 ]
 
 [[package]]
 name = "bao-servo-malloc-size-of"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "app_units",
  "atomic_refcell",
  "bao-ipc-channel",
  "bao-servo-allocator",
+ "bao-servo-arc",
  "bao-stylo",
+ "bao-stylo-dom",
+ "bao-stylo-malloc-size-of",
  "bytes",
  "content-security-policy",
  "cookie 0.18.2",
@@ -928,11 +957,8 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "resvg",
- "servo_arc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "smallvec",
  "string_cache",
- "stylo_dom 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "stylo_malloc_size_of 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "taffy",
  "tendril",
  "time",
@@ -1066,9 +1092,10 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net-traits"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "bao-ipc-channel",
+ "bao-servo-arc",
  "bao-servo-base",
  "bao-servo-config",
  "bao-servo-embedder-traits",
@@ -1101,7 +1128,6 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_with",
- "servo_arc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "sys-locale",
  "tokio",
  "url",
@@ -1111,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-paint-api"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "bao-servo-base",
  "bao-servo-embedder-traits",
@@ -1121,6 +1147,7 @@ dependencies = [
  "bao-servo-tracing",
  "bao-servo-url",
  "bao-stylo",
+ "bao-stylo-traits",
  "bitflags 2.13.2",
  "crossbeam-channel",
  "dpi",
@@ -1137,7 +1164,6 @@ dependencies = [
  "serde_bytes",
  "smallvec",
  "strum",
- "stylo_traits 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "surfman",
  "webrender_api",
 ]
@@ -1187,6 +1213,8 @@ dependencies = [
  "backtrace",
  "bao-ipc-channel",
  "bao-mozjs",
+ "bao-selectors",
+ "bao-servo-arc",
  "bao-servo-background-hang-monitor-api",
  "bao-servo-base",
  "bao-servo-bluetooth-traits",
@@ -1223,6 +1251,10 @@ dependencies = [
  "bao-servo-webxr-api",
  "bao-servo-xpath",
  "bao-stylo",
+ "bao-stylo-atoms",
+ "bao-stylo-dom",
+ "bao-stylo-malloc-size-of",
+ "bao-stylo-traits",
  "bao_ipc",
  "base64 0.23.1",
  "base64ct",
@@ -1289,20 +1321,14 @@ dependencies = [
  "resvg",
  "rsa",
  "rustc-hash 2.1.3",
- "selectors 0.41.0",
  "serde",
  "serde_json",
- "servo_arc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "sha1 0.11.0",
  "sha2 0.11.0",
  "sha3 0.12.0",
  "smallvec",
  "sponge-cursor",
  "strum",
- "stylo_atoms 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "stylo_dom 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "stylo_malloc_size_of 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "stylo_traits 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "svgtypes",
  "swapper",
  "tempfile",
@@ -1326,10 +1352,11 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-bindings"
-version = "0.5.24"
+version = "0.5.25"
 dependencies = [
  "atomic_refcell",
  "bao-mozjs",
+ "bao-servo-arc",
  "bao-servo-base",
  "bao-servo-config",
  "bao-servo-constellation-traits",
@@ -1341,6 +1368,7 @@ dependencies = [
  "bao-servo-url",
  "bao-servo-webxr-api",
  "bao-stylo",
+ "bao-stylo-atoms",
  "bitflags 2.13.2",
  "crossbeam-channel",
  "encoding_rs",
@@ -1359,10 +1387,8 @@ dependencies = [
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
- "servo_arc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "smallvec",
  "strum",
- "stylo_atoms 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tendril",
  "tracing",
  "xml5ever",
@@ -1371,7 +1397,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-traits"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "accesskit",
  "bao-servo-base",
@@ -1391,6 +1417,8 @@ dependencies = [
  "bao-servo-url",
  "bao-servo-webgpu-traits",
  "bao-servo-webxr-api",
+ "bao-stylo-atoms",
+ "bao-stylo-traits",
  "bitflags 2.13.2",
  "crossbeam-channel",
  "euclid",
@@ -1399,14 +1427,12 @@ dependencies = [
  "rustc-hash 2.1.3",
  "serde",
  "strum",
- "stylo_atoms 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "stylo_traits 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "webrender_api",
 ]
 
 [[package]]
 name = "bao-servo-script-webgpu"
-version = "0.5.31"
+version = "0.5.32"
 dependencies = [
  "arrayvec",
  "bao-mozjs",
@@ -1420,13 +1446,13 @@ dependencies = [
  "bao-servo-script-bindings",
  "bao-servo-url",
  "bao-servo-webgpu-traits",
+ "bao-stylo-atoms",
  "euclid",
  "indexmap 2.14.2",
  "log",
  "malloc_size_of_derive",
  "num-traits",
  "serde_core",
- "stylo_atoms 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "trait-set",
 ]
 
@@ -1464,13 +1490,13 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-url"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
+ "bao-servo-arc",
  "bao-servo-malloc-size-of",
  "encoding_rs",
  "malloc_size_of_derive",
  "serde",
- "servo_arc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "url",
  "uuid",
 ]
@@ -1526,12 +1552,21 @@ dependencies = [
 
 [[package]]
 name = "bao-stylo"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "app_units",
  "arrayvec",
  "atomic_refcell",
+ "bao-selectors",
+ "bao-servo-arc",
+ "bao-stylo-atoms",
  "bao-stylo-derive",
+ "bao-stylo-dom",
+ "bao-stylo-malloc-size-of",
+ "bao-stylo-static-prefs",
+ "bao-stylo-traits",
+ "bao-to-shmem",
+ "bao-to-shmem-derive",
  "bitflags 2.13.2",
  "byteorder",
  "cssparser",
@@ -1557,23 +1592,14 @@ dependencies = [
  "rayon",
  "rayon-core",
  "rustc-hash 2.1.3",
- "selectors 0.41.0",
  "serde",
- "servo_arc 0.5.0",
  "smallbitvec",
  "smallvec",
  "static_assertions",
  "string_cache",
  "strum",
  "strum_macros",
- "stylo_atoms 0.22.0",
- "stylo_dom 0.22.0",
- "stylo_malloc_size_of 0.22.0",
- "stylo_static_prefs 0.22.0",
- "stylo_traits 0.22.0",
  "thin-vec",
- "to_shmem 0.6.0",
- "to_shmem_derive 0.2.0",
  "uluru",
  "url",
  "void",
@@ -1582,8 +1608,93 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao-stylo-atoms"
+version = "0.22.0"
+dependencies = [
+ "string_cache",
+ "string_cache_codegen",
+]
+
+[[package]]
 name = "bao-stylo-derive"
 version = "0.22.0"
+dependencies = [
+ "darling 0.20.11",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "synstructure 0.13.2",
+]
+
+[[package]]
+name = "bao-stylo-dom"
+version = "0.22.0"
+dependencies = [
+ "bao-stylo-malloc-size-of",
+ "bitflags 2.13.2",
+]
+
+[[package]]
+name = "bao-stylo-malloc-size-of"
+version = "0.22.0"
+dependencies = [
+ "app_units",
+ "bao-selectors",
+ "bao-servo-arc",
+ "cssparser",
+ "euclid",
+ "hashbrown 0.17.1",
+ "parking_lot",
+ "smallbitvec",
+ "smallvec",
+ "string_cache",
+ "thin-vec",
+ "void",
+]
+
+[[package]]
+name = "bao-stylo-static-prefs"
+version = "0.22.0"
+dependencies = [
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "bao-stylo-traits"
+version = "0.22.0"
+dependencies = [
+ "app_units",
+ "bao-selectors",
+ "bao-servo-arc",
+ "bao-stylo-atoms",
+ "bao-stylo-malloc-size-of",
+ "bao-to-shmem",
+ "bao-to-shmem-derive",
+ "bitflags 2.13.2",
+ "cssparser",
+ "euclid",
+ "malloc_size_of_derive",
+ "serde",
+ "thin-vec",
+ "url",
+]
+
+[[package]]
+name = "bao-to-shmem"
+version = "0.6.0"
+dependencies = [
+ "bao-servo-arc",
+ "cssparser",
+ "hashbrown 0.17.1",
+ "smallbitvec",
+ "smallvec",
+ "string_cache",
+ "thin-vec",
+]
+
+[[package]]
+name = "bao-to-shmem-derive"
+version = "0.2.0"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -6069,41 +6180,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "selectors"
-version = "0.41.0"
-dependencies = [
- "bitflags 2.13.2",
- "cssparser",
- "derive_more",
- "hashbrown 0.17.1",
- "log",
- "new_debug_unreachable",
- "precomputed-hash",
- "rustc-hash 2.1.3",
- "servo_arc 0.5.0",
- "smallvec",
- "to_shmem 0.6.0",
- "to_shmem_derive 0.2.0",
-]
-
-[[package]]
-name = "selectors"
-version = "0.41.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8322aebea94a6cc288ff884e8a49bdbceef60206c400c6c46d22e62fc4fd91a6"
-dependencies = [
- "bitflags 2.13.2",
- "cssparser",
- "derive_more",
- "log",
- "new_debug_unreachable",
- "precomputed-hash",
- "rustc-hash 2.1.3",
- "servo_arc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "smallvec",
-]
-
-[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6225,24 +6301,6 @@ checksum = "66cf8fedced2fcf12406bcb34223dffb92eaf34908ede12fed414c82b7f00b3e"
 dependencies = [
  "base16ct",
  "serde",
-]
-
-[[package]]
-name = "servo_arc"
-version = "0.5.0"
-dependencies = [
- "serde",
- "stable_deref_trait",
-]
-
-[[package]]
-name = "servo_arc"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4eceb519ec34d8290aaf6e46f435102f2bfa63f22b05a144fb16ab266d3b198"
-dependencies = [
- "serde",
- "stable_deref_trait",
 ]
 
 [[package]]
@@ -6566,137 +6624,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stylo_atoms"
-version = "0.22.0"
-dependencies = [
- "string_cache",
- "string_cache_codegen",
-]
-
-[[package]]
-name = "stylo_atoms"
-version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee1771588fd747ef16f8b1990061b6f37c7d3251a0f9b74f405a44c0c5fb8966"
-dependencies = [
- "string_cache",
- "string_cache_codegen",
-]
-
-[[package]]
-name = "stylo_dom"
-version = "0.22.0"
-dependencies = [
- "bitflags 2.13.2",
- "stylo_malloc_size_of 0.22.0",
-]
-
-[[package]]
-name = "stylo_dom"
-version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9febcb03f2b669ef06b3e8a5209e6280971ed55cecf83fbf3c0562fcf2aa2ec6"
-dependencies = [
- "bitflags 2.13.2",
- "stylo_malloc_size_of 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "stylo_malloc_size_of"
-version = "0.22.0"
-dependencies = [
- "app_units",
- "cssparser",
- "euclid",
- "hashbrown 0.17.1",
- "parking_lot",
- "selectors 0.41.0",
- "servo_arc 0.5.0",
- "smallbitvec",
- "smallvec",
- "string_cache",
- "thin-vec",
- "void",
-]
-
-[[package]]
-name = "stylo_malloc_size_of"
-version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83ed69d55ee907599f093221004a28371925236f09f20961963020abf38bab6a"
-dependencies = [
- "app_units",
- "cssparser",
- "euclid",
- "parking_lot",
- "selectors 0.41.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "servo_arc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "smallbitvec",
- "smallvec",
- "string_cache",
- "thin-vec",
- "void",
-]
-
-[[package]]
-name = "stylo_static_prefs"
-version = "0.22.0"
-dependencies = [
- "toml 1.1.6+spec-1.1.0",
-]
-
-[[package]]
-name = "stylo_static_prefs"
-version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6767c48a1590461db79f8b434ccc5a2d65600a3b716751f7999b35ccead1e024"
-dependencies = [
- "toml 1.1.6+spec-1.1.0",
-]
-
-[[package]]
-name = "stylo_traits"
-version = "0.22.0"
-dependencies = [
- "app_units",
- "bitflags 2.13.2",
- "cssparser",
- "euclid",
- "malloc_size_of_derive",
- "selectors 0.41.0",
- "serde",
- "servo_arc 0.5.0",
- "stylo_atoms 0.22.0",
- "stylo_malloc_size_of 0.22.0",
- "thin-vec",
- "to_shmem 0.6.0",
- "to_shmem_derive 0.2.0",
- "url",
-]
-
-[[package]]
-name = "stylo_traits"
-version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "645d6bfe40eb6e86ebe9f2d2adadcbced41bfa96175de7cb13d4d178d27bc83d"
-dependencies = [
- "app_units",
- "bitflags 2.13.2",
- "cssparser",
- "euclid",
- "malloc_size_of_derive",
- "selectors 0.41.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde",
- "servo_arc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "stylo_atoms 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "stylo_malloc_size_of 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "thin-vec",
- "to_shmem 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "to_shmem_derive 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "url",
-]
-
-[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7005,57 +6932,6 @@ name = "tinyvec"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
-
-[[package]]
-name = "to_shmem"
-version = "0.6.0"
-dependencies = [
- "cssparser",
- "hashbrown 0.17.1",
- "servo_arc 0.5.0",
- "smallbitvec",
- "smallvec",
- "string_cache",
- "thin-vec",
-]
-
-[[package]]
-name = "to_shmem"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbf077da8dd01cc18453bd7d9bc3a945c262f5f344562e5f6deb3914b4dd6f14"
-dependencies = [
- "cssparser",
- "servo_arc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "smallbitvec",
- "smallvec",
- "string_cache",
- "thin-vec",
-]
-
-[[package]]
-name = "to_shmem_derive"
-version = "0.2.0"
-dependencies = [
- "darling 0.20.11",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
- "synstructure 0.13.2",
-]
-
-[[package]]
-name = "to_shmem_derive"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f8e91a023810fd2019648410d00eea13a71f21d849e71d6d9ed936fb8061174"
-dependencies = [
- "darling 0.20.11",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
- "synstructure 0.13.2",
-]
 
 [[package]]
 name = "tokio"
