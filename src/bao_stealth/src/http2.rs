@@ -281,13 +281,6 @@ mod tests {
     }
 
     #[test]
-    fn settings_frame_payload_firefox_first_is_0x01_65536() {
-        let fp = Http2Fingerprint::firefox();
-        let payload = fp.settings_frame_payload();
-        assert_eq!(payload[0], (0x01, 65536));
-    }
-
-    #[test]
     fn settings_frame_payload_chrome_third_is_0x03_1000() {
         let fp = Http2Fingerprint::chrome();
         let payload = fp.settings_frame_payload();
@@ -295,9 +288,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_frame_payload_enable_push_0_when_false() {
+    fn settings_frame_payload_firefox_header_table_and_enable_push_entries() {
         let fp = Http2Fingerprint::firefox();
         let payload = fp.settings_frame_payload();
+        // SETTINGS_HEADER_TABLE_SIZE (0x01) — entry 0.
+        assert_eq!(payload[0], (0x01, 65536));
+        // SETTINGS_ENABLE_PUSH (0x02) — entry 1; Firefox advertises push disabled.
         assert_eq!(payload[1], (0x02, 0));
     }
 

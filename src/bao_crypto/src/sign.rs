@@ -1,4 +1,5 @@
 use crate::CryptoError;
+use crate::free_pkey_if_non_null;
 use bun_boringssl_sys::*;
 use core::ffi::{c_long, c_void};
 use core::ptr;
@@ -32,9 +33,7 @@ pub struct Signer {
 
 impl Drop for Signer {
     fn drop(&mut self) {
-        if !self.pkey.is_null() {
-            unsafe { EVP_PKEY_free(self.pkey) };
-        }
+        free_pkey_if_non_null(self.pkey);
     }
 }
 
@@ -91,6 +90,12 @@ fn parse_der_to_pkey(der: &[u8]) -> Result<*mut EVP_PKEY, CryptoError> {
 }
 
 impl Signer {
+    // REQ-ARCH-1 duplicate exemption (registered 2026-10-16): from_pkcs8_pem /
+    // from_pkcs8_der share only the 3-line `Ok(Signer { pkey, algo })`
+    // constructor tail; the bodies are semantically separate parse backends
+    // (PEM text via PEM_read_bio_PrivateKey vs DER binary via
+    // d2i_AutoPrivateKey, distinct error strings). Extracting the tail would
+    // hide the format distinction that is the point of each constructor.
     pub fn from_pkcs8_pem(algo: &SignAlgorithm, pem: &str) -> Result<Signer, CryptoError> {
         let pkey = parse_pem_to_pkey(pem)?;
         Ok(Signer {

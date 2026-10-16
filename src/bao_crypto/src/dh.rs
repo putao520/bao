@@ -17,15 +17,8 @@ use crate::CryptoError;
 use bun_boringssl_sys as bssl;
 use core::ptr;
 
-/// RAII guard for a BoringSSL `BIGNUM*`.
-struct BnGuard(*mut bssl::BIGNUM);
-impl Drop for BnGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { bssl::BN_free(self.0) };
-        }
-    }
-}
+// RAII guard for a BoringSSL `BIGNUM*`.
+bssl_guard!(BnGuard, bssl::BIGNUM, bssl::BN_free);
 
 fn bn_to_vec(bn: *const bssl::BIGNUM) -> Vec<u8> {
     if bn.is_null() {

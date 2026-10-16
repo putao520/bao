@@ -37,59 +37,12 @@ fn curve_priv_len(curve: EcCurve) -> usize {
     }
 }
 
-struct EcKeyGuard(*mut EC_KEY);
-impl Drop for EcKeyGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { EC_KEY_free(self.0) };
-        }
-    }
-}
-
-struct BnCtxGuard(*mut BN_CTX);
-impl Drop for BnCtxGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { BN_CTX_free(self.0) };
-        }
-    }
-}
-
-struct EcPointGuard(*mut EC_POINT);
-impl Drop for EcPointGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { EC_POINT_free(self.0) };
-        }
-    }
-}
-
-struct BnGuard(*mut BIGNUM);
-impl Drop for BnGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { BN_free(self.0) };
-        }
-    }
-}
-
-struct PkeyGuard(*mut EVP_PKEY);
-impl Drop for PkeyGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { EVP_PKEY_free(self.0) };
-        }
-    }
-}
-
-struct PkeyCtxGuard(*mut EVP_PKEY_CTX);
-impl Drop for PkeyCtxGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { EVP_PKEY_CTX_free(self.0) };
-        }
-    }
-}
+bssl_guard!(EcKeyGuard, EC_KEY, EC_KEY_free);
+bssl_guard!(BnCtxGuard, BN_CTX, BN_CTX_free);
+bssl_guard!(EcPointGuard, EC_POINT, EC_POINT_free);
+bssl_guard!(BnGuard, BIGNUM, BN_free);
+bssl_guard!(PkeyGuard, EVP_PKEY, EVP_PKEY_free);
+bssl_guard!(PkeyCtxGuard, EVP_PKEY_CTX, EVP_PKEY_CTX_free);
 
 fn ec_extract_private_bytes(key: *mut EC_KEY, priv_len: usize) -> Result<Vec<u8>, CryptoError> {
     let priv_bn = unsafe { EC_KEY_get0_private_key(key) };

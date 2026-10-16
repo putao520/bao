@@ -73,15 +73,19 @@ mod tests {
         let _ = BaoDevServer;
     }
 
-    #[test]
-    fn dev_server_handle_is_send() {
-        fn assert_send<T: Send>() {}
-        assert_send::<bun_bundler::dispatch::DevServerHandle>();
+    // The two auto-trait assertions below differ only in the marker bound
+    // (Send vs Sync); the shared body is generated once here instead of being
+    // copy-pasted per tag.
+    macro_rules! assert_dev_server_handle_marker {
+        ($test:ident, $marker:ident) => {
+            #[test]
+            fn $test() {
+                fn assert_marker<T: $marker>() {}
+                assert_marker::<bun_bundler::dispatch::DevServerHandle>();
+            }
+        };
     }
 
-    #[test]
-    fn dev_server_handle_is_sync() {
-        fn assert_sync<T: Sync>() {}
-        assert_sync::<bun_bundler::dispatch::DevServerHandle>();
-    }
+    assert_dev_server_handle_marker!(dev_server_handle_is_send, Send);
+    assert_dev_server_handle_marker!(dev_server_handle_is_sync, Sync);
 }

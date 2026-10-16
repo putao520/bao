@@ -1,4 +1,5 @@
 use crate::CryptoError;
+use crate::free_pkey_if_non_null;
 use crate::sign::{RsaHash, SignAlgorithm, SignatureFormat, raw_ecdsa_sig_to_der};
 use bun_boringssl_sys::*;
 use core::ffi::{c_long, c_void};
@@ -11,9 +12,7 @@ pub struct Verifier {
 
 impl Drop for Verifier {
     fn drop(&mut self) {
-        if !self.pkey.is_null() {
-            unsafe { EVP_PKEY_free(self.pkey) };
-        }
+        free_pkey_if_non_null(self.pkey);
     }
 }
 

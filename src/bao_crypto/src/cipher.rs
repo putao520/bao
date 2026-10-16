@@ -706,61 +706,35 @@ impl CipherCtx {
 mod tests {
     use super::*;
 
+    /// AEAD encrypt→decrypt roundtrip: the 16-byte tag is produced and the
+    /// recovered plaintext equals the input. `algo`/`key`/`plaintext` differ
+    /// per cipher, but the assertion shape is identical (the pair flagged as
+    /// duplicate) — the algorithm under test stays a parameter.
+    fn assert_aead_roundtrip(algo: CipherAlgorithm, key: &[u8], plaintext: &[u8]) {
+        let iv = &[1u8; 12];
+        let result = encrypt(algo, key, iv, None, plaintext).unwrap();
+        assert_eq!(result.auth_tag.len(), 16);
+        let decrypted = decrypt(algo, key, iv, None, &result.ciphertext, &result.auth_tag).unwrap();
+        assert_eq!(decrypted, plaintext.to_vec());
+    }
+
     #[test]
     fn aes_128_gcm_roundtrip() {
-        let key = &[0u8; 16];
-        let iv = &[1u8; 12];
-        let plaintext = b"hello aes-128-gcm";
-        let result = encrypt(CipherAlgorithm::Aes128Gcm, key, iv, None, plaintext).unwrap();
-        assert_eq!(result.auth_tag.len(), 16);
-        let decrypted = decrypt(
-            CipherAlgorithm::Aes128Gcm,
-            key,
-            iv,
-            None,
-            &result.ciphertext,
-            &result.auth_tag,
-        )
-        .unwrap();
-        assert_eq!(decrypted, plaintext.to_vec());
+        assert_aead_roundtrip(CipherAlgorithm::Aes128Gcm, &[0u8; 16], b"hello aes-128-gcm");
     }
 
     #[test]
     fn aes_256_gcm_roundtrip() {
-        let key = &[0u8; 32];
-        let iv = &[1u8; 12];
-        let plaintext = b"hello aes-256-gcm";
-        let result = encrypt(CipherAlgorithm::Aes256Gcm, key, iv, None, plaintext).unwrap();
-        assert_eq!(result.auth_tag.len(), 16);
-        let decrypted = decrypt(
-            CipherAlgorithm::Aes256Gcm,
-            key,
-            iv,
-            None,
-            &result.ciphertext,
-            &result.auth_tag,
-        )
-        .unwrap();
-        assert_eq!(decrypted, plaintext.to_vec());
+        assert_aead_roundtrip(CipherAlgorithm::Aes256Gcm, &[0u8; 32], b"hello aes-256-gcm");
     }
 
     #[test]
     fn chacha20_poly1305_roundtrip() {
-        let key = &[0u8; 32];
-        let iv = &[1u8; 12];
-        let plaintext = b"hello chacha20-poly1305";
-        let result = encrypt(CipherAlgorithm::ChaCha20Poly1305, key, iv, None, plaintext).unwrap();
-        assert_eq!(result.auth_tag.len(), 16);
-        let decrypted = decrypt(
+        assert_aead_roundtrip(
             CipherAlgorithm::ChaCha20Poly1305,
-            key,
-            iv,
-            None,
-            &result.ciphertext,
-            &result.auth_tag,
-        )
-        .unwrap();
-        assert_eq!(decrypted, plaintext.to_vec());
+            &[0u8; 32],
+            b"hello chacha20-poly1305",
+        );
     }
 
     #[test]

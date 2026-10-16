@@ -256,14 +256,20 @@ fn put_u64(out: &mut Vec<u8>, v: u64) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 
-fn put_bytes(out: &mut Vec<u8>, v: &[u8]) {
-    put_u64(out, v.len() as u64);
+/// Length-prefixed byte blob: write `v.len()` with `put_len`, then the bytes.
+/// The width of the length field is the only difference between the u32/u64
+/// variants below, so it is a parameter rather than a per-variant copy.
+fn put_len_prefixed(out: &mut Vec<u8>, v: &[u8], put_len: fn(&mut Vec<u8>, u64)) {
+    put_len(out, v.len() as u64);
     out.extend_from_slice(v);
 }
 
+fn put_bytes(out: &mut Vec<u8>, v: &[u8]) {
+    put_len_prefixed(out, v, put_u64);
+}
+
 fn put_bytes32(out: &mut Vec<u8>, v: &[u8]) {
-    put_u32(out, v.len() as u32);
-    out.extend_from_slice(v);
+    put_len_prefixed(out, v, |out, n| put_u32(out, n as u32));
 }
 
 /// Parse and fully verify an entry against the exact key record + current

@@ -2212,18 +2212,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn webrtc_js_is_valid_iife() {
-        let hooks = firefox_hooks();
-        let js = hooks.webrtc_js();
+    /// Test aid helper: asserts a hook JS producer emits a well-formed IIFE.
+    /// Extracted during the REQ-ARCH-1 duplicate hygiene wave, shared by the
+    /// consolidated `webrtc_and_timing_js_are_valid_iife` case (the former
+    /// per-hook `*_is_valid_iife` bodies were byte-identical after identifier
+    /// normalization).
+    fn assert_iife_js(js: &str, label: &str) {
         assert!(
             js.starts_with("(function() {") || js.starts_with("(function(){{"),
-            "WebRTC JS must be an IIFE"
+            "{label} JS must be an IIFE"
         );
-        assert!(
-            js.ends_with("})();"),
-            "WebRTC JS must end with IIFE closure"
-        );
+        assert!(js.ends_with("})();"), "{label} JS must end with IIFE closure");
+    }
+
+    #[test]
+    fn webrtc_and_timing_js_are_valid_iife() {
+        let hooks = firefox_hooks();
+        assert_iife_js(&hooks.webrtc_js(), "WebRTC");
+        assert_iife_js(&hooks.timing_js(), "Timing");
     }
 
     #[test]
@@ -2248,20 +2254,6 @@ mod tests {
         assert!(
             js.contains("0.1"),
             "timing JS must contain default precision 0.1ms"
-        );
-    }
-
-    #[test]
-    fn timing_js_is_valid_iife() {
-        let hooks = firefox_hooks();
-        let js = hooks.timing_js();
-        assert!(
-            js.starts_with("(function() {") || js.starts_with("(function(){{"),
-            "Timing JS must be an IIFE"
-        );
-        assert!(
-            js.ends_with("})();"),
-            "Timing JS must end with IIFE closure"
         );
     }
 

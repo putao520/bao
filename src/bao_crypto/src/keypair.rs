@@ -32,50 +32,11 @@ pub fn generate_key_pair(kp_type: &KeyPairType) -> Result<KeyPairResult, CryptoE
     }
 }
 
-struct PkeyGuard(*mut EVP_PKEY);
-impl Drop for PkeyGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { EVP_PKEY_free(self.0) };
-        }
-    }
-}
-
-struct RsaGuard(*mut RSA);
-impl Drop for RsaGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { RSA_free(self.0) };
-        }
-    }
-}
-
-struct EcKeyGuard(*mut EC_KEY);
-impl Drop for EcKeyGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { EC_KEY_free(self.0) };
-        }
-    }
-}
-
-struct BnGuard(*mut BIGNUM);
-impl Drop for BnGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { BN_free(self.0) };
-        }
-    }
-}
-
-struct BioGuard(*mut BIO);
-impl Drop for BioGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { BIO_free(self.0) };
-        }
-    }
-}
+bssl_guard!(PkeyGuard, EVP_PKEY, EVP_PKEY_free);
+bssl_guard!(RsaGuard, RSA, RSA_free);
+bssl_guard!(EcKeyGuard, EC_KEY, EC_KEY_free);
+bssl_guard!(BnGuard, BIGNUM, BN_free);
+bssl_guard!(BioGuard, BIO, BIO_free);
 
 fn bio_to_vec(bio: *mut BIO) -> Result<Vec<u8>, CryptoError> {
     let len = unsafe { BIO_ctrl(bio, 3, 0, std::ptr::null_mut()) } as usize; // BIO_CTRL_PENDING = 3

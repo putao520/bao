@@ -108,6 +108,12 @@ pub struct ClickConfig {
 }
 
 impl BehaviorConfig {
+    // ── Anti-fingerprint dual-profile data — REQ-ARCH-1 duplicate 语义分述豁免 ──
+    // `firefox` / `chrome` 是相互独立的浏览器行为画像:两具函数体内的每个字段
+    // (mouse/keyboard/scroll/click) 都是针对该浏览器实测标定的不同值,无共享计算——
+    // 结构同形度=画像 schema 本身。若抽取共享 builder 会把两条指纹签名耦合到一处,
+    // 与 stealth「每浏览器画像可独立调参」的设计相悖。故登记为语义分述豁免
+    // (similarity=1 因检测器仅归一化标识符/数值,不判别字段值的语义差异),不做结构合并。
     pub fn firefox() -> Self {
         BehaviorConfig {
             mouse: MouseConfig {

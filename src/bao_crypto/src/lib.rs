@@ -50,6 +50,37 @@ pub enum CryptoError {
     OperationFailed(String),
 }
 
+/// Declare an RAII free-guard for a raw BoringSSL pointer type.
+///
+/// Every BoringSSL object this crate owns needs the same teardown: free the
+/// pointer on drop unless it is null. The resource type and its free function
+/// vary per object, so the shared body lives here once instead of being
+/// copy-pasted as a per-type `impl Drop`. Expands to a private tuple newtype
+/// with a `Drop` impl that calls `$free` on the non-null inner pointer.
+macro_rules! bssl_guard {
+    ($name:ident, $ty:ty, $free:path) => {
+        struct $name(*mut $ty);
+        impl Drop for $name {
+            fn drop(&mut self) {
+                if !self.0.is_null() {
+                    unsafe { $free(self.0) };
+                }
+            }
+        }
+    };
+}
+
+/// Free a BoringSSL `EVP_PKEY` unless the pointer is null.
+///
+/// Shared teardown for the owning types whose Drop needs to release an
+/// `EVP_PKEY` (`Signer` in [`sign`], `Verifier` in [`verify`]).
+#[inline]
+pub(crate) fn free_pkey_if_non_null(pkey: *mut bun_boringssl_sys::EVP_PKEY) {
+    if !pkey.is_null() {
+        unsafe { bun_boringssl_sys::EVP_PKEY_free(pkey) };
+    }
+}
+
 pub mod certificate;
 pub mod cipher;
 pub mod dh;

@@ -609,8 +609,7 @@ mod hangup_tests {
         _ip: *mut u8,
         _ip_len: c_int,
     ) -> *mut us_socket_t {
-        OPEN_COUNT.fetch_add(1, Ordering::SeqCst);
-        s
+        crate::test_hooks::counted(s, &OPEN_COUNT)
     }
 
     unsafe extern "C" fn t_data(
@@ -624,8 +623,7 @@ mod hangup_tests {
     }
 
     unsafe extern "C" fn t_end(s: *mut us_socket_t) -> *mut us_socket_t {
-        END_COUNT.fetch_add(1, Ordering::SeqCst);
-        s
+        crate::test_hooks::counted(s, &END_COUNT)
     }
 
     unsafe extern "C" fn t_close(
@@ -633,8 +631,7 @@ mod hangup_tests {
         _code: c_int,
         _reason: *mut c_void,
     ) -> *mut us_socket_t {
-        CLOSE_COUNT.fetch_add(1, Ordering::SeqCst);
-        s
+        crate::test_hooks::counted(s, &CLOSE_COUNT)
     }
 
     static VTABLE: VTable = VTable {
@@ -864,8 +861,7 @@ mod paused_eof_tests {
     }
 
     unsafe extern "C" fn t_end(s: *mut us_socket_t) -> *mut us_socket_t {
-        END_COUNT.fetch_add(1, Ordering::SeqCst);
-        s
+        crate::test_hooks::counted(s, &END_COUNT)
     }
 
     unsafe extern "C" fn t_close(
@@ -873,8 +869,7 @@ mod paused_eof_tests {
         _code: c_int,
         _reason: *mut c_void,
     ) -> *mut us_socket_t {
-        CLOSE_COUNT.fetch_add(1, Ordering::SeqCst);
-        s
+        crate::test_hooks::counted(s, &CLOSE_COUNT)
     }
 
     static VTABLE: VTable = VTable {
@@ -1122,8 +1117,7 @@ mod write_rearm_paused_tests {
         _code: c_int,
         _reason: *mut c_void,
     ) -> *mut us_socket_t {
-        CLOSE_COUNT.fetch_add(1, Ordering::SeqCst);
-        s
+        crate::test_hooks::counted(s, &CLOSE_COUNT)
     }
 
     static VTABLE: VTable = VTable {
@@ -1342,8 +1336,7 @@ mod ipc_recvmsg_tests {
         _ip: *mut u8,
         _ip_len: c_int,
     ) -> *mut us_socket_t {
-        OPEN_COUNT.fetch_add(1, Ordering::SeqCst);
-        s
+        crate::test_hooks::counted(s, &OPEN_COUNT)
     }
 
     unsafe extern "C" fn t_data(
@@ -1366,8 +1359,7 @@ mod ipc_recvmsg_tests {
         _code: c_int,
         _reason: *mut c_void,
     ) -> *mut us_socket_t {
-        CLOSE_COUNT.fetch_add(1, Ordering::SeqCst);
-        s
+        crate::test_hooks::counted(s, &CLOSE_COUNT)
     }
 
     static VTABLE: VTable = VTable {
@@ -1576,5 +1568,27 @@ mod ipc_recvmsg_tests {
             SocketGroup::destroy(group);
             us_loop_free(loop_);
         }
+    }
+}
+
+/// Shared test-callback body for the socket vtable test modules above.
+///
+/// Each behavioral module (`hangup_tests` / `paused_eof_tests` /
+/// `write_rearm_paused_tests` / `ipc_recvmsg_tests`) binds its own
+/// `unsafe extern "C" fn t_*` wrappers against its own module-local counter
+/// statics — the C dispatcher resolves them by symbol name through each
+/// module's `VTABLE`, so the counters must stay module-local. The identical
+/// fetch-add/return body is shared here; the per-module statics, wrappers
+/// and vtable wiring stay where the behavior under test is defined.
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use bun_uws_sys::us_socket_t;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Bump the event counter and pass the socket through unchanged.
+    #[inline]
+    pub(crate) fn counted(s: *mut us_socket_t, c: &AtomicUsize) -> *mut us_socket_t {
+        c.fetch_add(1, Ordering::SeqCst);
+        s
     }
 }
