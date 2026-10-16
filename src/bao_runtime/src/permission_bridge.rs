@@ -75,29 +75,28 @@ pub fn check_net(host: &str) -> ::std::result::Result<(), String> {
     })
 }
 
+/// Shared boolean-permission gate: `check_env`/`check_run` differ only in
+/// which flag they consult and the denial label they report
+/// (REQ-ARCH-1 duplicate convergence).
+fn check_flag(allowed: bool, denied: &str) -> ::std::result::Result<(), String> {
+    if allowed {
+        Ok(())
+    } else {
+        Err(format!("Permission denied: {}", denied).into())
+    }
+}
+
 pub fn check_env() -> ::std::result::Result<(), String> {
     PERMISSION_GUARD.with(|g| match g.borrow().as_ref() {
         None => Ok(()),
-        Some(perm) => {
-            if perm.env_allowed {
-                Ok(())
-            } else {
-                Err("Permission denied: env".into())
-            }
-        }
+        Some(perm) => check_flag(perm.env_allowed, "env"),
     })
 }
 
 pub fn check_run() -> ::std::result::Result<(), String> {
     PERMISSION_GUARD.with(|g| match g.borrow().as_ref() {
         None => Ok(()),
-        Some(perm) => {
-            if perm.run_allowed {
-                Ok(())
-            } else {
-                Err("Permission denied: run".into())
-            }
-        }
+        Some(perm) => check_flag(perm.run_allowed, "run"),
     })
 }
 

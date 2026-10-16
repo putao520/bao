@@ -28,6 +28,9 @@ use bun_uws_sys::response::Response;
 use bun_uws_sys::socket_context::BunSocketContextOptions;
 
 use crate::gc_store::{gc_store_get_ns, gc_store_insert_ns, gc_store_remove_ns};
+// define_int_prop is the crate-wide single source in node_constants
+// (REQ-ARCH-1 duplicate convergence).
+use crate::node_constants::define_int_prop;
 use crate::require::cache_builtin;
 
 static NEXT_SERVER_ID: AtomicU64 = AtomicU64::new(1);
@@ -2566,6 +2569,117 @@ unsafe fn h2_get_headers_obj(cx: *mut JSContext, obj: *mut JSObject) -> Option<*
     }
 }
 
+/// Write one h2 writeHead headers object to the wire and mirror it into the
+/// `_headers` store. Node merge semantics: setHeader-store values are written
+/// first (minus keys the writeHead object overrides — skipped in the store
+/// flush so the wire never carries the header twice), then the writeHead
+/// object's own keys. No-op for a null uWS res.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn h2_res_write_head_records(cx: *mut JSContext, obj: *mut JSObject, hdrs_val: JSVal) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+    rooted!(&in(cx_ref) let hdrs_obj = hdrs_val.to_object());
+
+    let mut arg_keys: Vec<String> = Vec::new();
+    {
+        let mut ids = mozjs::rust::IdVector::new(cx_ref);
+        if w2::GetPropertyKeys(
+            cx_ref,
+            hdrs_obj.handle().into(),
+            JSITER_OWNONLY as u32,
+            ids.handle_mut(),
+        ) {
+            for jsid in &*ids {
+                if !jsid.is_string() {
+                    continue;
+                }
+                let key_str = jsid.to_string();
+                let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+                    NonNull::new_unchecked(key_str),
+                );
+                arg_keys.push(key);
+            }
+        }
+    }
+
+    let uws_res = get_uws_res(cx, obj);
+    if !uws_res.is_null() {
+        let res_mut = Response::<false>::cast_res(uws_res);
+        // setHeader store first, minus overridden keys.
+        if let Some(headers_store) = h2_get_headers_obj(cx, obj) {
+            rooted!(&in(cx_ref) let store_root = headers_store);
+            let mut store_ids = mozjs::rust::IdVector::new(cx_ref);
+            if w2::GetPropertyKeys(
+                cx_ref,
+                store_root.handle().into(),
+                JSITER_OWNONLY as u32,
+                store_ids.handle_mut(),
+            ) {
+                for jsid in &*store_ids {
+                    if !jsid.is_string() {
+                        continue;
+                    }
+                    let key_str = jsid.to_string();
+                    let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+                        NonNull::new_unchecked(key_str),
+                    );
+                    if key.starts_with(':') || arg_keys.contains(&key) {
+                        continue;
+                    }
+                    let c_key = ZBox::from_bytes(key.as_bytes());
+                    let mut hv = UndefinedValue();
+                    JS_GetProperty(
+                        cx,
+                        store_root.handle().into(),
+                        c_key.as_ptr(),
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut hv,
+                        },
+                    );
+                    if hv.is_string() {
+                        let val = crate::js_to_rust_string(cx, hv);
+                        let key_lower = key.to_ascii_lowercase();
+                        let c_val = ZBox::from_bytes(val.as_bytes());
+                        (*res_mut).write_header(key_lower.as_bytes(), c_val.as_bytes());
+                    }
+                }
+            }
+        }
+        h2_write_headers_obj(cx, hdrs_obj.get(), &mut *res_mut);
+    }
+
+    // Mirror the writeHead object into _headers for getHeader/hasHeader truth.
+    if let Some(headers_store) = h2_get_headers_obj(cx, obj) {
+        rooted!(&in(cx_ref) let store_root = headers_store);
+        for key in &arg_keys {
+            let c_key = ZBox::from_bytes(key.as_bytes());
+            let mut hv = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                hdrs_obj.handle().into(),
+                c_key.as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut hv,
+                },
+            );
+            if hv.is_string() {
+                JS_SetProperty(
+                    cx,
+                    store_root.handle().into(),
+                    c_key.as_ptr(),
+                    {
+                        rooted!(&in(cx_ref) let hr = hv);
+                        hr.handle().into()
+                    },
+                );
+            }
+        }
+    }
+}
+
 /// res.writeHead(status[, statusText][, headers]) — write status + headers
 /// to the wire. Second writeHead (or after headers sent) is node's
 /// ERR_HTTP_HEADERS_SENT.
@@ -2614,110 +2728,7 @@ unsafe extern "C" fn h2_res_write_head(cx: *mut JSContext, argc: u32, vp: *mut J
     for i in 1..(argc as usize) {
         let v = *args.get(i as u32).ptr;
         if v.is_object() {
-            rooted!(&in(cx_ref) let hdrs_obj = v.to_object());
-
-            // Node merge semantics: setHeader values written first, then the
-            // writeHead object's values — same-name writeHead keys override
-            // (skipped in the store flush so the wire never carries the
-            // header twice).
-            let mut arg_keys: Vec<String> = Vec::new();
-            {
-                let mut ids = mozjs::rust::IdVector::new(cx_ref);
-                if w2::GetPropertyKeys(
-                    cx_ref,
-                    hdrs_obj.handle().into(),
-                    JSITER_OWNONLY as u32,
-                    ids.handle_mut(),
-                ) {
-                    for jsid in &*ids {
-                        if !jsid.is_string() {
-                            continue;
-                        }
-                        let key_str = jsid.to_string();
-                        let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
-                            NonNull::new_unchecked(key_str),
-                        );
-                        arg_keys.push(key);
-                    }
-                }
-            }
-
-            let uws_res = get_uws_res(cx, obj.get());
-            if !uws_res.is_null() {
-                let res_mut = Response::<false>::cast_res(uws_res);
-                // setHeader store first, minus overridden keys.
-                if let Some(headers_store) = h2_get_headers_obj(cx, obj.get()) {
-                    rooted!(&in(cx_ref) let store_root = headers_store);
-                    let mut store_ids = mozjs::rust::IdVector::new(cx_ref);
-                    if w2::GetPropertyKeys(
-                        cx_ref,
-                        store_root.handle().into(),
-                        JSITER_OWNONLY as u32,
-                        store_ids.handle_mut(),
-                    ) {
-                        for jsid in &*store_ids {
-                            if !jsid.is_string() {
-                                continue;
-                            }
-                            let key_str = jsid.to_string();
-                            let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
-                                NonNull::new_unchecked(key_str),
-                            );
-                            if key.starts_with(':') || arg_keys.contains(&key) {
-                                continue;
-                            }
-                            let c_key = ZBox::from_bytes(key.as_bytes());
-                            let mut hv = UndefinedValue();
-                            JS_GetProperty(
-                                cx,
-                                store_root.handle().into(),
-                                c_key.as_ptr(),
-                                MutableHandle::<Value> {
-                                    _phantom_0: ::std::marker::PhantomData,
-                                    ptr: &mut hv,
-                                },
-                            );
-                            if hv.is_string() {
-                                let val = crate::js_to_rust_string(cx, hv);
-                                let key_lower = key.to_ascii_lowercase();
-                                let c_val = ZBox::from_bytes(val.as_bytes());
-                                (*res_mut).write_header(key_lower.as_bytes(), c_val.as_bytes());
-                            }
-                        }
-                    }
-                }
-                h2_write_headers_obj(cx, hdrs_obj.get(), &mut *res_mut);
-            }
-
-            // Mirror the writeHead object into _headers for
-            // getHeader/hasHeader truth.
-            if let Some(headers_store) = h2_get_headers_obj(cx, obj.get()) {
-                rooted!(&in(cx_ref) let store_root = headers_store);
-                for key in &arg_keys {
-                    let c_key = ZBox::from_bytes(key.as_bytes());
-                    let mut hv = UndefinedValue();
-                    JS_GetProperty(
-                        cx,
-                        hdrs_obj.handle().into(),
-                        c_key.as_ptr(),
-                        MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut hv,
-                        },
-                    );
-                    if hv.is_string() {
-                        JS_SetProperty(
-                            cx,
-                            store_root.handle().into(),
-                            c_key.as_ptr(),
-                            {
-                                rooted!(&in(cx_ref) let hr = hv);
-                                hr.handle().into()
-                            },
-                        );
-                    }
-                }
-            }
+            h2_res_write_head_records(cx, obj.get(), v);
             break;
         }
     }
@@ -4918,26 +4929,6 @@ unsafe extern "C" fn http2_fetch(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 // ──────────────────────────────────────────────────────────────────────
 // Property helpers
 // ──────────────────────────────────────────────────────────────────────
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn define_int_prop(
-    cx: &mut mozjs::context::JSContext,
-    obj_ptr: *mut JSObject,
-    name: &str,
-    val: i32,
-) {
-    let c_name = ZBox::from_bytes(name.as_bytes());
-    let raw_cx = cx.raw_cx();
-    rooted!(&in(cx) let obj = obj_ptr);
-    rooted!(&in(cx) let v = Int32Value(val));
-    JS_DefineProperty(
-        raw_cx,
-        obj.handle().into(),
-        c_name.as_ptr(),
-        v.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-}
 
 // ──────────────────────────────────────────────────────────────────────
 // Unit tests

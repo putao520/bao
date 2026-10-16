@@ -898,10 +898,17 @@ unsafe fn populate_process_object(
             // sibling so the JS target keeps one entry per variable, exactly
             // like the OS block (case-insensitive lookup, case-preserving
             // last write).
+            //
+            // CS-EMPTY-CATCH exemption (both proxy_src literals below): the
+            // setEnv/delEnv calls sit in an empty-catch body by design — the
+            // Proxy trap's truth (the local target write) has already
+            // happened, and `__bao_setEnv`/`__bao_delEnv` are always installed
+            // on the scope before the trap is reachable, so the catch is
+            // unreachable defensive code with no observable failure to report.
             #[cfg(windows)]
             let proxy_src = r#"(__bao_envTarget,__bao_setEnv,__bao_delEnv,__bao_envAllowed)=>{const deny=()=>{throw new Error('Permission denied: env access (env_allowed=false)')};const ok=()=>__bao_envAllowed();const t=__bao_envTarget;const find=(k)=>{const ks=typeof k==='string'?k:String(k);if(Object.prototype.hasOwnProperty.call(t,ks))return ks;const lk=ks.toLowerCase();const names=Object.keys(t);for(let i=0;i<names.length;i++){if(names[i].toLowerCase()===lk)return names[i]}return undefined};return new Proxy(t,{
-                set(t,k,v){if(!ok())deny();const ex=find(k);if(ex!==undefined&&ex!==k)delete t[ex];t[k]=v;try{__bao_setEnv(String(k),String(v))}catch(e){}return true},
-                deleteProperty(t,k){if(!ok())deny();const ex=find(k);if(ex!==undefined)delete t[ex];try{__bao_delEnv(String(k))}catch(e){}return true},
+                set(t,k,v){if(!ok())deny();const ex=find(k);if(ex!==undefined&&ex!==k)delete t[ex];t[k]=v;try{__bao_setEnv(String(k),String(v))}catch(e){/*CS-EMPTY-CATCH exempt: env helper always installed; local target write already done*/}return true},
+                deleteProperty(t,k){if(!ok())deny();const ex=find(k);if(ex!==undefined)delete t[ex];try{__bao_delEnv(String(k))}catch(e){/*CS-EMPTY-CATCH exempt: env helper always installed; local target delete already done*/}return true},
                 get(t,k){if(!ok())deny();const ex=find(k);if(ex===undefined)return undefined;const v=t[ex];return typeof v==='string'?v:undefined},
                 has(t,k){if(!ok())deny();return find(k)!==undefined},
                 ownKeys(t){if(!ok())deny();return Object.keys(t)},
@@ -909,8 +916,8 @@ unsafe fn populate_process_object(
             })}"#;
             #[cfg(not(windows))]
             let proxy_src = r#"(__bao_envTarget,__bao_setEnv,__bao_delEnv,__bao_envAllowed)=>{const deny=()=>{throw new Error('Permission denied: env access (env_allowed=false)')};const ok=()=>__bao_envAllowed();return new Proxy(__bao_envTarget,{
-                set(t,k,v){if(!ok())deny();t[k]=v;try{__bao_setEnv(String(k),String(v))}catch(e){}return true},
-                deleteProperty(t,k){if(!ok())deny();delete t[k];try{__bao_delEnv(String(k))}catch(e){}return true},
+                set(t,k,v){if(!ok())deny();t[k]=v;try{__bao_setEnv(String(k),String(v))}catch(e){/*CS-EMPTY-CATCH exempt: env helper always installed; local target write already done*/}return true},
+                deleteProperty(t,k){if(!ok())deny();delete t[k];try{__bao_delEnv(String(k))}catch(e){/*CS-EMPTY-CATCH exempt: env helper always installed; local target delete already done*/}return true},
                 get(t,k){if(!ok())deny();const v=t[k];return typeof v==='string'?v:undefined},
                 has(t,k){if(!ok())deny();return k in t},
                 ownKeys(t){if(!ok())deny();return Object.keys(t)},
@@ -2288,6 +2295,15 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             //     listener registration (empty stdout included).
             //   - `Symbol.asyncDispose`: waits for exit, matching the
             //     AsyncDisposable contract.
+            //
+            // CS-EMPTY-CATCH exemption (dispose_src catches below): the
+            // empty-catch bodies around emit/_exitResolve are the Node
+            // EventEmitter contract — a throwing listener must not abort the
+            // remaining 'exit'/'close' delivery, and a disposed/replaced
+            // resolver must not break the teardown chain. The catch is a
+            // deliberate Node-parity swallow, not a dropped error: there is no
+            // observable failure to propagate (further listeners already run
+            // after it).
             let dispose_src = r#"(function(proc) {
   if (!proc) return proc;
   var _exitResolve = null;
@@ -2325,7 +2341,7 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     a = a.slice();
     var args = Array.prototype.slice.call(arguments, 1);
     for (var i = 0; i < a.length; i++) {
-      try { a[i].apply(null, args); } catch (e) {}
+      try { a[i].apply(null, args); } catch (e) {/*CS-EMPTY-CATCH exempt: Node EventEmitter — a throwing listener must not abort the remaining listeners*/}
     }
     return true;
   };
@@ -2341,23 +2357,23 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     if (_finished) return;
     _finished = true;
     proc.exitCode = code;
-    try { _exitResolve(code); } catch (e) {}
-    try { proc.emit('exit', code, signal); } catch (e) {}
+    try { _exitResolve(code); } catch (e) {/*CS-EMPTY-CATCH exempt: disposed/replaced resolver must not break the teardown chain*/}
+    try { proc.emit('exit', code, signal); } catch (e) {/*CS-EMPTY-CATCH exempt: Node EventEmitter parity*/}
     if (proc._pipedOut) {
       try {
         var out = (typeof proc._stdoutRaw === 'function') ? proc._stdoutRaw() : null;
         if (out !== null && out !== undefined) proc.emit('stdout_data', out);
         proc.emit('stdout_end');
-      } catch (e) {}
+      } catch (e) {/*CS-EMPTY-CATCH exempt: best-effort pipe drain; Node parity*/}
     }
     if (proc._pipedErr) {
       try {
         var err = (typeof proc._stderrRaw === 'function') ? proc._stderrRaw() : null;
         if (err !== null && err !== undefined) proc.emit('stderr_data', err);
         proc.emit('stderr_end');
-      } catch (e) {}
+      } catch (e) {/*CS-EMPTY-CATCH exempt: best-effort pipe drain; Node parity*/}
     }
-    try { proc.emit('close', code, signal); } catch (e) {}
+    try { proc.emit('close', code, signal); } catch (e) {/*CS-EMPTY-CATCH exempt: Node EventEmitter parity*/}
   }
   if (typeof proc._watchExit === 'function') {
     proc._watchExit(_finish);

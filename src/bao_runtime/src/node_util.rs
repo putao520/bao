@@ -1817,6 +1817,12 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
 //   - rejection: falsy reason is wrapped in an Error carrying `.cause`
 //   - a synchronous throw of the wrapped fn is delivered to the callback on a
 //     microtask (Node defers via process.nextTick)
+//
+// CS-EMPTY-CATCH exemption: the empty-catch around `reason.cause = err` inside
+// the rejection handler is best-effort cause attachment — a frozen/non-
+// extensible `reason` object cannot take `.cause`, and Node's callbackify does
+// not surface that as an error (the original `reason` is still delivered to the
+// callback).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn util_callbackify(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
@@ -1854,7 +1860,7 @@ unsafe extern "C" fn util_callbackify(cx: *mut JSContext, _argc: u32, vp: *mut J
       var reason = err;
       if (!reason) {
         reason = new Error('falsy rejection reason');
-        if (reason && !reason.cause) { try { reason.cause = err; } catch (e) {} }
+        if (reason && !reason.cause) { try { reason.cause = err; } catch (e) {/*CS-EMPTY-CATCH exempt: frozen reason cannot take .cause; original reason still delivered*/} }
       }
       cb(reason);
     });

@@ -560,8 +560,12 @@ unsafe extern "C" fn tty_write_stream_write(cx: *mut JSContext, argc: u32, vp: *
     true
 }
 
-/// ref() — no-op for TTY streams (Node.js compatible: stream.ref() returns this)
-unsafe extern "C" fn tty_ref(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+/// Shared no-op ref()/unref() core — both return `this` for object receivers
+/// (Node parity: TTY streams have no external handle to ref/unref). The two
+/// registered faces are observationally identical by design
+/// (REQ-ARCH-1 duplicate convergence).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn tty_return_this(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if this.is_object() {
@@ -575,19 +579,14 @@ unsafe extern "C" fn tty_ref(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     true
 }
 
+/// ref() — no-op for TTY streams (Node.js compatible: stream.ref() returns this)
+unsafe extern "C" fn tty_ref(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    tty_return_this(cx, argc, vp)
+}
+
 /// unref() — no-op for TTY streams (Node.js compatible: stream.unref() returns this)
 unsafe extern "C" fn tty_unref(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv();
-    if this.is_object() {
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
-        rooted!(&in(cx_ref) let obj = this.to_object());
-        args.rval().set(ObjectValue(obj.get()));
-    } else {
-        args.rval().set(UndefinedValue());
-    }
-    true
+    tty_return_this(cx, argc, vp)
 }
 
 /// resume() — mark stream as readable and emit 'resume' event

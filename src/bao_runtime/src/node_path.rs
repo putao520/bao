@@ -8,6 +8,9 @@ use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
+// return_string is the crate-wide single source in node_crypto
+// (REQ-ARCH-1 duplicate convergence).
+use crate::node_crypto::return_string;
 use crate::require::cache_builtin;
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -1701,8 +1704,16 @@ unsafe extern "C" fn win32_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut J
     true
 }
 
+/// Shared `path.parse` core: identical arg handling + result object shape;
+/// the win32/posix faces differ only in the algorithm core consulted
+/// (REQ-ARCH-1 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn win32_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe fn path_parse_impl(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+    parse: fn(&str) -> (String, String, String, String, String),
+) -> bool {
     let args = ::mozjs::jsapi::CallArgs::from_vp(vp, argc);
     if argc == 0 {
         ::mozjs::jsapi::JS_ReportErrorUTF8(
@@ -1717,7 +1728,7 @@ unsafe extern "C" fn win32_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         args.rval().set(::mozjs::jsval::UndefinedValue());
         return true;
     };
-    let (root, dir, base, ext, name) = win32_core::parse(&p);
+    let (root, dir, base, ext, name) = parse(&p);
     let raw_cx = cx;
     let mut wrapped = ::mozjs::context::JSContext::from_ptr(
         ::std::ptr::NonNull::new_unchecked(raw_cx),
@@ -1754,6 +1765,11 @@ unsafe extern "C" fn win32_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     def_str!("name", name);
     args.rval().set(::mozjs::jsval::ObjectValue(obj.get()));
     true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn win32_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    path_parse_impl(cx, argc, vp, win32_core::parse)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1772,57 +1788,7 @@ unsafe extern "C" fn posix_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut J
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn posix_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = ::mozjs::jsapi::CallArgs::from_vp(vp, argc);
-    if argc == 0 {
-        ::mozjs::jsapi::JS_ReportErrorUTF8(
-            cx,
-            ::std::ffi::CStr::from_bytes_with_nul(b"path.parse requires a path\0")
-                .unwrap()
-                .as_ptr(),
-        );
-        return false;
-    }
-    let Some(p) = posix_arg(cx, *args.get(0).ptr) else {
-        args.rval().set(::mozjs::jsval::UndefinedValue());
-        return true;
-    };
-    let (root, dir, base, ext, name) = posix_core::parse(&p);
-    let raw_cx = cx;
-    let mut wrapped = ::mozjs::context::JSContext::from_ptr(
-        ::std::ptr::NonNull::new_unchecked(raw_cx),
-    );
-    let cx_ref = &mut wrapped;
-    ::mozjs::rooted!(&in(cx_ref) let obj = ::mozjs::rust::wrappers2::JS_NewPlainObject(cx_ref));
-    if obj.get().is_null() {
-        args.rval().set(::mozjs::jsval::UndefinedValue());
-        return true;
-    }
-    let h = obj.handle().into();
-    macro_rules! def_str {
-        ($name:literal, $val:expr) => {{
-            let cs = ZBox::from_bytes($val.as_bytes());
-            let js = JS_NewStringCopyZ(raw_cx, cs.as_ptr());
-            if !js.is_null() {
-                ::mozjs::rooted!(&in(cx_ref) let sv = ::mozjs::jsval::StringValue(&*js));
-                ::mozjs::jsapi::JS_DefineProperty(
-                    raw_cx,
-                    h,
-                    ::std::ffi::CStr::from_bytes_with_nul(::std::concat!($name, "\0").as_bytes())
-                        .unwrap()
-                        .as_ptr(),
-                    sv.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-            }
-        }};
-    }
-    def_str!("root", root);
-    def_str!("dir", dir);
-    def_str!("base", base);
-    def_str!("ext", ext);
-    def_str!("name", name);
-    args.rval().set(::mozjs::jsval::ObjectValue(obj.get()));
-    true
+    path_parse_impl(cx, argc, vp, posix_core::parse)
 }
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
@@ -2301,18 +2267,6 @@ unsafe fn arg_to_string(
     }
     let rust_str = crate::jsstr_to_rust_string(cx, s);
     ::std::option::Option::Some(rust_str)
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
-    let c_str = ZBox::from_bytes(s.as_bytes());
-    let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
-    if js_str.is_null() {
-        args.rval().set(UndefinedValue());
-    } else {
-        args.rval().set(mozjs::jsval::StringValue(&*js_str));
-    }
-    true
 }
 
 // ── Host/platform face ────────────────────────────────────────────────────

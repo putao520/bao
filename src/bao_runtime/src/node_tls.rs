@@ -27,6 +27,7 @@ use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
+use crate::node_crypto::argon2_get_prop;
 use crate::node_events::{
     ee_emit, ee_off, ee_on, ee_once, ee_prepend, ee_prepend_once, ee_remove_all,
 };
@@ -4397,25 +4398,6 @@ unsafe extern "C" fn tls_socket_get_alpn(cx: *mut JSContext, _argc: u32, vp: *mu
     true
 }
 
-/// Read a plain property off a socket object (Undefined when absent).
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn tls_socket_prop(cx: *mut JSContext, obj: *mut JSObject, name: &core::ffi::CStr) -> JSVal {
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj_root = obj);
-    let mut out = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj_root.handle().into(),
-        name.as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut out,
-        },
-    );
-    out
-}
-
 /// socket.getProtocol() — the negotiated TLS version captured at handshake
 /// time (`_tlsProtocol`). Sockets without a completed handshake (and probe
 /// objects) report `null`, Node's "no live session" answer — never a
@@ -4424,7 +4406,7 @@ unsafe fn tls_socket_prop(cx: *mut JSContext, obj: *mut JSObject, name: &core::f
 unsafe extern "C" fn tls_get_protocol(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let protocol = if args.thisv().is_object() {
-        tls_socket_prop(cx, args.thisv().to_object(), c"_tlsProtocol")
+        argon2_get_prop(cx, args.thisv().to_object(), c"_tlsProtocol")
     } else {
         UndefinedValue()
     };
@@ -4446,7 +4428,7 @@ unsafe extern "C" fn tls_get_cipher(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     let cx_ref = &mut wrapped_cx;
 
     let name = if args.thisv().is_object() {
-        tls_socket_prop(cx, args.thisv().to_object(), c"_tlsCipherName")
+        argon2_get_prop(cx, args.thisv().to_object(), c"_tlsCipherName")
     } else {
         UndefinedValue()
     };
@@ -4455,7 +4437,7 @@ unsafe extern "C" fn tls_get_cipher(cx: *mut JSContext, _argc: u32, vp: *mut JSV
         return true;
     }
     let version = if args.thisv().is_object() {
-        tls_socket_prop(cx, args.thisv().to_object(), c"_tlsCipherVersion")
+        argon2_get_prop(cx, args.thisv().to_object(), c"_tlsCipherVersion")
     } else {
         UndefinedValue()
     };
@@ -4494,7 +4476,7 @@ unsafe extern "C" fn tls_get_cipher(cx: *mut JSContext, _argc: u32, vp: *mut JSV
 unsafe extern "C" fn tls_get_peer_cert(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let cert = if args.thisv().is_object() {
-        tls_socket_prop(cx, args.thisv().to_object(), c"_tlsPeerCert")
+        argon2_get_prop(cx, args.thisv().to_object(), c"_tlsPeerCert")
     } else {
         UndefinedValue()
     };

@@ -25,6 +25,7 @@ use bun_uws_sys::Loop;
 use bun_uws_sys::udp::PacketBuffer;
 use bun_uws_sys::udp::Socket as UdpSocket;
 
+use crate::bun_listen::{build_sockaddr, cleanup_gc_key, extract_js_callback};
 use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove, gc_store_unique_key};
 // Platform socket-type namespace: the winsock mirrors in
 // bun_windows_sys::ws2_32 carry POSIX field names and identical layouts
@@ -50,36 +51,8 @@ fn get_loop() -> *mut Loop {
 
 // ──────────────────── JS helpers ────────────────────
 
-/// Extract a JS function callback from a property on a JS object.
-/// Returns `None` if the property is missing or not a function.
-/// @trace REQ-BAO-API-017 [api:Bun.udpSocket]
-fn extract_js_callback(
-    cx: *mut JSContext,
-    obj_h: Handle<*mut JSObject>,
-    prop: &str,
-) -> Option<*mut JSObject> {
-    let mut cv = UndefinedValue();
-    let c_prop = ZBox::from_bytes(prop.as_bytes());
-    unsafe {
-        JS_GetProperty(
-            cx,
-            obj_h,
-            c_prop.as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut cv,
-            },
-        );
-    }
-    if cv.is_object() {
-        let cx2 = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
-        rooted!(&in(cx2) let co = cv.to_object());
-        if unsafe { JS_ObjectIsFunction(co.get()) } {
-            return Some(co.get());
-        }
-    }
-    None
-}
+// `extract_js_callback` / `cleanup_gc_key` / `build_sockaddr` are shared with
+// bun_listen (crate-wide single source; REQ-ARCH-1 duplicate convergence).
 
 /// Invoke a JS callback stored in GcStore by key.
 /// Passes `args` as arguments to the JS function. Returns `true` on success.
@@ -149,89 +122,6 @@ unsafe fn invoke_js_callback(cx: *mut JSContext, cb_key: &Option<String>, args: 
         }
     }
     ok
-}
-
-/// Build a libc sockaddr_storage from host:port.
-/// Returns the address length, or 0 on parse failure.
-/// @trace REQ-BAO-API-017 [api:Bun.udpSocket]
-fn build_sockaddr(host: &str, port: u16, storage: &mut sockaddr_storage) -> usize {
-    let addr: ::std::net::SocketAddr = match host.parse() {
-        Ok(a) => a,
-        Err(_) => match format!("{}:{}", host, port).parse() {
-            Ok(a) => a,
-            Err(_) => return 0,
-        },
-    };
-    match addr {
-        ::std::net::SocketAddr::V4(v4) => {
-            let sa = sockaddr_in {
-                sin_family: AF_INET as u16,
-                sin_port: port.to_be(),
-                sin_addr: in_addr {
-                    s_addr: u32::from(*v4.ip()).to_be(),
-                },
-                sin_zero: [0; 8],
-            };
-            let sa_bytes = unsafe {
-                ::std::slice::from_raw_parts(
-                    ::std::ptr::from_ref(&sa).cast::<u8>(),
-                    ::std::mem::size_of::<sockaddr_in>(),
-                )
-            };
-            let storage_bytes = unsafe {
-                ::std::slice::from_raw_parts_mut(
-                    storage as *mut _ as *mut u8,
-                    ::std::mem::size_of::<sockaddr_storage>(),
-                )
-            };
-            storage_bytes[..sa_bytes.len()].copy_from_slice(sa_bytes);
-            sa_bytes.len()
-        }
-        ::std::net::SocketAddr::V6(v6) => {
-            let sa = sockaddr_in6 {
-                sin6_family: AF_INET6 as u16,
-                sin6_port: port.to_be(),
-                sin6_flowinfo: 0,
-                sin6_addr: in6_addr {
-                    s6_addr: v6.ip().octets(),
-                },
-                sin6_scope_id: 0,
-            };
-            let sa_bytes = unsafe {
-                ::std::slice::from_raw_parts(
-                    ::std::ptr::from_ref(&sa).cast::<u8>(),
-                    ::std::mem::size_of::<sockaddr_in6>(),
-                )
-            };
-            let storage_bytes = unsafe {
-                ::std::slice::from_raw_parts_mut(
-                    storage as *mut _ as *mut u8,
-                    ::std::mem::size_of::<sockaddr_storage>(),
-                )
-            };
-            storage_bytes[..sa_bytes.len()].copy_from_slice(sa_bytes);
-            sa_bytes.len()
-        }
-    }
-}
-
-/// Clean up a GcStore key stored as a JS property on an object.
-/// @trace REQ-BAO-API-017 [api:Bun.udpSocket]
-unsafe fn cleanup_gc_key(cx: *mut JSContext, obj_h: Handle<*mut JSObject>, prop: *const i8) {
-    let mut val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj_h,
-        prop,
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut val,
-        },
-    );
-    if val.is_string() {
-        let key = crate::js_to_rust_string(cx, val);
-        gc_store_remove(cx, &key);
-    }
 }
 
 /// Reject a Promise with an error message object.

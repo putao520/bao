@@ -719,8 +719,10 @@ unsafe fn arg_to_string(cx: *mut JSContext, val: JSVal) -> Option<String> {
     Some(crate::jsstr_to_rust_string(cx, s))
 }
 
+// Crate-wide single source (node_path imports this; REQ-ARCH-1 duplicate
+// convergence — the two copies were byte-identical).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
+pub(crate) unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
     let c_str = ZBox::from_bytes(s.as_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
     if js_str.is_null() {
@@ -5235,7 +5237,51 @@ unsafe extern "C" fn crypto_private_decrypt(cx: *mut JSContext, argc: u32, vp: *
 // (these are in bun_boringssl_sys), extracting the RSA key from EVP_PKEY
 // with EVP_PKEY_get0_RSA.
 
-fn rsa_public_encrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<u8>, String> {
+/// BoringSSL raw-RSA entry point shape shared by all four faces.
+type RsaRawOpFn = unsafe extern "C" fn(
+    usize,
+    *const u8,
+    *mut u8,
+    *mut bun_boringssl_sys::RSA,
+    ::std::os::raw::c_int,
+) -> ::std::os::raw::c_int;
+
+/// Shared raw-RSA core: identical buffer sizing + PKCS#1 padding + result
+/// truncation across the four faces; they differ only in the BoringSSL entry
+/// point (and the error label naming it). REQ-ARCH-1 duplicate convergence.
+unsafe fn rsa_crypt_inner(
+    op: RsaRawOpFn,
+    op_name: &str,
+    rsa: *mut bun_boringssl_sys::RSA,
+    data: &[u8],
+) -> ::std::result::Result<Vec<u8>, String> {
+    let key_size = bun_boringssl_sys::RSA_size(rsa) as usize;
+    let mut out = vec![0u8; key_size];
+    let len = op(
+        data.len(),
+        data.as_ptr(),
+        out.as_mut_ptr(),
+        rsa,
+        bun_boringssl_sys::RSA_PKCS1_PADDING,
+    );
+    if len < 0 {
+        return Err(format!("{} failed", op_name).into());
+    }
+    out.truncate(len as usize);
+    Ok(out)
+}
+
+/// Shared PEM loader core: identical BIO/EVP_PKEY plumbing across the four
+/// faces; the public faces load via `PEM_read_bio_PUBKEY`, the private faces
+/// via `PEM_read_bio_PrivateKey`, then run the matching raw op
+/// (REQ-ARCH-1 duplicate convergence).
+fn rsa_pem_op(
+    data: &[u8],
+    pem: &str,
+    public: bool,
+    op: RsaRawOpFn,
+    op_name: &str,
+) -> ::std::result::Result<Vec<u8>, String> {
     unsafe {
         let bio = bun_boringssl_sys::BIO_new_mem_buf(
             pem.as_ptr() as *const ::std::ffi::c_void,
@@ -5244,195 +5290,78 @@ fn rsa_public_encrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<u
         if bio.is_null() {
             return Err("BIO_new_mem_buf failed".into());
         }
-        let pkey = bun_boringssl_sys::PEM_read_bio_PUBKEY(
-            bio,
-            ::std::ptr::null_mut(),
-            None::<bun_boringssl_sys::pem_password_cb>,
-            ::std::ptr::null_mut(),
-        );
+        let pkey = if public {
+            bun_boringssl_sys::PEM_read_bio_PUBKEY(
+                bio,
+                ::std::ptr::null_mut(),
+                None::<bun_boringssl_sys::pem_password_cb>,
+                ::std::ptr::null_mut(),
+            )
+        } else {
+            bun_boringssl_sys::PEM_read_bio_PrivateKey(
+                bio,
+                ::std::ptr::null_mut(),
+                None::<bun_boringssl_sys::pem_password_cb>,
+                ::std::ptr::null_mut(),
+            )
+        };
         bun_boringssl_sys::BIO_free(bio);
         if pkey.is_null() {
-            return Err("PEM_read_bio_PUBKEY failed".into());
+            return Err(if public {
+                "PEM_read_bio_PUBKEY failed".into()
+            } else {
+                "PEM_read_bio_PrivateKey failed".into()
+            });
         }
         let rsa = bun_boringssl_sys::EVP_PKEY_get0_RSA(pkey);
         if rsa.is_null() {
             bun_boringssl_sys::EVP_PKEY_free(pkey);
             return Err("Not an RSA key".into());
         }
-        let result = rsa_encrypt_inner(rsa, data);
+        let result = rsa_crypt_inner(op, op_name, rsa, data);
         bun_boringssl_sys::EVP_PKEY_free(pkey);
         result
     }
+}
+
+fn rsa_public_encrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<u8>, String> {
+    rsa_pem_op(
+        data,
+        pem,
+        true,
+        bun_boringssl_sys::RSA_public_encrypt,
+        "RSA_public_encrypt",
+    )
 }
 
 fn rsa_public_decrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<u8>, String> {
-    unsafe {
-        let bio = bun_boringssl_sys::BIO_new_mem_buf(
-            pem.as_ptr() as *const ::std::ffi::c_void,
-            pem.len() as isize,
-        );
-        if bio.is_null() {
-            return Err("BIO_new_mem_buf failed".into());
-        }
-        let pkey = bun_boringssl_sys::PEM_read_bio_PUBKEY(
-            bio,
-            ::std::ptr::null_mut(),
-            None::<bun_boringssl_sys::pem_password_cb>,
-            ::std::ptr::null_mut(),
-        );
-        bun_boringssl_sys::BIO_free(bio);
-        if pkey.is_null() {
-            return Err("PEM_read_bio_PUBKEY failed".into());
-        }
-        let rsa = bun_boringssl_sys::EVP_PKEY_get0_RSA(pkey);
-        if rsa.is_null() {
-            bun_boringssl_sys::EVP_PKEY_free(pkey);
-            return Err("Not an RSA key".into());
-        }
-        let result = rsa_public_decrypt_inner(rsa, data);
-        bun_boringssl_sys::EVP_PKEY_free(pkey);
-        result
-    }
+    rsa_pem_op(
+        data,
+        pem,
+        true,
+        bun_boringssl_sys::RSA_public_decrypt,
+        "RSA_public_decrypt",
+    )
 }
 
 fn rsa_private_encrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<u8>, String> {
-    unsafe {
-        let bio = bun_boringssl_sys::BIO_new_mem_buf(
-            pem.as_ptr() as *const ::std::ffi::c_void,
-            pem.len() as isize,
-        );
-        if bio.is_null() {
-            return Err("BIO_new_mem_buf failed".into());
-        }
-        let pkey = bun_boringssl_sys::PEM_read_bio_PrivateKey(
-            bio,
-            ::std::ptr::null_mut(),
-            None::<bun_boringssl_sys::pem_password_cb>,
-            ::std::ptr::null_mut(),
-        );
-        bun_boringssl_sys::BIO_free(bio);
-        if pkey.is_null() {
-            return Err("PEM_read_bio_PrivateKey failed".into());
-        }
-        let rsa = bun_boringssl_sys::EVP_PKEY_get0_RSA(pkey);
-        if rsa.is_null() {
-            bun_boringssl_sys::EVP_PKEY_free(pkey);
-            return Err("Not an RSA key".into());
-        }
-        let result = rsa_private_encrypt_inner(rsa, data);
-        bun_boringssl_sys::EVP_PKEY_free(pkey);
-        result
-    }
+    rsa_pem_op(
+        data,
+        pem,
+        false,
+        bun_boringssl_sys::RSA_private_encrypt,
+        "RSA_private_encrypt",
+    )
 }
 
 fn rsa_private_decrypt_pem(data: &[u8], pem: &str) -> ::std::result::Result<Vec<u8>, String> {
-    unsafe {
-        let bio = bun_boringssl_sys::BIO_new_mem_buf(
-            pem.as_ptr() as *const ::std::ffi::c_void,
-            pem.len() as isize,
-        );
-        if bio.is_null() {
-            return Err("BIO_new_mem_buf failed".into());
-        }
-        let pkey = bun_boringssl_sys::PEM_read_bio_PrivateKey(
-            bio,
-            ::std::ptr::null_mut(),
-            None::<bun_boringssl_sys::pem_password_cb>,
-            ::std::ptr::null_mut(),
-        );
-        bun_boringssl_sys::BIO_free(bio);
-        if pkey.is_null() {
-            return Err("PEM_read_bio_PrivateKey failed".into());
-        }
-        let rsa = bun_boringssl_sys::EVP_PKEY_get0_RSA(pkey);
-        if rsa.is_null() {
-            bun_boringssl_sys::EVP_PKEY_free(pkey);
-            return Err("Not an RSA key".into());
-        }
-        let result = rsa_private_decrypt_inner(rsa, data);
-        bun_boringssl_sys::EVP_PKEY_free(pkey);
-        result
-    }
-}
-
-unsafe fn rsa_encrypt_inner(
-    rsa: *mut bun_boringssl_sys::RSA,
-    data: &[u8],
-) -> ::std::result::Result<Vec<u8>, String> {
-    let key_size = bun_boringssl_sys::RSA_size(rsa) as usize;
-    let mut out = vec![0u8; key_size];
-    let len = bun_boringssl_sys::RSA_public_encrypt(
-        data.len(),
-        data.as_ptr(),
-        out.as_mut_ptr(),
-        rsa,
-        bun_boringssl_sys::RSA_PKCS1_PADDING,
-    );
-    if len < 0 {
-        return Err("RSA_public_encrypt failed".into());
-    }
-    out.truncate(len as usize);
-    Ok(out)
-}
-
-unsafe fn rsa_public_decrypt_inner(
-    rsa: *mut bun_boringssl_sys::RSA,
-    data: &[u8],
-) -> ::std::result::Result<Vec<u8>, String> {
-    let key_size = bun_boringssl_sys::RSA_size(rsa) as usize;
-    let mut out = vec![0u8; key_size];
-    let len = bun_boringssl_sys::RSA_public_decrypt(
-        data.len(),
-        data.as_ptr(),
-        out.as_mut_ptr(),
-        rsa,
-        bun_boringssl_sys::RSA_PKCS1_PADDING,
-    );
-    if len < 0 {
-        return Err("RSA_public_decrypt failed".into());
-    }
-    out.truncate(len as usize);
-    Ok(out)
-}
-
-unsafe fn rsa_private_encrypt_inner(
-    rsa: *mut bun_boringssl_sys::RSA,
-    data: &[u8],
-) -> ::std::result::Result<Vec<u8>, String> {
-    let key_size = bun_boringssl_sys::RSA_size(rsa) as usize;
-    let mut out = vec![0u8; key_size];
-    let len = bun_boringssl_sys::RSA_private_encrypt(
-        data.len(),
-        data.as_ptr(),
-        out.as_mut_ptr(),
-        rsa,
-        bun_boringssl_sys::RSA_PKCS1_PADDING,
-    );
-    if len < 0 {
-        return Err("RSA_private_encrypt failed".into());
-    }
-    out.truncate(len as usize);
-    Ok(out)
-}
-
-unsafe fn rsa_private_decrypt_inner(
-    rsa: *mut bun_boringssl_sys::RSA,
-    data: &[u8],
-) -> ::std::result::Result<Vec<u8>, String> {
-    let key_size = bun_boringssl_sys::RSA_size(rsa) as usize;
-    let mut out = vec![0u8; key_size];
-    let len = bun_boringssl_sys::RSA_private_decrypt(
-        data.len(),
-        data.as_ptr(),
-        out.as_mut_ptr(),
-        rsa,
-        bun_boringssl_sys::RSA_PKCS1_PADDING,
-    );
-    if len < 0 {
-        return Err("RSA_private_decrypt failed".into());
-    }
-    out.truncate(len as usize);
-    Ok(out)
+    rsa_pem_op(
+        data,
+        pem,
+        false,
+        bun_boringssl_sys::RSA_private_decrypt,
+        "RSA_private_decrypt",
+    )
 }
 
 // ============================================================
@@ -6135,8 +6064,12 @@ unsafe fn argon2_is_plain_object(cx: *mut JSContext, val: JSVal) -> bool {
 /// Read one property off the parameters object (UndefinedValue on failure).
 /// `name` takes a C-string literal (`&CStr`); the raw pointer is taken at
 /// the SM API boundary inside.
+///
+/// Crate-wide single source (REQ-ARCH-1 duplicate convergence, user-authorized
+/// boundary extension): node_tls's former `tls_socket_prop` was byte-identical
+/// and now imports this — one copy serves both call sites.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn argon2_get_prop(
+pub(crate) unsafe fn argon2_get_prop(
     cx: *mut JSContext,
     obj: *mut JSObject,
     name: &::std::ffi::CStr,

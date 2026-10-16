@@ -240,8 +240,17 @@ unsafe extern "C" fn rl_create_interface(cx: *mut JSContext, argc: u32, vp: *mut
     true
 }
 
+/// Shared close/pause/resume core: identical receiver handling + boolean
+/// property write + return-this; the three faces differ only in which flag
+/// they set (REQ-ARCH-1 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn rl_close(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe fn rl_flag(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+    prop: &'static ::core::ffi::CStr,
+    val: bool,
+) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() {
@@ -250,60 +259,31 @@ unsafe extern "C" fn rl_close(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) ->
     }
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let this_obj = this.to_object());
-    rooted!(&in(wrapped_cx) let closed_v = BooleanValue(true));
+    rooted!(&in(wrapped_cx) let flag_v = BooleanValue(val));
     JS_DefineProperty(
         cx,
         this_obj.handle().into(),
-        c"closed".as_ptr(),
-        closed_v.handle().into(),
+        prop.as_ptr(),
+        flag_v.handle().into(),
         JSPROP_ENUMERATE as u32,
     );
     args.rval().set(ObjectValue(this_obj.get()));
     true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn rl_close(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    rl_flag(cx, _argc, vp, c"closed", true)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn rl_pause(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let this_obj = this.to_object());
-    rooted!(&in(wrapped_cx) let paused_v = BooleanValue(true));
-    JS_DefineProperty(
-        cx,
-        this_obj.handle().into(),
-        c"paused".as_ptr(),
-        paused_v.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-    args.rval().set(ObjectValue(this_obj.get()));
-    true
+    rl_flag(cx, _argc, vp, c"paused", true)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn rl_resume(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let this = args.thisv();
-    if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let this_obj = this.to_object());
-    rooted!(&in(wrapped_cx) let paused_v = BooleanValue(false));
-    JS_DefineProperty(
-        cx,
-        this_obj.handle().into(),
-        c"paused".as_ptr(),
-        paused_v.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-    args.rval().set(ObjectValue(this_obj.get()));
-    true
+    rl_flag(cx, _argc, vp, c"paused", false)
 }
 
 /// Read one line (up to and including `\n`) from a raw file descriptor.

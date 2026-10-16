@@ -278,18 +278,32 @@ pub(crate) unsafe extern "C" fn zlib_deflate_sync(cx: *mut JSContext, argc: u32,
     }
 }
 
+/// Shared inflate-family core: identical arg extraction + checked-decompress
+/// delivery; the four faces differ only in the zlib windowBits mode
+/// (15 = zlib, -15 = raw, 16 = single-member gzip, 47 = auto-detect)
+/// (REQ-ARCH-1 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
-pub(crate) unsafe extern "C" fn zlib_inflate_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn zlib_inflate_wbits(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+    window_bits: core::ffi::c_int,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let data = if argc > 0 {
         extract_bytes(cx, *args.get(0).ptr)
     } else {
         Vec::new()
     };
-    match decompress_checked_or_throw(cx, &data, 15) {
+    match decompress_checked_or_throw(cx, &data, window_bits) {
         Some(decompressed) => return_bytes(cx, &args, decompressed),
         None => false,
     }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe extern "C" fn zlib_inflate_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    zlib_inflate_wbits(cx, argc, vp, 15)
 }
 
 /// `zlib.crc32(data[, value])` — Node 18+ zlib CRC-32 checksum with
@@ -365,16 +379,7 @@ unsafe extern "C" fn zlib_deflate_raw_sync(cx: *mut JSContext, argc: u32, vp: *m
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_inflate_raw_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 {
-        extract_bytes(cx, *args.get(0).ptr)
-    } else {
-        Vec::new()
-    };
-    match decompress_checked_or_throw(cx, &data, -15) {
-        Some(decompressed) => return_bytes(cx, &args, decompressed),
-        None => false,
-    }
+    zlib_inflate_wbits(cx, argc, vp, -15)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -405,16 +410,7 @@ pub(crate) unsafe extern "C" fn zlib_gzip_sync(cx: *mut JSContext, argc: u32, vp
 // undefined (was: single member + silent swallow).
 #[allow(unsafe_op_in_unsafe_fn)]
 pub(crate) unsafe extern "C" fn zlib_gunzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 {
-        extract_bytes(cx, *args.get(0).ptr)
-    } else {
-        Vec::new()
-    };
-    match decompress_checked_or_throw(cx, &data, 16) {
-        Some(decompressed) => return_bytes(cx, &args, decompressed),
-        None => false,
-    }
+    zlib_inflate_wbits(cx, argc, vp, 16)
 }
 
 // unzipSync — auto-detect (node windowBits 15+32) through the same state
@@ -424,16 +420,7 @@ pub(crate) unsafe extern "C" fn zlib_gunzip_sync(cx: *mut JSContext, argc: u32, 
 // returned undefined; empty members are legitimate and now decode.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_unzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let data = if argc > 0 {
-        extract_bytes(cx, *args.get(0).ptr)
-    } else {
-        Vec::new()
-    };
-    match decompress_checked_or_throw(cx, &data, 47) {
-        Some(decompressed) => return_bytes(cx, &args, decompressed),
-        None => false,
-    }
+    zlib_inflate_wbits(cx, argc, vp, 47)
 }
 
 // ---------------------------------------------------------------------------

@@ -1565,6 +1565,14 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
         // installed on the global as `URL`) to express the same semantics in
         // pure JS, mirroring Node.js' reference implementation. See
         // ~/code/rust/bun/src/js/node/url.ts (which delegates to Bun.* C++).
+        //
+        // CS-EMPTY-CATCH exemption: the best-effort cwd resolution around
+        // require('path').resolve(path) sits in an empty-catch body — require
+        // may be absent in a bare global scope, in which case the raw path is
+        // kept (Node's documented Linux behaviour for an already-absolute
+        // path); there is no failure to report. domainToASCII/domainToUnicode
+        // return the input unchanged on an unparsable domain (Node's ICU
+        // fallback), so their catches likewise carry no error.
         let url_extra_src = r#"(function(u){
   function pathToFileURL(path) {
     if (typeof path !== 'string') {
@@ -1573,7 +1581,7 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
     // Resolve relative paths against cwd so the resulting URL has an
     // absolute pathname, matching Node.js' behaviour on Linux.
     if (path.charAt(0) !== '/') {
-      try { path = require('path').resolve(path); } catch (e) {}
+      try { path = require('path').resolve(path); } catch (e) {/*CS-EMPTY-CATCH exempt: best-effort cwd resolve; bare scope keeps raw path (Node Linux behaviour)*/}
     }
     // Percent-encode each path segment (preserving '/' and other URL-safe
     // chars). Mirrors Node's pathToFileURL encoder.
@@ -2448,9 +2456,16 @@ unsafe fn sp_make_iterator(cx: *mut JSContext, snapshot: *mut JSObject) -> *mut 
     }
 }
 
-/// keys() — iterator over pair names in list order (duplicates included).
+/// Shared keys()/values() core: identical this-binding + snapshot-iterator
+/// delivery; the two faces differ only in which half of each pair is
+/// projected (REQ-ARCH-1 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_keys(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn sp_projection_iter(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+    want_keys: bool,
+) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
@@ -2459,7 +2474,11 @@ unsafe extern "C" fn sp_keys(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> 
             return true;
         }
     };
-    let it = unsafe { sp_string_snapshot_iterator(cx, pairs.iter().map(|(k, _)| k)) };
+    let it = if want_keys {
+        unsafe { sp_string_snapshot_iterator(cx, pairs.iter().map(|(k, _)| k)) }
+    } else {
+        unsafe { sp_string_snapshot_iterator(cx, pairs.iter().map(|(_, v)| v)) }
+    };
     args.rval().set(if it.is_null() {
         UndefinedValue()
     } else {
@@ -2468,24 +2487,16 @@ unsafe extern "C" fn sp_keys(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> 
     true
 }
 
+/// keys() — iterator over pair names in list order (duplicates included).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_keys(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    sp_projection_iter(cx, _argc, vp, true)
+}
+
 /// values() — iterator over pair values in list order.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn sp_values(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
-        Some(p) => p,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
-    };
-    let it = unsafe { sp_string_snapshot_iterator(cx, pairs.iter().map(|(_, v)| v)) };
-    args.rval().set(if it.is_null() {
-        UndefinedValue()
-    } else {
-        ObjectValue(it)
-    });
-    true
+    sp_projection_iter(cx, _argc, vp, false)
 }
 
 /// entries() — iterator over [name, value] pairs in list order.

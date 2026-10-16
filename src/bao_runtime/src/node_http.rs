@@ -1904,6 +1904,93 @@ unsafe fn get_uws_res(
     ptr_val.to_private() as *mut bun_uws_sys::response::c::uws_res
 }
 
+/// Extract the writeHead status code and record it as `statusCode` on the res
+/// object (end() reads it as the default). Returns `None` when the argument
+/// is missing or not an int32 — the whole writeHead is then a no-op (h1
+/// parity: only an integer status drives the wire).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn res_write_head_status(
+    cx: *mut JSContext,
+    this_obj: *mut JSObject,
+    v: mozjs::jsval::JSVal,
+) -> Option<i32> {
+    if !v.is_int32() {
+        return None;
+    }
+    let status = v.to_int32();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = this_obj);
+    rooted!(&in(cx_ref) let v_root = v);
+    JS_SetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"statusCode".as_ptr(),
+        v_root.handle().into(),
+    );
+    Some(status)
+}
+
+/// Write an h1 writeHead headers object to the uWS response: per own string
+/// property, Get → if string, lowercase the name and `write_header`. No-op
+/// for non-objects and for a null uWS res.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn res_write_head_headers(
+    cx: *mut JSContext,
+    obj: *mut JSObject,
+    hdrs_val: mozjs::jsval::JSVal,
+) {
+    if !hdrs_val.is_object() {
+        return;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+    rooted!(&in(cx_ref) let hdrs_obj = hdrs_val.to_object());
+    let uws_res = get_uws_res(cx, obj);
+    if uws_res.is_null() {
+        return;
+    }
+    let res_mut = Response::<false>::cast_res(uws_res);
+    // Iterate ALL properties of the headers object via IdVector + GetPropertyKeys.
+    let mut ids = mozjs::rust::IdVector::new(cx_ref);
+    if !w2::GetPropertyKeys(
+        cx_ref,
+        hdrs_obj.handle().into(),
+        JSITER_OWNONLY as u32,
+        ids.handle_mut(),
+    ) {
+        return;
+    }
+    for jsid in &*ids {
+        if !jsid.is_string() {
+            continue;
+        }
+        let key_str = jsid.to_string();
+        let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+            NonNull::new_unchecked(key_str),
+        );
+        let mut hv = UndefinedValue();
+        let c_key = ZBox::from_bytes(key.as_bytes());
+        JS_GetProperty(
+            cx,
+            hdrs_obj.handle().into(),
+            c_key.as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut hv,
+            },
+        );
+        if hv.is_string() {
+            let val = crate::js_to_rust_string(cx, hv);
+            // Convert header name to lowercase for uWS.
+            let key_lower = key.to_ascii_lowercase();
+            let c_val = ZBox::from_bytes(val.as_bytes());
+            (*res_mut).write_header(key_lower.as_bytes(), c_val.as_bytes());
+        }
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn res_write_head(
     cx: *mut JSContext,
@@ -1916,19 +2003,11 @@ unsafe extern "C" fn res_write_head(
     let cx_ref = &mut wrapped_cx;
 
     if argc > 0 {
-        let v = *args.get(0).ptr;
-        if v.is_int32() {
-            let status = v.to_int32();
-            let this = args.thisv();
-            rooted!(&in(cx_ref) let obj = this.to_object());
-            rooted!(&in(cx_ref) let v_root = v);
-            JS_SetProperty(
-                cx,
-                obj.handle().into(),
-                c"statusCode".as_ptr(),
-                v_root.handle().into(),
-            );
-
+        // Only an integer status arg records statusCode and drives the wire
+        // (see res_write_head_status); headers follow the same boolean.
+        let this = args.thisv();
+        rooted!(&in(cx_ref) let obj = this.to_object());
+        if let Some(status) = res_write_head_status(cx, obj.get(), *args.get(0).ptr) {
             // Write status to uWS Response.
             let uws_res = get_uws_res(cx, obj.get());
             if !uws_res.is_null() {
@@ -1939,50 +2018,7 @@ unsafe extern "C" fn res_write_head(
 
             // Write headers if arg[1] is an object.
             if argc > 1 {
-                let hdrs_val = *args.get(1).ptr;
-                if hdrs_val.is_object() {
-                    rooted!(&in(cx_ref) let hdrs_obj = hdrs_val.to_object());
-                    let uws_res = get_uws_res(cx, obj.get());
-                    if !uws_res.is_null() {
-                        let res_mut = Response::<false>::cast_res(uws_res);
-                        // Iterate ALL properties of the headers object via IdVector + GetPropertyKeys.
-                        let mut ids = mozjs::rust::IdVector::new(cx_ref);
-                        if w2::GetPropertyKeys(
-                            cx_ref,
-                            hdrs_obj.handle().into(),
-                            JSITER_OWNONLY as u32,
-                            ids.handle_mut(),
-                        ) {
-                            for jsid in &*ids {
-                                if !jsid.is_string() {
-                                    continue;
-                                }
-                                let key_str = jsid.to_string();
-                                let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
-                                    NonNull::new_unchecked(key_str),
-                                );
-                                let mut hv = UndefinedValue();
-                                let c_key = ZBox::from_bytes(key.as_bytes());
-                                JS_GetProperty(
-                                    cx,
-                                    hdrs_obj.handle().into(),
-                                    c_key.as_ptr(),
-                                    MutableHandle::<Value> {
-                                        _phantom_0: ::std::marker::PhantomData,
-                                        ptr: &mut hv,
-                                    },
-                                );
-                                if hv.is_string() {
-                                    let val = crate::js_to_rust_string(cx, hv);
-                                    // Convert header name to lowercase for uWS.
-                                    let key_lower = key.to_ascii_lowercase();
-                                    let c_val = ZBox::from_bytes(val.as_bytes());
-                                    (*res_mut).write_header(key_lower.as_bytes(), c_val.as_bytes());
-                                }
-                            }
-                        }
-                    }
-                }
+                res_write_head_headers(cx, obj.get(), *args.get(1).ptr);
             }
         }
     }

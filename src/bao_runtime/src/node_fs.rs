@@ -4234,8 +4234,24 @@ unsafe extern "C" fn fs_chown(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     }
 }
 
+/// Shared fd-lifecycle syscall core: `close`/`fsync` run the same
+/// fd-extraction + error delivery and differ only in the syscall
+/// (unix-only; the non-unix faces short-circuit to undefined exactly as
+/// before). REQ-ARCH-1 duplicate convergence.
+#[cfg(unix)]
+unsafe fn fd_void_syscall(op: &str, fd: i32) -> i32 {
+    if op == "close" {
+        unsafe { libc::close(fd) }
+    } else {
+        unsafe { libc::fsync(fd) }
+    }
+}
+
+/// Shared async fd-void op core (`close`/`fsync`): identical arg extraction,
+/// async spawn and sync-fallback delivery; the two faces differ only in the
+/// op label and the syscall (REQ-ARCH-1 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn fs_close(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe fn fs_fd_void_op(cx: *mut JSContext, argc: u32, vp: *mut JSVal, op: &'static str) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let fd_val = if argc > 0 {
         *args.get(0).ptr
@@ -4249,42 +4265,35 @@ unsafe extern "C" fn fs_close(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     };
 
     if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 1) {
-        spawn_fs_async(
-            cx,
-            "close",
-            format!("fd:{}", fd),
-            callback,
-            None,
-            move || {
-                #[cfg(unix)]
-                {
-                    let rv = unsafe { libc::close(fd) };
-                    if rv == 0 {
-                        Ok(FsAsyncResult::OkVoid)
-                    } else {
-                        Err(::std::io::Error::last_os_error())
-                    }
-                }
-                #[cfg(not(unix))]
-                {
+        spawn_fs_async(cx, op, format!("fd:{}", fd), callback, None, move || {
+            #[cfg(unix)]
+            {
+                let rv = fd_void_syscall(op, fd);
+                if rv == 0 {
                     Ok(FsAsyncResult::OkVoid)
+                } else {
+                    Err(::std::io::Error::last_os_error())
                 }
-            },
-        );
+            }
+            #[cfg(not(unix))]
+            {
+                Ok(FsAsyncResult::OkVoid)
+            }
+        });
         args.rval().set(UndefinedValue());
         return true;
     }
 
     #[cfg(unix)]
     {
-        let rv = unsafe { libc::close(fd) };
+        let rv = fd_void_syscall(op, fd);
         if rv == 0 {
             args.rval().set(UndefinedValue());
             true
         } else {
             throw_fs_error(
                 cx,
-                "close",
+                op,
                 &format!("fd:{}", fd),
                 &::std::io::Error::last_os_error(),
             )
@@ -4295,6 +4304,16 @@ unsafe extern "C" fn fs_close(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         args.rval().set(UndefinedValue());
         true
     }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_close(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    fs_fd_void_op(cx, argc, vp, "close")
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_fsync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    fs_fd_void_op(cx, argc, vp, "fsync")
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -4613,69 +4632,6 @@ unsafe extern "C" fn fs_fstat(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             throw_fs_error(
                 cx,
                 "fstat",
-                &format!("fd:{}", fd),
-                &::std::io::Error::last_os_error(),
-            )
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        args.rval().set(UndefinedValue());
-        true
-    }
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn fs_fsync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let fd_val = if argc > 0 {
-        *args.get(0).ptr
-    } else {
-        UndefinedValue()
-    };
-    let fd = if fd_val.is_int32() {
-        fd_val.to_int32()
-    } else {
-        -1
-    };
-
-    if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 1) {
-        spawn_fs_async(
-            cx,
-            "fsync",
-            format!("fd:{}", fd),
-            callback,
-            None,
-            move || {
-                #[cfg(unix)]
-                {
-                    let rv = unsafe { libc::fsync(fd) };
-                    if rv == 0 {
-                        Ok(FsAsyncResult::OkVoid)
-                    } else {
-                        Err(::std::io::Error::last_os_error())
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    Ok(FsAsyncResult::OkVoid)
-                }
-            },
-        );
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    #[cfg(unix)]
-    {
-        let rv = unsafe { libc::fsync(fd) };
-        if rv == 0 {
-            args.rval().set(UndefinedValue());
-            true
-        } else {
-            throw_fs_error(
-                cx,
-                "fsync",
                 &format!("fd:{}", fd),
                 &::std::io::Error::last_os_error(),
             )
@@ -7328,8 +7284,16 @@ unsafe extern "C" fn fs_open_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     }
 }
 
+/// Shared sync fd-void op core (`closeSync`/`fsyncSync`): identical arg
+/// extraction + error delivery; the two faces differ only in the op label
+/// and the syscall (REQ-ARCH-1 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn fs_close_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe fn fs_fd_void_sync_op(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+    op: &'static str,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let fd_val = if argc > 0 {
         *args.get(0).ptr
@@ -7343,14 +7307,14 @@ unsafe extern "C" fn fs_close_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     };
     #[cfg(unix)]
     {
-        let rv = unsafe { libc::close(fd) };
+        let rv = fd_void_syscall(op, fd);
         if rv == 0 {
             args.rval().set(UndefinedValue());
             true
         } else {
             throw_fs_error(
                 cx,
-                "closeSync",
+                &format!("{}Sync", op),
                 &format!("fd:{}", fd),
                 &::std::io::Error::last_os_error(),
             )
@@ -7361,6 +7325,11 @@ unsafe extern "C" fn fs_close_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         args.rval().set(UndefinedValue());
         true
     }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_close_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    fs_fd_void_sync_op(cx, argc, vp, "close")
 }
 
 // BCE-20260816-FS-READSYNC — the old implementation ignored the caller's
@@ -7811,37 +7780,7 @@ unsafe extern "C" fn fs_fdatasync_sync(cx: *mut JSContext, argc: u32, vp: *mut J
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn fs_fsync_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let fd_val = if argc > 0 {
-        *args.get(0).ptr
-    } else {
-        UndefinedValue()
-    };
-    let fd = if fd_val.is_int32() {
-        fd_val.to_int32()
-    } else {
-        -1
-    };
-    #[cfg(unix)]
-    {
-        let rv = unsafe { libc::fsync(fd) };
-        if rv == 0 {
-            args.rval().set(UndefinedValue());
-            true
-        } else {
-            throw_fs_error(
-                cx,
-                "fsyncSync",
-                &format!("fd:{}", fd),
-                &::std::io::Error::last_os_error(),
-            )
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        args.rval().set(UndefinedValue());
-        true
-    }
+    fs_fd_void_sync_op(cx, argc, vp, "fsync")
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -9454,8 +9393,16 @@ unsafe fn get_hidden_bool(cx: *mut JSContext, obj: *mut JSObject, prop: &str) ->
     val.to_boolean()
 }
 
+/// Shared `Stats.prototype.isXxx()` core: identical receiver plumbing; the
+/// seven faces differ only in which hidden boolean slot they read
+/// (REQ-ARCH-1 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn stats_is_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe fn stats_hidden_bool_getter(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+    prop: &'static str,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
@@ -9464,24 +9411,19 @@ unsafe extern "C" fn stats_is_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(
         cx,
         this.get(),
-        "_isFile",
+        prop,
     )));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn stats_is_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    stats_hidden_bool_getter(cx, argc, vp, "_isFile")
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn stats_is_directory(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let mut wrapped_cx =
-        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let this = args.thisv().to_object());
-    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(
-        cx,
-        this.get(),
-        "_isDirectory",
-    )));
-    true
+    stats_hidden_bool_getter(cx, argc, vp, "_isDirectory")
 }
 // --- FileHandle class for fs/promises ---
 //
@@ -10460,17 +10402,7 @@ unsafe extern "C" fn fh_write_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn stats_is_block_device(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let mut wrapped_cx =
-        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let this = args.thisv().to_object());
-    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(
-        cx,
-        this.get(),
-        "_isBlockDevice",
-    )));
-    true
+    stats_hidden_bool_getter(cx, argc, vp, "_isBlockDevice")
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -10479,88 +10411,55 @@ unsafe extern "C" fn stats_is_character_device(
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let mut wrapped_cx =
-        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let this = args.thisv().to_object());
-    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(
-        cx,
-        this.get(),
-        "_isCharacterDevice",
-    )));
-    true
+    stats_hidden_bool_getter(cx, argc, vp, "_isCharacterDevice")
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn stats_is_fifo(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let mut wrapped_cx =
-        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let this = args.thisv().to_object());
-    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(
-        cx,
-        this.get(),
-        "_isFIFO",
-    )));
-    true
+    stats_hidden_bool_getter(cx, argc, vp, "_isFIFO")
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn stats_is_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let mut wrapped_cx =
-        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let this = args.thisv().to_object());
-    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(
-        cx,
-        this.get(),
-        "_isSocket",
-    )));
-    true
+    stats_hidden_bool_getter(cx, argc, vp, "_isSocket")
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn stats_is_symlink(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let mut wrapped_cx =
-        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let this = args.thisv().to_object());
-    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(
-        cx,
-        this.get(),
-        "_isSymbolicLink",
-    )));
-    true
+    stats_hidden_bool_getter(cx, argc, vp, "_isSymbolicLink")
 }
 
 // --- Dirent type methods ---
 
+/// Shared `Dirent.prototype.isXxx()` core: identical receiver plumbing; the
+/// three faces differ only in the hidden `_typeCode` value they compare
+/// against (0=file, 1=directory, 2=symbolic link) (REQ-ARCH-1 duplicate
+/// convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn dirent_is_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe fn dirent_type_code_getter(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+    expected: i32,
+) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let this = args.thisv().to_object());
     let type_code = get_hidden_int(cx, this.get(), "_typeCode");
-    args.rval().set(mozjs::jsval::BooleanValue(type_code == 0));
+    args.rval().set(mozjs::jsval::BooleanValue(type_code == expected));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dirent_is_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    dirent_type_code_getter(cx, argc, vp, 0)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dirent_is_directory(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let mut wrapped_cx =
-        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let this = args.thisv().to_object());
-    let type_code = get_hidden_int(cx, this.get(), "_typeCode");
-    args.rval().set(mozjs::jsval::BooleanValue(type_code == 1));
-    true
+    dirent_type_code_getter(cx, argc, vp, 1)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -10569,14 +10468,7 @@ unsafe extern "C" fn dirent_is_symbolic_link(
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let mut wrapped_cx =
-        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let this = args.thisv().to_object());
-    let type_code = get_hidden_int(cx, this.get(), "_typeCode");
-    args.rval().set(mozjs::jsval::BooleanValue(type_code == 2));
-    true
+    dirent_type_code_getter(cx, argc, vp, 2)
 }
 
 macro_rules! dirent_type_method {

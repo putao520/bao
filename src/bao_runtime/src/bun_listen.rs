@@ -57,10 +57,15 @@ fn get_loop() -> *mut Loop {
 
 // ──────────────────── Shared JS helpers ────────────────────
 
+// The three JS-plumbing helpers below (`extract_js_callback` /
+// `cleanup_gc_key` / `build_sockaddr`) are the crate-wide single source for
+// the listen/connect/udpSocket faces — bun_udp imports them (REQ-ARCH-1
+// duplicate convergence; they were byte-identical copies).
+
 /// Extract a JS function callback from a property on a JS object.
 /// Returns `None` if the property is missing or not a function.
 /// @trace REQ-BAO-API-017 [api:Bun.listen/connect/udpSocket]
-fn extract_js_callback(
+pub(crate) fn extract_js_callback(
     cx: *mut JSContext,
     obj_h: Handle<*mut JSObject>,
     prop: &str,
@@ -3516,7 +3521,7 @@ unsafe fn write_response_object(
 }
 
 /// Build a sockaddr_storage from host:port. Returns 0 on failure.
-fn build_sockaddr(host: &str, port: u16, storage: &mut sockaddr_storage) -> usize {
+pub(crate) fn build_sockaddr(host: &str, port: u16, storage: &mut sockaddr_storage) -> usize {
     let addr: ::std::net::SocketAddr = match host.parse() {
         Ok(a) => a,
         Err(_) => match format!("{}:{}", host, port).parse() {
@@ -3578,7 +3583,11 @@ fn build_sockaddr(host: &str, port: u16, storage: &mut sockaddr_storage) -> usiz
 }
 
 /// Clean up a GcStore key stored as a JS property on an object.
-unsafe fn cleanup_gc_key(cx: *mut JSContext, obj_h: Handle<*mut JSObject>, prop: *const i8) {
+pub(crate) unsafe fn cleanup_gc_key(
+    cx: *mut JSContext,
+    obj_h: Handle<*mut JSObject>,
+    prop: *const i8,
+) {
     let mut val = UndefinedValue();
     JS_GetProperty(
         cx,

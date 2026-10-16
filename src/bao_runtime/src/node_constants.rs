@@ -455,8 +455,10 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 }
 
 /// Define an integer property on a JS object (enumerable).
+// Crate-wide single source (node_http2 imports this; REQ-ARCH-1 duplicate
+// convergence — the two copies were byte-identical).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn define_int_prop(
+pub(crate) unsafe fn define_int_prop(
     cx: &mut mozjs::context::JSContext,
     obj_ptr: *mut JSObject,
     name: &str,

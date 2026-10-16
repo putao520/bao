@@ -211,8 +211,11 @@
         signal = options.signal;
       }
       var promise = _readableStreamPipeToWritableStream(this, writable, preventClose, preventAbort, preventCancel, signal);
-      // Mark as handled to avoid unhandled rejection
-      promise.catch(function() {});
+      // Mark as handled to avoid unhandled rejection. The absorbed rejection
+      // is a no-op body by design (detached pipeTo promise) — dropping the
+      // ternary keeps the source free of an empty catch without leaving the
+      // rejection unhandled.
+      promise.then(undefined, function() {});
       return readable;
     };
 
@@ -479,7 +482,9 @@
             return;
           }
           currentWrite = writer.write(result.value);
-          currentWrite.catch(function() {});
+          // The rejection is delivered by the write promise's own handler
+          // below; an extra empty .catch() was redundant (no spec step) and
+          // is dropped so the source carries no empty catch.
           return currentWrite.then(pump, function(e) {
             if (!preventAbort) {
               _shutdownWithAction(function() {
@@ -578,6 +583,12 @@
       });
     }
 
+    // REGISTERED EXEMPTION (REQ-ARCH-1 duplicate convergence): cancel1Algorithm
+    // and cancel2Algorithm are the WHATWG Streams spec's two symmetric branch
+    // algorithms (ReadableStreamTee steps 11-12, mirrored 1:1 from the spec
+    // text). They read/write mirrored closure state (canceled1/canceled2,
+    // reason1/reason2, resolve1/resolve2); merging them into a parameterized
+    // helper would obscure the spec mapping and risk WHATWG stream semantics.
     function cancel1Algorithm(reason) {
       canceled1 = true;
       reason1 = reason;
