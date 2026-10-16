@@ -24,7 +24,7 @@ parking_lot = {version = "0.12", features = ["serde"]}
 profile_traits = {package = "bao-servo-profile-traits", path = "../../shared/profile", version = ">=0.5.16, <0.6.0"}
 read-fonts = {version = "0.43.3"}
 serde = {version = "1.0.228"}
-servo_arc = {version = "=0.5.0", features = ["servo"]}
+servo_arc = {version = "=0.5.0", package = "bao-servo-arc", path = "../../../../servo_arc", features = ["servo"]}
 servo-base = {package = "bao-servo-base", path = "../../shared/base", version = ">=0.5.17, <0.6.0"}
 servo-url = {package = "bao-servo-url", path = "../../url", version = ">=0.5.9, <0.6.0"}
 style = {package = "bao-stylo", path = "../../../../stylo", version = ">=0.22.0, <0.23.0"}

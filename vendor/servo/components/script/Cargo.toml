@@ -180,7 +180,7 @@ script_traits = {package = "bao-servo-script-traits", path = "../shared/script",
 # (0cb50925b) by path — NOT via [patch.crates-io]: 0cb50925b has breaking API
 # changes (Element gains a Copy bound) and lol_html depends on the registry
 # crate, which must stay on the registry node.
-selectors = {version = "=0.41.0", path = "../../../selectors"}
+selectors = {version = "=0.41.0", path = "../../../selectors", package = "bao-selectors"}
 serde = {version = "1.0.228", features = ["derive"]}
 serde_json = {version = "1.0", features = ["preserve_order"]}
 background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../shared/background_hang_monitor", version = ">=0.5.16, <0.6.0"}
@@ -194,7 +194,7 @@ servo-media = {package = "bao-servo-media", path = "../media/servo-media", versi
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = ">=0.5.2, <0.6.0"}
 servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
 servo-webvtt = {package = "bao-servo-webvtt", path = "../webvtt", version = ">=0.5.7, <0.6.0"}
-servo_arc = {version = "=0.5.0", features = ["servo"]}
+servo_arc = {version = "=0.5.0", package = "bao-servo-arc", path = "../../../servo_arc", features = ["servo"]}
 sha1 = {version = "0.11", optional = true}
 sha2 = {version = "0.11", optional = true}
 sha3 = {version = "0.12", optional = true}
@@ -203,10 +203,10 @@ sponge-cursor = {version = "0.1", optional = true}
 storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = ">=0.5.16, <0.6.0"}
 strum = {version = "0.28", features = ["derive"]}
 style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
-stylo_atoms = {version = "=0.22.0"}
-stylo_dom = {version = "=0.22.0"}
-stylo_malloc_size_of = {version = "=0.22.0"}
-stylo_traits = {version = "=0.22.0"}
+stylo_atoms = {version = "=0.22.0", package = "bao-stylo-atoms", path = "../../../stylo_atoms"}
+stylo_dom = {version = "=0.22.0", package = "bao-stylo-dom", path = "../../../stylo_dom"}
+stylo_malloc_size_of = {version = "=0.22.0", package = "bao-stylo-malloc-size-of", path = "../../../stylo_malloc_size_of"}
+style_traits = {version = "=0.22.0", package = "bao-stylo-traits", path = "../../../stylo_traits"}
 swapper = {version = "0.1"}
 tempfile = {version = "3"}
 tendril = {version = "0.5", features = ["encoding_rs"]}

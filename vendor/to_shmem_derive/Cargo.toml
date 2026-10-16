@@ -9,7 +9,7 @@
 # sub-workspace (single-compile-universe ruling).
 # Upstream sync: re-copy from the monorepo rev servo pins, redo inlining.
 [package]
-name = "to_shmem_derive"
+name = "bao-to-shmem-derive"
 version = "0.2.0"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"

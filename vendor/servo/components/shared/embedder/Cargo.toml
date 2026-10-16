@@ -38,7 +38,7 @@ servo-geometry = {package = "bao-servo-geometry", path = "../../geometry", versi
 servo-url = {package = "bao-servo-url", path = "../../url", version = ">=0.5.9, <0.6.0"}
 strum = {version = "0.28", features = ["derive"]}
 style = {package = "bao-stylo", path = "../../../../stylo", version = ">=0.22.0, <0.23.0"}
-stylo_traits = {version = "=0.22.0"}
+style_traits = {version = "=0.22.0", package = "bao-stylo-traits", path = "../../../../stylo_traits"}
 url = {version = "2.5"}
 uuid = {version = "1.23.3", features = ["v4", "v5"]}
 webdriver = {version = "0.54.0"}

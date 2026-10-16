@@ -47,7 +47,7 @@ servo-constellation-traits = {package = "bao-servo-constellation-traits", path =
 servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = ">=0.5.9, <0.6.0"}
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = ">=0.5.2, <0.6.0"}
 smallvec = {version = "1.15", features = ["serde", "union"]}
-stylo_traits = {version = "=0.22.0"}
+style_traits = {version = "=0.22.0", package = "bao-stylo-traits", path = "../../../stylo_traits"}
 surfman = {version = "0.14.0"}
 timers = {package = "bao-servo-timers", path = "../timers", version = ">=0.5.9, <0.6.0"}
 tracing = {version = "0.1.44", optional = true}

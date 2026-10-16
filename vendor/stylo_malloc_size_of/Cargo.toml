@@ -9,7 +9,7 @@
 # sub-workspace (single-compile-universe ruling).
 # Upstream sync: re-copy from the monorepo rev servo pins, redo inlining.
 [package]
-name = "stylo_malloc_size_of"
+name = "bao-stylo-malloc-size-of"
 version = "0.22.0"
 authors = ["The Servo Project Developers"]
 license = "MIT OR Apache-2.0"
@@ -30,8 +30,8 @@ cssparser = "0.38"
 euclid = "0.22"
 hashbrown = "0.17"
 parking_lot = "0.12"
-selectors = { version = "0.41.0", path = "../selectors" }
-servo_arc = { version = "0.5.0", path = "../servo_arc" }
+selectors = { version = "0.41.0", path = "../selectors", package = "bao-selectors" }
+servo_arc = { version = "0.5.0", path = "../servo_arc", package = "bao-servo-arc" }
 smallbitvec = "2.3.0"
 smallvec = "1.13"
 string_cache = { version = "0.11", optional = true }

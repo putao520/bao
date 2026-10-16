@@ -55,11 +55,11 @@ servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=
 servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = ">=0.5.2, <0.6.0"}
 servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
-servo_arc = {version = "=0.5.0", features = ["servo"]}
+servo_arc = {version = "=0.5.0", package = "bao-servo-arc", path = "../../../servo_arc", features = ["servo"]}
 skrifa = {version = "0.46.2"}
 smallvec = {version = "1.15", features = ["serde", "union"]}
 style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
-stylo_atoms = {version = "=0.22.0"}
+stylo_atoms = {version = "=0.22.0", package = "bao-stylo-atoms", path = "../../../stylo_atoms"}
 tracing = {version = "0.1.44", optional = true}
 unicode-properties = {version = "0.1.4", features = ["emoji"]}
 unicode-script = {version = "0.5"}

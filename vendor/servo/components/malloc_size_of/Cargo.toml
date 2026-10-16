@@ -34,12 +34,12 @@ once_cell = {version = "1.21.4"}
 parking_lot = {version = "0.12", features = ["serde"]}
 resvg = {version = "0.48.1"}
 servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = ">=0.5.2, <0.6.0"}
-servo_arc = {version = "=0.5.0", features = ["servo"]}
+servo_arc = {version = "=0.5.0", package = "bao-servo-arc", path = "../../../servo_arc", features = ["servo"]}
 smallvec = {version = "1.15", features = ["serde", "union"]}
 string_cache = {version = "0.11"}
 style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
-stylo_dom = {version = "=0.22.0"}
-stylo_malloc_size_of = {version = "=0.22.0"}
+stylo_dom = {version = "=0.22.0", package = "bao-stylo-dom", path = "../../../stylo_dom"}
+stylo_malloc_size_of = {version = "=0.22.0", package = "bao-stylo-malloc-size-of", path = "../../../stylo_malloc_size_of"}
 taffy = {version = "0.14.0", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"]}
 tendril = {version = "0.5", features = ["encoding_rs"]}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}

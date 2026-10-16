@@ -44,8 +44,8 @@ servo-constellation-traits = {package = "bao-servo-constellation-traits", path =
 servo-url = {package = "bao-servo-url", path = "../../url", version = ">=0.5.9, <0.6.0"}
 storage_traits = {package = "bao-servo-storage-traits", path = "../../shared/storage", version = ">=0.5.16, <0.6.0"}
 strum = {version = "0.28", features = ["derive"]}
-stylo_atoms = {version = "=0.22.0"}
-stylo_traits = {version = "=0.22.0"}
+stylo_atoms = {version = "=0.22.0", package = "bao-stylo-atoms", path = "../../../../stylo_atoms"}
+style_traits = {version = "=0.22.0", package = "bao-stylo-traits", path = "../../../../stylo_traits"}
 webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../../shared/webgpu", version = ">=0.5.17, <0.6.0", optional = true}
 webrender_api = {version = "0.70"}
 webxr-api = {package = "bao-servo-webxr-api", path = "../../shared/webxr", version = ">=0.5.15, <0.6.0"}

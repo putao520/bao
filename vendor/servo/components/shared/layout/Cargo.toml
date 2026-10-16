@@ -36,14 +36,14 @@ uuid = {version = "1.23.3", features = ["v4", "v5"]}
 # (0cb50925b) by path — NOT via [patch.crates-io]: 0cb50925b has breaking API
 # changes (Element gains a Copy bound) and lol_html depends on the registry
 # crate, which must stay on the registry node.
-selectors = {version = "=0.41.0", path = "../../../../selectors"}
+selectors = {version = "=0.41.0", path = "../../../../selectors", package = "bao-selectors"}
 serde = {version = "1.0.228"}
 background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../../shared/background_hang_monitor", version = ">=0.5.16, <0.6.0"}
 servo-base = {package = "bao-servo-base", path = "../../shared/base", version = ">=0.5.17, <0.6.0"}
 servo-url = {package = "bao-servo-url", path = "../../url", version = ">=0.5.9, <0.6.0"}
-servo_arc = {version = "=0.5.0", features = ["servo"]}
+servo_arc = {version = "=0.5.0", package = "bao-servo-arc", path = "../../../../servo_arc", features = ["servo"]}
 style = {package = "bao-stylo", path = "../../../../stylo", version = ">=0.22.0, <0.23.0"}
-stylo_traits = {version = "=0.22.0"}
+style_traits = {version = "=0.22.0", package = "bao-stylo-traits", path = "../../../../stylo_traits"}
 webrender_api = {version = "0.70"}
 
 [lints.rust]

@@ -9,7 +9,7 @@
 # sub-workspace (single-compile-universe ruling).
 # Upstream sync: re-copy from the monorepo rev servo pins, redo inlining.
 [package]
-name = "stylo_static_prefs"
+name = "bao-stylo-static-prefs"
 version = "0.22.0"
 authors = ["The Servo Project Developers"]
 documentation = "https://docs.rs/stylo_static_prefs/"

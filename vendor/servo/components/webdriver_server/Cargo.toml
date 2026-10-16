@@ -29,7 +29,7 @@ servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=
 servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
 servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = ">=0.5.9, <0.6.0"}
 servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
-stylo_traits = {version = "=0.22.0"}
+style_traits = {version = "=0.22.0", package = "bao-stylo-traits", path = "../../../stylo_traits"}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
 uuid = {version = "1.23.3", features = ["v4", "v5"]}
 webdriver = {version = "0.54.0"}

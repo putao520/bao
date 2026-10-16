@@ -744,6 +744,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao-selectors"
+version = "0.41.0"
+dependencies = [
+ "bao-servo-arc",
+ "bao-to-shmem",
+ "bao-to-shmem-derive",
+ "bitflags 2.11.1",
+ "cssparser 0.38.0",
+ "derive_more",
+ "hashbrown 0.17.1",
+ "log",
+ "new_debug_unreachable",
+ "precomputed-hash",
+ "rustc-hash",
+ "smallvec",
+]
+
+[[package]]
 name = "bao-servo"
 version = "0.5.27"
 dependencies = [
@@ -785,6 +803,7 @@ dependencies = [
  "bao-servo-wakelock",
  "bao-servo-webgl",
  "bao-stylo",
+ "bao-stylo-traits",
  "bitflags 2.11.1",
  "cookie 0.18.1",
  "crossbeam-channel",
@@ -802,7 +821,6 @@ dependencies = [
  "parking_lot",
  "rustc-hash",
  "serde",
- "stylo_traits",
  "surfman",
  "tokio",
  "url",
@@ -818,6 +836,14 @@ dependencies = [
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "bao-servo-arc"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -919,11 +945,11 @@ name = "bao-servo-config"
 version = "0.5.14"
 dependencies = [
  "bao-servo-config-macro",
+ "bao-stylo-static-prefs",
  "num_enum",
  "serde",
  "serde_json",
  "strum 0.28.0",
- "stylo_static_prefs",
 ]
 
 [[package]]
@@ -965,6 +991,7 @@ dependencies = [
  "bao-servo-url",
  "bao-servo-webxr-api",
  "bao-stylo",
+ "bao-stylo-traits",
  "base64 0.23.1",
  "content-security-policy",
  "crossbeam-channel",
@@ -976,7 +1003,6 @@ dependencies = [
  "rand 0.10.2",
  "rustc-hash",
  "serde",
- "stylo_traits",
 ]
 
 [[package]]
@@ -1097,6 +1123,7 @@ dependencies = [
  "bao-servo-pixels",
  "bao-servo-url",
  "bao-stylo",
+ "bao-stylo-traits",
  "bitflags 2.11.1",
  "content-security-policy",
  "cookie 0.18.1",
@@ -1111,7 +1138,6 @@ dependencies = [
  "rustc-hash",
  "serde",
  "strum 0.28.0",
- "stylo_traits",
  "url",
  "uuid",
  "webdriver",
@@ -1125,6 +1151,7 @@ dependencies = [
  "app_units",
  "atomic_refcell",
  "bao-servo-allocator",
+ "bao-servo-arc",
  "bao-servo-base",
  "bao-servo-config",
  "bao-servo-fonts-traits",
@@ -1135,6 +1162,7 @@ dependencies = [
  "bao-servo-tracing",
  "bao-servo-url",
  "bao-stylo",
+ "bao-stylo-atoms",
  "bitflags 2.11.1",
  "byteorder",
  "content-security-policy",
@@ -1162,10 +1190,8 @@ dependencies = [
  "read-fonts 0.43.3",
  "rustc-hash",
  "serde",
- "servo_arc 0.5.0",
  "skrifa 0.46.2",
  "smallvec",
- "stylo_atoms",
  "unicode-properties",
  "unicode-script",
  "url",
@@ -1181,6 +1207,7 @@ name = "bao-servo-fonts-traits"
 version = "0.5.19"
 dependencies = [
  "atomic_refcell",
+ "bao-servo-arc",
  "bao-servo-base",
  "bao-servo-malloc-size-of",
  "bao-servo-profile-traits",
@@ -1195,7 +1222,6 @@ dependencies = [
  "parking_lot",
  "read-fonts 0.43.3",
  "serde",
- "servo_arc 0.5.0",
  "uuid",
  "webrender_api",
 ]
@@ -1242,6 +1268,8 @@ dependencies = [
  "app_units",
  "arrayvec",
  "atomic_refcell",
+ "bao-selectors",
+ "bao-servo-arc",
  "bao-servo-base",
  "bao-servo-config",
  "bao-servo-embedder-traits",
@@ -1259,6 +1287,8 @@ dependencies = [
  "bao-servo-tracing",
  "bao-servo-url",
  "bao-stylo",
+ "bao-stylo-atoms",
+ "bao-stylo-traits",
  "bitflags 2.11.1",
  "data-url",
  "euclid",
@@ -1276,13 +1306,9 @@ dependencies = [
  "phf 0.14.0",
  "rayon",
  "rustc-hash",
- "selectors 0.41.0",
  "serde",
- "servo_arc 0.5.0",
  "smallvec",
  "strum 0.28.0",
- "stylo_atoms",
- "stylo_traits",
  "taffy",
  "unicode-bidi",
  "unicode-script",
@@ -1300,6 +1326,8 @@ dependencies = [
  "accesskit",
  "app_units",
  "atomic_refcell",
+ "bao-selectors",
+ "bao-servo-arc",
  "bao-servo-background-hang-monitor-api",
  "bao-servo-base",
  "bao-servo-embedder-traits",
@@ -1312,6 +1340,7 @@ dependencies = [
  "bao-servo-script-traits",
  "bao-servo-url",
  "bao-stylo",
+ "bao-stylo-traits",
  "bitflags 2.11.1",
  "euclid",
  "html5ever",
@@ -1319,10 +1348,7 @@ dependencies = [
  "malloc_size_of_derive",
  "parking_lot",
  "rustc-hash",
- "selectors 0.41.0",
  "serde",
- "servo_arc 0.5.0",
- "stylo_traits",
  "uuid",
  "webrender_api",
 ]
@@ -1335,7 +1361,10 @@ dependencies = [
  "atomic_refcell",
  "bao-ipc-channel",
  "bao-servo-allocator",
+ "bao-servo-arc",
  "bao-stylo",
+ "bao-stylo-dom",
+ "bao-stylo-malloc-size-of",
  "bytes",
  "content-security-policy",
  "cookie 0.18.1",
@@ -1353,11 +1382,8 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "resvg",
- "servo_arc 0.5.0",
  "smallvec",
  "string_cache",
- "stylo_dom",
- "stylo_malloc_size_of",
  "taffy",
  "tendril",
  "time",
@@ -1598,6 +1624,7 @@ dependencies = [
  "async-tungstenite",
  "aws-lc-rs",
  "bao-ipc-channel",
+ "bao-servo-arc",
  "bao-servo-base",
  "bao-servo-config",
  "bao-servo-devtools-traits",
@@ -1658,7 +1685,6 @@ dependencies = [
  "sea-query",
  "sea-query-rusqlite",
  "serde",
- "servo_arc 0.5.0",
  "smallvec",
  "tempfile",
  "time",
@@ -1679,6 +1705,7 @@ name = "bao-servo-net-traits"
 version = "0.5.18"
 dependencies = [
  "bao-ipc-channel",
+ "bao-servo-arc",
  "bao-servo-base",
  "bao-servo-config",
  "bao-servo-embedder-traits",
@@ -1711,7 +1738,6 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_with",
- "servo_arc 0.5.0",
  "sys-locale",
  "tokio",
  "url",
@@ -1737,6 +1763,7 @@ dependencies = [
  "bao-servo-timers",
  "bao-servo-tracing",
  "bao-servo-webgl",
+ "bao-stylo-traits",
  "bitflags 2.11.1",
  "crossbeam-channel",
  "dpi",
@@ -1747,7 +1774,6 @@ dependencies = [
  "rayon",
  "rustc-hash",
  "smallvec",
- "stylo_traits",
  "surfman",
  "webrender",
  "webrender_api",
@@ -1766,6 +1792,7 @@ dependencies = [
  "bao-servo-tracing",
  "bao-servo-url",
  "bao-stylo",
+ "bao-stylo-traits",
  "bitflags 2.11.1",
  "crossbeam-channel",
  "dpi",
@@ -1782,7 +1809,6 @@ dependencies = [
  "serde_bytes",
  "smallvec",
  "strum 0.28.0",
- "stylo_traits",
  "surfman",
  "webrender_api",
 ]
@@ -1849,6 +1875,8 @@ dependencies = [
  "backtrace",
  "bao-ipc-channel",
  "bao-mozjs",
+ "bao-selectors",
+ "bao-servo-arc",
  "bao-servo-background-hang-monitor-api",
  "bao-servo-base",
  "bao-servo-canvas-traits",
@@ -1881,6 +1909,10 @@ dependencies = [
  "bao-servo-webvtt",
  "bao-servo-xpath",
  "bao-stylo",
+ "bao-stylo-atoms",
+ "bao-stylo-dom",
+ "bao-stylo-malloc-size-of",
+ "bao-stylo-traits",
  "bao_ipc",
  "base64 0.23.1",
  "base64ct",
@@ -1946,20 +1978,14 @@ dependencies = [
  "resvg",
  "rsa",
  "rustc-hash",
- "selectors 0.41.0",
  "serde",
  "serde_json",
- "servo_arc 0.5.0",
  "sha1 0.11.0",
  "sha2 0.11.0",
  "sha3 0.12.0",
  "smallvec",
  "sponge-cursor",
  "strum 0.28.0",
- "stylo_atoms",
- "stylo_dom",
- "stylo_malloc_size_of",
- "stylo_traits",
  "svgtypes",
  "swapper",
  "tempfile",
@@ -1986,6 +2012,7 @@ version = "0.5.24"
 dependencies = [
  "atomic_refcell",
  "bao-mozjs",
+ "bao-servo-arc",
  "bao-servo-base",
  "bao-servo-config",
  "bao-servo-constellation-traits",
@@ -1996,6 +2023,7 @@ dependencies = [
  "bao-servo-profile-traits",
  "bao-servo-url",
  "bao-stylo",
+ "bao-stylo-atoms",
  "bitflags 2.11.1",
  "crossbeam-channel",
  "encoding_rs",
@@ -2014,10 +2042,8 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde_json",
- "servo_arc 0.5.0",
  "smallvec",
  "strum 0.28.0",
- "stylo_atoms",
  "tendril",
  "xml5ever",
  "zeroize",
@@ -2044,6 +2070,8 @@ dependencies = [
  "bao-servo-storage-traits",
  "bao-servo-url",
  "bao-servo-webxr-api",
+ "bao-stylo-atoms",
+ "bao-stylo-traits",
  "bitflags 2.11.1",
  "crossbeam-channel",
  "euclid",
@@ -2052,8 +2080,6 @@ dependencies = [
  "rustc-hash",
  "serde",
  "strum 0.28.0",
- "stylo_atoms",
- "stylo_traits",
  "webrender_api",
 ]
 
@@ -2117,11 +2143,11 @@ dependencies = [
 name = "bao-servo-url"
 version = "0.5.11"
 dependencies = [
+ "bao-servo-arc",
  "bao-servo-malloc-size-of",
  "encoding_rs",
  "malloc_size_of_derive",
  "serde",
- "servo_arc 0.5.0",
  "url",
  "uuid",
 ]
@@ -2143,6 +2169,7 @@ dependencies = [
  "bao-servo-embedder-traits",
  "bao-servo-geometry",
  "bao-servo-url",
+ "bao-stylo-traits",
  "base64 0.23.1",
  "cookie 0.18.1",
  "crossbeam-channel",
@@ -2154,7 +2181,6 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde_json",
- "stylo_traits",
  "time",
  "uuid",
  "webdriver",
@@ -2219,12 +2245,21 @@ dependencies = [
 
 [[package]]
 name = "bao-stylo"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "app_units",
  "arrayvec",
  "atomic_refcell",
+ "bao-selectors",
+ "bao-servo-arc",
+ "bao-stylo-atoms",
  "bao-stylo-derive",
+ "bao-stylo-dom",
+ "bao-stylo-malloc-size-of",
+ "bao-stylo-static-prefs",
+ "bao-stylo-traits",
+ "bao-to-shmem",
+ "bao-to-shmem-derive",
  "bitflags 2.11.1",
  "byteorder",
  "cssparser 0.38.0",
@@ -2250,23 +2285,14 @@ dependencies = [
  "rayon",
  "rayon-core",
  "rustc-hash",
- "selectors 0.41.0",
  "serde",
- "servo_arc 0.5.0",
  "smallbitvec",
  "smallvec",
  "static_assertions",
  "string_cache",
  "strum 0.28.0",
  "strum_macros 0.28.0",
- "stylo_atoms",
- "stylo_dom",
- "stylo_malloc_size_of",
- "stylo_static_prefs",
- "stylo_traits",
  "thin-vec",
- "to_shmem",
- "to_shmem_derive",
  "uluru",
  "url",
  "void",
@@ -2275,8 +2301,93 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao-stylo-atoms"
+version = "0.22.0"
+dependencies = [
+ "string_cache",
+ "string_cache_codegen",
+]
+
+[[package]]
 name = "bao-stylo-derive"
 version = "0.22.0"
+dependencies = [
+ "darling 0.20.11",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+ "synstructure 0.13.2",
+]
+
+[[package]]
+name = "bao-stylo-dom"
+version = "0.22.0"
+dependencies = [
+ "bao-stylo-malloc-size-of",
+ "bitflags 2.11.1",
+]
+
+[[package]]
+name = "bao-stylo-malloc-size-of"
+version = "0.22.0"
+dependencies = [
+ "app_units",
+ "bao-selectors",
+ "bao-servo-arc",
+ "cssparser 0.38.0",
+ "euclid",
+ "hashbrown 0.17.1",
+ "parking_lot",
+ "smallbitvec",
+ "smallvec",
+ "string_cache",
+ "thin-vec",
+ "void",
+]
+
+[[package]]
+name = "bao-stylo-static-prefs"
+version = "0.22.0"
+dependencies = [
+ "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
+name = "bao-stylo-traits"
+version = "0.22.0"
+dependencies = [
+ "app_units",
+ "bao-selectors",
+ "bao-servo-arc",
+ "bao-stylo-atoms",
+ "bao-stylo-malloc-size-of",
+ "bao-to-shmem",
+ "bao-to-shmem-derive",
+ "bitflags 2.11.1",
+ "cssparser 0.38.0",
+ "euclid",
+ "malloc_size_of_derive",
+ "serde",
+ "thin-vec",
+ "url",
+]
+
+[[package]]
+name = "bao-to-shmem"
+version = "0.6.0"
+dependencies = [
+ "bao-servo-arc",
+ "cssparser 0.38.0",
+ "hashbrown 0.17.1",
+ "smallbitvec",
+ "smallvec",
+ "string_cache",
+ "thin-vec",
+]
+
+[[package]]
+name = "bao-to-shmem-derive"
+version = "0.2.0"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -3720,7 +3831,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -7963,7 +8074,7 @@ dependencies = [
  "memchr",
  "mime",
  "precomputed-hash",
- "selectors 0.37.0",
+ "selectors",
  "thiserror 2.0.18",
 ]
 
@@ -9950,26 +10061,8 @@ dependencies = [
  "phf_codegen 0.13.1",
  "precomputed-hash",
  "rustc-hash",
- "servo_arc 0.4.3",
+ "servo_arc",
  "smallvec",
-]
-
-[[package]]
-name = "selectors"
-version = "0.41.0"
-dependencies = [
- "bitflags 2.11.1",
- "cssparser 0.38.0",
- "derive_more",
- "hashbrown 0.17.1",
- "log",
- "new_debug_unreachable",
- "precomputed-hash",
- "rustc-hash",
- "servo_arc 0.5.0",
- "smallvec",
- "to_shmem",
- "to_shmem_derive",
 ]
 
 [[package]]
@@ -10117,14 +10210,6 @@ version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "170fb83ab34de17dc69aa7c67482b22218ddb85da56546f9bd6b929e32a05930"
 dependencies = [
- "stable_deref_trait",
-]
-
-[[package]]
-name = "servo_arc"
-version = "0.5.0"
-dependencies = [
- "serde",
  "stable_deref_trait",
 ]
 
@@ -10525,67 +10610,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "stylo_atoms"
-version = "0.22.0"
-dependencies = [
- "string_cache",
- "string_cache_codegen",
-]
-
-[[package]]
-name = "stylo_dom"
-version = "0.22.0"
-dependencies = [
- "bitflags 2.11.1",
- "stylo_malloc_size_of",
-]
-
-[[package]]
-name = "stylo_malloc_size_of"
-version = "0.22.0"
-dependencies = [
- "app_units",
- "cssparser 0.38.0",
- "euclid",
- "hashbrown 0.17.1",
- "parking_lot",
- "selectors 0.41.0",
- "servo_arc 0.5.0",
- "smallbitvec",
- "smallvec",
- "string_cache",
- "thin-vec",
- "void",
-]
-
-[[package]]
-name = "stylo_static_prefs"
-version = "0.22.0"
-dependencies = [
- "toml 1.1.2+spec-1.1.0",
-]
-
-[[package]]
-name = "stylo_traits"
-version = "0.22.0"
-dependencies = [
- "app_units",
- "bitflags 2.11.1",
- "cssparser 0.38.0",
- "euclid",
- "malloc_size_of_derive",
- "selectors 0.41.0",
- "serde",
- "servo_arc 0.5.0",
- "stylo_atoms",
- "stylo_malloc_size_of",
- "thin-vec",
- "to_shmem",
- "to_shmem_derive",
- "url",
 ]
 
 [[package]]
@@ -11258,30 +11282,6 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
-
-[[package]]
-name = "to_shmem"
-version = "0.6.0"
-dependencies = [
- "cssparser 0.38.0",
- "hashbrown 0.17.1",
- "servo_arc 0.5.0",
- "smallbitvec",
- "smallvec",
- "string_cache",
- "thin-vec",
-]
-
-[[package]]
-name = "to_shmem_derive"
-version = "0.2.0"
-dependencies = [
- "darling 0.20.11",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
- "synstructure 0.13.2",
-]
 
 [[package]]
 name = "tokio"

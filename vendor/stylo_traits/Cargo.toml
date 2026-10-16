@@ -9,7 +9,7 @@
 # sub-workspace (single-compile-universe ruling).
 # Upstream sync: re-copy from the monorepo rev servo pins, redo inlining.
 [package]
-name = "stylo_traits"
+name = "bao-stylo-traits"
 version = "0.22.0"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
@@ -31,13 +31,13 @@ app_units = "0.7"
 bitflags = "2"
 cssparser = "0.38"
 euclid = "0.22"
-malloc_size_of = { version = "0.22.0", path = "../stylo_malloc_size_of", package = "stylo_malloc_size_of", features = ["servo"] }
+malloc_size_of = { version = "0.22.0", path = "../stylo_malloc_size_of", package = "bao-stylo-malloc-size-of", features = ["servo"] }
 malloc_size_of_derive = "0.1"
-selectors = { version = "0.41.0", path = "../selectors" }
+selectors = { version = "0.41.0", path = "../selectors", package = "bao-selectors" }
 serde = "1.0"
-servo_arc = { version = "0.5.0", path = "../servo_arc" }
-stylo_atoms = { version = "0.22.0", path = "../stylo_atoms", optional = true }
+servo_arc = { version = "0.5.0", path = "../servo_arc", package = "bao-servo-arc" }
+stylo_atoms = { version = "0.22.0", path = "../stylo_atoms", package = "bao-stylo-atoms", optional = true }
 thin-vec = "0.2"
-to_shmem = { version = "0.6.0", path = "../to_shmem", features = ["servo"] }
-to_shmem_derive = { version = "0.2.0", path = "../to_shmem_derive" }
+to_shmem = { version = "0.6.0", path = "../to_shmem", package = "bao-to-shmem", features = ["servo"] }
+to_shmem_derive = { version = "0.2.0", path = "../to_shmem_derive", package = "bao-to-shmem-derive" }
 url = { version = "2.5", optional = true }

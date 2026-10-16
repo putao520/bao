@@ -9,7 +9,7 @@
 # sub-workspace (single-compile-universe ruling).
 # Upstream sync: re-copy from the monorepo rev servo pins, redo inlining.
 [package]
-name = "selectors"
+name = "bao-selectors"
 version = "0.41.0"
 authors = ["The Servo Project Developers"]
 documentation = "https://docs.rs/selectors/"
@@ -36,8 +36,8 @@ hashbrown = "0.17"
 rustc-hash = "2.1.1"
 log = "0.4"
 precomputed-hash = "0.1"
-servo_arc = { version = "0.5.0", path = "../servo_arc" }
+servo_arc = { version = "0.5.0", path = "../servo_arc", package = "bao-servo-arc" }
 smallvec = "1.0"
-to_shmem = { version = "0.6.0", path = "../to_shmem", features = ["servo"], optional = true }
-to_shmem_derive = { version = "0.2.0", path = "../to_shmem_derive", optional = true }
+to_shmem = { version = "0.6.0", path = "../to_shmem", package = "bao-to-shmem", features = ["servo"], optional = true }
+to_shmem_derive = { version = "0.2.0", path = "../to_shmem_derive", package = "bao-to-shmem-derive", optional = true }
 new_debug_unreachable = "1"

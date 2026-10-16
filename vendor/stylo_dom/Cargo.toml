@@ -9,7 +9,7 @@
 # sub-workspace (single-compile-universe ruling).
 # Upstream sync: re-copy from the monorepo rev servo pins, redo inlining.
 [package]
-name = "stylo_dom"
+name = "bao-stylo-dom"
 version = "0.22.0"
 authors = ["The Servo Project Developers"]
 documentation = "https://docs.rs/stylo_dom/"
@@ -24,4 +24,4 @@ path = "lib.rs"
 
 [dependencies]
 bitflags = "2"
-malloc_size_of = { version = "0.22.0", path = "../stylo_malloc_size_of", package = "stylo_malloc_size_of", features = ["servo"] }
+malloc_size_of = { version = "0.22.0", path = "../stylo_malloc_size_of", package = "bao-stylo-malloc-size-of", features = ["servo"] }

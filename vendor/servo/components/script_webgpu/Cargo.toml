@@ -14,7 +14,7 @@ name = "script_webgpu"
 path = "lib.rs"
 
 [dependencies]
-stylo_atoms = {version = "=0.22.0"}
+stylo_atoms = {version = "=0.22.0", package = "bao-stylo-atoms", path = "../../../stylo_atoms"}
 arrayvec = {version = "0.7"}
 euclid = {version = "0.22"}
 servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = ">=0.5.14, <0.6.0", features = ["webgpu"]}

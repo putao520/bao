@@ -451,29 +451,10 @@ freetype = { path = "vendor/freetype-wrapper" }
 # guard - see vendor/usvg/src/parser/clippath.rs and the CLAUDE.md vendor list.
 usvg = { path = "vendor/usvg" }
 
-# BAO PATCH (REQ-BRW-047 -> e128 2026-10-07): vendored `stylo_atoms`
-# (0.22.0 base). The WebVTT `enter`/`exit`/`cuechange` atoms were natively
-# absorbed upstream by the 0.22.0 atom table; the remaining BAO additions are
-# `processorerror` (AudioWorklet wave) and `updatefound` (SW lifecycle wave).
-# Also carries a build.rs rerun-if-changed patch (fingerprint-rotation
-# staleness). Atoms are append-only (no existing entry is touched).
-stylo_atoms = { path = "vendor/stylo_atoms" }
-
-# BAO PATCH (e128, 2026-10-07, REQ-BRW-002 upstream convergence to the
-# 2026-10-05 boundary): the stylo monorepo crates servo pins in upstream
-# commit 614cd411f ("Upgrade Stylo to 2026-10-01", git pin 0cb50925b) are
-# vendored — crates.io still tops at 0.22.0/0.41.0/0.5.0, so the git
-# snapshot is the absorb form (user ruling 2026-10-07; W3 "fork 1 pkg"
-# superseded for this wave). Versions are unchanged content-forward moves.
-# NOTE: `stylo` itself is NOT patched — it keeps the bao-stylo rename and is
-# wired as a direct path dep in the vendor/servo component manifests
-# (patch entries cannot rename packages). `selectors` is NOT patched either
-# — 0cb50925b has breaking API changes (Element gains a `Copy` bound) and
-# lol_html depends on the registry crate; consumers use path deps instead.
-stylo_dom = { path = "vendor/stylo_dom" }
-stylo_malloc_size_of = { path = "vendor/stylo_malloc_size_of" }
-stylo_static_prefs = { path = "vendor/stylo_static_prefs" }
-stylo_traits = { path = "vendor/stylo_traits" }
-servo_arc = { path = "vendor/servo_arc" }
-to_shmem = { path = "vendor/to_shmem" }
-to_shmem_derive = { path = "vendor/to_shmem_derive" }
+# BAO PATCH (REQ-ARCH-4, 2026-10-16): the upstream-name stylo-family crates
+# (stylo_atoms / stylo_dom / stylo_malloc_size_of / stylo_static_prefs /
+# stylo_traits / servo_arc / to_shmem / to_shmem_derive) are no longer
+# [patch.crates-io]-replaced. They are now renamed to bao-* packages for
+# full-stack publication autonomy (PRD-REQ-FORK-AUTONOMY) and wired as
+# direct path+package deps in each consuming manifest — a [patch] entry
+# cannot rename a package, so the patch form is retired here.

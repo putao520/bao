@@ -42,11 +42,11 @@ servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=
 servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
 servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = ">=0.5.14, <0.6.0"}
 servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
-servo_arc = {version = "=0.5.0", features = ["servo"]}
+servo_arc = {version = "=0.5.0", package = "bao-servo-arc", path = "../../../servo_arc", features = ["servo"]}
 smallvec = {version = "1.15", features = ["serde", "union"]}
 strum = {version = "0.28", features = ["derive"]}
 style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
-stylo_atoms = {version = "=0.22.0"}
+stylo_atoms = {version = "=0.22.0", package = "bao-stylo-atoms", path = "../../../stylo_atoms"}
 tendril = {version = "0.5", features = ["encoding_rs"]}
 tracing = {version = "0.1.44", optional = true}
 webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = ">=0.5.15, <0.6.0", optional = true}

@@ -54,19 +54,19 @@ script_traits = {package = "bao-servo-script-traits", path = "../shared/script",
 # (0cb50925b) by path — NOT via [patch.crates-io]: 0cb50925b has breaking API
 # changes (Element gains a Copy bound) and lol_html depends on the registry
 # crate, which must stay on the registry node.
-selectors = {version = "=0.41.0", path = "../../../selectors"}
+selectors = {version = "=0.41.0", path = "../../../selectors", package = "bao-selectors"}
 serde = {version = "1.0.228"}
 servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
 servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
 servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = ">=0.5.9, <0.6.0"}
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = ">=0.5.2, <0.6.0"}
 servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
-servo_arc = {version = "=0.5.0", features = ["servo"]}
+servo_arc = {version = "=0.5.0", package = "bao-servo-arc", path = "../../../servo_arc", features = ["servo"]}
 smallvec = {version = "1.15", features = ["serde", "union"]}
 strum = {version = "0.28", features = ["derive"]}
 style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
-stylo_atoms = {version = "=0.22.0"}
-stylo_traits = {version = "=0.22.0"}
+stylo_atoms = {version = "=0.22.0", package = "bao-stylo-atoms", path = "../../../stylo_atoms"}
+style_traits = {version = "=0.22.0", package = "bao-stylo-traits", path = "../../../stylo_traits"}
 taffy = {version = "0.14.0", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"]}
 tracing = {version = "0.1.44", optional = true}
 unicode-bidi = {version = "0.3.18"}
