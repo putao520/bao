@@ -301,24 +301,16 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
 
 /// Real fingerprint website evaluation E2E.
 ///
-/// Graceful skip conditions:
-///   1. BAO_TEST_NETWORK != "1" — opt-in for external network access
-///   2. No DISPLAY/WAYLAND_DISPLAY — servo requires a display server
-///   3. BrowserRuntime::new fails — servo init in headless env
-///
-/// All three trigger `eprintln!("[skip] ...") + return`, never fail.
+/// Environment contract (statically declared via `#[ignore]`): requires
+/// external network (real fingerprint sites) + a display server; see the
+/// ignore reason for the Xvfb recipe. `--run-ignored=all` in a provisioned
+/// env executes the full body — runtime-init failure there is a panic, not a
+/// skip.
+#[ignore = "[env-gate] 需要 真外网指纹检测站点(bot.sannysoft.com/browserleaks.com 等真实站点) + DISPLAY(servo WebRender GL-based); 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 BAO_TEST_NETWORK=1 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn fingerprint_website_eval_e2e() {
     // Guard 1: opt-in for real network access
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1 — fingerprint website E2E requires real network");
-        return;
-    }
     // Guard 2: servo requires a display server
-    if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
-        eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
-        return;
-    }
 
     // PARENT MODE: initialize runtime once for the entire test. This same
     // runtime is used for both Phase 1 (local data: stealth property checks)
@@ -331,11 +323,7 @@ fn fingerprint_website_eval_e2e() {
     let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!(
-                "[skip] BrowserRuntime::new failed (likely missing servo runtime): {}",
-                e
-            );
-            return;
+            panic!("BrowserRuntime::new failed (likely missing servo runtime): {}", e);
         }
     };
     let pool: &PagePool = runtime.page_pool();

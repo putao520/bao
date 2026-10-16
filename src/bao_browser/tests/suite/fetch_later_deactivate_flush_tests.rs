@@ -210,6 +210,7 @@ fn arm_page1(runtime: &BrowserRuntime, page1_url: &str) -> PageHandle {
 /// flushed by the navigate-away deactivation instead of lingering until the
 /// timer — while the document stays active, activateAfter must still be
 /// honored (negative window).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn fetch_later_on_navigate_away_is_flushed_without_waiting_for_activate_after() {
     let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -230,8 +231,7 @@ try {
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = arm_page1(&runtime, &fixture.url("/page1"));
@@ -261,6 +261,7 @@ try {
 
 /// Shape 2 (WPT subtest 4): the aborted record must stay silent through the
 /// deactivate flush; the live sibling must be flushed exactly once.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn aborted_deferred_record_is_not_flushed_on_navigate_away() {
     let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -284,8 +285,7 @@ try {
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = arm_page1(&runtime, &fixture.url("/page1"));

@@ -504,6 +504,14 @@ unsafe fn populate_bun_object(
     unsafe {
         crate::bun_glob_api::install(cx, bun_obj);
     }
+    // @trace REQ-ENG-19 [api:Bun.Transpiler] — TS/JSX 转译器 (bun_transpiler_api)。
+    unsafe {
+        crate::bun_transpiler_api::install(cx, bun_obj);
+    }
+    // @trace REQ-ENG-21 [api:Bun.DNSResolver] — DNS 查询器 (bun_dns_resolver_api)。
+    unsafe {
+        crate::bun_dns_resolver_api::install(cx, bun_obj);
+    }
     // @trace REQ-ENG-006 [api:Bun.spawnSync] — synchronous subprocess.
     unsafe {
         crate::bun_spawn_sync::install(cx, bun_obj);

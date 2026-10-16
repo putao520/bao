@@ -102,18 +102,6 @@ fn serializer() -> &'static Mutex<()> {
     SERIALIZER.get_or_init(|| Mutex::new(()))
 }
 
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Percent-encode an HTML document into a `data:text/html` URL (the parity
 /// face needs no subresources — no network).
 fn data_url(html: &str) -> String {
@@ -171,11 +159,9 @@ fn make_page(html: &str) -> (BrowserRuntime, PageHandle) {
 /// property-for-property (set equality, both directions asserted). A
 /// missing property or an extra Bao-only property is red — either one is a
 /// fingerprint surface a detection page can enumerate.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn editcontext_parity_chrome_prototype_enums() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let (_runtime, page) =

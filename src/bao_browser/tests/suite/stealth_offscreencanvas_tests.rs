@@ -51,19 +51,6 @@ mod common;
 /// BCE-20260627-009.
 static TEST_SERIALIZER: Mutex<()> = Mutex::new(());
 
-/// Skip-guard helper: returns true if the test should skip (no network/display).
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Acquire the global serializer lock for the full test duration.
 fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
     let guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
@@ -77,7 +64,6 @@ fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
         )
     }
 }
-
 
 /// The servo JS bridge may return a JS string value as `"..."` (quoted). Strip
 /// a single outer quote pair if present so the caller sees the raw value.
@@ -206,11 +192,9 @@ fn assert_worker_digest_ok(result: Option<String>) {
 /// gate), construction, getContext('2d'), fillRect, getImageData readback.
 /// The main thread only receives the digest string — every asserted fact is
 /// computed in the Worker realm.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c13_worker_offscreencanvas_2d_pipeline_works() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -241,11 +225,9 @@ fn c13_worker_offscreencanvas_2d_pipeline_works() {
 /// WebIDL Pref gate removes the interface). This Window-realm probe isolates
 /// "pref not applied" from "worker canvas path broken" if §1 ever regresses,
 /// and proves the flip is per-embedder-config, not worker-specific.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c13_window_realm_offscreencanvas_exposed_after_pref_flip() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -333,11 +315,9 @@ self.postMessage(__r);
 /// vendor patch this returned null because the WebGL1 path Window-downcast the
 /// global), drawingBuffer geometry, getParameter(VERSION), clear + readPixels
 /// round-trip, getError()==NO_ERROR.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c14_worker_offscreencanvas_webgl1_pipeline_works() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -390,11 +370,9 @@ fn c14_worker_offscreencanvas_webgl1_pipeline_works() {
 
 /// @trace REQ-BRW-004 [criterion:14] window-realm canvas WebGL1 control probe
 /// (live, direct probe of the Window path)
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c14_window_realm_webgl1_control_probe_works() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -480,11 +458,9 @@ self.postMessage(__r);
 /// of `get_or_init_webgl2_context` Window-downcast the global and returned
 /// null in workers), drawingBuffer geometry, clear + readPixels round-trip,
 /// getError()==NO_ERROR.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c14_worker_offscreencanvas_webgl2_pipeline_works() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -571,11 +547,9 @@ self.postMessage(__r);
 /// the result via `self.global().as_window()`, which panics ("expected a
 /// Window scope") in a worker. This probe must return a legal
 /// WebGLShaderPrecisionFormat (three integers ≥ 0) on BOTH context types.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c14_worker_webgl_getshaderprecisionformat_works() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -630,11 +604,9 @@ fn c14_worker_webgl_getshaderprecisionformat_works() {
 /// @trace REQ-BRW-004 [criterion:14] window-realm canvas WebGL2 control probe
 /// (live, direct probe of the UNCHANGED Window path through the refactored
 /// WebGL2 new/new_inherited + the re-anchored GetShaderPrecisionFormat)
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c14_window_realm_webgl2_control_probe_works() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -743,11 +715,9 @@ self.postMessage(__r);
 /// the TRUE servo values — identical to the worker realm's zero-wrapper
 /// results — and `__originalGetParameter__` holds the servo native, not a
 /// stealth JS hook.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn e36_window_getparameter_unintercepted_matches_worker_native() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -817,11 +787,9 @@ fn e36_window_getparameter_unintercepted_matches_worker_native() {
 /// e36 completion ②(live): the interception capability is fully intact —
 /// JS-hook-layer enums (0x9246/0x9245/0x0D33) and native-override-layer enums
 /// (0x1F00/0x1F01) still return the stealth profile's configured values.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn e36_window_getparameter_intercepted_enums_still_profile_driven() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -866,11 +834,9 @@ fn e36_window_getparameter_intercepted_enums_still_profile_driven() {
 /// e36 completion ③(live): a stealth-free page (`stealth_profile: None`)
 /// carries NO stealth chain at all — no __originalGetParameter__ slot, no JS
 /// hook on getParameter, pure servo-native surfaces returning true values.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn e36_stealth_free_page_has_no_stealth_chain() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let (_runtime, page) = live_page(None);
@@ -1053,11 +1019,9 @@ fn parse_retirement_digest(r: &str) -> (i64, i64, i64) {
 /// @trace REQ-BRW-004 [criterion:13] window-realm canvas noise via paint
 /// layer + toDataURL/getImageData cross-path parity (JS segment retired,
 /// user ruling 2026-09-09).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c13_retirement_window_getimagedata_noise_and_todataurl_parity() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -1150,11 +1114,9 @@ __r.then(function (v) { self.postMessage(v); },
 /// paint layer + convertToBlob/getImageData cross-path parity (JS segment
 /// retired, user ruling 2026-09-09; W1a's worker JS-hook regression is
 /// superseded by this paint-layer live pin).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c13_retirement_worker_noise_and_converttoblob_parity() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();

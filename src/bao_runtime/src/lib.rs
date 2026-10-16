@@ -14,6 +14,7 @@ pub mod bun_build;
 pub mod bun_builtins;
 // @trace REQ-ENG-006 [api:Bun.* Bun-face completion wave] — per-domain Bun
 // API modules mounted by populate_bun_object (bun_api.rs).
+pub mod bun_dns_resolver_api;
 pub mod bun_glob_api;
 pub mod bun_hash_api;
 pub mod bun_inspect_api;
@@ -24,6 +25,7 @@ pub mod bun_util_api;
 pub mod bun_ffi;
 pub mod bun_sqlite;
 pub mod bun_test;
+pub mod bun_transpiler_api;
 pub mod dispatch;
 pub mod fetch_api;
 // @trace REQ-ENG-006 [entity:IpcChannel] — child_process IPC + cluster fd passing (SCM_RIGHTS)

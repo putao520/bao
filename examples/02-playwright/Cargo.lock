@@ -3694,6 +3694,7 @@ dependencies = [
  "bun_spawn_sys",
  "bun_sys",
  "bun_threading",
+ "bun_transpiler",
  "bun_url",
  "bun_uws",
  "bun_uws_sys",

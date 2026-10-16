@@ -250,18 +250,6 @@ self.onmessage = function (e) {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// The servo JS bridge may return a JS string value as `"..."` (quoted).
 /// Strip a single outer quote pair if present (multi_injection form).
 fn unquote_bridge(mut s: String) -> String {
@@ -426,12 +414,10 @@ fn make_msg_driver(worker_url: &str, kinds: &[&str]) -> String {
 /// queue). The worker deep-checks the payload (`x === 1`, tag intact, data
 /// is an OBJECT not a string) and posts the verdict back, which also proves
 /// the worker→page return leg of the same roundtrip.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn worker_realm_api_c2_page_to_worker_postmessage_echo() {
     if !common::run_isolated("worker_realm_api_tests::worker_realm_api_c2_page_to_worker_postmessage_echo") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let fixture = spawn_realm_api_fixture();
@@ -505,12 +491,10 @@ fn worker_realm_api_c2_page_to_worker_postmessage_echo() {
 ///     values and posts the OBJECT back; the page deep-verifies per type.
 const CLONE_KEYS: [&str; 6] = ["plain", "arr", "nested", "ab", "map", "u8"];
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn worker_realm_api_c6_structured_clone_roundtrip_five_types() {
     if !common::run_isolated("worker_realm_api_tests::worker_realm_api_c6_structured_clone_roundtrip_five_types") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let fixture = spawn_realm_api_fixture();
@@ -582,12 +566,10 @@ fn worker_realm_api_c6_structured_clone_roundtrip_five_types() {
 /// callable with correct results, and the imported script's self.* global
 /// visible. Server-side hit log proves the /helper.js fetch egressed
 /// (two-sided proof: transport + effect).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn worker_realm_api_c6_import_scripts_helper_globals() {
     if !common::run_isolated("worker_realm_api_tests::worker_realm_api_c6_import_scripts_helper_globals") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let fixture = spawn_realm_api_fixture();
@@ -679,12 +661,10 @@ fn worker_realm_api_c6_import_scripts_helper_globals() {
 ///     real work (monotonic clock in the worker realm).
 ///   - location: href/origin/protocol/host exactly equal the worker script
 ///     URL (Rust-side comparison against the fixture-computed URL).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn worker_realm_api_c8_crypto_performance_location() {
     if !common::run_isolated("worker_realm_api_tests::worker_realm_api_c8_crypto_performance_location") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let fixture = spawn_realm_api_fixture();

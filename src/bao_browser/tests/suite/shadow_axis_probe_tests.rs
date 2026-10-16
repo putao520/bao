@@ -62,14 +62,6 @@ use std::time::{Duration, Instant};
 
 use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle};
 
-fn should_skip() -> bool {
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Drive servo's ScriptThread with no-op evaluates while polling a page-side
 /// sink variable (the same pump pattern every live harness here uses).
 fn poll_sink(page: &PageHandle, sink: &str, timeout: Duration) -> Option<String> {
@@ -98,12 +90,10 @@ fn poll_sink(page: &PageHandle, sink: &str, timeout: Duration) -> Option<String>
 /// read's own pump wake" (stamp == read-now) from "servo self-woke the
 /// thread" (stamp < read-now); either verdict satisfies the axis, the
 /// deterministic assertion is fires-under-pump.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn shadow_axis_probe_i_set_immediate_page_realm() {
     if !common::run_isolated("shadow_axis_probe_tests::shadow_axis_probe_i_set_immediate_page_realm") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
@@ -172,12 +162,10 @@ fn shadow_axis_probe_i_set_immediate_page_realm() {
 /// shadow. Canonical spec order: promise reactions and queueMicrotask
 /// callbacks drain FIFO at the script-end job checkpoint; a nested
 /// queueMicrotask appends before the macrotask timer task runs.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn shadow_axis_probe_q_queue_microtask_order() {
     if !common::run_isolated("shadow_axis_probe_tests::shadow_axis_probe_q_queue_microtask_order") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
@@ -238,12 +226,10 @@ fn shadow_axis_probe_q_queue_microtask_order() {
 /// C axis — page-realm crypto shadow functional fidelity: getRandomValues
 /// fills and returns the same array, randomUUID is v4-shaped and fresh per
 /// call, subtle.digest resolves to the NIST SHA-256("abc") vector.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn shadow_axis_probe_c_crypto_page_realm() {
     if !common::run_isolated("shadow_axis_probe_tests::shadow_axis_probe_c_crypto_page_realm") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
@@ -327,12 +313,10 @@ fn shadow_axis_probe_c_crypto_page_realm() {
 ///       -based `{now}` plain object has neither), WebSocket carries
 ///       `prototype.send` (the plain-object shadow defined send
 ///       per-instance only), crypto stringifies '[object Crypto]'.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn shadow_axis_probe_g_whatwg_identity_page_realm() {
     if !common::run_isolated("shadow_axis_probe_tests::shadow_axis_probe_g_whatwg_identity_page_realm") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");

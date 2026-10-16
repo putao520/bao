@@ -98,6 +98,7 @@ fn poll_until(page: &PageHandle, timeout: Duration, cond: &dyn Fn() -> bool) -> 
     None
 }
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn pagestate_reaches_interactive_in_step_with_title() {
     let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -105,8 +106,7 @@ fn pagestate_reaches_interactive_in_step_with_title() {
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = runtime
@@ -157,6 +157,7 @@ fn pagestate_reaches_interactive_in_step_with_title() {
     assert!(t2.is_some(), "re-navigation must reach Interactive again");
 }
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn verbatim_readme_path1_no_external_pump() {
     let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -168,8 +169,7 @@ fn verbatim_readme_path1_no_external_pump() {
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = runtime
@@ -287,8 +287,7 @@ fn make_runtime(cfg: BaoConfig) -> Option<BrowserRuntime> {
     match BrowserRuntime::new(cfg) {
         Ok(r) => Some(r),
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            None
+            panic!("runtime init failed: {e}");
         }
     }
 }

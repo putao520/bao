@@ -10,9 +10,10 @@
 //   - move_to_click_delay exists (settling delay before mousedown).
 //   - press durations fall in the configured range [40ms, 200ms].
 //
-// Graceful strategy:
-//   - Requires real servo runtime + display server. Absent either (or
-//     BrowserRuntime::new fails) → `[skip]` + return.
+// Environment contract:
+//   - Requires a display server (servo WebRender GL-based) — declared
+//     statically via `#[ignore = "需要 DISPLAY ..."]`; runtime-init failure in
+//     a provisioned env is a panic.
 //   - Local `data:text/html` test page — NO external network required.
 
 #![allow(dead_code)]
@@ -163,28 +164,17 @@ fn dispatch_mouse_event(page: &PageHandle, ev_type: &str, x: f64, y: f64) -> Res
     }
 }
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn click_human_e2e() {
     // Guard 1: opt-in for real servo runtime
-    if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_REAL_SERVO != 1 — click human E2E requires real servo runtime");
-        return;
-    }
     // Guard 2: servo requires a display server
-    if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
-        eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
-        return;
-    }
     // Guard 3: BrowserRuntime::new may fail in environments lacking servo runtime deps
     let config = BaoConfig::default();
     let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!(
-                "[skip] BrowserRuntime::new failed (likely missing servo runtime): {}",
-                e
-            );
-            return;
+            panic!("BrowserRuntime::new failed (likely missing servo runtime): {}", e);
         }
     };
     let pool: &PagePool = runtime.page_pool();

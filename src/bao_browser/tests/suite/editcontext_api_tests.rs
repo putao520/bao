@@ -33,18 +33,6 @@ fn serializer() -> &'static Mutex<()> {
     SERIALIZER.get_or_init(|| Mutex::new(()))
 }
 
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Percent-encode an HTML document into a `data:text/html` URL (no
 /// subresources — the EditContext face needs no network).
 fn data_url(html: &str) -> String {
@@ -136,11 +124,9 @@ fn make_page(html: &str) -> (BrowserRuntime, PageHandle) {
 /// TextFormatUpdateEvent dictionary init, and the updateText /
 /// updateSelection / characterBounds state machines including reversed
 /// ranges and the cached-bounds snapshot contract.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn editcontext_api_c1_constructor_surface() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let (_runtime, page) =
@@ -242,11 +228,9 @@ fn editcontext_api_c1_constructor_surface() {
 /// off the tree, the single-element invariant (NotSupportedError), the
 /// TypeError class for non-EditContext values, and the NotSupportedError
 /// class for disallowed elements.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn editcontext_api_c2_association() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let (_runtime, page) =
@@ -336,11 +320,9 @@ fn editcontext_api_c2_association() {
 /// C3: event dispatch — constructed TextUpdateEvent/TextFormatUpdateEvent
 /// flow through `dispatchEvent` and the `ontextupdate` handler attribute,
 /// and the on* handler attributes exist on the prototype surface.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn editcontext_api_c3_event_dispatch() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let (_runtime, page) =
@@ -409,11 +391,9 @@ fn editcontext_api_c3_event_dispatch() {
 /// `textupdate` carrying the UTF-16 range and new selection, and the DOM is
 /// never mutated. Backspace/Delete run the collapsed-deletion state machine,
 /// and canceling `beforeinput` suppresses the `textupdate`.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn editcontext_api_c4_driver_interop() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let (_runtime, page) = make_page(
@@ -565,7 +545,6 @@ window.__focused = (document.activeElement === div);
     );
 }
 
-
 /// A plain-character key press with `Ctrl` held (the copy/cut/paste editing
 /// actions are Control-modified on Linux).
 fn ctrl_char(page: &PageHandle, ch: char, code: Code) {
@@ -625,11 +604,9 @@ fn named_key(page: &PageHandle, named: servo::NamedKey, code: Code) {
 ///   (5) paste routing: text copied from a contenteditable pastes into the
 ///       focused EditContext host as plain text (`textupdate`, no DOM
 ///       mutation).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn editcontext_api_c5_p1_faces() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let (_runtime, page) = make_page(

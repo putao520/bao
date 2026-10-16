@@ -36,18 +36,6 @@ fn serializer() -> &'static Mutex<()> {
     SERIALIZER.get_or_init(|| Mutex::new(()))
 }
 
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Percent-encode an HTML document into a `data:text/html` URL (no
 /// subresources — the editing face needs no network).
 fn data_url(html: &str) -> String {
@@ -198,11 +186,9 @@ fn make_page(url: &str) -> (BrowserRuntime, PageHandle) {
 /// Real key delivery into a focused contenteditable must insert text through
 /// the servo text-input engine: `innerText` changes, the `input` event fires,
 /// and the key events are trusted (`isTrusted`).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn editing_e2e_contenteditable_real_key_insertion() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let html = r#"<!DOCTYPE html><html><body>
@@ -221,14 +207,11 @@ window.__state = function(){
 </script></body></html>"#;
     let (_runtime, page) = make_page(&data_url(html));
 
-    if !document_editing_enabled(&page) {
-        eprintln!(
-            "[skip] document-context editing is pref-dark (dom_exec_command_enabled=false, \
-             registered defect) — contenteditable insertion pin deferred until the pref \
-             contract lands"
-        );
-        return;
-    }
+    assert!(
+        document_editing_enabled(&page),
+        "document-context editing is pref-dark (dom_exec_command_enabled=false, \
+         registered defect) — contenteditable insertion pin requires the pref contract"
+    );
 
     page.evaluate_js_web("document.getElementById('ce').focus();")
         .expect("focus eval must run");
@@ -262,11 +245,9 @@ window.__state = function(){
 /// The insertText carrier (per-character Character Down/Up) must update
 /// `<input>`/`<textarea>` `.value` through the real engine, including
 /// non-ASCII payloads, without touching unrelated fields.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn editing_e2e_insert_text_carrier_input_and_textarea() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let html = r#"<!DOCTYPE html><html><body>
@@ -323,11 +304,9 @@ fn editing_e2e_insert_text_carrier_input_and_textarea() {
 ///
 /// Enter (NamedKey) must drive the InsertParagraph editing action: typing
 /// across an Enter in a contenteditable yields a two-line innerText.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn editing_e2e_enter_key_paragraph_in_contenteditable() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let html = r#"<!DOCTYPE html><html><body>
@@ -339,13 +318,11 @@ fn editing_e2e_enter_key_paragraph_in_contenteditable() {
 </body></html>"#;
     let (_runtime, page) = make_page(&data_url(html));
 
-    if !document_editing_enabled(&page) {
-        eprintln!(
-            "[skip] document-context editing is pref-dark (dom_exec_command_enabled=false, \
-             registered defect) — Enter paragraph pin deferred until the pref contract lands"
-        );
-        return;
-    }
+    assert!(
+        document_editing_enabled(&page),
+        "document-context editing is pref-dark (dom_exec_command_enabled=false, \
+         registered defect) — Enter paragraph pin requires the pref contract"
+    );
 
     page.evaluate_js_web("document.getElementById('ce').focus();")
         .expect("focus eval must run");
@@ -375,11 +352,9 @@ fn editing_e2e_enter_key_paragraph_in_contenteditable() {
 /// `null`. e159 邻接观察③清偿 pin — the UA-only setter path (trusted
 /// clipboard events) is covered by the WPT insertFromPaste campaign; this
 /// pin holds the script-construction face.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn editing_e2e_inputevent_init_datatransfer() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let html = r#"<!DOCTYPE html><html><body><script>
@@ -427,11 +402,9 @@ window.__probe = function(){
 /// e178 核验报告登记清偿 pin — the UA-only setter path (trusted EditContext
 /// `beforeinput`) is held by the editcontext c1-c5 suite; this pin holds
 /// the script-construction face.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn editing_e2e_inputevent_init_targetranges() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let html = r#"<!DOCTYPE html><html><body><script>
@@ -478,11 +451,9 @@ window.__probe = function(){
 /// password field must produce NO clipboardchange and NO deleteByCut
 /// beforeinput, while a text input on the same page produces both (positive
 /// control) — observed through the real keyboard clipboard-action path.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn editing_e2e_password_copy_cut_guard() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let html = r#"<!DOCTYPE html><html><body>

@@ -8,26 +8,20 @@
 // 1. **单元测试（默认运行）**：验证 h3 默认启用、Alt-Svc 解析、错误处理。
 //    这些测试不需要网络，已在 `src/bao_runtime/src/h3_fetch.rs` 内联完成。
 //
-// 2. **真网络测试（graceful 环境检测 + BAO_TEST_NETWORK=1）**：验证实际 h3 请求、
+// 2. **真网络测试（`#[ignore]` 显式门控 + BAO_TEST_NETWORK=1）**：验证实际 h3 请求、
 //    连接复用、流多路复用、HTTP/1.1 fallback。运行命令：
 //    ```
-//    BAO_TEST_NETWORK=1 cargo test -p bun_runtime --test h3_fetch_tests
+//    BAO_TEST_NETWORK=1 cargo nextest run --run-ignored=all -p bun_runtime -E 'test(h3_)'
 //    ```
 //
-// ## BAO_TEST_NETWORK 门控（graceful skip 模式）
+// ## BAO_TEST_NETWORK 门控（`#[ignore]` 显式 skip 模式）
 //
-// 真网络测试默认 graceful skip：函数开头检测 `BAO_TEST_NETWORK=1` + 网络可达性，
-// 无环境时 `eprintln!("[skip] ...") + return`（不算 fail），有环境时真实跑 + assert。
-// 这避免 CI 在沙箱（无外网）环境失败，同时允许开发者按需验证 h3 行为。
+// 真网络测试默认以 `#[ignore = "<原因>"]` 显式跳过：nextest 报 SKIP + 原因串
+// （环境需求 + 真跑命令 + 期望断言，可观测），无 env 时不再静默 PASS（假绿已根除）。
+// 真跑需显式：`BAO_TEST_NETWORK=1 cargo nextest run --run-ignored=all -p bun_runtime`；
+// 函数体内的网络可达性预检为 fail-closed assert（不可达 = 响亮失败，非静默跳过）。
 
 use std::time::Duration;
-
-/// 真网络测试是否启用（BAO_TEST_NETWORK=1）。
-fn network_test_enabled() -> bool {
-    std::env::var("BAO_TEST_NETWORK")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
 
 /// 网络可达性快速预检：尝试 TCP 连接到 host:443。
 ///
@@ -116,28 +110,25 @@ fn http1_fallback_path_preserved() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 真网络测试（graceful skip + BAO_TEST_NETWORK=1）
+// 真网络测试（#[ignore] 显式 skip + BAO_TEST_NETWORK=1）
 //
-// 运行：BAO_TEST_NETWORK=1 cargo test -p bun_runtime --test h3_fetch_tests
-// 默认（无 BAO_TEST_NETWORK）每项测试 graceful skip（eprintln + return）。
+// 默认 nextest 报 SKIP（显式可观测，原因串含环境需求/真跑命令/期望断言）。
+// 真跑：BAO_TEST_NETWORK=1 cargo nextest run --run-ignored=all -p bun_runtime -E 'test(h3_)'
 // ═══════════════════════════════════════════════════════════════════════
 
 /// REQ-H3-001: h3 真网络请求（force_http3 via fetch options）。
 ///
 /// 使用 `cloudflare-quic.com`（Cloudflare 的公开 HTTP/3 测试端点）。
-/// 若不可达则跳过。
+/// 不可达 = fail-closed assert（响应亮失败，非静默跳过）。
 ///
 // @trace REQ-H3-001 [req:REQ-H3-001] [level:system]
 #[test]
+#[ignore = "[env-gate] 需要 BAO_TEST_NETWORK=1 + 外网可达 cloudflare-quic.com:443 (真 h3/QUIC 外网); 真跑: BAO_TEST_NETWORK=1 cargo nextest run --run-ignored=all -p bun_runtime -E 'test(h3_real_request_force_http3)'; 期望: h3 启用后 https://cloudflare-quic.com/ 返回 2xx-3xx,h3 协商失败时 HTTP/1.1 fallback 仍成功"]
 fn h3_real_request_force_http3() {
-    if !network_test_enabled() {
-        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK not set");
-        return;
-    }
-    if !is_reachable("cloudflare-quic.com", 443) {
-        eprintln!("[skip] 环境不可用: cloudflare-quic.com:443 unreachable");
-        return;
-    }
+    assert!(
+        is_reachable("cloudflare-quic.com", 443),
+        "REQ-H3-001: 前置失败 — cloudflare-quic.com:443 不可达(真网络测试需外网;无外网环境请保持本测试 ignore 不跑)"
+    );
 
     bun_runtime::h3_fetch::enable_h3_by_default();
     assert!(
@@ -192,15 +183,12 @@ fn h3_real_request_force_http3() {
 ///
 // @trace REQ-H3-001 [req:REQ-H3-001] [level:system]
 #[test]
+#[ignore = "[env-gate] 需要 BAO_TEST_NETWORK=1 + 外网可达 cloudflare-quic.com:443 (真 h3/QUIC 外网); 真跑: BAO_TEST_NETWORK=1 cargo nextest run --run-ignored=all -p bun_runtime -E 'test(h3_connection_reuse_multiple_requests)'; 期望: 同 origin 连续 3 请求连接复用不崩溃,成功响应均为 2xx-3xx"]
 fn h3_connection_reuse_multiple_requests() {
-    if !network_test_enabled() {
-        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK not set");
-        return;
-    }
-    if !is_reachable("cloudflare-quic.com", 443) {
-        eprintln!("[skip] 环境不可用: cloudflare-quic.com:443 unreachable");
-        return;
-    }
+    assert!(
+        is_reachable("cloudflare-quic.com", 443),
+        "REQ-H3-001-C3: 前置失败 — cloudflare-quic.com:443 不可达(真网络测试需外网;无外网环境请保持本测试 ignore 不跑)"
+    );
 
     bun_runtime::h3_fetch::enable_h3_by_default();
 
@@ -239,11 +227,8 @@ fn h3_connection_reuse_multiple_requests() {
 ///
 // @trace REQ-H3-001 [req:REQ-H3-001] [level:system]
 #[test]
+#[ignore = "[env-gate] 需要 BAO_TEST_NETWORK=1 (真网络测试族统一门控;本测试实际仅连 localhost:1 无需外网); 真跑: BAO_TEST_NETWORK=1 cargo nextest run --run-ignored=all -p bun_runtime -E 'test(h3_error_handling_connection_refused)'; 期望: 对 https://127.0.0.1:1/ 请求返回非空错误(Err)而非 panic"]
 fn h3_error_handling_connection_refused() {
-    if !network_test_enabled() {
-        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK not set");
-        return;
-    }
 
     bun_runtime::h3_fetch::enable_h3_by_default();
 
@@ -274,15 +259,12 @@ fn h3_error_handling_connection_refused() {
 ///
 // @trace REQ-H3-001 [req:REQ-H3-001] [level:system]
 #[test]
+#[ignore = "[env-gate] 需要 BAO_TEST_NETWORK=1 + 外网可达 example.com:443 (不支持 h3 的对照主机); 真跑: BAO_TEST_NETWORK=1 cargo nextest run --run-ignored=all -p bun_runtime -E 'test(h3_fallback_to_http1_when_unsupported)'; 期望: example.com 经 HTTP/1.1 fallback 返回 200 且 body 非空"]
 fn h3_fallback_to_http1_when_unsupported() {
-    if !network_test_enabled() {
-        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK not set");
-        return;
-    }
-    if !is_reachable("example.com", 443) {
-        eprintln!("[skip] 环境不可用: example.com:443 unreachable");
-        return;
-    }
+    assert!(
+        is_reachable("example.com", 443),
+        "REQ-H3-001-C5: 前置失败 — example.com:443 不可达(真网络测试需外网;无外网环境请保持本测试 ignore 不跑)"
+    );
 
     bun_runtime::h3_fetch::enable_h3_by_default();
 
@@ -317,15 +299,12 @@ fn h3_fallback_to_http1_when_unsupported() {
 ///
 // @trace REQ-H3-001 [req:REQ-H3-001] [level:system]
 #[test]
+#[ignore = "[env-gate] 需要 BAO_TEST_NETWORK=1 + 外网可达 cloudflare-quic.com:443 (真 h3/QUIC 外网); 真跑: BAO_TEST_NETWORK=1 cargo nextest run --run-ignored=all -p bun_runtime -E 'test(h3_stream_multiplexing_stability)'; 期望: 多路径串行请求至少 1 个成功(stream 管理稳定性)"]
 fn h3_stream_multiplexing_stability() {
-    if !network_test_enabled() {
-        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK not set");
-        return;
-    }
-    if !is_reachable("cloudflare-quic.com", 443) {
-        eprintln!("[skip] 环境不可用: cloudflare-quic.com:443 unreachable");
-        return;
-    }
+    assert!(
+        is_reachable("cloudflare-quic.com", 443),
+        "REQ-H3-001: 前置失败 — cloudflare-quic.com:443 不可达(真网络测试需外网;无外网环境请保持本测试 ignore 不跑)"
+    );
 
     bun_runtime::h3_fetch::enable_h3_by_default();
 

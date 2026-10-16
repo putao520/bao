@@ -36,24 +36,11 @@
 #[path = "common/mod.rs"]
 mod common;
 
-
 use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 static TEST_SERIALIZER: Mutex<()> = Mutex::new(());
-
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
 
 /// The ServiceWorker script the test registers. Runs at SW scope init (after
 /// `define_all_exposed_interfaces`), introspects the FetchEvent surface, then
@@ -164,7 +151,6 @@ fn probe_result(fixture: &common::http_fixture::HttpFixture) -> Option<String> {
         })
 }
 
-
 fn urldecode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -225,11 +211,9 @@ fn wait_for<F: Fn() -> Option<T>, T>(mut poll: F, timeout: Duration, what: &str)
 /// mechanical mirrors of the existing Dedicated/Shared arms. The respondWith
 /// settle side stays compile-verified only until S2b produces mediators from
 /// the net layer (see the header note above).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c19_sw_realm_exposes_fetchevent_pipeline_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_sw_fixture();

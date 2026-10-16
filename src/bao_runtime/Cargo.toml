@@ -65,6 +65,8 @@ bun_resolver = { path = "../resolver", version = "^0.2.0" }
 bun_ast = { path = "../ast", version = "^0.2.0" }
 bun_event_loop = { path = "../event_loop", version = "^0.2.0" }
 bun_dns = { path = "../dns", version = "^0.2.0" }
+# @trace REQ-ENG-19 [dep:bun_transpiler] — SWC TS-strip 转译内核 (Bun.Transpiler)
+bun_transpiler = { path = "../transpiler", version = "^0.2.0" }
 bun_cares_sys = { path = "../cares_sys", version = "0.2.0" }
 bun_io = { path = "../io", version = "^0.2.0" }
 bun_base64 = { path = "../base64", version = "0.2.0" }

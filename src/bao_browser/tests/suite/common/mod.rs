@@ -41,12 +41,31 @@ pub fn run_isolated(test_name: &str) -> bool {
     if std::env::var_os(ISOLATED_ENV).is_some() {
         return true; // child (or an outer runner already isolated us)
     }
+    // cargo-nextest already runs each test in its own process — the re-exec
+    // dance below exists only for plain `cargo test`, where libtest shares
+    // one process across tests. Re-execing from under nextest would ALSO
+    // silently break `#[ignore = "..."]`-marked tests: the child libtest
+    // invocation has no `--ignored`, so it would report the test "ignored",
+    // exit 0, and the parent would skip the body — a fake green.
+    if std::env::var_os("NEXTEST").is_some() {
+        return true; // per-test process isolation is the runner's job here
+    }
     let exe = std::env::current_exe().expect("current_exe for isolated re-exec");
-    let status = std::process::Command::new(exe)
-        .arg(test_name)
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg(test_name)
         .arg("--exact")
         .arg("--test-threads=1")
-        .arg("--nocapture")
+        .arg("--nocapture");
+    // Propagate an `--ignored`/`--include-ignored` invocation so a statically
+    // #[ignore]d test re-exec'd from `cargo test -- --ignored` actually runs
+    // in the child (a bare re-exec would report it ignored and exit 0 —
+    // another silent fake green).
+    let ignored_invocation =
+        std::env::args().any(|a| a == "--ignored" || a == "--include-ignored");
+    if ignored_invocation {
+        cmd.arg("--ignored");
+    }
+    let status = cmd
         .env(ISOLATED_ENV, "1")
         .status()
         .unwrap_or_else(|e| panic!("spawn isolated test process for {test_name}: {e}"));

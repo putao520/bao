@@ -56,19 +56,6 @@ mod common;
 /// BCE-20260627-009.
 static TEST_SERIALIZER: Mutex<()> = Mutex::new(());
 
-/// Skip-guard helper: returns true if the test should skip (no network/display).
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Acquire the global serializer lock for the full test duration.
 fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
     let guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
@@ -80,7 +67,6 @@ fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
         )
     }
 }
-
 
 /// The servo JS bridge may return a JS string value as `"..."` (quoted). Strip
 /// a single outer quote pair if present so the caller sees the raw value.
@@ -358,11 +344,9 @@ fn worker_digest_rt(r: &str) -> &str {
 /// same-seed bit-level determinism on BOTH carriers (offline render + the
 /// real-time buffer carrier) and the bao_stealth audio hook presence on the
 /// W1a worker injection chain.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c15_worker_offlineaudiocontext_full_stack_works() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -492,11 +476,9 @@ fn wait_for_window_result(page: &bao_browser::PageHandle, timeout: Duration) -> 
 /// cross-realm fingerprint consistency arm of completion ②, pinned on both
 /// carriers. Any divergence is a detector-visible inconsistency (different
 /// fingerprints for the same "browser").
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c15_worker_window_cross_realm_noise_consistency() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -551,11 +533,9 @@ fn c15_worker_window_cross_realm_noise_consistency() {
 /// (the hook's `detNoise`), not a constant offset — on BOTH carriers (the
 /// offline render vector and the real-time AudioContext buffer carrier).
 /// Also re-pins determinism on the second page (same=1, rtsame=1).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c15_worker_noise_diverges_across_seeds() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile_a = StealthProfile::firefox_default();
@@ -622,11 +602,9 @@ fn c15_worker_noise_diverges_across_seeds() {
 /// createBiquadFilter ...) remain present on the Window surface, and the
 /// audio noise hook is still installed on the Window realm's AudioBuffer
 /// prototype.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c15_window_audio_family_zero_regression() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();

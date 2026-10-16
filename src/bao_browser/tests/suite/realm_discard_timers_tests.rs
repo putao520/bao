@@ -256,6 +256,7 @@ fn wait_title(page: &PageHandle, title: &str, timeout: Duration) -> bool {
 // timers — the RED-1 core.
 // ---------------------------------------------------------------------------
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn same_domain_nav_discards_old_realm_bao_timers() {
     if !common::run_isolated("realm_discard_timers_tests::same_domain_nav_discards_old_realm_bao_timers")
@@ -266,8 +267,7 @@ fn same_domain_nav_discards_old_realm_bao_timers() {
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = runtime
@@ -382,6 +382,7 @@ fn same_domain_nav_discards_old_realm_bao_timers() {
 // creation realm and then navigates it away.
 // ---------------------------------------------------------------------------
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn same_domain_nav_churn_no_timer_accumulation() {
     if !common::run_isolated("realm_discard_timers_tests::same_domain_nav_churn_no_timer_accumulation")
@@ -392,8 +393,7 @@ fn same_domain_nav_churn_no_timer_accumulation() {
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
 
@@ -496,6 +496,7 @@ fn same_domain_nav_churn_no_timer_accumulation() {
 // (different registered domain → different ScriptThread) and page close.
 // ---------------------------------------------------------------------------
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn cross_host_nav_and_page_close_no_regression() {
     if !common::run_isolated("realm_discard_timers_tests::cross_host_nav_and_page_close_no_regression")
@@ -506,8 +507,7 @@ fn cross_host_nav_and_page_close_no_regression() {
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = runtime
@@ -627,14 +627,14 @@ fn cross_host_nav_and_page_close_no_regression() {
 // close, the late completion never re-enters JS, and the timer face stays
 // at zero.
 // ---------------------------------------------------------------------------
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn page_discard_inflight_completion_never_reenters_js() {
     let fixture = DiscardFixture::spawn();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
 
@@ -757,14 +757,14 @@ fn page_discard_inflight_completion_never_reenters_js() {
 // (page_discard_inflight_completion_never_reenters_js) — a post-removal
 // render settle is not deterministically constructible (servo-media
 // collapses the huge buffer before any removal can race it).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn offline_render_resolve_suppressed_after_discard() {
     let fixture = DiscardFixture::spawn();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = runtime

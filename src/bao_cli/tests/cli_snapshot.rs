@@ -7,7 +7,11 @@
 // exercise it). Normalization institutionalizes the 220d0fe9 platform
 // lesson: argv[0] basename (`bao`/`bao.exe`) → `<BIN>`, CRLF → LF,
 // `v<semver>` → `v<VER>`. After normalization golden comparison is
-// byte-equal.
+// byte-equal. Spawn pinning institutionalizes the P3 canonical-battery
+// lesson (2026-10-16): display-server hooks are stripped from every
+// golden-face spawn — under DISPLAY=:99/Xvfb, servo/GL X-connection attempts
+// during `bao browser` init leak Xlib warnings into stderr ahead of the real
+// face, fabricating drift against goldens that were generated display-less.
 //
 // What is NOT snapshotted: the runtime output faces (`bao run/build/test`
 // executing a program, browser session output, compat REPORTS) — the compat
@@ -129,9 +133,18 @@ fn find_bao_binary() -> std::path::PathBuf {
 }
 
 /// Capture one invocation: (stdout, stderr, exit code).
+///
+/// The spawn environment is pinned display-less (DISPLAY/WAYLAND_DISPLAY
+/// stripped) so the CLI faces are deterministic under any ambient display
+/// configuration — see the header note on the P3 canonical-battery lesson.
+/// Per-Command `env_remove`, not process-global mutation: sibling tests in
+/// this binary keep inheriting the ambient environment.
 fn run_bin(bin: &std::path::Path, args: &[&str]) -> Output {
-    Command::new(bin)
-        .args(args)
+    let mut cmd = Command::new(bin);
+    for var in ["DISPLAY", "WAYLAND_DISPLAY"] {
+        cmd.env_remove(var);
+    }
+    cmd.args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn {} failed: {e}", bin.display()))
 }

@@ -66,21 +66,10 @@ fn spawn_origin() -> u16 {
     port
 }
 
-fn display_guard() -> bool {
-    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
-        eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
-        return false;
-    }
-    true
-}
-
-fn make_runtime() -> Option<BrowserRuntime> {
+fn make_runtime() -> BrowserRuntime {
     match BrowserRuntime::new(BaoConfig::default()) {
-        Ok(r) => Some(r),
-        Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            None
-        }
+        Ok(r) => r,
+        Err(e) => panic!("runtime init failed: {e}"),
     }
 }
 
@@ -105,20 +94,15 @@ fn poll_interactive(page: &PageHandle, timeout: Duration, stage: &str) {
 /// Runtime A loads a real URL to Interactive, is dropped; runtime B (same
 /// process) must load the SAME way. Pre-fix: B's create_page dies at
 /// `wait_for_pipeline_ready` (10s) — "pipeline not ready after timeout".
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn second_runtime_initial_load_completes_in_process() {
     let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    if !display_guard() {
-        return;
-    }
     let port = spawn_origin();
     let url = format!("http://127.0.0.1:{port}/");
 
     // ── Stage A: the first runtime in this process (control arm) ──
-    let rt_a = match make_runtime() {
-        Some(r) => r,
-        None => return,
-    };
+    let rt_a = make_runtime();
     let p_a = rt_a
         .create_page(&PageConfig {
             url: Some(url.clone()),
@@ -133,10 +117,7 @@ fn second_runtime_initial_load_completes_in_process() {
     eprintln!("[e134] stage A runtime dropped");
 
     // ── Stage B: the second runtime in the SAME process (poisoned arm) ──
-    let rt_b = match make_runtime() {
-        Some(r) => r,
-        None => return,
-    };
+    let rt_b = make_runtime();
     let p_b = rt_b
         .create_page(&PageConfig {
             url: Some(url),
@@ -155,19 +136,14 @@ fn second_runtime_initial_load_completes_in_process() {
 /// about:blank (pipeline spawn alone) and then navigated — the navigation must
 /// land. Pre-fix: the URL never moved off about:blank (the load died with no
 /// edge, exactly the e133-registered "verbatim wait" failure form).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn second_runtime_navigate_load_completes_in_process() {
     let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    if !display_guard() {
-        return;
-    }
     let port = spawn_origin();
     let url = format!("http://127.0.0.1:{port}/");
 
-    let rt_a = match make_runtime() {
-        Some(r) => r,
-        None => return,
-    };
+    let rt_a = make_runtime();
     let p_a = rt_a
         .create_page(&PageConfig {
             url: Some(url.clone()),
@@ -179,10 +155,7 @@ fn second_runtime_navigate_load_completes_in_process() {
     drop(rt_a);
     eprintln!("[e134] stage A runtime dropped");
 
-    let rt_b = match make_runtime() {
-        Some(r) => r,
-        None => return,
-    };
+    let rt_b = make_runtime();
     let p_b = rt_b
         .create_page(&PageConfig {
             url: Some("about:blank".into()),

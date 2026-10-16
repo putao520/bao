@@ -135,18 +135,14 @@ fn spawn_origin() -> u16 {
     port
 }
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn post_creation_navigate_stale_complete_race() {
-    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
-        eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
-        return;
-    }
     let port = spawn_origin();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let pool = runtime.page_pool();
@@ -271,18 +267,14 @@ fn post_creation_navigate_stale_complete_race() {
 /// `document.URL` and reads the pre-navigation document. This pins the
 /// USER-VISIBLE symptom (skip diagnostic "page did not fully load
 /// [document.URL=about:blank ...]"), not just the internal projection.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn post_creation_navigate_wait_for_load_early_exit() {
-    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
-        eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
-        return;
-    }
     let port = spawn_origin();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let pool = runtime.page_pool();
@@ -374,18 +366,14 @@ fn page_url_now(page: &PageHandle) -> String {
 /// projection must report `Interactive` before the navigation commits; the
 /// hop timeline (BAO_NAV_RACE_PROBE=1) shows hopS/hopC Complete landing
 /// after hopB's reset.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn post_creation_navigate_slowinit_stale_complete_deterministic() {
-    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
-        eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
-        return;
-    }
     let port = spawn_origin();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let pool = runtime.page_pool();
@@ -472,18 +460,14 @@ fn post_creation_navigate_slowinit_stale_complete_deterministic() {
 /// FAST target N times on a quiet machine: if loads die here too, Face B is
 /// solo-reproducible (constellation-class); if not, it is load-dependent.
 /// Honest report only — no assert on the rate (registered finding).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn post_creation_navigate_fast_target_load_liveness_probe() {
-    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
-        eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
-        return;
-    }
     let port = spawn_origin();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let pool = runtime.page_pool();
@@ -545,18 +529,14 @@ fn epoch_ms_now() -> u128 {
 /// (`BAO_NAV_RACE_PROBE=1` shows `P3 LOAD-DROPPED-PENDING-GUARD`).
 /// The e131 midload test documented this drop as out-of-scope; this test pins
 /// the FIXED contract: the newest navigation must eventually win.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn post_creation_back_to_back_double_navigate_not_dropped() {
-    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
-        eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
-        return;
-    }
     let port = spawn_origin();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let pool = runtime.page_pool();
@@ -625,18 +605,14 @@ fn post_creation_back_to_back_double_navigate_not_dropped() {
 /// forever (strictly worse than the race being fixed). This test issues a
 /// second navigation while the first load is still in flight and requires
 /// the second load to reach Interactive with its URL committed.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn post_creation_navigate_midload_renavigate_not_starved() {
-    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
-        eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
-        return;
-    }
     let port = spawn_origin();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let pool = runtime.page_pool();

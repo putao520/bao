@@ -69,18 +69,6 @@ use bao_stealth::StealthProfile;
 /// Serializes servo-touching phases inside one isolated test process.
 static TEST_SERIALIZER: Mutex<()> = Mutex::new(());
 
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 fn wait_for<F: Fn() -> Option<T>, T>(poll: F, timeout: Duration, what: &str) -> Option<T> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -219,12 +207,10 @@ fn spawn_sw_c19_fixture() -> common::http_fixture::HttpFixture {
 /// EGRESS — the ClientHello — is on the wire, which is the entire
 /// assertion surface here (same egress-not-settlement discipline as the
 /// mediation test's ③).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c19_sub1_sw_forwarded_fetch_rides_page_tls_h2_profile_live() {
     if !common::run_isolated("sw_stealth_profile_tests::c19_sub1_sw_forwarded_fetch_rides_page_tls_h2_profile_live") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
@@ -539,14 +525,12 @@ fn network_event_url(params: &serde_json::Value) -> String {
 /// intercepted URL arrive on the WS event stream (status 201 on the
 /// response — the MEDIATED response, proving the observation covers the
 /// interception, not just the native egress).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c19_sub2_cdp_network_observability_of_sw_intercepted_fetch_live() {
     if !common::run_isolated(
         "sw_stealth_profile_tests::c19_sub2_cdp_network_observability_of_sw_intercepted_fetch_live",
     ) {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
@@ -812,14 +796,12 @@ fn c19_sub2_cdp_network_observability_of_sw_intercepted_fetch_live() {
 ///      (the vendor terminate path — the manager drops the registration and
 ///      terminates the worker thread before resolving), new requests must
 ///      receive the NATIVE fixture response (mediation gone).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c19_sub3_sw_cross_page_inheritance_and_terminate_deregistration_live() {
     if !common::run_isolated(
         "sw_stealth_profile_tests::c19_sub3_sw_cross_page_inheritance_and_terminate_deregistration_live",
     ) {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
@@ -1080,14 +1062,12 @@ self.postMessage(__r);
 /// accessor), audiohooked=1 + wglhooked=1 (W1a hooks), orignative=1 (e36
 /// gate) — and each marker exactly once (hooks blob single delivery, no
 /// double-define).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn sw_scope_injector_starvation_after_dedicated_worker_live() {
     if !common::run_isolated(
         "sw_stealth_profile_tests::sw_scope_injector_starvation_after_dedicated_worker_live",
     ) {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());

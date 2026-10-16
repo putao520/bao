@@ -23,22 +23,14 @@ fn wait_for_load(page: &bao_browser::PageHandle, max_ms: u64) {
     }
 }
 
+#[ignore = "[env-gate] 需要 真外网 example.com/example.org/example.net + DISPLAY(servo WebRender GL-based); 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 BAO_TEST_NETWORK=1 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn bce004_double_external_navigation() {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return;
-    }
     eprintln!("[bce004] step 1: BrowserRuntime::new");
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
 
@@ -49,15 +41,13 @@ fn bce004_double_external_navigation() {
     }) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[fail] create_page: {e}");
-            return;
+            panic!("create_page: {e}");
         }
     };
 
     eprintln!("[bce004] step 3: navigate #1 → https://example.com/");
     if let Err(e) = page.navigate("https://example.com/") {
-        eprintln!("[fail] navigate #1: {e}");
-        return;
+        panic!("navigate #1: {e}");
     }
     wait_for_load(&page, 8000);
     let r1 = page
@@ -67,8 +57,7 @@ fn bce004_double_external_navigation() {
 
     eprintln!("[bce004] step 4: navigate #2 → https://example.org/");
     if let Err(e) = page.navigate("https://example.org/") {
-        eprintln!("[fail] navigate #2: {e}");
-        return;
+        panic!("navigate #2: {e}");
     }
     wait_for_load(&page, 8000);
     let r2 = page
@@ -78,8 +67,7 @@ fn bce004_double_external_navigation() {
 
     eprintln!("[bce004] step 5: navigate #3 → https://www.example.net/");
     if let Err(e) = page.navigate("https://www.example.net/") {
-        eprintln!("[fail] navigate #3: {e}");
-        return;
+        panic!("navigate #3: {e}");
     }
     wait_for_load(&page, 8000);
     eprintln!("[bce004] PASS — no SIGSEGV after 3 navigations");

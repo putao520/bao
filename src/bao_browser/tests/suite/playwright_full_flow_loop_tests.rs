@@ -229,14 +229,14 @@ impl WsCdp {
 }
 
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn playwright_style_full_flow_three_rounds() {
     let origin_port = spawn_origin();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip-w40] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = runtime

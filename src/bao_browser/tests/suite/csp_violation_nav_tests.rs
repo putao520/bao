@@ -108,6 +108,7 @@ fn poll_until(page: &PageHandle, timeout: Duration, cond: &dyn Fn() -> bool) -> 
 /// SIGSEGV inside `JS::DescribeScriptedCaller` ~0.3s after the stylesheet
 /// fetch completed (the whole test process vanished — nextest reports a crash,
 /// not an assertion failure).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn csp_violating_stylesheet_subresource_does_not_kill_the_process() {
     let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -142,8 +143,7 @@ fn csp_violating_stylesheet_subresource_does_not_kill_the_process() {
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = runtime
@@ -191,6 +191,7 @@ fn csp_violating_stylesheet_subresource_does_not_kill_the_process() {
 /// header must NOT produce a securitypolicyviolation (proves the violation in
 /// the positive test comes from the style-src policy, i.e. the report task
 /// path, and not from some unrelated stylesheet failure).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn same_page_without_csp_header_reports_no_violation() {
     let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -221,8 +222,7 @@ fn same_page_without_csp_header_reports_no_violation() {
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = runtime

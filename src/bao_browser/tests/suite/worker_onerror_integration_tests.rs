@@ -45,19 +45,6 @@ mod common;
 /// Serializes all servo-touching tests in this binary (servo single-instance).
 static TEST_SERIALIZER: Mutex<()> = Mutex::new(());
 
-/// Skip-guard helper: returns true if the test should skip (no network/display).
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Acquire the global serializer lock. Hold for the full test duration.
 /// The servo idempotent patches (BCE-20260627-009) make repeated
 /// BrowserRuntime::new safe; this lock only prevents concurrent servo instances.
@@ -123,7 +110,6 @@ fn make_worker_driver(worker_script_body: &str) -> String {
         body = worker_script_body
     )
 }
-
 
 /// Poll `window.__onerrorResult` until it is non-null or the timeout elapses.
 /// Returns the captured JSON string, or an empty string on timeout.
@@ -228,18 +214,15 @@ fn parse_onerror_result(
 // actually executes the data: URL script body. If __probe becomes
 // "before-throw" the worker ran; if it stays null the worker never executed.
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn servo_native_worker_executes_probe() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = match runtime.create_page(&PageConfig {
@@ -301,18 +284,15 @@ fn servo_native_worker_executes_probe() {
 /// the main-thread `worker.onerror` handler fires (i.e. `__onerrorResult` is
 /// populated) within a bounded wait, proving the servo-native ErrorEvent
 /// dispatch path is wired through.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn servo_native_onerror_fires_on_script_error() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = match runtime.create_page(&PageConfig {
@@ -357,18 +337,15 @@ fn servo_native_onerror_fires_on_script_error() {
 /// Asserts the ErrorEvent delivered to the main thread has non-null, correctly
 /// typed `message` (string), `filename` (string), `lineno` (number), and
 /// `colno` (number) fields per SPEC criterion #9.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn servo_native_onerror_error_event_fields() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = match runtime.create_page(&PageConfig {
@@ -423,18 +400,15 @@ fn servo_native_onerror_error_event_fields() {
 /// Verifies the ErrorEvent.message string carries the thrown Error's textual
 /// message, confirming servo propagates the worker-side error text verbatim
 /// rather than a generic placeholder.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn servo_native_onerror_message_contains_error_text() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = match runtime.create_page(&PageConfig {

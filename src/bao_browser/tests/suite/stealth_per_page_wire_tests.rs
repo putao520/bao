@@ -45,18 +45,6 @@ use bao_stealth::StealthProfile;
 /// Serializes servo-touching phases inside one isolated test process.
 static TEST_SERIALIZER: Mutex<()> = Mutex::new(());
 
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Drive servo's ScriptThread with a no-op evaluate (the pump pattern every
 /// live harness here uses) so page-realm async dispatches progress.
 fn pump(page: &bao_browser::PageHandle, ms: u64) {
@@ -174,14 +162,12 @@ fn await_hello(
 ///   4. both ALPN lists offer `h2,http/1.1` (no h1 downgrade on either).
 /// Before the fix both pages rode the LAST-installed profile (identical
 /// JA3, wrong anchor on one side) — that is the RED this test pins.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn per_page_divergent_wire_profiles_live() {
     if !common::run_isolated(
         "stealth_per_page_wire_tests::per_page_divergent_wire_profiles_live",
     ) {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
@@ -312,14 +298,12 @@ fn spawn_sw_origin_fixture() -> common::http_fixture::HttpFixture {
 /// process-global fallback bucket holds the Chrome profile. The ruling
 /// holds iff the SW-realm ClientHello carries the REGISTERING page's
 /// Firefox anchor ("8-29-23-24-25"), NOT the Chrome one.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn sw_egress_rides_host_page_profile_under_divergence_live() {
     if !common::run_isolated(
         "stealth_per_page_wire_tests::sw_egress_rides_host_page_profile_under_divergence_live",
     ) {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
@@ -470,12 +454,10 @@ fn dispatch_fetch(page: &bao_browser::PageHandle, port: u16, path: &str) {
 /// LAST-INSTALL-WINS thread-local (`TL_STEALTH_PROFILE`): page F (installed
 /// first) presented page C's Chrome fingerprint — that is the RED this test
 /// pins (T14 control: both pages' JA3 identical / page F wrong anchor).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn stealth_per_page_fetch_profiles_live() {
     if !common::run_isolated("stealth_per_page_wire_tests::stealth_per_page_fetch_profiles_live") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());

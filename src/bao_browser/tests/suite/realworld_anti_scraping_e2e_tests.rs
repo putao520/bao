@@ -156,20 +156,21 @@ fn inject_stealth_js(
 // Main test — single servo init, fault-tolerant scenarios
 // ---------------------------------------------------------------------------
 
-/// E2E test requiring servo headless environment.
-/// Graceful skip: BrowserRuntime::new() SIGSEGVs in environments
-/// without a display server (no X11/Wayland/virtual framebuffer).
-/// Run with `cargo test realworld_anti_scraping_e2e` when a display is available;
-/// otherwise the test detects the missing display and skips (eprintln + return).
+/// E2E test requiring servo headless environment + real external sites.
+///
+/// Environment contract (statically declared via `#[ignore]`): requires a
+/// display server (Xvfb) and external network; see the ignore reason for the
+/// provisioning recipe. Runtime-init failure in a provisioned env panics.
+#[ignore = "[env-gate] 需要 真外网(58.com/www.meituan.com 真实站点) + DISPLAY(servo WebRender GL-based); 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 BAO_TEST_NETWORK=1 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn realworld_anti_scraping_e2e() {
-    // Guard: skip if no DISPLAY environment (headless CI without Xvfb)
-    if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
-        eprintln!(
-            "[skip] 环境不可用: no DISPLAY or WAYLAND_DISPLAY — servo requires a display server"
-        );
-        return;
-    }
+    let config = BaoConfig::default();
+    let runtime = match BrowserRuntime::new(config) {
+        Ok(r) => r,
+        Err(e) => panic!("BrowserRuntime::new failed: {}", e),
+    };
+    let pool: &PagePool = runtime.page_pool();
+    let mut report = Report::default();
 
     let config = BaoConfig::default();
     let runtime = match BrowserRuntime::new(config) {

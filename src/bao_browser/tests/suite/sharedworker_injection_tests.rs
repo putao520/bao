@@ -61,19 +61,6 @@ mod common;
 /// BCE-20260627-009.
 static TEST_SERIALIZER: Mutex<()> = Mutex::new(());
 
-/// Skip-guard helper: returns true if the test should skip (no network/display).
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Acquire the global serializer lock for the full test duration.
 fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
     let guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
@@ -85,7 +72,6 @@ fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
         )
     }
 }
-
 
 /// The servo JS bridge may return a JS string value as `"..."` (quoted). Strip
 /// a single outer quote pair if present so the caller sees the raw value.
@@ -244,11 +230,9 @@ fn assert_sharedworker_injection(tag: &str, r: &str, main_ua: &str, expected_nam
 /// shared realm's engine getter serves the page profile UA (first drain point)
 /// and the W1a audio hook is installed (post-interfaces delivery through
 /// `on_complete`).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn sharedworker_ctor_port_roundtrip_and_stealth_injection() {
-    if should_skip() {
-        return;
-    }
     let _ser = lock_serializer();
     let (_runtime, page) = live_page(StealthProfile::firefox_default());
 
@@ -316,11 +300,9 @@ fn sharedworker_ctor_port_roundtrip_and_stealth_injection() {
 /// tier can only be consumed once, so the SECOND shared worker is proof the
 /// non-consuming injector tier covers SharedWorker scopes — not a bare
 /// fingerprintable realm.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn sharedworker_second_instance_still_injected() {
-    if should_skip() {
-        return;
-    }
     let _ser = lock_serializer();
     let (_runtime, page) = live_page(StealthProfile::firefox_default());
 

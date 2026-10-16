@@ -116,13 +116,7 @@ fn run_bao(args: &[&str], stdin: Option<&str>) -> std::io::Result<std::process::
 fn bao_cli_e2e_full_lifecycle() {
     let bao = match bao_path() {
         Some(p) => p,
-        None => {
-            eprintln!(
-                "SKIP: bao binary not found at ./{} — run `cargo build` first",
-                BAO_BIN
-            );
-            return;
-        }
+        None => panic!("bao binary not found at ./{BAO_BIN} — run `cargo build` first"),
     };
     eprintln!("using bao binary: {}", bao.display());
 
@@ -387,19 +381,16 @@ fn bao_cli_e2e_full_lifecycle() {
     );
 }
 
-// ─── 网络 E2E — bao browser 子命令(需要 servo Opts 单例 + 网络) ──────────────
+// ─── E2E — bao browser 子命令(需要 servo Opts 单例;零外部网络:只连 127.0.0.1)──
 //
-// bao browser --cdp-port 启动 servo + CDP server,长时间运行。
-// 此测试默认 graceful skip(避免启动长时间运行的进程占资源)。
-// 启用方式:BAO_TEST_NETWORK=1 cargo test bao_cli_browser_subcommand
+// bao browser --cdp-port 启动 servo + CDP server。servo WebRender GL-based,
+// 无 DISPLAY 环境静态 #[ignore](原因串携带 Xvfb 配方);
+// `--run-ignored=all` 在已供环境执行。
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 // @trace REQ-CLI-002 [level:e2e]
 fn bao_cli_browser_subcommand_starts() {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK=1 not set (bao browser subcommand E2E)");
-        return;
-    }
     let bao = bao_path().expect("bao binary not found");
 
     // Act: 启动 bao browser,绑一个空闲端口

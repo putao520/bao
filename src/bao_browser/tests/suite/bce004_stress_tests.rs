@@ -52,21 +52,13 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
     Ok(())
 }
 
+#[ignore = "[env-gate] 需要 真外网 bot.sannysoft.com/browserleaks.com/example.* + DISPLAY(servo WebRender GL-based); 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 BAO_TEST_NETWORK=1 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn bce004_stress_ten_navigations() {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return;
-    }
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init: {e}");
-            return;
+            panic!("runtime init: {e}");
         }
     };
     let profile = StealthProfile::chrome_default();
@@ -77,15 +69,13 @@ fn bce004_stress_ten_navigations() {
     }) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[fail] create_page: {e}");
-            return;
+            panic!("create_page: {e}");
         }
     };
 
     eprintln!("[stress] pre-nav inject");
     if let Err(e) = inject_stealth_js(&page, &profile) {
-        eprintln!("[fail] pre-nav inject: {e}");
-        return;
+        panic!("pre-nav inject: {e}");
     }
 
     let sites = [

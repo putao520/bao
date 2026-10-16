@@ -214,23 +214,13 @@ enum Action {
 const MAX_PAGES: usize = 8;
 const CHAOS_ROUNDS: usize = 150;
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn pagepool_chaos_memory_safety() {
-    // Graceful skip: this test exercises the full servo runtime via BrowserRuntime::new(),
-    // which requires a display server (X11/Wayland/Xvfb) and the real servo backend.
-    // Skip silently-but-visibly when the environment is unavailable so that the test
-    // never fails in headless CI sandboxes, yet still runs the full chaos loop when
-    // BAO_TEST_REAL_SERVO=1 is set (or a display is present).
-    let display_available =
-        std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok();
-    let forced = std::env::var("BAO_TEST_REAL_SERVO").as_deref() == Ok("1");
-    if !display_available && !forced {
-        eprintln!(
-            "[skip] 环境不可用: no DISPLAY/WAYLAND_DISPLAY and BAO_TEST_REAL_SERVO=1 not set \
-             (pagepool chaos requires full servo runtime)"
-        );
-        return;
-    }
+    // Exercises the full servo runtime via BrowserRuntime::new(), which
+    // requires a display server (X11/Wayland/Xvfb). Without one the test is
+    // statically skipped (see the #[ignore] above — the reason string carries
+    // the Xvfb recipe); with one it runs the full chaos loop.
     let config = BaoConfig {
         max_pages: MAX_PAGES,
         idle_ttl: Duration::from_secs(5),

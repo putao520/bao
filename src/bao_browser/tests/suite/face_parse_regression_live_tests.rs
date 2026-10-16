@@ -41,18 +41,6 @@ fn serializer() -> &'static Mutex<()> {
     SERIALIZER.get_or_init(|| Mutex::new(()))
 }
 
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Percent-encode an HTML document into a `data:text/html` URL (no
 /// subresources — the face-parse face needs no network). The `%20` form of
 /// the attribute value decodes back to the literal two spaces the probe
@@ -146,11 +134,9 @@ const PROBE_SCRIPT: &str = r#"(function () {
 /// The three e190/e191 green-account assertions on the live path. Any one
 /// of them failing (or the eval itself erroring — the panic class face)
 /// re-opens the face-parse defect class.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn face_parse_static_and_command_regression_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
 
     let (_runtime, page) = make_page(&data_url(PROBE_PAGE_HTML));

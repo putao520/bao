@@ -64,19 +64,6 @@ use bao_stealth::StealthProfile;
 /// Serializes servo-touching tests inside one isolated test process.
 static TEST_SERIALIZER: Mutex<()> = Mutex::new(());
 
-/// Skip-guard helper: returns true if the test should skip (no network/display).
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Drive servo's ScriptThread with a no-op evaluate (the pump pattern every
 /// live harness here uses) so page-realm async dispatches progress.
 fn pump(page: &bao_browser::PageHandle, ms: u64) {
@@ -170,14 +157,12 @@ fn digest_flips(digest: &str) -> u64 {
 ///   4. both digests have flips > 0 (noise actually engaged on both).
 /// Before the fix both readbacks rode the LAST-installed seed → identical
 /// digests — that is the RED this test pins.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn per_page_divergent_canvas_noise_live() {
     if !common::run_isolated(
         "stealth_per_page_canvas_tests::per_page_divergent_canvas_noise_live",
     ) {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
@@ -246,14 +231,12 @@ fn per_page_divergent_canvas_noise_live() {
 /// entry — while page S's stays noisy (flips > 0). Pre-R53 the global kept
 /// page S's seed 42 and page N's readback inherited it (RED: flips > 0 on
 /// the stealth-free page).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn stealth_free_page_canvas_zero_noise_live() {
     if !common::run_isolated(
         "stealth_per_page_canvas_tests::stealth_free_page_canvas_zero_noise_live",
     ) {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
@@ -335,7 +318,6 @@ var __r = (function () {
 self.postMessage(__r);
 "#;
 
-
 /// Run the worker-realm OffscreenCanvas probe on `page`; polls the
 /// `window.__wkCanvas` sink. Returns the raw `a|b` digest pair.
 fn run_worker_canvas_probe(page: &bao_browser::PageHandle) -> String {
@@ -394,14 +376,12 @@ fn run_worker_canvas_probe(page: &bao_browser::PageHandle) -> String {
 ///      rides its HOST page's profile, not the process-global last write).
 /// Pre-R53 both workers rode the last-installed global seed → identical
 /// digests (RED).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn worker_offscreencanvas_rides_host_page_profile_live() {
     if !common::run_isolated(
         "stealth_per_page_canvas_tests::worker_offscreencanvas_rides_host_page_profile_live",
     ) {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());

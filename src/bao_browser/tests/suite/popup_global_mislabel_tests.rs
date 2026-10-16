@@ -266,6 +266,7 @@ fn pump_until(
 /// The popup's LIVE realm (shared Window global of the initial about:blank
 /// and the real /popup document) must survive the about:blank pipeline's
 /// exit: armed bao timers keep ticking after the real document is active.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn popup_shared_global_survives_replacement_pipeline_exit() {
     bun_core::Output::init_test();
@@ -278,8 +279,7 @@ fn popup_shared_global_survives_replacement_pipeline_exit() {
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let pool: &PagePool = runtime.page_pool();

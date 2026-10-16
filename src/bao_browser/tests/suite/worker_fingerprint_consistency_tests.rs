@@ -48,19 +48,6 @@ mod common;
 /// BCE-20260627-009.
 static TEST_SERIALIZER: Mutex<()> = Mutex::new(());
 
-/// Skip-guard helper: returns true if the test should skip (no network/display).
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Acquire the global serializer lock for the full test duration.
 fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
     let guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
@@ -117,7 +104,6 @@ const FP_CANONICAL_JS: &str = r#"(function () {
 fn make_worker_body(canonical_expr: &str) -> String {
     format!("var __fp = {expr}; self.postMessage(__fp);", expr = canonical_expr)
 }
-
 
 /// Page-side driver: create the Worker from a data: URL and wire
 /// `w.onmessage` → `window.__workerFP` (worker→main digest sink) and
@@ -272,11 +258,9 @@ fn worker_digest(page: &bao_browser::PageHandle) -> String {
 /// navigator.userAgent / platform / hardwareConcurrency / language(s) equal
 /// the main thread's values — and that both equal the profile's configured
 /// values (deterministic anchor, not just internal agreement).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c12_worker_navigator_matches_main_thread_per_field() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -373,11 +357,9 @@ fn c12_worker_navigator_matches_main_thread_per_field() {
 /// back, then computed on the main thread with the SAME snippet, and the two
 /// digests are asserted byte-equal — the CreepJS/sannysoft worker-vs-main
 /// comparison shape from the criterion text.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c17_worker_fingerprint_digest_equals_main_thread_digest() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
@@ -426,11 +408,9 @@ fn c17_worker_fingerprint_digest_equals_main_thread_digest() {
 ///   2. The stealth worker's covered surfaces equal the profile's configured
 ///      values (proves the surface is profile-driven — no servo-native
 ///      passthrough).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c16_worker_surface_differs_from_no_stealth_baseline() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();

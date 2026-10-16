@@ -32,28 +32,13 @@ fn wait_for_load(page: &PageHandle, max_ms: u64) {
     }
 }
 
-fn env_ok() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return false;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return false;
-    }
-    true
-}
-
+#[ignore = "[env-gate] 需要 真外网 example.com/example.org/example.net + DISPLAY(servo WebRender GL-based); 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 BAO_TEST_NETWORK=1 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn bce004_iso_multi_eval_no_nav() {
-    if !env_ok() {
-        return;
-    }
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] init: {e}");
-            return;
+            panic!("init: {e}");
         }
     };
     let page = match runtime.create_page(&PageConfig {
@@ -62,8 +47,7 @@ fn bce004_iso_multi_eval_no_nav() {
     }) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[fail] create: {e}");
-            return;
+            panic!("create: {e}");
         }
     };
     // 50 evaluate_js calls (Node Realm path, filename "bao_evaluate_js")
@@ -77,16 +61,13 @@ fn bce004_iso_multi_eval_no_nav() {
     eprintln!("[iso-eval] PASS — 50 Node Realm evals no SIGSEGV");
 }
 
+#[ignore = "[env-gate] 需要 真外网 example.com/example.org/example.net + DISPLAY(servo WebRender GL-based); 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 BAO_TEST_NETWORK=1 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn bce004_iso_multi_nav_no_eval() {
-    if !env_ok() {
-        return;
-    }
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] init: {e}");
-            return;
+            panic!("init: {e}");
         }
     };
     let page = match runtime.create_page(&PageConfig {
@@ -95,8 +76,7 @@ fn bce004_iso_multi_nav_no_eval() {
     }) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[fail] create: {e}");
-            return;
+            panic!("create: {e}");
         }
     };
     let urls = [
@@ -114,16 +94,13 @@ fn bce004_iso_multi_nav_no_eval() {
     eprintln!("[iso-nav] PASS — 3 navs no SIGSEGV");
 }
 
+#[ignore = "[env-gate] 需要 真外网 example.com/example.org/example.net + DISPLAY(servo WebRender GL-based); 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 BAO_TEST_NETWORK=1 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn bce004_iso_eval_nav_eval() {
-    if !env_ok() {
-        return;
-    }
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] init: {e}");
-            return;
+            panic!("init: {e}");
         }
     };
     let page = match runtime.create_page(&PageConfig {
@@ -132,37 +109,31 @@ fn bce004_iso_eval_nav_eval() {
     }) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[fail] create: {e}");
-            return;
+            panic!("create: {e}");
         }
     };
     eprintln!("[iso-eval-nav-eval] eval #1");
     let _ = page.evaluate_js("1+1");
     eprintln!("[iso-eval-nav-eval] nav → https://example.com/");
     if let Err(e) = page.navigate("https://example.com/") {
-        eprintln!("[fail] nav: {e}");
-        return;
+        panic!("nav: {e}");
     }
     wait_for_load(&page, 8000);
     eprintln!("[iso-eval-nav-eval] eval #2 (post-nav)");
     let r2 = page.evaluate_js("2+2");
     if let Err(e) = r2 {
-        eprintln!("[fail] post-nav eval: {e}");
-        return;
+        panic!("post-nav eval: {e}");
     }
     eprintln!("[iso-eval-nav-eval] PASS — eval+nav+eval no SIGSEGV");
 }
 
+#[ignore = "[env-gate] 需要 真外网 example.com/example.org/example.net + DISPLAY(servo WebRender GL-based); 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 BAO_TEST_NETWORK=1 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn bce004_iso_create_close_create() {
-    if !env_ok() {
-        return;
-    }
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] init: {e}");
-            return;
+            panic!("init: {e}");
         }
     };
     let pool = runtime.page_pool();

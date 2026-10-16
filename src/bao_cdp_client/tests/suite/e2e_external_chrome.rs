@@ -7,12 +7,13 @@
 //! 3. **event_subscription**: subscribe event → mock push → 接收
 //! 4. **multi_command_sequence**: 多个命令按序往返
 //! 5. **error_recovery**: JSON-RPC error / 超时
-//! 6. **real_chrome**: 真实 Chrome (`ws://127.0.0.1:9222`),graceful skip + 环境变量
+//! 6. **real_chrome**: 真实 Chrome (`ws://127.0.0.1:9222`),`#[ignore]` 显式 skip + 环境变量
 //!
 //! ## 策略
 //!
 //! - **Mock 路径**: 启动 in-process mini ws server(bao_cdp::ws_handshake::server_handshake)
-//! - **真 Chrome 路径**: 检查 `BAO_TEST_CHROME_URL` 环境变量,有则跑,无则 graceful skip(eprintln + return)
+//! - **真 Chrome 路径**: `#[ignore = "<原因>"]` 显式 skip(nextest 报 SKIP + 原因串,
+//!   可观测),真跑需 `BAO_TEST_CHROME_URL` + `--run-ignored=all`
 //!
 //! @trace REQ-BAO-API-002 [interface:Transport]
 //! @trace TEST-BAO-API-E2E-EXTERNAL
@@ -439,14 +440,15 @@ fn e2e_external_close_then_send_returns_connection_closed() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// §5 真 Chrome E2E — graceful skip + BAO_TEST_CHROME_URL 环境变量
+// §5 真 Chrome E2E — #[ignore] 显式 skip + BAO_TEST_CHROME_URL 环境变量
 // ════════════════════════════════════════════════════════════════════
 
-/// 真实 Chrome 完整 E2E 测试。启用方式:
+/// 真实 Chrome 完整 E2E 测试。默认 `#[ignore]` 显式 SKIP(nextest 可观测),
+/// 真跑方式:
 /// ```sh
-/// BAO_TEST_CHROME_URL=ws://127.0.0.1:9222 cargo test e2e_real_chrome_navigation_and_screenshot
+/// BAO_TEST_CHROME_URL=ws://127.0.0.1:9222 cargo nextest run --run-ignored=all \
+///   -p bao_cdp_client -E 'test(e2e_real_chrome_navigation_and_screenshot)'
 /// ```
-/// 默认(无 BAO_TEST_CHROME_URL)graceful skip(eprintln + return)。
 ///
 /// ## CDP 流程说明
 /// Runtime / Page 都是 **page-domain**,不能在 browser-level session(无 sessionId)
@@ -455,15 +457,13 @@ fn e2e_external_close_then_send_returns_connection_closed() {
 ///
 /// flatten 模式下所有命令必须显式传 `sessionId` 字段(已通过 send_command 第 3 参实现)。
 #[test]
+#[ignore = "[env-gate] 需要 BAO_TEST_CHROME_URL=ws://<host>:<port> (真实 Chrome CDP ws 端点,如 ws://127.0.0.1:9222); 真跑: BAO_TEST_CHROME_URL=ws://127.0.0.1:9222 cargo nextest run --run-ignored=all -p bao_cdp_client -E 'test(e2e_real_chrome_navigation_and_screenshot)'; 期望: Target.createTarget→attachToTarget(flatten)→Page.navigate 返回 frameId→Page.captureScreenshot 返回非空 base64 png"]
 fn e2e_real_chrome_navigation_and_screenshot() {
-    // Arrange — 必须显式启用(real chrome 测试)
-    let url = match std::env::var("BAO_TEST_CHROME_URL") {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("[skip] 环境不可用: BAO_TEST_CHROME_URL not set (real chrome E2E)");
-            return;
-        }
-    };
+    // Arrange — fail-closed(#[ignore] 门下的防御:显式运行时缺 env 必响亮失败)
+    let url = std::env::var("BAO_TEST_CHROME_URL").expect(
+        "BAO_TEST_CHROME_URL not set — this real-chrome E2E is #[ignore]-gated; \
+         run with --run-ignored=all and a real Chrome ws endpoint",
+    );
     let mut t = WebSocketTransport::connect(&url).expect("ws connect to real chrome");
     t.set_command_timeout(Duration::from_secs(10));
 
@@ -545,15 +545,13 @@ fn e2e_real_chrome_navigation_and_screenshot() {
 }
 
 #[test]
+#[ignore = "[env-gate] 需要 BAO_TEST_CHROME_URL=ws://<host>:<port> (真实 Chrome CDP ws 端点,如 ws://127.0.0.1:9222); 真跑: BAO_TEST_CHROME_URL=ws://127.0.0.1:9222 cargo nextest run --run-ignored=all -p bao_cdp_client -E 'test(e2e_real_chrome_runtime_evaluate)'; 期望: Runtime.evaluate '1 + 1' 在 page session 返回 value=2"]
 fn e2e_real_chrome_runtime_evaluate() {
-    // Arrange — 必须显式启用(real chrome 测试)
-    let url = match std::env::var("BAO_TEST_CHROME_URL") {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("[skip] 环境不可用: BAO_TEST_CHROME_URL not set (real chrome E2E)");
-            return;
-        }
-    };
+    // Arrange — fail-closed(#[ignore] 门下的防御:显式运行时缺 env 必响亮失败)
+    let url = std::env::var("BAO_TEST_CHROME_URL").expect(
+        "BAO_TEST_CHROME_URL not set — this real-chrome E2E is #[ignore]-gated; \
+         run with --run-ignored=all and a real Chrome ws endpoint",
+    );
     let mut t = WebSocketTransport::connect(&url).expect("ws connect");
     t.set_command_timeout(Duration::from_secs(10));
 

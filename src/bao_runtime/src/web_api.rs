@@ -2451,9 +2451,17 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Extract BufferSource bytes: TypedArray/DataView fast path, then BARE
-/// ArrayBuffer (subtle results are bare ArrayBuffers — the node_crypto
-/// extractor misses those), then empty.
+/// Extract BufferSource bytes: TypedArray/DataView fast path, then bare
+/// ArrayBuffer or SharedArrayBuffer, then empty.
+///
+/// SUBTLE-BYTES-EMPTY-BUFFERSOURCE-CRASH contract (fixed 2026-10-16): a
+/// successful view unwrap owns the answer — a zero-length (or detached)
+/// view reads as an empty Vec and must NEVER fall through to the bare
+/// ArrayBuffer leg; and the bare leg is guarded by
+/// IsArrayBufferObjectMaybeShared before any length/data probe
+/// (GetArrayBufferByteLength crashes on any non-ArrayBuffer object —
+/// hostile-page SIGSEGV vector, reachable from every subtle entry point).
+/// Same shape as the node_crypto argon2 extractor.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn subtle_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
     if !val.is_object() {
@@ -2471,8 +2479,11 @@ unsafe fn subtle_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
         &mut is_shared,
         &mut data_ptr,
     );
-    if !u8_unwrapped.is_null() && !data_ptr.is_null() && length > 0 {
-        return ::std::slice::from_raw_parts(data_ptr, length).to_vec();
+    if !u8_unwrapped.is_null() {
+        if !data_ptr.is_null() && length > 0 {
+            return ::std::slice::from_raw_parts(data_ptr, length).to_vec();
+        }
+        return Vec::new();
     }
     let mut view_length: usize = 0;
     let mut view_shared = false;
@@ -2483,20 +2494,26 @@ unsafe fn subtle_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
         &mut view_shared,
         &mut view_data,
     );
-    if !view_unwrapped.is_null() && !view_data.is_null() && view_length > 0 {
-        return ::std::slice::from_raw_parts(view_data, view_length).to_vec();
+    if !view_unwrapped.is_null() {
+        if !view_data.is_null() && view_length > 0 {
+            return ::std::slice::from_raw_parts(view_data, view_length).to_vec();
+        }
+        return Vec::new();
     }
-    // Bare ArrayBuffer (length via ByteLength; data ptr valid while rooted,
-    // copied before any further JSAPI call).
-    let ab_len = mozjs_sys::jsapi::JS::GetArrayBufferByteLength(obj_root.get());
-    if ab_len > 0 {
+    // Bare ArrayBuffer or SharedArrayBuffer (detached → length 0). The probe
+    // is guarded: never call an ArrayBuffer-only accessor on the object —
+    // data ptr valid while rooted, copied before any further JSAPI call.
+    if mozjs_sys::jsapi::JS::IsArrayBufferObjectMaybeShared(obj_root.get()) {
+        let mut ab_len: usize = 0;
         let mut ab_shared = false;
-        let ab_data = mozjs_sys::jsapi::JS::GetArrayBufferData(
+        let mut ab_data: *mut u8 = ::std::ptr::null_mut();
+        mozjs_sys::jsapi::JS::GetArrayBufferMaybeSharedLengthAndData(
             obj_root.get(),
+            &mut ab_len,
             &mut ab_shared,
-            ::std::ptr::null(),
+            &mut ab_data,
         );
-        if !ab_data.is_null() {
+        if !ab_data.is_null() && ab_len > 0 {
             return ::std::slice::from_raw_parts(ab_data, ab_len).to_vec();
         }
     }

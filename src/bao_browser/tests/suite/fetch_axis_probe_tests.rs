@@ -145,18 +145,6 @@ impl Drop for H1ProbeFixture {
 // Shared probe helpers
 // ---------------------------------------------------------------------------
 
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Drive servo's ScriptThread with no-op evaluates while polling a page-side
 /// sink variable (the same pump pattern every live harness here uses).
 fn poll_sink(page: &PageHandle, sink: &str, timeout: Duration) -> Option<String> {
@@ -182,12 +170,10 @@ fn poll_sink(page: &PageHandle, sink: &str, timeout: Duration) -> Option<String>
 /// `fetch().then()` chain settles with the response body. Before the
 /// ScriptThread MiniEventLoop pump fix the settle side timed out while the
 /// fixture still recorded the hit — the exact e39 black-hole signature.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn fetch_axis_probe_b_absolute() {
     if !common::run_isolated("fetch_axis_probe_tests::fetch_axis_probe_b_absolute") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let fixture = H1ProbeFixture::spawn();
@@ -235,12 +221,10 @@ fn fetch_axis_probe_b_absolute() {
 /// base-URL resolution exists in the override chain). This probe pins what a
 /// conformant page expects: resolution against the document base → same
 /// settle shape as the absolute probe.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn fetch_axis_probe_b_relative() {
     if !common::run_isolated("fetch_axis_probe_tests::fetch_axis_probe_b_relative") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let fixture = H1ProbeFixture::spawn();
@@ -282,12 +266,10 @@ fn fetch_axis_probe_b_relative() {
 /// T axis — page realm `setTimeout` settlement (same-class probe for the
 /// per-thread MiniEventLoop: bao's install_timer_globals runs on page realms
 /// and its callbacks dispatch through the same loop the fetch resolve uses).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn fetch_axis_probe_t_settimeout() {
     if !common::run_isolated("fetch_axis_probe_tests::fetch_axis_probe_t_settimeout") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let fixture = H1ProbeFixture::spawn();
@@ -323,12 +305,10 @@ fn fetch_axis_probe_t_settimeout() {
 /// fixture never saw a connection. If the same URL shape misbehaves from a
 /// plain page realm too, the defect is in the shared egress (bridge/bun URL
 /// handling), not the SW thread.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn fetch_axis_probe_urlshape_double_slash() {
     if !common::run_isolated("fetch_axis_probe_tests::fetch_axis_probe_urlshape_double_slash") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let fixture = H1ProbeFixture::spawn();
@@ -379,12 +359,10 @@ fn fetch_axis_probe_urlshape_double_slash() {
 /// (Content-Length 48 = the "/" document) while the fixture never saw a
 /// connection. Every historically-green bridge test URL carries no query
 /// string — this probe discriminates query-vs-not on the bridge path.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn fetch_axis_probe_query_string_xhr() {
     if !common::run_isolated("fetch_axis_probe_tests::fetch_axis_probe_query_string_xhr") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let fixture = H1ProbeFixture::spawn();
@@ -438,12 +416,10 @@ fn fetch_axis_probe_query_string_xhr() {
 /// override; this exercises servo's own fetch_async → FetchThread →
 /// resource-thread → bun bridge → response-task round trip from a worker
 /// thread, with the result posted back via postMessage).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn fetch_axis_probe_c_worker_realm() {
     if !common::run_isolated("fetch_axis_probe_tests::fetch_axis_probe_c_worker_realm") {
-        return;
-    }
-    if should_skip() {
         return;
     }
     let fixture = H1ProbeFixture::spawn();

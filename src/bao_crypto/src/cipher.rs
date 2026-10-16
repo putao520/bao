@@ -72,6 +72,15 @@ unsafe extern "C" {
     fn EVP_CipherFinal_ex(ctx: *mut evp_cipher_ctx_st, out: *mut u8, outl: *mut c_int) -> c_int;
 }
 
+// AES-192-GCM AEAD getter: bun_boringssl_sys surfaces the 128/256/chacha
+// getters only. BoringSSL itself ships EVP_aead_aes_192_gcm (aead.h —
+// key_len 24, shared GCM sealv/openv_detached), so bind it here per the
+// TASK-1-CRYPTO file-domain rule (same libboringssl.a via force_link; never
+// by editing bun_boringssl_sys source).
+unsafe extern "C" {
+    fn EVP_aead_aes_192_gcm() -> *const bssl::EVP_AEAD;
+}
+
 /// RAII EVP_CIPHER_CTX (non-AEAD). Reset on drop.
 struct EvpCipherCtx {
     ctx: *mut evp_cipher_ctx_st,
@@ -275,12 +284,9 @@ impl CipherAlgorithm {
     fn aead_cipher(self) -> Option<*const bssl::EVP_AEAD> {
         Some(match self {
             CipherAlgorithm::Aes128Gcm => bssl::EVP_aead_aes_128_gcm(),
+            CipherAlgorithm::Aes192Gcm => unsafe { EVP_aead_aes_192_gcm() },
             CipherAlgorithm::Aes256Gcm => bssl::EVP_aead_aes_256_gcm(),
             CipherAlgorithm::ChaCha20Poly1305 => bssl::EVP_aead_chacha20_poly1305(),
-            // AES-192-GCM: BoringSSL ships no dedicated getter, but the 256-GCM
-            // aead honors the actual key length passed to EVP_AEAD_CTX_init only
-            // for the AES-*_GCM internal; 192 is unsupported by BoringSSL's AEAD.
-            CipherAlgorithm::Aes192Gcm => return None,
             _ => return None,
         })
     }
@@ -726,6 +732,15 @@ mod tests {
     #[test]
     fn aes_256_gcm_roundtrip() {
         assert_aead_roundtrip(CipherAlgorithm::Aes256Gcm, &[0u8; 32], b"hello aes-256-gcm");
+    }
+
+    // SUBTLE-AES192GCM-NO-AEAD (fixed 2026-10-16): the 192 getter was never
+    // wired (stale "BoringSSL ships no 192-GCM AEAD" belief — the vendored
+    // BoringSSL exports EVP_aead_aes_192_gcm, aead.h). WebCrypto mandates
+    // 128/192/256 for AES-GCM, so the subtle layer always advertised 192.
+    #[test]
+    fn aes_192_gcm_roundtrip() {
+        assert_aead_roundtrip(CipherAlgorithm::Aes192Gcm, &[0u8; 24], b"hello aes-192-gcm");
     }
 
     #[test]

@@ -442,18 +442,6 @@ fn wait_for<F: Fn() -> Option<T>, T>(mut poll: F, timeout: Duration, what: &str)
     None
 }
 
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Evaluates `js` on the page and polls until it stops reporting `pending`.
 fn eval_pending(
     page: &PageHandle,
@@ -480,11 +468,9 @@ fn eval_pending(
 /// closed, addModule must resolve against a real HTTP module, and the module
 /// must run on a real AudioWorkletGlobalScope (registerProcessor callable,
 /// real sampleRate/currentTime/currentFrame).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn audioworklet_surface_addmodule_and_scope_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_aw_fixture();
@@ -568,11 +554,9 @@ fn audioworklet_surface_addmodule_and_scope_live() {
 /// observes `Request.destination == "audioworklet"` (the e72 destination
 /// face), and respondWith's the pass-through fetch — the module loads only
 /// when BOTH the destination axis and the module pipeline are right.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn audioworklet_module_fetch_destination_via_sw_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_aw_fixture();
@@ -656,11 +640,9 @@ fn audioworklet_module_fetch_destination_via_sw_live() {
 /// The unregistered-name rejection (spec NotSupportedError arm) went live
 /// with the 段(3) wiring — the 段(1) INERT deviation documented in the file
 /// header is closed, so this test now asserts the rejection too.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn audioworklet_node_constructs_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_aw_fixture();
@@ -777,11 +759,9 @@ fn spawn_wired_page(
 /// node + bridge) → OfflineAudioContext render → the destination carries the
 /// processor's sample-exact echo, and `node.parameters` is a real
 /// AudioParamMap whose `gain` entry automates `WorkletParam(0)`.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn audioworklet_render_echo_and_parameters_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_aw_fixture();
@@ -869,11 +849,9 @@ fn audioworklet_render_echo_and_parameters_live() {
 /// A processor whose `process()` throws latches the bridge on the worklet
 /// thread and fires `processorerror` on the main thread exactly once (the
 /// spec's one-shot), through the Trusted-task channel.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn audioworklet_processorerror_fires_once_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_aw_fixture();
@@ -919,11 +897,9 @@ fn audioworklet_processorerror_fires_once_live() {
 /// main→processor message wakes the pump drain on the worklet thread, the
 /// processor's handler replies, and the reply is dispatched as a `message`
 /// event on the node's port with the scope's real sampleRate attached.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn audioworklet_port_roundtrip_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_aw_fixture();
@@ -969,11 +945,9 @@ fn audioworklet_port_roundtrip_live() {
 /// "invoking processor constructor" steps 3-5 + 8) — the processor
 /// constructor receives the deserialized dictionary object, and
 /// `options.processorOptions.x` is the exact value the page placed there.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn audioworklet_processor_options_simple_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_aw_fixture();
@@ -1027,11 +1001,9 @@ fn audioworklet_processor_options_simple_live() {
 /// main→worklet structured clone with shape and order intact (the
 /// substitution clone preserves enumeration order; JSON comparison is the
 /// oracle).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn audioworklet_processor_options_nested_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_aw_fixture();
@@ -1086,11 +1058,9 @@ fn audioworklet_processor_options_nested_live() {
 /// (worklet→main through the lane), and the page's reply is received by the
 /// processor and forwarded through the node's port (main→worklet through
 /// the lane).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn audioworklet_processor_options_port_in_port_roundtrip_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_aw_fixture();
@@ -1163,11 +1133,9 @@ fn audioworklet_processor_options_port_in_port_roundtrip_live() {
 /// so every constructor-posted message was lost (the WPT
 /// messageport/options deterministic-TIMEOUT class — first message arrives
 /// only when the page posts first).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn audioworklet_ctor_port_message_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_aw_fixture();
@@ -1210,11 +1178,9 @@ fn audioworklet_ctor_port_message_live() {
 /// `this.<x>` access threw on the first block, the node latched
 /// processorerror and went silent (every WPT processor that touches `this`
 /// in `process()` hung there while the arg-only echo surface stayed green).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn audioworklet_process_this_binding_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_aw_fixture();
@@ -1278,11 +1244,9 @@ fn audioworklet_process_this_binding_live() {
 /// accessor, CreateDataProperty semantics) — the node keeps rendering (the
 /// buffer is NOT silent and no error fires). Runs on its own context: an
 /// OfflineAudioContext renders exactly once.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn audioworklet_invalid_param_getter_invalidates_node_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_aw_fixture();

@@ -229,18 +229,10 @@ impl Drop for HttpsPopupFixture {
 }
 
 // ---------------------------------------------------------------------------
-// Harness (suite convention: graceful skip without a real servo display)
+// Harness (suite convention: DISPLAY-gated via #[ignore]; init failure panics)
 // ---------------------------------------------------------------------------
 
-fn runtime_or_skip(tag: &str) -> Option<BrowserRuntime> {
-    if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
-        eprintln!("[skip] {tag}: BAO_TEST_REAL_SERVO != 1");
-        return None;
-    }
-    if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
-        eprintln!("[skip] {tag}: no DISPLAY or WAYLAND_DISPLAY");
-        return None;
-    }
+fn runtime_or_skip(tag: &str) -> BrowserRuntime {
     let config = BaoConfig {
         // WPT posture: the servo page network (bridge + sync XHR) must accept
         // the self-signed fixture; the popup's async fetch must inherit the
@@ -249,11 +241,8 @@ fn runtime_or_skip(tag: &str) -> Option<BrowserRuntime> {
         ..BaoConfig::default()
     };
     match BrowserRuntime::new(config) {
-        Ok(runtime) => Some(runtime),
-        Err(e) => {
-            eprintln!("[skip] {tag}: BrowserRuntime::new failed: {e}");
-            None
-        }
+        Ok(runtime) => runtime,
+        Err(e) => panic!("{tag}: BrowserRuntime::new failed: {e}"),
     }
 }
 
@@ -279,14 +268,13 @@ fn wait_for_load(page: &bao_browser::PageHandle, max_ms: u64) {
 /// self-signed HTTPS target under the runtime's `ignore_certificate_errors`
 /// posture. Pre-fix the deferred-injection fetch override enforces strict
 /// verification and the fetch dies post-handshake (`TypeError: fetch failed`).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn https_popup_fetch_settles_under_ignore_certificate_errors() {
     bun_core::Output::init_test();
 
     let fixture = HttpsPopupFixture::spawn();
-    let Some(runtime) = runtime_or_skip("https_popup_fetch") else {
-        return;
-    };
+    let runtime = runtime_or_skip("https_popup_fetch");
     let pool = runtime.page_pool();
 
     let mut page = None;

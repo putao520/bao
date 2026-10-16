@@ -2291,7 +2291,8 @@ unsafe fn tls_extract_credentials(cx: *mut JSContext, val: JSVal) -> ::std::resu
         }
     }
 
-    // Plain object path: string .cert / .key properties.
+    // Plain object path: .cert / .key properties (string or byte view —
+    // node `cert`/`key` shapes, same as createServer options).
     let get_str_prop = |name: &str| -> Option<String> {
         let cname = ZBox::from_bytes(name.as_bytes());
         let mut v = UndefinedValue();
@@ -2304,11 +2305,7 @@ unsafe fn tls_extract_credentials(cx: *mut JSContext, val: JSVal) -> ::std::resu
                 ptr: &mut v,
             },
         );
-        if v.is_string() {
-            Some(crate::js_to_rust_string(cx, v))
-        } else {
-            None
-        }
+        tls_pem_one(cx, v)
     };
     match (get_str_prop("cert"), get_str_prop("key")) {
         (Some(cert), Some(key)) => Ok((cert, key)),
@@ -2352,6 +2349,92 @@ unsafe fn tls_collect_write_bytes(cx: *mut JSContext, v: JSVal) -> Option<Vec<u8
         return Some(Vec::new());
     }
     None
+}
+
+/// Extract one PEM blob from a JS value: string, or byte view
+/// (Uint8Array/Buffer/ArrayBuffer). node documents `cert`/`key`/`ca` as
+/// `string | Buffer` (and arrays thereof) — `fs.readFileSync` returns a
+/// Buffer/Uint8Array, the canonical real-world input shape. Byte views
+/// decode as UTF-8 (PEM is ASCII; non-UTF-8 bytes are not a valid blob).
+/// Returns None for empty values — an empty blob is not a PEM input.
+unsafe fn tls_pem_one(cx: *mut JSContext, v: JSVal) -> Option<String> {
+    if v.is_string() {
+        let s = crate::js_to_rust_string(cx, v);
+        return if s.is_empty() { None } else { Some(s) };
+    }
+    if !v.is_object() {
+        return None;
+    }
+    let bytes = tls_collect_write_bytes(cx, v)?;
+    if bytes.is_empty() {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// Expand a node `cert`/`key`/`ca` option value into PEM blobs: a single
+/// value (`string | Buffer | {pem, ...}`) or an array of those — the
+/// documented shapes of node:tls `createServer`/`connect` options. Entries
+/// that do not carry PEM bytes are skipped (the caller's preexisting
+/// missing-material failure path stays the loud one).
+unsafe fn tls_pem_list(cx: *mut JSContext, v: JSVal) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if !v.is_object() {
+        if let Some(p) = tls_pem_one(cx, v) {
+            out.push(p);
+        }
+        return out;
+    }
+    // Byte view first: a typed array is an object with no numeric elements,
+    // so this must be tried before the array walk.
+    if let Some(p) = tls_pem_one(cx, v) {
+        out.push(p);
+        return out;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = v.to_object());
+    // Array walk (house pattern: JS_GetElement until undefined) — covers
+    // `cert: [leaf, intermediate]` chains and string[]/Buffer[] arrays.
+    let mut i: u32 = 0;
+    loop {
+        let mut elem = UndefinedValue();
+        JS_GetElement(
+            cx,
+            obj.handle().into(),
+            i,
+            MutableHandle::<JSVal> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut elem,
+            },
+        );
+        if elem.is_undefined() {
+            break;
+        }
+        if let Some(p) = tls_pem_one(cx, elem) {
+            out.push(p);
+        }
+        i += 1;
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    // `{pem, passphrase}` object form (node docs) — read the .pem field.
+    // Passphrase-encrypted keys remain unsupported (unchanged scope).
+    let mut pem_v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"pem".as_ptr(),
+        MutableHandle::<JSVal> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut pem_v,
+        },
+    );
+    if let Some(p) = tls_pem_one(cx, pem_v) {
+        out.push(p);
+    }
+    out
 }
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
@@ -3255,32 +3338,10 @@ unsafe extern "C" fn tls_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 ptr: &mut ca,
             },
         );
-        if ca.is_string() {
-            ca_pems.push(crate::js_to_rust_string(cx, ca));
-        } else if ca.is_object() {
-            // Array of PEM strings.
-            rooted!(&in(cx_ref) let arr = ca.to_object());
-            let mut i: u32 = 0;
-            loop {
-                let mut elem = UndefinedValue();
-                JS_GetElement(
-                    cx,
-                    arr.handle().into(),
-                    i,
-                    MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut elem,
-                    },
-                );
-                if elem.is_undefined() {
-                    break;
-                }
-                if elem.is_string() {
-                    ca_pems.push(crate::js_to_rust_string(cx, elem));
-                }
-                i += 1;
-            }
-        }
+        // node `ca: string | Buffer | string[] | Buffer[]` — one shared
+        // expander covers every shape (single byte views included; the old
+        // string-only walk silently dropped a lone `ca: Buffer`).
+        ca_pems.extend(tls_pem_list(cx, ca));
         (host, port)
     } else if argc > 0 && (*args.get(0).ptr).is_int32() {
         let port = (*args.get(0).ptr).to_int32() as u16;
@@ -3730,7 +3791,13 @@ unsafe extern "C" fn tls_create_server(cx: *mut JSContext, argc: u32, vp: *mut J
                 0,
             );
 
-            // Parse key/cert from options and store in SecureContextState on the server object
+            // Parse key/cert from options and store in SecureContextState on
+            // the server object. node shapes: `key`/`cert` are
+            // `string | Buffer | string[] | Buffer[]` (`fs.readFileSync`
+            // returns Buffer/Uint8Array — the canonical real-world input).
+            // key: single key slot, first parseable entry wins. cert: an
+            // array is a chain (leaf + intermediates) — join so the whole
+            // chain, not just its last entry, is served.
             let mut key_val = UndefinedValue();
             JS_GetProperty(
                 cx,
@@ -3741,9 +3808,10 @@ unsafe extern "C" fn tls_create_server(cx: *mut JSContext, argc: u32, vp: *mut J
                     ptr: &mut key_val,
                 },
             );
-            if key_val.is_string() {
-                let pem = crate::js_to_rust_string(cx, key_val);
-                sc_state_set_key(cx, server.get(), &pem);
+            for pem in tls_pem_list(cx, key_val) {
+                if sc_state_set_key(cx, server.get(), &pem) {
+                    break;
+                }
             }
             let mut cert_val = UndefinedValue();
             JS_GetProperty(
@@ -3755,9 +3823,10 @@ unsafe extern "C" fn tls_create_server(cx: *mut JSContext, argc: u32, vp: *mut J
                     ptr: &mut cert_val,
                 },
             );
-            if cert_val.is_string() {
-                let pem = crate::js_to_rust_string(cx, cert_val);
-                sc_state_set_cert(cx, server.get(), &pem);
+            let pems = tls_pem_list(cx, cert_val);
+            if !pems.is_empty() {
+                let joined = pems.join("\n");
+                sc_state_set_cert(cx, server.get(), &joined);
             }
 
             // Parse ALPNProtocols from options
@@ -3958,12 +4027,15 @@ unsafe extern "C" fn sc_set_key(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let args = CallArgs::from_vp(vp, argc);
     if argc > 0 {
         let val = *args.get(0).ptr;
-        if val.is_string() {
-            let pem = crate::js_to_rust_string(cx, val);
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-            let cx_ref = &mut wrapped_cx;
-            rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-            sc_state_set_key(cx, this_obj.get(), &pem);
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+        // node `key: string | Buffer | string[] | Buffer[]` — first
+        // parseable entry wins (single key slot).
+        for pem in tls_pem_list(cx, val) {
+            if sc_state_set_key(cx, this_obj.get(), &pem) {
+                break;
+            }
         }
     }
     args.rval().set(UndefinedValue());
@@ -3975,12 +4047,15 @@ unsafe extern "C" fn sc_set_cert(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let args = CallArgs::from_vp(vp, argc);
     if argc > 0 {
         let val = *args.get(0).ptr;
-        if val.is_string() {
-            let pem = crate::js_to_rust_string(cx, val);
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-            let cx_ref = &mut wrapped_cx;
-            rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-            sc_state_set_cert(cx, this_obj.get(), &pem);
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+        // node `cert: string | Buffer | string[] | Buffer[]` — an array is
+        // a certificate chain: join so the whole chain is stored.
+        let pems = tls_pem_list(cx, val);
+        if !pems.is_empty() {
+            let joined = pems.join("\n");
+            sc_state_set_cert(cx, this_obj.get(), &joined);
         }
     }
     args.rval().set(UndefinedValue());
@@ -3992,11 +4067,10 @@ unsafe extern "C" fn sc_add_ca_cert(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let args = CallArgs::from_vp(vp, argc);
     if argc > 0 {
         let val = *args.get(0).ptr;
-        if val.is_string() {
-            let pem = crate::js_to_rust_string(cx, val);
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-            let cx_ref = &mut wrapped_cx;
-            rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+        for pem in tls_pem_list(cx, val) {
             sc_state_add_ca(cx, this_obj.get(), &pem);
         }
     }
@@ -4009,15 +4083,17 @@ unsafe extern "C" fn sc_set_ca(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     let args = CallArgs::from_vp(vp, argc);
     if argc > 0 {
         let val = *args.get(0).ptr;
-        if val.is_string() {
-            let pem = crate::js_to_rust_string(cx, val);
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+        let pems = tls_pem_list(cx, val);
+        if !pems.is_empty() {
             // setCA replaces the entire CA store, so reset first
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-            let cx_ref = &mut wrapped_cx;
-            rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
             let state = sc_state_ensure(cx, this_obj.get());
             (*state).ca_certs = Vec::new();
-            sc_state_add_ca(cx, this_obj.get(), &pem);
+            for pem in &pems {
+                sc_state_add_ca(cx, this_obj.get(), pem);
+            }
         }
     }
     args.rval().set(UndefinedValue());

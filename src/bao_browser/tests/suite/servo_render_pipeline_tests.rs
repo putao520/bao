@@ -22,7 +22,7 @@
 //   5. **screenshot**: page.take_screenshot() → servo SoftwareRendering → PNG
 //
 // **运行约束**: servo Opts 是 per-process 单例,所有断言合并到单个 #[test]。
-// 网络 navigate(https://example.com)用 graceful skip + BAO_TEST_NETWORK=1 启用。
+// 网络 navigate(https://example.com)静态 #[ignore = "[env-gate] ..."](原因串携带真跑配方)。
 
 use bao_browser::{
     BaoConfig, BrowserRuntime, PageConfig, PageHandle, PagePool, PageState, ScreenshotFormat,
@@ -249,15 +249,12 @@ fn servo_render_pipeline_data_url_default_run() {
     );
 }
 
-// ─── 网络 E2E — graceful skip + BAO_TEST_NETWORK=1 启用 ─────────────────────
+// ─── 网络 E2E — 静态 #[ignore](真外网 + DISPLAY,原因串携带真跑配方) ──────────
 
+#[ignore = "[env-gate] 需要 真外网 example.com + DISPLAY(servo WebRender GL-based); 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 BAO_TEST_NETWORK=1 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 // @trace REQ-BRW-001 [level:e2e]
 fn servo_render_pipeline_network_example_com() {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK=1 not set (network E2E)");
-        return;
-    }
 
     // Arrange
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");

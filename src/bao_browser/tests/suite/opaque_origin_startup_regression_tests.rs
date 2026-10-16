@@ -41,14 +41,6 @@ fn boot_lock() -> MutexGuard<'static, ()> {
     }
 }
 
-fn require_display() -> bool {
-    if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
-        eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
-        return false;
-    }
-    true
-}
-
 /// Pump servo's loop until the page answers a page-realm evaluation. The P0
 /// crash manifested exactly here: the ScriptThread died at init, so every
 /// evaluation errored forever ("pipeline never ready, CDP never listens").
@@ -109,11 +101,9 @@ fn create_opaque_page(
 /// stealth probe surface active, each page probed with the throwing
 /// accessor AFTER ready, then re-evaluated to prove the ScriptThread
 /// survived.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn opaque_origin_startup_survives_throwing_accessors() {
-    if !require_display() {
-        return;
-    }
     let _guard = boot_lock();
     bun_core::Output::init_test();
 
@@ -191,11 +181,9 @@ fn opaque_origin_startup_survives_throwing_accessors() {
 /// session against an opaque-origin page must complete a
 /// Runtime.evaluate round-trip through the production wiring
 /// (BaoWsRegistry → bridge → servo PagePool).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn cdp_answers_on_opaque_origin_page() {
-    if !require_display() {
-        return;
-    }
     let _guard = boot_lock();
     bun_core::Output::init_test();
 

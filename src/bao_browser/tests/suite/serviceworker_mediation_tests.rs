@@ -56,24 +56,11 @@
 #[path = "common/mod.rs"]
 mod common;
 
-
 use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 static TEST_SERIALIZER: Mutex<()> = Mutex::new(());
-
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
 
 /// The ServiceWorker the test registers: intercepts `/api/data` with a
 /// synthetic Response; proxies `/api/proxied` through its own `fetch()` of
@@ -225,11 +212,9 @@ fn one_probe(page: &bao_browser::PageHandle, path: &str) -> String {
 /// → SW realm FetchEvent → respondWith → CustomResponse → net Response):
 /// interception with a synthetic response, pass-through for non-intercepted
 /// URLs, and the anti-loop proxy shape `respondWith(fetch(event.request))`.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c19_sw_mediates_page_fetch_end_to_end_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_sw_mediation_fixture();
@@ -380,11 +365,9 @@ fn c19_sw_mediates_page_fetch_end_to_end_live() {
 ///      carry "worker" honestly, so "no empty record on this path" is the
 ///      exact discriminator and cannot false-green: the only request that
 ///      CAN carry "empty" here is the post-activation re-fetch.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c19_sw_refetch_preserves_destination_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_sw_mediation_fixture();
@@ -529,11 +512,9 @@ fn install_e73_recorder_js() -> String {
 /// one and both assertions invert (the RED shape this test must not regress
 /// to). The registration scope deliberately excludes both pages — no request
 /// is ever mediated, isolating the messaging face.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c19_sw_postmessage_targets_enrolled_client_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_sw_mediation_fixture();
@@ -736,11 +717,9 @@ fn install_e75_recorder_js() -> String {
 /// to exactly page A — the dead client must not be answered anymore. Before
 /// the e75 teardown ping the manager kept the dead slot forever (the RED
 /// this test must not regress to: the count stays 2).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c19_sw_unenrolls_dead_client_live() {
-    if should_skip() {
-        return;
-    }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = spawn_sw_mediation_fixture();

@@ -38,7 +38,19 @@ webdriver = ["dep:webdriver_server"]
 # that WebGL and crypto are always-on surfaces (stealth probing needs the real
 # GL/crypto face present), so the features are enabled unconditionally here —
 # the pre-swap snapshot compiled both in unconditionally.
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.25, <0.6.0", default-features = false, features = ["baked-in-resources", "webgl", "webcrypto"] }
+# gamepad (REQ-BRW-30, 2026-10-16): the upstream snapshot gates the Gamepad
+# exposure axis behind `skip-unless CARGO_FEATURE_GAMEPAD` in script_bindings
+# webidls (Gamepad/GamepadButton/GamepadEvent/GamepadHapticActuator/
+# Navigator.getGamepads compiled out otherwise => `undefined` at runtime).
+# Bao's product contract is that the Gamepad API is an always-on surface
+# (headless with no embedder-provided pads => getGamepads() returns an empty
+# array, same as Chrome headless), so the feature is enabled unconditionally
+# here. The target-gated servo declarations below (media-gstreamer / no-wgl)
+# inherit it by cargo feature unification — no per-target repetition needed.
+# Pure compile-time gate: gamepad = ["script/gamepad",
+# "servo-constellation/gamepad", "embedder_traits/gamepad"] all forward to
+# empty feature stubs, zero new crates/system libs.
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.25, <0.6.0", default-features = false, features = ["baked-in-resources", "webgl", "webcrypto", "gamepad"] }
 # WebDriver embedder host (feature "webdriver"): the upstream component that
 # owns the whole WebDriver HTTP protocol — bao only pumps the embedder channel.
 webdriver_server = { package = "bao-servo-webdriver-server", path = "../../vendor/servo/components/webdriver_server", version = "=0.5.19", optional = true }

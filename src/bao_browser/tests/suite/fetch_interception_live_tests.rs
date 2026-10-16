@@ -506,14 +506,14 @@ fn assert_paused_face(p: &Value, url_hint: &str) -> String {
 // network, and the design §4 structural order holds on the wire
 // ─────────────────────────────────────────────────────────────────────────
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn fetch_interception_pause_then_continue_completes_over_real_network() {
     let origin = spawn_origin();
     let fixture = match LiveFixture::spawn() {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[skip-fetch-live] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let ws_url = fixture.ws_url.clone();
@@ -612,14 +612,14 @@ fn client_pause_continue(ws_url: &str, origin: u16, tx: std::sync::mpsc::Sender<
 // Case 2 — fulfillRequest: a synthetic response downlinks to the page
 // ─────────────────────────────────────────────────────────────────────────
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn fetch_interception_fulfill_request_downlinks_synthetic_response() {
     let origin = spawn_origin();
     let fixture = match LiveFixture::spawn() {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[skip-fetch-live] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let ws_url = fixture.ws_url.clone();
@@ -695,14 +695,14 @@ fn client_fulfill(ws_url: &str, origin: u16, tx: std::sync::mpsc::Sender<Result<
 // pauses (the disable-is-the-exit invariant, design §3.1)
 // ─────────────────────────────────────────────────────────────────────────
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn fetch_interception_disable_drains_pause_and_subsequent_requests_flow_direct() {
     let origin = spawn_origin();
     let fixture = match LiveFixture::spawn() {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[skip-fetch-live] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let ws_url = fixture.ws_url.clone();

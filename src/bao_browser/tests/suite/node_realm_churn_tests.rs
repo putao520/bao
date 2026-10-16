@@ -88,14 +88,14 @@ fn assert_all_node_ok(pages: &[PageHandle], stage: &str) {
     }
 }
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn churn_close_keeps_long_lived_pages_node_realm() {
     let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
 

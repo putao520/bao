@@ -36,19 +36,6 @@ mod common;
 /// Each test acquires this lock for its full duration. BCE-20260627-009.
 static TEST_SERIALIZER: Mutex<()> = Mutex::new(());
 
-/// Skip-guard helper: returns true if the test should skip (no network/display).
-fn should_skip() -> bool {
-    if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_NETWORK != 1");
-        return true;
-    }
-    if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
-        eprintln!("[skip] no DISPLAY");
-        return true;
-    }
-    false
-}
-
 /// Acquire the global serializer lock. Hold for the full test duration.
 /// The servo idempotent patches (BCE-20260627-009) make repeated
 /// BrowserRuntime::new safe; this lock only prevents concurrent servo instances.
@@ -64,7 +51,6 @@ fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
         )
     }
 }
-
 
 /// Make JS that creates N workers in parallel via Promise.all, each running the
 /// given script body (URL-encoded), and waits for all to settle.
@@ -117,17 +103,14 @@ fn wait_for_js_condition(page: &bao_browser::PageHandle, expr: &str, timeout: Du
 /// Creates N workers in parallel, each immediately self-closing, and verifies
 /// the BrowserRuntime does not crash (no SIGSEGV/panic). This tests the crash-safe
 /// teardown path under concurrent load.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c18_concurrent_create_destroy_zero_crash() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = match runtime.create_page(&PageConfig {
@@ -146,8 +129,7 @@ fn c18_concurrent_create_destroy_zero_crash() {
         .wait_for_pipeline_ready(Duration::from_secs(5))
         .is_err()
     {
-        eprintln!("[skip] pipeline not ready");
-        return;
+        panic!("pipeline not ready");
     }
 
     // Worker script: immediately self.close() to trigger teardown immediately.
@@ -188,17 +170,14 @@ fn c18_concurrent_create_destroy_zero_crash() {
 ///
 /// Verifies that WorkerHandle.is_closing() correctly reflects the worker state
 /// even when multiple workers are created and terminated concurrently.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c18_concurrent_terminate_closing_flag_consistent() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
 
@@ -209,16 +188,14 @@ fn c18_concurrent_terminate_closing_flag_consistent() {
     }) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[skip] create_page: {e}");
-            return;
+            panic!("create_page: {e}");
         }
     };
     if page
         .wait_for_pipeline_ready(Duration::from_secs(5))
         .is_err()
     {
-        eprintln!("[skip] pipeline not ready");
-        return;
+        panic!("pipeline not ready");
     }
 
     // Create workers via BrowserRuntime::create_worker (which returns WorkerHandle).
@@ -237,8 +214,7 @@ fn c18_concurrent_terminate_closing_flag_consistent() {
                 handles.push(handle);
             }
             Err(e) => {
-                eprintln!("[skip] create_worker failed: {e}");
-                return;
+                panic!("create_worker failed: {e}");
             }
         }
     }
@@ -278,17 +254,14 @@ fn c18_concurrent_terminate_closing_flag_consistent() {
 ///
 /// Exercises all three teardown paths (worker.terminate(), self.close(), page-unload)
 /// and verifies each is crash-safe.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c18_three_path_teardown_crash_free() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
 
@@ -300,16 +273,14 @@ fn c18_three_path_teardown_crash_free() {
         }) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("[skip] page for path 1: {e}");
-                return;
+                panic!("page for path 1: {e}");
             }
         };
         if page
             .wait_for_pipeline_ready(Duration::from_secs(3))
             .is_err()
         {
-            eprintln!("[skip] pipeline not ready for path 1");
-            return;
+            panic!("pipeline not ready for path 1");
         }
 
         // Create worker that posts messages (long-running until terminated).
@@ -351,8 +322,7 @@ fn c18_three_path_teardown_crash_free() {
             .wait_for_pipeline_ready(Duration::from_secs(3))
             .is_err()
         {
-            eprintln!("[skip] pipeline not ready for path 2");
-            return;
+            panic!("pipeline not ready for path 2");
         }
 
         // Worker immediately self.close().
@@ -388,8 +358,7 @@ fn c18_three_path_teardown_crash_free() {
             .wait_for_pipeline_ready(Duration::from_secs(3))
             .is_err()
         {
-            eprintln!("[skip] pipeline not ready for path 3");
-            return;
+            panic!("pipeline not ready for path 3");
         }
 
         // Create long-running worker.
@@ -439,17 +408,14 @@ fn c18_three_path_teardown_crash_free() {
 /// `create_worker_with_url` registers before dispatching `new Worker(url)`.
 /// This test drives the real servo-native worker path and asserts the backfill
 /// lands and crash-safe teardown reports REALM_PROFILES unregistration.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn c18_worker_global_addr_backfilled_and_unregistered() {
-    if should_skip() {
-        return;
-    }
     let _guard = lock_serializer();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = match runtime.create_page(&PageConfig {
@@ -458,24 +424,21 @@ fn c18_worker_global_addr_backfilled_and_unregistered() {
     }) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[skip] create_page: {e}");
-            return;
+            panic!("create_page: {e}");
         }
     };
     if page
         .wait_for_pipeline_ready(Duration::from_secs(5))
         .is_err()
     {
-        eprintln!("[skip] pipeline not ready");
-        return;
+        panic!("pipeline not ready");
     }
 
     let worker_url = "data:text/javascript,self.postMessage('ready');".to_string();
     let handle = match runtime.create_worker_with_url(&page, &worker_url) {
         Ok(h) => h,
         Err(e) => {
-            eprintln!("[skip] create_worker failed: {e}");
-            return;
+            panic!("create_worker failed: {e}");
         }
     };
 

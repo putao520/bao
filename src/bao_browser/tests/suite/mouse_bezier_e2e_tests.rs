@@ -9,10 +9,10 @@
 //   - Consecutive points have direction changes consistent with a Bezier curve
 //   - Speed varies (ease-in-out: start slow, fast in middle, slow at end)
 //
-// Graceful strategy:
-//   - This test requires a real servo runtime (and DISPLAY server). If either
-//     is absent (BAO_TEST_REAL_SERVO != 1, no DISPLAY, BrowserRuntime::new fails),
-//     the test prints `[skip]` and returns without fail.
+// Environment contract:
+//   - This test requires a display server (servo WebRender GL-based) —
+//     declared statically via `#[ignore = "需要 DISPLAY ..."]`; runtime-init
+//     failure in a provisioned env is a panic.
 //   - The local `data:text/html` test page is fully self-contained — NO external
 //     network access required.
 //
@@ -154,28 +154,17 @@ fn dispatch_mousemove(page: &PageHandle, x: f64, y: f64) -> Result<(), String> {
     }
 }
 
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn mouse_bezier_e2e() {
     // Guard 1: opt-in for real servo runtime
-    if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
-        eprintln!("[skip] BAO_TEST_REAL_SERVO != 1 — mouse Bezier E2E requires real servo runtime");
-        return;
-    }
     // Guard 2: servo requires a display server
-    if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
-        eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
-        return;
-    }
     // Guard 3: BrowserRuntime::new may fail in environments lacking servo runtime deps
     let config = BaoConfig::default();
     let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!(
-                "[skip] BrowserRuntime::new failed (likely missing servo runtime): {}",
-                e
-            );
-            return;
+            panic!("BrowserRuntime::new failed (likely missing servo runtime): {}", e);
         }
     };
     let pool: &PagePool = runtime.page_pool();

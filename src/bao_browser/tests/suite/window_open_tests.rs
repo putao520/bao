@@ -14,8 +14,10 @@
 //   4. `window.close()` from page JS → WebViewClosed → pool entry retired
 //      (notify_closed path, criterion ⑤).
 //
-// Graceful strategy (suite convention): requires BAO_TEST_REAL_SERVO=1 and a
-// display server; absent either → skip (never a false red).
+// Environment contract (suite convention): these are real-servo E2Es — they
+// need a display server, so each carries `#[ignore = "需要 DISPLAY ..."]`
+// (the reason string carries the Xvfb recipe); `--run-ignored=all` in a
+// provisioned env runs them, and runtime-init failure there is a panic.
 
 #![allow(dead_code)]
 
@@ -24,25 +26,14 @@ use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool};
 const OPENER_HTML: &str = "data:text/html;charset=utf-8,<html><body>opener</body></html>";
 const CROSS_HTML: &str = "data:text/html;charset=utf-8,<html><body>cross</body></html>";
 
-fn runtime_or_skip(tag: &str) -> Option<BrowserRuntime> {
+fn runtime_or_skip(tag: &str) -> BrowserRuntime {
     runtime_or_skip_with(tag, BaoConfig::default())
 }
 
-fn runtime_or_skip_with(tag: &str, config: BaoConfig) -> Option<BrowserRuntime> {
-    if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
-        eprintln!("[skip] {tag}: BAO_TEST_REAL_SERVO != 1");
-        return None;
-    }
-    if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
-        eprintln!("[skip] {tag}: no DISPLAY or WAYLAND_DISPLAY");
-        return None;
-    }
+fn runtime_or_skip_with(tag: &str, config: BaoConfig) -> BrowserRuntime {
     match BrowserRuntime::new(config) {
-        Ok(runtime) => Some(runtime),
-        Err(e) => {
-            eprintln!("[skip] {tag}: BrowserRuntime::new failed: {e}");
-            None
-        }
+        Ok(runtime) => runtime,
+        Err(e) => panic!("{tag}: BrowserRuntime::new failed: {e}"),
     }
 }
 
@@ -57,11 +48,10 @@ fn create_opener(pool: &PagePool) -> bao_browser::PageHandle {
 /// ① window.open (same-origin target `about:blank`) returns a live Window,
 /// the popup is pooled accounting-wise, becomes evaluable after the deferred
 /// pump-side init, and an explicit close reclaims the accounting.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn window_open_same_origin_returns_window_and_child_page_evaluable() {
-    let Some(runtime) = runtime_or_skip("window_open_same_origin") else {
-        return;
-    };
+    let runtime = runtime_or_skip("window_open_same_origin");
     let pool: &PagePool = runtime.page_pool();
     let opener = create_opener(pool);
 
@@ -125,11 +115,10 @@ fn window_open_same_origin_returns_window_and_child_page_evaluable() {
 /// ② cross-origin open: both documents carry opaque (never-equal) origins, so
 /// the returned WindowProxy is the cross-origin state — still non-null (the
 /// embedder ask is origin-independent; servo has no popup blocker gate).
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn window_open_cross_origin_returns_window() {
-    let Some(runtime) = runtime_or_skip("window_open_cross_origin") else {
-        return;
-    };
+    let runtime = runtime_or_skip("window_open_cross_origin");
     let pool: &PagePool = runtime.page_pool();
     let opener = create_opener(pool);
 
@@ -152,15 +141,14 @@ fn window_open_cross_origin_returns_window() {
 /// ④ pool-limit exhaustion: the delegate drops the creation request → the
 /// script side's blocked recv closes → JS null. Chromium maps resource
 /// exhaustion to exactly this; a panic or hang here would be a regression.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn window_open_denied_at_pool_limit_returns_null() {
     let config = BaoConfig {
         max_pages: 1,
         ..BaoConfig::default()
     };
-    let Some(runtime) = runtime_or_skip_with("window_open_pool_limit", config) else {
-        return;
-    };
+    let runtime = runtime_or_skip_with("window_open_pool_limit", config);
     let pool: &PagePool = runtime.page_pool();
     let opener = create_opener(pool);
     assert_eq!(pool.stats().total_created, 1, "opener fills the pool");
@@ -184,11 +172,10 @@ fn window_open_denied_at_pool_limit_returns_null() {
 /// ⑤ window.close() from page JS: servo notifies the embedder
 /// (WebViewClosed → notify_closed) and the pool entry is retired through the
 /// regular close path — keyeds cleaned up, accounting drops.
+#[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn window_close_via_page_js_retires_pool_entry() {
-    let Some(runtime) = runtime_or_skip("window_close_retires_pool_entry") else {
-        return;
-    };
+    let runtime = runtime_or_skip("window_close_retires_pool_entry");
     let pool: &PagePool = runtime.page_pool();
     let opener = create_opener(pool);
 

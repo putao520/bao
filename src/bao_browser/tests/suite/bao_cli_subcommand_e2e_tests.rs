@@ -26,7 +26,7 @@
 //      直跑,也不是 External 的 "unknown command"。
 //
 // **运行约束**: 需要预 build 的 bao 二进制(bao_path() 探测);缺失时
-// graceful skip,与 bao_cli_e2e_tests.rs 同约定。
+// fail-closed(assert!/panic!,与 bao_cli_e2e_tests.rs 的 run_bao .expect 同约定)。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -120,13 +120,7 @@ fn fresh_temp_dir(label: &str) -> PathBuf {
 fn bao_cli_subcommand_doctor_never_exits_nonzero() {
     let bao = match bao_path() {
         Some(p) => p,
-        None => {
-            eprintln!(
-                "SKIP: bao binary not found at ./{} — run `cargo build` first",
-                BAO_BIN
-            );
-            return;
-        }
+        None => panic!("bao binary not found at ./{BAO_BIN} — run `cargo build` first"),
     };
     eprintln!("using bao binary: {}", bao.display());
 
@@ -176,13 +170,10 @@ fn bao_cli_subcommand_doctor_never_exits_nonzero() {
 #[test]
 // @trace REQ-ENG-006 [level:e2e]
 fn bao_cli_subcommand_test_runner_exit_codes() {
-    if bao_path().is_none() {
-        eprintln!(
-            "SKIP: bao binary not found at ./{} — run `cargo build` first",
-            BAO_BIN
-        );
-        return;
-    }
+    assert!(
+        bao_path().is_some(),
+        "bao binary not found at ./{BAO_BIN} — run `cargo build` first"
+    );
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -380,13 +371,10 @@ fn bao_cli_subcommand_test_runner_exit_codes() {
 #[test]
 // @trace REQ-CLI-001 [level:e2e]
 fn bao_cli_subcommand_build_artifact_and_missing_entry() {
-    if bao_path().is_none() {
-        eprintln!(
-            "SKIP: bao binary not found at ./{} — run `cargo build` first",
-            BAO_BIN
-        );
-        return;
-    }
+    assert!(
+        bao_path().is_some(),
+        "bao binary not found at ./{BAO_BIN} — run `cargo build` first"
+    );
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -503,13 +491,10 @@ fn bao_cli_subcommand_build_artifact_and_missing_entry() {
 #[test]
 // @trace REQ-CLI-001 [level:e2e]
 fn bao_cli_subcommand_install_argument_surface() {
-    if bao_path().is_none() {
-        eprintln!(
-            "SKIP: bao binary not found at ./{} — run `cargo build` first",
-            BAO_BIN
-        );
-        return;
-    }
+    assert!(
+        bao_path().is_some(),
+        "bao binary not found at ./{BAO_BIN} — run `cargo build` first"
+    );
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -588,13 +573,10 @@ fn bao_cli_subcommand_install_argument_surface() {
 #[test]
 // @trace REQ-CLI-001 [level:e2e]
 fn bao_cli_subcommand_external_script_path_treated_as_url_is_rejected_by_browser_init() {
-    if bao_path().is_none() {
-        eprintln!(
-            "SKIP: bao binary not found at ./{} — run `cargo build` first",
-            BAO_BIN
-        );
-        return;
-    }
+    assert!(
+        bao_path().is_some(),
+        "bao binary not found at ./{BAO_BIN} — run `cargo build` first"
+    );
 
     let mut passed = 0u32;
     let mut failed = 0u32;

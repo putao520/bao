@@ -4,8 +4,9 @@
 // PATH and the npm registry is reachable (`npm view` works), and
 // puppeteer-core downloads NO Chromium (connectOverCDP/connect attaches to
 // OUR endpoint), so this is the real-Puppeteer form, not protocol-shaped.
-// Graceful honest skip only for genuine environment absence (no node / npm
-// install failure), with the reason printed.
+// Environment contract: node on PATH + npm registry reachability are declared
+// statically via `#[ignore = "[env-gate] ..."]` (reason carries the recipe);
+// provisioning failures inside a provisioned env are panics, never skips.
 //
 // Harness shape: main thread owns BrowserRuntime + the run_with_bridge loop
 // (servo spin + bridge drain + event translation — BrowserRuntime holds
@@ -33,9 +34,11 @@ fn pick_free_port() -> u16 {
 }
 
 /// Prepare the node workspace (once per machine): puppeteer-core install.
-/// Returns (node_path, workspace_dir) or None with the reason printed.
-fn prepare_node_workspace() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
-    let node = which_node()?;
+/// Returns (node_path, workspace_dir); any provisioning failure is a panic
+/// (the test is statically #[ignore]d without node/npm/network — reaching
+/// this body means the environment declared itself provisioned).
+fn prepare_node_workspace() -> (std::path::PathBuf, std::path::PathBuf) {
+    let node = which_node();
     let dir = std::path::PathBuf::from("/tmp/w40-puppeteer-core");
     let marker = dir.join("node_modules").join("puppeteer-core");
     if !marker.exists() {
@@ -45,8 +48,7 @@ fn prepare_node_workspace() -> Option<(std::path::PathBuf, std::path::PathBuf)> 
             .current_dir(&dir)
             .status();
         if init.map(|s| !s.success()).unwrap_or(true) {
-            eprintln!("[skip-w40] node package.json init failed");
-            return None;
+            panic!("node package.json init failed");
         }
         // puppeteer-core only — no Chromium download (we attach to OUR ws).
         let inst = std::process::Command::new("npm")
@@ -56,23 +58,22 @@ fn prepare_node_workspace() -> Option<(std::path::PathBuf, std::path::PathBuf)> 
         match inst {
             Ok(o) if o.status.success() => {}
             other => {
-                eprintln!(
-                    "[skip-w40] npm install puppeteer-core failed: {:?}",
+                panic!(
+                    "npm install puppeteer-core failed: {:?}",
                     other.err().map(|e| e.to_string()).unwrap_or_default()
                 );
-                return None; // honest skip (task stop condition: install failure)
             }
         }
     }
-    Some((node, dir))
+    (node, dir)
 }
 
-fn which_node() -> Option<std::path::PathBuf> {
+fn which_node() -> std::path::PathBuf {
     for cand in ["/home/putao/.nvm/versions/node/v24.19.0/bin/node", "node"] {
         if cand.starts_with('/') {
             let p = std::path::PathBuf::from(cand);
             if p.exists() {
-                return Some(p);
+                return p;
             }
         } else if std::process::Command::new(cand)
             .arg("--version")
@@ -80,11 +81,10 @@ fn which_node() -> Option<std::path::PathBuf> {
             .map(|o| o.status.success())
             .unwrap_or(false)
         {
-            return Some(std::path::PathBuf::from(cand));
+            return std::path::PathBuf::from(cand);
         }
     }
-    eprintln!("[skip-w40] node not found on PATH");
-    None
+    panic!("node not found on PATH");
 }
 
 const NODE_SCRIPT: &str = r#"
@@ -181,19 +181,17 @@ function ok(name, cond, extra) {
 })().catch(e => { console.error('W40-STEP-FAIL exception :: ' + (e && e.message)); process.exit(1); });
 "#;
 
+#[ignore = "[env-gate] 需要 系统 node/npm + npm registry 外网(puppeteer-core@24 安装) + DISPLAY(servo WebRender GL-based); 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 BAO_TEST_NETWORK=1 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn puppeteer_real_lifecycle_e2e() {
-    let Some((node, dir)) = prepare_node_workspace() else {
-        return; // honest skip with printed reason (no fake green)
-    };
+    let (node, dir) = prepare_node_workspace();
     let script_path = dir.join("w40-puppeteer.js");
     std::fs::write(&script_path, NODE_SCRIPT).expect("write node script");
 
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[skip-w40] runtime init failed: {e}");
-            return;
+            panic!("runtime init failed: {e}");
         }
     };
     let page = runtime
