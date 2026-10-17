@@ -1000,9 +1000,14 @@ fn test_parse_new_request_no_prefix() {
 }
 
 #[test]
-fn test_parse_new_request_plus_to_space() {
+fn test_parse_new_request_plus_is_literal() {
+    // Chromium /json/new parity (devtools_http_handler.cc:681): the decode is
+    // `base::UnescapeBinaryURLComponent` with the default
+    // `UnescapeRule::NORMAL` — no REPLACE_PLUS_WITH_SPACE. A literal `+` in
+    // the target URL survives; `+`→space is the form-urlencoded rule, not the
+    // discovery contract.
     let result = parse_new_request("GET /json/new?hello+world HTTP/1.1\r\n");
-    assert_eq!(result.unwrap(), "hello world");
+    assert_eq!(result.unwrap(), "hello+world");
 }
 
 #[test]

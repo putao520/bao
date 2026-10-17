@@ -4463,6 +4463,7 @@ name = "cdp-server"
 version = "0.2.1"
 dependencies = [
  "bao_ipc",
+ "bun_url",
  "log",
  "serde",
  "serde_json",

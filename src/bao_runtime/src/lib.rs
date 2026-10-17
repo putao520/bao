@@ -247,6 +247,74 @@ pub unsafe fn jsstr_to_rust_string(
     }
 }
 
+/// Iterate an object's own enumerable string-keyed properties, fetching each
+/// value by id (`JS_GetPropertyById` — no per-key C-string round trip, no
+/// by-name re-lookup). Shared replacement for the former
+/// `jsid.to_string → jsstr_to_string → ZBox → JS_GetProperty` traversal
+/// boilerplate (headers / env / exports / record-obj family).
+///
+/// For each own string key, invokes `f(name, id, value, fetch_ok)`:
+/// - `name`: Rust copy of the key
+/// - `id`: handle to the rooted jsid, for `JS_GetPropertyById` /
+///   `JS_SetPropertyById` follow-ups on the same key
+/// - `value`: fetched value (undefined when `fetch_ok` is false); the helper
+///   keeps it rooted for the callback's duration
+/// - `fetch_ok`: `false` when the property get failed (e.g. throwing getter);
+///   the callback decides skip/keep, matching each site's prior error handling
+///
+/// Non-string keys (symbols, array indices) are skipped. A failed get neither
+/// aborts the loop nor touches pending exceptions, and `GetPropertyKeys`
+/// failure skips the whole walk (all identical to the sites this consolidates).
+/// Returns `false` when enumeration itself failed (callback never runs) —
+/// call sites that distinguish "no walk" from "empty walk" consume it.
+///
+/// # Safety
+/// `cx` must be a live JSContext on the current thread and `obj` must be a
+/// rooted object handle.
+pub unsafe fn for_each_string_property<F>(
+    cx: *mut mozjs::jsapi::JSContext,
+    obj: mozjs::jsapi::Handle<*mut mozjs::jsapi::JSObject>,
+    mut f: F,
+) -> bool
+where
+    F: FnMut(
+        &str,
+        mozjs::jsapi::Handle<mozjs::jsapi::jsid>,
+        mozjs::jsapi::Value,
+        bool,
+    ),
+{
+    use mozjs::jsapi::{jsid, JS_GetPropertyById, JSITER_OWNONLY};
+    use mozjs::rooted;
+
+    let mut wrapped = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut ids = mozjs::rust::IdVector::new(&mut wrapped);
+    if !mozjs::rust::wrappers2::GetPropertyKeys(
+        &mut wrapped,
+        // SAFETY: `obj` is a live caller-rooted location (Safety contract above).
+        unsafe { mozjs::rust::Handle::from_raw(obj) },
+        JSITER_OWNONLY as u32,
+        ids.handle_mut(),
+    ) {
+        return false;
+    }
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let mut val = mozjs::jsval::UndefinedValue());
+    for jsid in &*ids {
+        if !jsid.is_string() {
+            continue;
+        }
+        let name = crate::jsstr_to_rust_string(cx, jsid.to_string());
+        let id_h = mozjs::jsapi::Handle::<jsid> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: jsid as *const jsid as *mut jsid,
+        };
+        let got = unsafe { JS_GetPropertyById(cx, obj.into(), id_h, val.handle_mut().into()) };
+        f(&name, id_h, val.handle().get(), got);
+    }
+    true
+}
+
 /// Force-link `bun_install` compilation unit so the linker resolves
 /// `__bun_resolver_init_package_manager` from `bun_install::auto_installer`.
 #[inline(never)]

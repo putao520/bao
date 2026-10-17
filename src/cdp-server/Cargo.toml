@@ -17,3 +17,4 @@ tungstenite = { version = "0.26", features = ["handshake"] }
 # transparent re-export — single import point, same rule as every other
 # channel face (the paired sender lives in bao_browser's delegates).
 bao_ipc = { path = "../bao_ipc", version = "0.1.0" }
+bun_url = { path = "../url", version = "^0.2.1" }

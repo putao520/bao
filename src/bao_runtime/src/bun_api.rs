@@ -5954,50 +5954,27 @@ unsafe fn serve_write_response_object(
                 res_mut.write_header(c_key.as_bytes(), c_v.as_bytes());
             }
         } else {
-            // Plain-object headers: property enumeration via `GetPropertyKeys`
-            // (mozjs Rust wrapper) + `IdVector` — the canonical pattern used in
-            // node_url.rs / node_util.rs for iterating JS object keys without
-            // raw AutoIdArray struct layout assumptions.
-            let mut ids = mozjs::rust::IdVector::new(cx_ref_resp);
-            let ok = GetPropertyKeys(
+            // Plain-object headers: own-enum string keys walked by the shared
+            // by-id property walker (IdVector + GetPropertyKeys + value fetch).
+            crate::for_each_string_property(
                 raw_cx,
                 headers_obj.handle().into(),
-                JSITER_OWNONLY,
-                ids.handle_mut(),
-            );
-            if ok {
-                for jsid in &*ids {
-                    if !jsid.is_string() {
-                        continue;
+                |key, _id, header_val, _| {
+                    if !header_val.is_string() {
+                        return;
                     }
-                    let key_str_ptr = jsid.to_string();
-                    let key = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)), NonNull::new_unchecked(key_str_ptr));
-                    let mut header_val = UndefinedValue();
-                    let c_key = ZBox::from_bytes(key.as_bytes());
-                    JS_GetProperty(
-                        raw_cx,
-                        headers_obj.handle().into(),
-                        c_key.as_ptr(),
-                        MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut header_val,
-                        },
-                    );
-                    let val_str = if header_val.is_string() {
-                        crate::js_to_rust_string(raw_cx, header_val)
-                    } else {
-                        continue;
-                    };
+                    let val_str = crate::js_to_rust_string(raw_cx, header_val);
 
                     // Skip Content-Length — uWS recomputes it from the body
                     // bytes passed to `end`.
                     if key.eq_ignore_ascii_case("content-length") {
-                        continue;
+                        return;
                     }
+                    let c_key = ZBox::from_bytes(key.as_bytes());
                     let c_v = ZBox::from_bytes(val_str.as_bytes());
                     res_mut.write_header(c_key.as_bytes(), c_v.as_bytes());
-                }
-            }
+                },
+            );
         }
     }
 
@@ -6505,40 +6482,22 @@ unsafe extern "C" fn bun_build(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         JS_GetProperty(cx, cfg_h, c"define".as_ptr(), def_val.handle_mut().into());
         if def_val.get().is_object() {
             rooted!(&in(cx_ref) let def_obj = def_val.get().to_object());
-            // Own enumerable string keys (Headers record parsing pattern).
-            let mut ids = mozjs::rust::IdVector::new(cx_ref);
-            if GetPropertyKeys(cx, def_obj.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
-                for jsid in &*ids {
-                    if !jsid.is_string() {
-                        continue;
-                    }
-                    let key_ptr = jsid.to_string();
-                    if key_ptr.is_null() {
-                        continue;
-                    }
-                    let key = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(key_ptr));
-                    let c_key = ZBox::from_bytes(key.as_bytes());
-                    rooted!(&in(cx_ref) let mut v_val = UndefinedValue());
-                    JS_GetProperty(
-                        cx,
-                        def_obj.handle().into(),
-                        c_key.as_ptr(),
-                        v_val.handle_mut().into(),
-                    );
-                    let value = if v_val.get().is_string() {
-                        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
-                            NonNull::new_unchecked(v_val.get().to_string()),
-                        )
-                    } else if v_val.get().is_number() {
-                        format!("{}", v_val.get().to_number())
-                    } else if v_val.get().is_boolean() {
-                        if v_val.get().to_boolean() { "true" } else { "false" }.to_string()
-                    } else {
-                        continue;
-                    };
-                    config.define.push((key, value));
-                }
-            }
+            // Own enumerable string keys (Headers record parsing pattern),
+            // walked by the shared by-id property walker.
+            crate::for_each_string_property(cx, def_obj.handle().into(), |key, _id, v_val, _| {
+                let value = if v_val.is_string() {
+                    jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+                        NonNull::new_unchecked(v_val.to_string()),
+                    )
+                } else if v_val.is_number() {
+                    format!("{}", v_val.to_number())
+                } else if v_val.is_boolean() {
+                    if v_val.to_boolean() { "true" } else { "false" }.to_string()
+                } else {
+                    return;
+                };
+                config.define.push((key.to_string(), value));
+            });
         }
     }
 

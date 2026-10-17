@@ -161,31 +161,14 @@ pub fn parse_new_request(request: &str) -> Option<String> {
     }
 }
 
+/// WHATWG pass-through percent-decode — Chromium `/json/new` parity
+/// (`base::UnescapeBinaryURLComponent`, default `UnescapeRule::NORMAL`):
+/// byte-level `%XY`; invalid escapes pass through literally; `+` is never a
+/// space (that is the form-urlencoded rule, not the discovery contract);
+/// multi-byte UTF-8 survives intact. Non-UTF-8 output is finalized lossily —
+/// a byte sequence that is not valid UTF-8 cannot name a URL string anyway.
 fn percent_decode(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut chars = input.bytes();
-    while let Some(b) = chars.next() {
-        if b == b'%' {
-            let hi = chars.next().unwrap_or(b'0');
-            let lo = chars.next().unwrap_or(b'0');
-            let val = hex_val(hi) << 4 | hex_val(lo);
-            result.push(val as char);
-        } else if b == b'+' {
-            result.push(' ');
-        } else {
-            result.push(b as char);
-        }
-    }
-    result
-}
-
-fn hex_val(b: u8) -> u8 {
-    match b {
-        b'0'..=b'9' => b - b'0',
-        b'a'..=b'f' => b - b'a' + 10,
-        b'A'..=b'F' => b - b'A' + 10,
-        _ => 0,
-    }
+    String::from_utf8_lossy(&bun_url::whatwg::percent_decode(input.as_bytes())).into_owned()
 }
 
 // @trace REQ-CDS-004 [req:REQ-CDS-004] [level:unit]
@@ -263,6 +246,17 @@ mod tests {
     }
 
     #[test]
+    fn new_request_keeps_literal_plus() {
+        // form-urlencoded `+`→space is not the discovery contract: a literal
+        // `+` in the target URL survives (Chromium parity).
+        let req = "GET /json/new?url=https://example.com/a+b HTTP/1.1";
+        assert_eq!(
+            parse_new_request(req),
+            Some("https://example.com/a+b".to_string())
+        );
+    }
+
+    #[test]
     fn new_request_wrong_path() {
         let req = "GET /json/version HTTP/1.1";
         assert_eq!(parse_new_request(req), None);
@@ -295,10 +289,30 @@ mod tests {
     }
 
     #[test]
-    fn hex_val_digits() {
-        assert_eq!(hex_val(b'0'), 0);
-        assert_eq!(hex_val(b'a'), 10);
-        assert_eq!(hex_val(b'F'), 15);
+    fn percent_decode_plus_is_not_a_space() {
+        // Chromium /json/new parity (devtools_http_handler.cc:681): the decode
+        // is `base::UnescapeBinaryURLComponent` with the default
+        // `UnescapeRule::NORMAL` — no REPLACE_PLUS_WITH_SPACE. A literal `+`
+        // in the target URL must survive.
+        assert_eq!(percent_decode("a+b"), "a+b");
+        assert_eq!(percent_decode("https://x/search?q=a+b"), "https://x/search?q=a+b");
+    }
+
+    #[test]
+    fn percent_decode_multi_byte_utf8_is_not_mangled() {
+        // `中` = E4 B8 AD: byte-level decode must not Latin-1 reinterpret
+        // the bytes into U+00E4 U+00B8 U+00AD.
+        assert_eq!(percent_decode("%E4%B8%AD"), "中");
+    }
+
+    #[test]
+    fn percent_decode_invalid_escape_passes_through() {
+        // The old form emitted NUL and ate the trailing bytes
+        // (`100%` → `100\0`, `a%ZZb` → `a\0b`); WHATWG §percent-decode and
+        // Chromium escape.cc both copy the `%` through literally.
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("a%ZZb"), "a%ZZb");
+        assert_eq!(percent_decode("%2"), "%2");
     }
 
     // @trace REQ-CDS-002 [req:REQ-CDS-002] [level:unit]

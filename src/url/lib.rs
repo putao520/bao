@@ -319,6 +319,43 @@ pub mod whatwg {
         string_from_owned_bytes(buf)
     }
 
+    /// WHATWG percent-decode (URL Standard §"percent-decode"): `%XY` with two
+    /// hex digits becomes one byte; a `%` not followed by two hex digits is
+    /// passed through literally. Byte-level — multi-byte UTF-8 sequences
+    /// survive round-trips intact, and `+` is never a space (that is the
+    /// form-urlencoded rule, not this one). The caller decides how to
+    /// interpret the resulting bytes.
+    ///
+    /// This is the pass-through form the fetch data: URL processor mandates
+    /// and Chromium's `base::UnescapeBinaryURLComponent` implements (CDP
+    /// `/json/new` discovery parity). For the strict form — error instead of
+    /// pass-through on invalid escapes, used by the HTTP router where the
+    /// input is presumed valid — see [`crate::PercentEncoding::decode`].
+    pub fn percent_decode(input: &[u8]) -> Vec<u8> {
+        fn hex_val(b: u8) -> Option<u8> {
+            match b {
+                b'0'..=b'9' => Some(b - b'0'),
+                b'a'..=b'f' => Some(b - b'a' + 10),
+                b'A'..=b'F' => Some(b - b'A' + 10),
+                _ => None,
+            }
+        }
+        let mut out = Vec::with_capacity(input.len());
+        let mut i = 0;
+        while i < input.len() {
+            if input[i] == b'%' && i + 2 < input.len() {
+                if let (Some(hi), Some(lo)) = (hex_val(input[i + 1]), hex_val(input[i + 2])) {
+                    out.push(hi << 4 | lo);
+                    i += 3;
+                    continue;
+                }
+            }
+            out.push(input[i]);
+            i += 1;
+        }
+        out
+    }
+
     /// `file://host/path` → `/path` (host stripped; percent sequences kept).
     pub fn path_from_file_url(str: &String) -> String {
         let utf8 = str.to_utf8();
@@ -389,6 +426,7 @@ pub mod whatwg {
 // `bun_url::join(...)` / `bun_url::href_from_string(...)` (install, http, bake, js_parser).
 pub use whatwg::{
     file_url_from_string, href_from_string, join, origin_from_slice, path_from_file_url,
+    percent_decode,
 };
 
 /// Where the authority ends, which is where the search for the `@` of the userinfo stops.
@@ -2454,6 +2492,56 @@ mod fragment_query_tests {
         assert_eq!(url.path, b"/path");
         assert_eq!(url.search, b"?q=1");
         assert_eq!(url.hash, b"#frag?x=2");
+    }
+}
+
+/// Upstream bun 08e4ccbc90 (#42881): the authority ends where `new URL()`
+/// ends it — `/`, `?`, `#`, and a `\` in a special scheme; a proxy is the
+/// one single-reader exception; no host is read behind a second scheme.
+#[cfg(test)]
+/// `whatwg::percent_decode` — the WHATWG pass-through byte-level decode.
+/// Three consumer faces share it: the fetch data: URL processor and
+/// `Bun.fileURLToPath` (bao_runtime), and CDP `/json/new` (cdp-server, which
+/// is Chromium `base::UnescapeBinaryURLComponent` parity — escape.cc: invalid
+/// escapes copied through literally, no `+` rewriting, multi-byte UTF-8
+/// preserved as bytes).
+#[cfg(test)]
+mod percent_decode_tests {
+    use super::whatwg;
+
+    #[test]
+    fn decodes_two_digit_escapes_case_insensitively() {
+        assert_eq!(whatwg::percent_decode(b"%20"), b" ");
+        assert_eq!(whatwg::percent_decode(b"%48%65%6C%6C%6F"), b"Hello");
+        assert_eq!(whatwg::percent_decode(b"a%2Fb"), b"a/b");
+    }
+
+    #[test]
+    fn multi_byte_utf8_survives_as_bytes() {
+        // `中` = E4 B8 AD — byte-level decode must not Latin-1 mangle it.
+        assert_eq!(whatwg::percent_decode(b"%E4%B8%AD"), "中".as_bytes());
+        assert_eq!(whatwg::percent_decode("%中".as_bytes()), "%中".as_bytes());
+    }
+
+    #[test]
+    fn plus_is_never_a_space() {
+        // The form-urlencoded rule, not this one (CDP /json/new parity).
+        assert_eq!(whatwg::percent_decode(b"a+b"), b"a+b");
+    }
+
+    #[test]
+    fn invalid_escapes_pass_through_literally() {
+        // WHATWG §percent-decode: a `%` not followed by two hex digits is
+        // appended as-is and position advances by one.
+        assert_eq!(whatwg::percent_decode(b"100%"), b"100%");
+        assert_eq!(whatwg::percent_decode(b"a%ZZb"), b"a%ZZb");
+        assert_eq!(whatwg::percent_decode(b"a%2"), b"a%2");
+        assert_eq!(whatwg::percent_decode(b"%"), b"%");
+    }
+
+    #[test]
+    fn empty_input_is_empty_output() {
+        assert_eq!(whatwg::percent_decode(b""), b"");
     }
 }
 

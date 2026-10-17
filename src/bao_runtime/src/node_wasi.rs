@@ -853,53 +853,21 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // Copy all named exports from the IIFE result onto the module object.
         // We enumerate the object's own properties to avoid hardcoding every
         // constant name.
-        let mut ids = mozjs::rust::IdVector::new(cx);
-        let got = mozjs::jsapi::GetPropertyKeys(
-            cx_raw,
-            exports_rooted.handle().into(),
-            mozjs::jsapi::JSITER_OWNONLY,
-            ids.handle_mut(),
-        );
-        if got {
-            for jsid in &*ids {
-                if !jsid.is_string() {
-                    continue;
-                }
-                let key_str_ptr = jsid.to_string();
-                if key_str_ptr.is_null() {
-                    continue;
-                }
-
-                let mut val = UndefinedValue();
-                let id_h = Handle::<jsid> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: jsid as *const jsid as *mut jsid,
-                };
-                let val_h = MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut val,
-                };
-                JS_GetPropertyById(cx_raw, exports_rooted.handle().into(), id_h, val_h);
-                if val.is_undefined() {
-                    continue;
-                }
-                rooted!(&in(cx) let val_root = val);
-
-                let cname = ZBox::from_bytes(
-                    mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx_raw)),
-                        ::std::ptr::NonNull::new_unchecked(key_str_ptr),
-                    )
-                    .as_bytes(),
-                );
-                JS_DefineProperty(
-                    cx_raw,
-                    mod_obj.handle().into(),
-                    cname.as_ptr(),
-                    val_root.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
+        crate::for_each_string_property(cx_raw, exports_rooted.handle().into(), |name, _id, val, _got| {
+            if val.is_undefined() {
+                return;
             }
-        }
+            rooted!(&in(cx) let val_root = val);
+
+            let cname = ZBox::from_bytes(name.as_bytes());
+            JS_DefineProperty(
+                cx_raw,
+                mod_obj.handle().into(),
+                cname.as_ptr(),
+                val_root.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        });
 
         cache_builtin(cx, "wasi", mod_obj.get());
     }

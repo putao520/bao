@@ -1614,44 +1614,17 @@ unsafe fn h2_write_headers_obj(
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let hdrs_obj = hdrs);
-    let mut ids = mozjs::rust::IdVector::new(cx_ref);
-    if !w2::GetPropertyKeys(
-        cx_ref,
-        hdrs_obj.handle().into(),
-        JSITER_OWNONLY as u32,
-        ids.handle_mut(),
-    ) {
-        return;
-    }
-    for jsid in &*ids {
-        if !jsid.is_string() {
-            continue;
-        }
-        let key_str = jsid.to_string();
-        let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
-            NonNull::new_unchecked(key_str),
-        );
+    crate::for_each_string_property(cx, hdrs_obj.handle().into(), |key, _id, hv, _| {
         if key.starts_with(':') {
-            continue;
+            return;
         }
-        let c_key = ZBox::from_bytes(key.as_bytes());
-        let mut hv = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            hdrs_obj.handle().into(),
-            c_key.as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut hv,
-            },
-        );
         if hv.is_string() {
             let val = crate::js_to_rust_string(cx, hv);
             let key_lower = key.to_ascii_lowercase();
             let c_val = ZBox::from_bytes(val.as_bytes());
             (*res_mut).write_header(key_lower.as_bytes(), c_val.as_bytes());
         }
-    }
+    });
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -2609,43 +2582,17 @@ unsafe fn h2_res_write_head_records(cx: *mut JSContext, obj: *mut JSObject, hdrs
         // setHeader store first, minus overridden keys.
         if let Some(headers_store) = h2_get_headers_obj(cx, obj) {
             rooted!(&in(cx_ref) let store_root = headers_store);
-            let mut store_ids = mozjs::rust::IdVector::new(cx_ref);
-            if w2::GetPropertyKeys(
-                cx_ref,
-                store_root.handle().into(),
-                JSITER_OWNONLY as u32,
-                store_ids.handle_mut(),
-            ) {
-                for jsid in &*store_ids {
-                    if !jsid.is_string() {
-                        continue;
-                    }
-                    let key_str = jsid.to_string();
-                    let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
-                        NonNull::new_unchecked(key_str),
-                    );
-                    if key.starts_with(':') || arg_keys.contains(&key) {
-                        continue;
-                    }
-                    let c_key = ZBox::from_bytes(key.as_bytes());
-                    let mut hv = UndefinedValue();
-                    JS_GetProperty(
-                        cx,
-                        store_root.handle().into(),
-                        c_key.as_ptr(),
-                        MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut hv,
-                        },
-                    );
-                    if hv.is_string() {
-                        let val = crate::js_to_rust_string(cx, hv);
-                        let key_lower = key.to_ascii_lowercase();
-                        let c_val = ZBox::from_bytes(val.as_bytes());
-                        (*res_mut).write_header(key_lower.as_bytes(), c_val.as_bytes());
-                    }
+            crate::for_each_string_property(cx, store_root.handle().into(), |key, _id, hv, _| {
+                if key.starts_with(':') || arg_keys.iter().any(|k| k == key) {
+                    return;
                 }
-            }
+                if hv.is_string() {
+                    let val = crate::js_to_rust_string(cx, hv);
+                    let key_lower = key.to_ascii_lowercase();
+                    let c_val = ZBox::from_bytes(val.as_bytes());
+                    (*res_mut).write_header(key_lower.as_bytes(), c_val.as_bytes());
+                }
+            });
         }
         h2_write_headers_obj(cx, hdrs_obj.get(), &mut *res_mut);
     }
@@ -2851,44 +2798,17 @@ unsafe extern "C" fn h2_res_get_headers(cx: *mut JSContext, _argc: u32, vp: *mut
     args.rval().set(ObjectValue(out.get()));
     if let Some(headers_store) = h2_get_headers_obj(cx, obj.get()) {
         rooted!(&in(cx_ref) let store_root = headers_store);
-        let mut ids = mozjs::rust::IdVector::new(cx_ref);
-        if w2::GetPropertyKeys(
-            cx_ref,
-            store_root.handle().into(),
-            JSITER_OWNONLY as u32,
-            ids.handle_mut(),
-        ) {
-            for jsid in &*ids {
-                if !jsid.is_string() {
-                    continue;
-                }
-                let key_str = jsid.to_string();
-                let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
-                    NonNull::new_unchecked(key_str),
-                );
-                let c_key = ZBox::from_bytes(key.as_bytes());
-                let mut hv = UndefinedValue();
-                JS_GetProperty(
-                    cx,
-                    store_root.handle().into(),
-                    c_key.as_ptr(),
-                    MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut hv,
-                    },
-                );
-                JS_DefineProperty(
-                    cx,
-                    out.handle().into(),
-                    c_key.as_ptr(),
-                    {
-                        rooted!(&in(cx_ref) let hr = hv);
-                        hr.handle().into()
-                    },
-                    JSPROP_ENUMERATE as u32,
-                );
-            }
-        }
+        crate::for_each_string_property(cx, store_root.handle().into(), |key, _id, hv, _| {
+            let c_key = ZBox::from_bytes(key.as_bytes());
+            rooted!(&in(cx_ref) let hr = hv);
+            JS_DefineProperty(
+                cx,
+                out.handle().into(),
+                c_key.as_ptr(),
+                hr.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        });
     }
     true
 }

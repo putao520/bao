@@ -1854,40 +1854,15 @@ unsafe extern "C" fn url_search_params_constructor(
                 }
                 out
             } else {
-                let mut ids = IdVector::new(cx_ref);
-                let ok = GetPropertyKeys(
-                    cx,
-                    init_obj.handle().into(),
-                    JSITER_OWNONLY,
-                    ids.handle_mut(),
-                );
                 let mut out: Vec<(String, String)> = Vec::new();
-                if ok {
-                    for jsid in &*ids {
-                        if !jsid.is_string() {
-                            continue;
-                        }
-                        let key_str = jsid.to_string();
-                        let key = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(key_str));
-                        let c_key = ZBox::from_bytes(&*key.as_bytes());
-                        let mut v_val = UndefinedValue();
-                        JS_GetProperty(
-                            cx,
-                            init_obj.handle().into(),
-                            c_key.as_ptr(),
-                            MutableHandle::<Value> {
-                                _phantom_0: ::std::marker::PhantomData,
-                                ptr: &mut v_val,
-                            },
-                        );
-                        let val = if v_val.is_string() {
-                            crate::js_to_rust_string(cx, v_val)
-                        } else {
-                            String::new()
-                        };
-                        out.push(((*key).to_string(), val));
-                    }
-                }
+                crate::for_each_string_property(cx, init_obj.handle().into(), |key, _id, v_val, _| {
+                    let val = if v_val.is_string() {
+                        crate::js_to_rust_string(cx, v_val)
+                    } else {
+                        String::new()
+                    };
+                    out.push((key.to_string(), val));
+                });
                 out
             }
         } else {

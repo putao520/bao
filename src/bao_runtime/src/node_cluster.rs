@@ -897,43 +897,22 @@ unsafe extern "C" fn cluster_fork(
     if argc > 0 && (*args.get(0).ptr).is_object() {
         let env_obj = (*args.get(0).ptr).to_object();
         rooted!(&in(cx_ref) let env_r = env_obj);
-        let mut ids = mozjs::rust::IdVector::new(cx_ref);
-        if GetPropertyKeys(cx, env_r.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
-            for jsid in &*ids {
-                if !jsid.is_string() {
-                    continue;
-                }
-                let key_ptr = jsid.to_string();
-                let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)),
-                    ::std::ptr::NonNull::new_unchecked(key_ptr),
-                );
-                let c_key = bun_core::ZBox::from_bytes(key.as_bytes());
-                let mut v_val = UndefinedValue();
-                JS_GetProperty(
-                    cx,
-                    env_r.handle().into(),
-                    c_key.as_ptr(),
-                    MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut v_val,
-                    },
-                );
-                let val = if v_val.is_string() {
-                    crate::js_to_rust_string(cx, v_val)
-                } else if v_val.is_int32() {
-                    v_val.to_int32().to_string()
-                } else if v_val.is_boolean() {
-                    if v_val.to_boolean() {
-                        "true".to_string()
-                    } else {
-                        "false".to_string()
-                    }
+        crate::for_each_string_property(cx, env_r.handle().into(), |key, _id, v_val, _| {
+            let val = if v_val.is_string() {
+                crate::js_to_rust_string(cx, v_val)
+            } else if v_val.is_int32() {
+                v_val.to_int32().to_string()
+            } else if v_val.is_boolean() {
+                if v_val.to_boolean() {
+                    "true".to_string()
                 } else {
-                    continue;
-                };
-                env_map.insert(key, val);
-            }
-        }
+                    "false".to_string()
+                }
+            } else {
+                return;
+            };
+            env_map.insert(key.to_string(), val);
+        });
     }
     env_map.insert("BAO_CLUSTER_WORKER_ID".to_string(), worker_id.to_string());
     env_map.insert(
