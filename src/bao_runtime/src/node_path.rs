@@ -235,7 +235,10 @@ mod node_alg {
                             return format!("\\\\{}\\{}\\", first_part, &path[last..]);
                         }
                         if j != last {
-                            device = Some(format!("\\\\{}{}", first_part, &path[last..j]));
+                            // The share segment keeps its leading separator —
+                            // the old fused form built `\\servershare` from
+                            // `\\server` + `share` (#71 c5 win32 face).
+                            device = Some(format!("\\\\{}\\{}", first_part, &path[last..j]));
                             root_end = j;
                         }
                     }
@@ -1106,6 +1109,15 @@ mod node_alg {
         }
         let tail = normalize_string(&resolved_tail, !resolved_absolute, b'\\', true);
         if resolved_absolute {
+            // A `\\.\` device-namespace root resolves verbatim — node keeps
+            // `\\.\a` bare while real UNC/drive roots keep their trailing
+            // separator (v24.19.0 oracle: resolve('\\.\a') = '\\.\a',
+            // resolve('\\server\share') = '\\server\share\').
+            if resolved_device.starts_with("\\\\.\\")
+                && (tail.is_empty() || tail == ".")
+            {
+                return resolved_device;
+            }
             format!("{}\\{}", resolved_device, tail)
         } else {
             let out = format!("{}{}", resolved_device, tail);
@@ -2190,6 +2202,21 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
       } else if (c === '?') {
         s += '.';
+      } else if (c === '[') {
+        // Character class: copy the body through, flipping a leading `!`
+        // negation to regex `^` (#71: the old escape-everything form turned
+        // `[ab]` into a literal-bracket string that never matched).
+        // Unterminated class falls back to a literal bracket.
+        var close = pattern.indexOf(']', i + 1);
+        if (close === -1) {
+          s += '\\[';
+        } else {
+          var body = pattern.slice(i + 1, close);
+          var neg = body.charAt(0) === '!';
+          if (neg) body = body.slice(1);
+          s += '[' + (neg ? '^' : '') + body + ']';
+          i = close;
+        }
       } else if ('.+^${}()|[]\\'.indexOf(c) >= 0) {
         s += '\\' + c;
       } else {

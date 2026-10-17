@@ -26,12 +26,15 @@ mod common;
 
 use common::eval_str;
 use common::eval_string;
+use common::eval_string_dbg;
 use common::setup_ctx;
 
 /// Evaluate a label-check body (`results.join("|")` contract) and assert
 /// every label passed, echoing failures with their captured diagnostics.
 fn assert_labels(ctx: &mut JsContext, body: &str, min_pass: usize) {
-    let results = eval_string(ctx, body);
+    // dbg stringifier(#71): eval 失败时给出 ERROR:{message} 而非静默空串
+    // —— "got 0 passes" 曾把顶层 JS 异常伪装成零断言,归因成本高。
+    let results = eval_string_dbg(ctx, body);
     let mut pass = 0usize;
     let mut failures: Vec<String> = Vec::new();
     for item in results.split('|') {
@@ -245,7 +248,11 @@ fn c5_path_win32_face_body() {
         check("w_basename_suffix", function() { return w.basename("C:" + B + "a" + B + "f.txt", ".txt") === "f"; });
         check("w_basename_both_seps", function() { return w.basename("a/b" + B + "c") === "c"; });
         check("w_basename_device_only", function() { return w.basename("C:") === ""; });
-        check("w_basename_no_ext_suffix", function() { return w.basename("C:\\a\\f", "f") === ""; });
+        // node v24.19.0 oracle (2026-10-18): node REFUSES to strip a suffix
+        // that equals the whole name — basename('C:\a\f','f') returns 'f',
+        // not ''. bao agrees; the original '' pin was written without the
+        // oracle run.
+        check("w_basename_no_ext_suffix", function() { return w.basename("C:\\a\\f", "f") === "f"; });
 
         // ── extname ──
         check("w_extname_mixed", function() { return w.extname("a" + B + "b.c" + B + "d.e") === ".e"; });
@@ -376,7 +383,11 @@ fn c5_path_errors_matchesglob_shape_body() {
         check("err_extname_noargs", function() {{ return msgOf(function() {{ p.extname(); }}).indexOf("must be of type string") >= 0; }});
         check("err_normalize_noargs", function() {{ return msgOf(function() {{ p.normalize(); }}).indexOf("must be of type string") >= 0; }});
         check("err_relative_onearg", function() {{ return msgOf(function() {{ p.relative("a"); }}).indexOf("must be of type string") >= 0; }});
-        check("err_parse_noargs", function() {{ return msgOf(function() {{ p.parse(); }}).indexOf("path.parse requires a path") >= 0; }});
+        // Pin = the engine-common substring. node v24 says `The "path"
+        // argument must be of type string. Received undefined` (V8 Received
+        // tail), bao/SM says the same head without the tail — the original
+        // "path.parse requires a path" matches NEITHER engine (no oracle run).
+        check("err_parse_noargs", function() {{ return msgOf(function() {{ p.parse(); }}).indexOf('path" argument must be of type string') >= 0; }});
         check("err_format_noargs", function() {{ return msgOf(function() {{ p.format(); }}).indexOf("pathObject") >= 0; }});
         check("err_format_nonobject", function() {{ return msgOf(function() {{ p.format(42); }}).indexOf("pathObject") >= 0; }});
 
@@ -418,8 +429,13 @@ fn c5_path_errors_matchesglob_shape_body() {
 
         results.join("|")
     "#,
-        sep = if cfg!(windows) { r#"\"\\""# } else { r#""/""# },
-        delim = if cfg!(windows) { r#"";""# } else { r#"":"# },
+        // Escaped regular strings, NOT raw strings: the raw form's quote
+        // counting bit once already — r#"":"#" yields content `":` (the
+        // closing `"` of the intended `":"` merges into the terminator),
+        // which parsed as an unterminated string literal and killed the
+        // whole body (#71). Escaped form renders exactly what it says.
+        sep = if cfg!(windows) { "\"\\\\\"" } else { "\"/\"" },
+        delim = if cfg!(windows) { "\";\"" } else { "\":\"" },
     ),
     30,
     );
@@ -468,7 +484,11 @@ fn c5_cp_sync_faces_deep_body() {
         // ── spawnSync ENOENT: fail object, not a throw ──
         var re = cp.spawnSync("/definitely-not-c5-xyz");
         check("sync_enoent_error_truthy", function() { return typeof re === "object" && re !== null && !!re.error; });
-        check("sync_enoent_status_neg1", function() { return re.status === -1; });
+        // node v24.19.0 oracle (2026-10-18): spawn failure → status is NULL
+        // (not -1 — the original pin was written without the oracle run).
+        check("sync_enoent_status_null", function() { return re.status === null; });
+        check("sync_enoent_code_enoent", function() { return re.error.code === "ENOENT"; });
+        check("sync_enoent_pid_zero", function() { return re.pid === 0; });
 
         // ── spawnSync encoding quadrants (SyncOutputCarrier) ──
         function sh(script, opts) { return cp.spawnSync("/bin/sh", ["-c", script], opts); }
@@ -679,6 +699,12 @@ fn c5_cp_native_error_arms_body() {
         check("drain_pid0_null", function() { return cp.__cp_drain(0, 0) === null; });
         check("drain_ghost_null", function() { return cp.__cp_drain(424242, 0) === null; });
         check("drain_which_default", function() { return cp.__cp_drain(424242) === null; });
+        // Negative faces (#71 SIGSEGV class): non-int32 args must land on the
+        // 0-sentinel arms, never the JSVal::to_int32 assert. The pre-fix
+        // wrapper materialized a second argument and crashed the runtime.
+        check("drain_which_nonnum_null", function() { return cp.__cp_drain(424242, "x") === null; });
+        check("stdin_write_nonnum_false", function() { return cp.__cp_stdin_write("x", "y") === false; });
+        check("killchild_nonnum_pid_false", function() { return cp.__cp_kill_child("x") === false; });
         check("poll_pid0_null", function() { return cp.__cp_poll_exit(0) === null; });
         check("poll_ghost_null", function() { return cp.__cp_poll_exit(424242) === null; });
 

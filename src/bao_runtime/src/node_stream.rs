@@ -906,7 +906,10 @@ pub(crate) fn install_cp_drain_buffer_carrier_parity(cx: &mut mozjs::context::JS
   var cur = cp && cp.__cp_drain;
   if (typeof cur !== 'function' || cur._baoOriginal) return;
   var wrapped = function(pid, which) {
-    var chunk = cur(pid, which);
+    // arity-faithful forward (#71): a bare wrapped(pid) must reach the native
+    // as a 1-arg call — materializing `which` as undefined flips the native's
+    // `argc > 1` guard on and JSVal::to_int32 asserts (SIGSEGV in extern "C").
+    var chunk = arguments.length === 1 ? cur(pid) : cur(pid, which);
     if (chunk === null || chunk === undefined) return chunk;
     // typedArray overload: copies the drained bytes into a real Buffer
     // (Buffer.isBuffer === true), leaving the source ArrayBuffer unaliased.

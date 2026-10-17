@@ -249,6 +249,22 @@ fn cp_rx_state_for_pid(pid: i32) -> Option<Arc<Mutex<CpRxState>>> {
         .and_then(|registry| registry.get(&pid).cloned())
 }
 
+/// Tolerant i32 coercion for the `__cp_*` internal bridges. JS callers (and
+/// the arity/shape-massaging wrappers around them) may hand over doubles or
+/// non-numbers; `JSVal::to_int32` asserts on a non-int32 payload and an assert
+/// inside an `extern "C"` fn aborts the whole process (#71 SIGSEGV class —
+/// same root as the `child.kill("SIGKILL")` fix on `child_kill`). Non-numeric
+/// → 0, the pid-0/which-0 sentinel every bridge already treats as no-op.
+fn cp_arg_i32(v: JSVal) -> i32 {
+    if v.is_int32() {
+        v.to_int32()
+    } else if v.is_double() {
+        v.to_double() as i32
+    } else {
+        0
+    }
+}
+
 /// Fold every channel event currently queued into the consumer-side state
 /// (non-blocking `try_recv` loop — the poll→push flip's consumer half). Data
 /// chunks accumulate in the buffers; `Exit` sticks into `exit_info`. By
@@ -573,15 +589,18 @@ fn cp_detect_exit_unix(s: &mut CpDrainState) {
         if ret == s.pid {
             // Child has exited — stash the status; try_push_exit
             // lifts it into an Exit event once the pipes are drained.
-            let exit_code = if libc::WIFEXITED(wstatus) {
-                libc::WEXITSTATUS(wstatus)
-            } else {
-                -1
-            };
+            // Encoding per the module contract (signal deaths → code = -signal).
             let signal = if libc::WIFSIGNALED(wstatus) {
                 libc::WTERMSIG(wstatus)
             } else {
                 0
+            };
+            let exit_code = if libc::WIFEXITED(wstatus) {
+                libc::WEXITSTATUS(wstatus)
+            } else if signal != 0 {
+                -(signal as i32)
+            } else {
+                -1
             };
             s.child_exited = true;
             s.reaped = Some((exit_code, signal));
@@ -1029,15 +1048,18 @@ fn cp_try_reap(pid: i32, state: &Mutex<CpRxState>) -> Option<CpReap> {
             cp_pump_rx(&mut s);
             s.exit_seen = true;
             if s.exit_info.is_none() {
-                let exit_code = if libc::WIFEXITED(wstatus) {
-                    libc::WEXITSTATUS(wstatus)
-                } else {
-                    -1
-                };
+                // Encoding per the module contract (signal deaths → code = -signal).
                 let signal = if libc::WIFSIGNALED(wstatus) {
                     libc::WTERMSIG(wstatus)
                 } else {
                     0
+                };
+                let exit_code = if libc::WIFEXITED(wstatus) {
+                    libc::WEXITSTATUS(wstatus)
+                } else if signal != 0 {
+                    -(signal as i32)
+                } else {
+                    -1
                 };
                 s.exit_info = Some((exit_code, signal));
             }
@@ -1083,7 +1105,8 @@ fn cp_try_reap(_pid: i32, state: &Mutex<CpRxState>) -> Option<CpReap> {
                 cp_pump_rx(&mut s);
                 s.exit_seen = true;
                 if s.exit_info.is_none() {
-                    s.exit_info = Some((-1, sig as i32));
+                    // Encoding per the module contract (signal deaths → code = -signal).
+                    s.exit_info = Some((-(sig as i32), sig as i32));
                 }
                 return Some(CpReap::Reaped);
             }
@@ -1318,6 +1341,17 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             c"__cp_ipc_recv".as_ptr(),
             Some(cp_ipc_recv),
             1,
+            0,
+        );
+        // Internal: send an IPC message into a child's fd-3 channel. The
+        // native existed but was never registered — every JS call died as
+        // "cp.__cp_ipc_send is not a function" (c5 coverage gap, #71).
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"__cp_ipc_send".as_ptr(),
+            Some(cp_ipc_send),
+            2,
             0,
         );
 
@@ -3168,12 +3202,12 @@ pub static CP_IPC_CHANNELS: LazyLock<
 unsafe extern "C" fn cp_drain(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 {
-        (*args.get(0).ptr).to_int32()
+        cp_arg_i32(*args.get(0).ptr)
     } else {
         0
     };
     let which = if argc > 1 {
-        (*args.get(1).ptr).to_int32()
+        cp_arg_i32(*args.get(1).ptr)
     } else {
         0
     }; // 0=stdout, 1=stderr
@@ -3248,7 +3282,7 @@ unsafe extern "C" fn cp_drain(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
 unsafe extern "C" fn cp_poll_exit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 {
-        (*args.get(0).ptr).to_int32()
+        cp_arg_i32(*args.get(0).ptr)
     } else {
         0
     };
@@ -3327,7 +3361,7 @@ unsafe extern "C" fn cp_poll_exit(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 unsafe extern "C" fn cp_stdin_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 {
-        (*args.get(0).ptr).to_int32()
+        cp_arg_i32(*args.get(0).ptr)
     } else {
         0
     };
@@ -3426,7 +3460,7 @@ unsafe extern "C" fn cp_stdin_write(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 unsafe extern "C" fn cp_stdin_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 {
-        (*args.get(0).ptr).to_int32()
+        cp_arg_i32(*args.get(0).ptr)
     } else {
         0
     };
@@ -3631,12 +3665,12 @@ unsafe extern "C" fn child_kill(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 unsafe extern "C" fn cp_kill_child(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 {
-        (*args.get(0).ptr).to_int32()
+        cp_arg_i32(*args.get(0).ptr)
     } else {
         0
     };
     let signal = if argc > 1 {
-        (*args.get(1).ptr).to_int32()
+        cp_arg_i32(*args.get(1).ptr)
     } else {
         CP_SIGTERM
     };
@@ -3673,7 +3707,7 @@ unsafe extern "C" fn cp_ipc_send(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 {
-        (*args.get(0).ptr).to_int32()
+        cp_arg_i32(*args.get(0).ptr)
     } else {
         0
     };
@@ -3770,7 +3804,7 @@ unsafe extern "C" fn cp_ipc_recv(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 {
-        (*args.get(0).ptr).to_int32()
+        cp_arg_i32(*args.get(0).ptr)
     } else {
         0
     };
@@ -3900,7 +3934,7 @@ unsafe extern "C" fn cp_ipc_disconnect(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 {
-        (*args.get(0).ptr).to_int32()
+        cp_arg_i32(*args.get(0).ptr)
     } else {
         0
     };
@@ -5035,10 +5069,98 @@ unsafe extern "C" fn cp_spawn_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let spawn_result = match spawn_sync::spawn(&sync_opts) {
         Ok(Ok(r)) => r,
         Ok(Err(sys_err)) => {
-            let msg = format!("spawnSync system error: {:?}", sys_err);
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
-            return false;
+            // node parity (v24.19.0 oracle 2026-10-18): spawnSync NEVER throws
+            // for a spawn failure — it returns the fail object
+            // { status: null, signal: null, pid: 0, error: {message, code,
+            // errno(-n), syscall: "spawnSync <path>", path} }. The former form
+            // threw a raw internal error through the eval boundary, aborting
+            // the whole JS body (c5_cp_sync_faces_deep "got 0" root cause).
+            let code_name = String::from_utf8_lossy(sys_err.name()).into_owned();
+            let path_str = String::from_utf8_lossy(&sys_err.path).into_owned();
+            let result_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+            if result_obj.is_null() {
+                args.rval().set(UndefinedValue());
+                return true;
+            }
+            rooted!(&in(cx_ref) let result_r = result_obj);
+            // error carrier: plain object with node's SystemError fields. A
+            // true `Error` instance needs a JS_NewError-style constructor the
+            // mozjs-sys surface doesn't expose (registered as follow-up).
+            let err_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+            if !err_obj.is_null() {
+                rooted!(&in(cx_ref) let err_r = err_obj);
+                for (key, value) in [
+                    (c"message", format!("spawnSync {} {}", path_str, code_name)),
+                    (c"code", code_name.clone()),
+                    (c"syscall", format!("spawnSync {}", path_str)),
+                    (c"path", path_str.clone()),
+                ] {
+                    let c_val = ZBox::from_vec(value.into_bytes());
+                    let js_str = JS_NewStringCopyZ(cx, c_val.as_ptr());
+                    if !js_str.is_null() {
+                        let val = StringValue(&*js_str);
+                        rooted!(&in(cx_ref) let vr = val);
+                        JS_DefineProperty(
+                            cx,
+                            err_r.handle().into(),
+                            key.as_ptr(),
+                            vr.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
+                }
+                // errno: node stores it negated (ENOENT → -2).
+                let errno_val = Int32Value(-(sys_err.errno as i32));
+                rooted!(&in(cx_ref) let er = errno_val);
+                JS_DefineProperty(
+                    cx,
+                    err_r.handle().into(),
+                    c"errno".as_ptr(),
+                    er.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+                let ev = ObjectValue(err_r.get());
+                rooted!(&in(cx_ref) let evr = ev);
+                JS_DefineProperty(
+                    cx,
+                    result_r.handle().into(),
+                    c"error".as_ptr(),
+                    evr.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            // status: null / signal: null / pid: 0 — the oracle shape.
+            {
+                let nv = NullValue();
+                rooted!(&in(cx_ref) let nr = nv);
+                JS_DefineProperty(
+                    cx,
+                    result_r.handle().into(),
+                    c"status".as_ptr(),
+                    nr.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+                JS_DefineProperty(
+                    cx,
+                    result_r.handle().into(),
+                    c"signal".as_ptr(),
+                    nr.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            {
+                let pv = Int32Value(0);
+                rooted!(&in(cx_ref) let pr = pv);
+                JS_DefineProperty(
+                    cx,
+                    result_r.handle().into(),
+                    c"pid".as_ptr(),
+                    pr.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            args.rval().set(ObjectValue(result_r.get()));
+            return true;
         }
         Err(e) => {
             let result_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
