@@ -621,7 +621,7 @@ fn cp_service_fd(s: &mut CpDrainState, which: &str, fd: i32, buf: &mut [u8]) {
         }
         _ => {
             // EAGAIN or error.
-            let errno = unsafe { *libc::__errno_location() };
+            let errno = bun_core::ffi::errno();
             if errno != libc::EAGAIN && errno != libc::EWOULDBLOCK {
                 // Real error — treat as EOF.
                 cp_mark_eof(s, which);
@@ -704,7 +704,7 @@ fn pipe_poll_thread(mut s: CpDrainState) {
         // Poll with 100ms timeout to allow periodic state checks.
         let ret = unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as u64, 100) };
         if ret < 0 {
-            let errno = unsafe { *libc::__errno_location() };
+            let errno = bun_core::ffi::errno();
             if errno == libc::EINTR {
                 continue;
             }
@@ -1045,7 +1045,7 @@ fn cp_try_reap(pid: i32, state: &Mutex<CpRxState>) -> Option<CpReap> {
         return Some(CpReap::Reaped);
     }
     // ret < 0
-    let errno = unsafe { *libc::__errno_location() };
+    let errno = bun_core::ffi::errno();
     if errno == libc::ECHILD {
         // Already reaped elsewhere — the poll thread's own waitpid won it.
         return Some(CpReap::AlreadyReaped);
@@ -2211,9 +2211,7 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     #[cfg(unix)]
     if pipe_stdout {
         if unsafe { libc::pipe(stdout_pipe.as_mut_ptr()) } != 0 {
-            let msg = format!("spawn: failed to create stdout pipe: errno {}", unsafe {
-                *libc::__errno_location()
-            });
+            let msg = format!("spawn: failed to create stdout pipe: errno {}", bun_core::ffi::errno());
             let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
@@ -2233,9 +2231,7 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                     libc::close(stdout_pipe[1]);
                 }
             }
-            let msg = format!("spawn: failed to create stderr pipe: errno {}", unsafe {
-                *libc::__errno_location()
-            });
+            let msg = format!("spawn: failed to create stderr pipe: errno {}", bun_core::ffi::errno());
             let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
@@ -2264,9 +2260,7 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                     libc::close(stderr_pipe[1]);
                 }
             }
-            let msg = format!("spawn: failed to create stdin pipe: errno {}", unsafe {
-                *libc::__errno_location()
-            });
+            let msg = format!("spawn: failed to create stdin pipe: errno {}", bun_core::ffi::errno());
             let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;

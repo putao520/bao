@@ -1254,40 +1254,19 @@ pub(crate) mod libc_binding {
 
     #[cfg(not(windows))]
     pub fn get_hostname() -> String {
-        let mut buf = [0u8; 256];
-        unsafe {
-            if libc::gethostname(buf.as_mut_ptr() as *mut ::std::os::raw::c_char, buf.len()) == 0 {
-                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-                String::from_utf8_lossy(&buf[..len]).into_owned()
-            } else {
-                "unknown".to_string()
-            }
-        }
+        // node parity: os.hostname() — gethostname(2) resolves to the kernel
+        // utsname nodename on Linux (glibc implements it via uname(2)), so
+        // rustix's infallible uname is the same source with zero unsafe.
+        rustix::system::uname().nodename().to_string_lossy().into_owned()
     }
 
     #[cfg(not(windows))]
     pub fn get_os_release() -> String {
-        let mut buf = [0u8; 256];
-        unsafe {
-            if libc::syscall(
-                libc::SYS_uname,
-                buf.as_mut_ptr() as *mut ::std::os::raw::c_void,
-            ) == 0
-            {
-                let utsname = buf.as_ptr() as *const libc::utsname;
-                let release = ::std::ffi::CStr::from_ptr((*utsname).release.as_ptr());
-                release.to_string_lossy().into_owned()
-            } else {
-                let mut uname = ::std::mem::MaybeUninit::<libc::utsname>::uninit();
-                if libc::uname(uname.as_mut_ptr()) == 0 {
-                    let uname = uname.assume_init();
-                    let release = ::std::ffi::CStr::from_ptr(uname.release.as_ptr());
-                    release.to_string_lossy().into_owned()
-                } else {
-                    "unknown".to_string()
-                }
-            }
-        }
+        // node parity: os.release() — the kernel release field. The former
+        // dual-path form (raw SYS_uname into an undersized [0u8; 256] buffer
+        // — struct utsname is 390 bytes, a latent stack OOB write — plus a
+        // libc::uname fallback) is collapsed onto the typed safe API.
+        rustix::system::uname().release().to_string_lossy().into_owned()
     }
 
     #[cfg(not(windows))]
@@ -1348,16 +1327,8 @@ pub(crate) mod libc_binding {
 
     #[cfg(not(windows))]
     pub fn get_os_version() -> String {
-        let mut uname = ::std::mem::MaybeUninit::<libc::utsname>::uninit();
-        unsafe {
-            if libc::uname(uname.as_mut_ptr()) == 0 {
-                let uname = uname.assume_init();
-                let version = ::std::ffi::CStr::from_ptr(uname.version.as_ptr());
-                version.to_string_lossy().into_owned()
-            } else {
-                "unknown".to_string()
-            }
-        }
+        // node parity: os.version() — the kernel build/version field.
+        rustix::system::uname().version().to_string_lossy().into_owned()
     }
 
     // ── windows arms (W2.5) ──────────────────────────────────────────────

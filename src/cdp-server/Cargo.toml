@@ -11,7 +11,7 @@ license = "MIT OR MPL-2.0"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tungstenite = { version = "0.26", features = ["handshake"] }
+tungstenite = { version = "0.30", features = ["handshake"] }
 # REQ-ARCH-3 (wave R3): the console receiver half (`CdpServer::
 # set_console_receiver`) is spelled through the unified MPMC substrate's
 # transparent re-export — single import point, same rule as every other

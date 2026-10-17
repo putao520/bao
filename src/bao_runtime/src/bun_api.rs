@@ -2,6 +2,7 @@
 // Bun.* namespace + process global + servers + test runner
 use ::std::cell::RefCell;
 use ::std::collections::HashMap;
+use ::std::io::IsTerminal;
 use ::std::io::Read;
 use ::std::path;
 use bun_core::ZBox;
@@ -1159,7 +1160,7 @@ unsafe fn populate_process_object(
                 fd.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
-            let is_tty = libc::isatty(1) == 1;
+            let is_tty = ::std::io::stdout().is_terminal();
             let tty_val = BooleanValue(is_tty);
             rooted!(&in(cx) let tv = tty_val);
             JS_DefineProperty(
@@ -1199,7 +1200,7 @@ unsafe fn populate_process_object(
                 fd.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
-            let is_tty = libc::isatty(2) == 1;
+            let is_tty = ::std::io::stderr().is_terminal();
             let tty_val = BooleanValue(is_tty);
             rooted!(&in(cx) let tv = tty_val);
             JS_DefineProperty(
@@ -1240,7 +1241,7 @@ unsafe fn populate_process_object(
                 fd.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
-            let is_tty = libc::isatty(0) == 1;
+            let is_tty = ::std::io::stdin().is_terminal();
             let tty_val = BooleanValue(is_tty);
             rooted!(&in(cx) let tv = tty_val);
             JS_DefineProperty(
@@ -9286,6 +9287,10 @@ unsafe extern "C" fn process_umask(_cx: *mut JSContext, _argc: u32, vp: *mut JSV
     #[cfg(windows)]
     let old = plat::umask(0o022);
     #[cfg(not(windows))]
+    // std::fs::umask is NOT a stable API — the `set_process_umask` feature
+    // doesn't exist on our pinned nightly (rustc E0635, 2026-10-17 probe), so
+    // this stays on libc. Read pattern: set+restore mirrors Node's
+    // uv_os_getumask (umask is write-only at the syscall level).
     let old = unsafe { libc::umask(0o022) };
     #[cfg(windows)]
     plat::umask(old);

@@ -129,7 +129,7 @@ bao_uloop = { path = "src/bao_uloop", version = "0.1.0" }
 rust-argon2 = "3.0"
 bcrypt = "0.19"
 getrandom = "0.4"
-strum = { version = "0.26", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 phf = { version = "0.11", features = ["macros"] }
 hashbrown = { version = "0.15", default-features = false, features = ["inline-more", "allocator-api2"] }
 allocator-api2 = { version = "0.2", default-features = false, features = ["alloc"] }
@@ -143,7 +143,7 @@ enum-map = "2"
 enumset = "1"
 libc = "0.2"
 memchr = "2"
-rustix = { version = "0.38", default-features = false, features = ["std", "fs", "event", "process", "net"] }
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "event", "process", "net", "system"] }
 bitflags = "2"
 zstd-pure-rs = "0.1"
 base64 = "0.22"
@@ -160,7 +160,7 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 crc32fast = "1"
 httparse = "1"
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
-twox-hash = "2.1"
+twox-hash = { version = "2.1", default-features = false, features = ["xxhash32", "xxhash64", "xxhash3_64", "xxhash3_128", "std"] }
 lol_html = "3.0"
 
 # ─── Internal path deps ─────────────────────────────────────────────────────
