@@ -153,6 +153,12 @@ bytes = "1"
 compact_str = "0.8"
 dashmap = "6"
 smallvec = "1"
+# @trace REQ-ENG-007 [dep:notify] fs.watch OS backend — notify RecommendedWatcher
+# (linux inotify / windows ReadDirectoryChangesW) replaces the hand-written
+# per-platform protocol decoders; Node semantic faces (persistent liveness,
+# file→parent-dir+basename filter, watchFile stat-poll, EventKind→Node name
+# translation) stay in bao_runtime/src/node_fs.rs.
+notify = "8.2"
 bumpalo = { version = "3", features = ["collections", "boxed"] }
 typed-arena = "2"
 itoa = "1"

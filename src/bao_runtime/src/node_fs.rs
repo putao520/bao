@@ -1,6 +1,6 @@
 // @trace REQ-ENG-007
 use ::std::cell::{Cell, RefCell};
-use ::std::collections::{HashMap, VecDeque};
+use ::std::collections::VecDeque;
 use ::std::fs;
 use ::std::path::{Path, PathBuf};
 use ::std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
@@ -2107,8 +2107,13 @@ unsafe extern "C" fn fs_watch(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) ->
     // options may be an object (position 1) or an encoding string; the
     // listener then sits at position 1 or 2 (Node: watch(filename[, options][, listener])).
     let mut persistent = true;
+    // recursive option: honored on windows (bWatchSubtree semantics via
+    // fsw_recursive_mode); linux throws ERR_FEATURE_UNAVAILABLE below before
+    // the backend is reached.
     #[cfg(windows)]
     let mut recursive = false;
+    #[cfg(not(windows))]
+    let recursive = false;
     let mut listener_val = UndefinedValue();
     if _argc > 1 {
         let opt_val = *args.get(1).ptr;
@@ -2141,9 +2146,15 @@ unsafe extern "C" fn fs_watch(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) ->
                 );
                 return false;
             }
-            // windows: ReadDirectoryChangesW bWatchSubtree covers the whole
-            // subtree natively — recursive fs.watch takes the upstream
-            // windows semantics (FswDirWatch.recursive below).
+            // windows: notify's ReadDirectoryChangesW backend covers the whole
+            // subtree natively — recursive fs.watch takes the upstream windows
+            // semantics (fsw_recursive_mode → RecursiveMode::Recursive below).
+            // (pre-wave gap fix: the option value was read but never assigned,
+            // so windows recursive watches silently ran NonRecursive.)
+            #[cfg(windows)]
+            if recursive_v.is_boolean() {
+                recursive = recursive_v.to_boolean();
+            }
             let mut persistent_v = UndefinedValue();
             JS_GetProperty(
                 cx,
@@ -2167,18 +2178,12 @@ unsafe extern "C" fn fs_watch(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) ->
 
     let is_dir = Path::new(&path).metadata().map(|m| m.is_dir()).unwrap_or(false);
 
-    // Register a real watch (kernel events — not polling).
-    #[cfg(not(windows))]
+    // Register a real watch (kernel events via notify — not polling).
     let id = fsw_next_id();
-    #[cfg(windows)]
-    let id = fsw_next_id();
-    #[cfg(not(windows))]
-    let wd = fsw_add_inotify_watch(&path);
-    #[cfg(windows)]
-    let wd = fsw_add_inotify_watch_ex(&path, recursive);
-    match wd {
-        ::std::result::Result::Ok(wd) => {
-            fsw_register_watch(id, wd, path.clone(), is_dir, persistent);
+    let registered = fsw_add_watch_ex(&path, recursive);
+    match registered {
+        ::std::result::Result::Ok(notify_root) => {
+            fsw_register_watch(id, path.clone(), notify_root, is_dir, recursive, persistent);
             let watcher = fsw_make_watcher_object(cx, id, is_dir);
             if watcher.is_null() {
                 args.rval().set(UndefinedValue());
@@ -2234,8 +2239,6 @@ unsafe extern "C" fn fs_watch_file(cx: *mut JSContext, _argc: u32, vp: *mut JSVa
     // watchFile(filename[, options], listener): options at 1, listener at 1/2.
     let mut interval_ms: u64 = 5007; // Node default
     let mut persistent = true;
-    #[cfg(windows)]
-    let mut recursive = false;
     let mut listener_val = UndefinedValue();
     if _argc > 1 {
         let opt_val = *args.get(1).ptr;
@@ -2470,126 +2473,45 @@ const S_IFBLK: i32 = 0o060000;
 #[cfg(windows)]
 const S_IFSOCK: i32 = 0o140000;
 //
-// Architecture (single-threaded JS model + one OS worker thread per JS thread):
-//   * fs.watch     → inotify (kernel events via bun_sys::linux — workspace
-//                    syscall surface, same primitives bun_watcher builds on).
-//   * fs.watchFile → stat polling at the caller's interval on the same worker.
-//   * Worker thread owns the poll loop: poll(2) on [inotify_fd, wake_pipe_r]
-//     with timeout = soonest watchFile deadline. It NEVER touches JS types —
-//     events cross to the JS thread as plain data (PendingFsEvent) through a
-//     Mutex<VecDeque> (cross-thread share: Mutex is the sanctioned tool per
-//     去锁化). JS callbacks fire on the JS thread from
-//     `fs_watch_pump_all` (driven by timers::drain_and_check / drain_one_pass,
-//     same integration point as web_api::ws_pump_all).
+// Architecture (single-threaded JS model + notify 8.2 backend — task #69
+// functional replacement wave): the two hand-written OS protocol backends
+// (linux inotify struct decode + windows OVERLAPPED/ReadDirectoryChangesW
+// raw FFI protocol) are replaced by notify's RecommendedWatcher (inotify on
+// linux / ReadDirectoryChangesW on windows — the same kernel primitives,
+// decoded by the maintained library). The Node semantic faces are retained:
+//   * fs.watch → notify RecommendedWatcher. notify runs its own internal
+//     thread; the handler below (plain data only — no JS types crosses
+//     threads) translates the EventKind to the Node event name and enqueues
+//     a PendingFsEvent through the Mutex<VecDeque> (cross-thread share:
+//     Mutex is the sanctioned tool per 去锁化). JS callbacks fire on the JS
+//     thread from `fs_watch_pump_all` (driven by timers::drain_and_check /
+//     drain_one_pass, same integration point as web_api::ws_pump_all).
+//   * fs.watchFile → stat polling at the caller's interval on the fsw
+//     worker thread (Condvar::wait_timeout on the soonest deadline).
+//   * File-level fs.watch subscribes the file's PARENT directory and
+//     filters by basename in the pump's fan-out matcher (notify's windows
+//     backend is directory-grained; the unified parent-dir subscription is
+//     one code path on both platforms).
+//   * notify reports no watch refcounts (a same-path re-watch overwrites
+//     the kernel watch), so multi-watcher fan-out and refcounted teardown
+//     stay at this layer: every FswWatchEntry carries its notify root,
+//     events fan out to ALL entries matching the event path, and the
+//     backend watch is removed only when the LAST watcher on that root
+//     closes (the same contract the former wd_map carried).
 //   * Liveness: a persistent watcher keeps the eval loop alive via
 //     `fs_watch_loop_alive` (Node semantics: persistent=true keeps the
-//     process alive; persistent:false delivers events only while the loop is
-//     alive for other reasons).
+//     process alive; persistent:false delivers events only while the loop
+//     is alive for other reasons).
 // ══════════════════════════════════════════════════════════════════════════
 
-/// Windows watch backend: ReadDirectoryChangesW over a per-directory handle
-/// with an OVERLAPPED read permanently pending; the worker drains completions
-/// (WaitForMultipleObjects on [wake event, dir events…] with the stat-poll
-/// deadline as timeout — bounded so late additions integrate fast). Event
-/// translation mirrors the inotify mapping: MODIFIED → "change",
-/// ADDED/REMOVED/RENAMED_* → "rename"; recursive watches use
-/// bWatchSubtree (native — node's recursive fs.watch works there).
-#[cfg(windows)]
-mod fsw_win {
-    use ::std::ffi::c_void;
-    pub type Handle = *mut c_void;
-    pub const FILE_LIST_DIRECTORY: u32 = 0x0001;
-    pub const FILE_SHARE_READ: u32 = 0x1;
-    pub const FILE_SHARE_WRITE: u32 = 0x2;
-    pub const FILE_SHARE_DELETE: u32 = 0x4;
-    pub const OPEN_EXISTING: u32 = 3;
-    pub const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    pub const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
-    pub const FILE_NOTIFY_CHANGE_FILE_NAME: u32 = 0x0000_0001;
-    pub const FILE_NOTIFY_CHANGE_DIR_NAME: u32 = 0x0000_0002;
-    pub const FILE_NOTIFY_CHANGE_ATTRIBUTES: u32 = 0x0000_0004;
-    pub const FILE_NOTIFY_CHANGE_SIZE: u32 = 0x0000_0008;
-    pub const FILE_NOTIFY_CHANGE_LAST_WRITE: u32 = 0x0000_0010;
-    pub const FILE_ACTION_ADDED: u32 = 0x1;
-    pub const FILE_ACTION_REMOVED: u32 = 0x2;
-    pub const FILE_ACTION_MODIFIED: u32 = 0x3;
-    pub const FILE_ACTION_RENAMED_OLD_NAME: u32 = 0x4;
-    pub const FILE_ACTION_RENAMED_NEW_NAME: u32 = 0x5;
-    pub const INFINITE: u32 = 0xFFFF_FFFF;
-    pub const WAIT_OBJECT_0: u32 = 0;
-    pub const WAIT_TIMEOUT: u32 = 0x102;
-    pub const WAIT_FAILED: u32 = 0xFFFF_FFFF;
-
-    #[repr(C)]
-    pub struct Overlapped {
-        pub Internal: usize,
-        pub InternalHigh: usize,
-        pub Pointer: *mut c_void,
-        pub hEvent: Handle,
-    }
-    #[repr(C)]
-    pub struct FileNotifyInformation {
-        pub NextEntryOffset: u32,
-        pub Action: u32,
-        pub FileNameLength: u32,
-        pub FileName: [u16; 1],
-    }
-
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        pub safe fn CreateEventW(
-            lpeventattributes: *mut c_void,
-            bmanualreset: i32,
-            binitialstate: i32,
-            lpname: *const u16,
-        ) -> Handle;
-        pub safe fn SetEvent(hevent: Handle) -> i32;
-        pub safe fn CloseHandle(hobject: Handle) -> i32;
-        pub safe fn CreateFileW(
-            lpfilename: *const u16,
-            dwdesiredaccess: u32,
-            dwsharemode: u32,
-            lpsecurityattributes: *mut c_void,
-            dwcreationdisposition: u32,
-            dwflagsandattributes: u32,
-            htemplatefile: Handle,
-        ) -> Handle;
-        pub safe fn ReadDirectoryChangesW(
-            hdirectory: Handle,
-            lpbuffer: *mut c_void,
-            nbufferlength: u32,
-            bwatchsubtree: i32,
-            dwnotifyfilter: u32,
-            lpbytesreturned: *mut u32,
-            lpoverlapped: *mut Overlapped,
-            lpcompletionroutine: *mut c_void,
-        ) -> i32;
-        pub safe fn GetOverlappedResult(
-            hfile: Handle,
-            lpoverlapped: *const Overlapped,
-            lpnumberofbytestransferred: *mut u32,
-            bwait: i32,
-        ) -> i32;
-        pub safe fn CancelIo(hfile: Handle);
-        pub safe fn WaitForMultipleObjects(
-            ncount: u32,
-            lphandles: *const Handle,
-            bwaitall: i32,
-            dwmilliseconds: u32,
-        ) -> u32;
-    }
-}
-
-/// Plain-data event marshalled worker → JS thread. No JS types cross threads.
+/// Plain-data event marshalled worker/notify thread → JS thread. No JS types cross threads.
 enum PendingFsEvent {
-    /// inotify event for an fs.watch entry.
-    Inotify {
-        id: u64,
-        /// "change" (IN_MODIFY/IN_ATTRIB) or "rename" (create/delete/move).
+    /// notify backend event for fs.watch entries: the Node event name
+    /// ("change"/"rename", translated from the notify EventKind on the
+    /// notify thread) plus the affected paths reported by the backend.
+    Notify {
         event_type: &'static str,
-        /// Event name for directory watches; basename for file watches; None
-        /// when the kernel supplies no name (e.g. IN_DELETE_SELF).
-        filename: Option<String>,
+        paths: Vec<PathBuf>,
     },
     /// watchFile poll detected a stat change (or ENOENT → zeroed curr).
     StatChange {
@@ -2613,13 +2535,6 @@ enum FswCommand {
 struct FswShared {
     queue: VecDeque<PendingFsEvent>,
     commands: VecDeque<FswCommand>,
-    /// wd → watcher ids sharing that kernel watch (inotify returns the SAME
-    /// wd for repeated add_watch on one path within one fd; Node semantics =
-    /// every fs.watch watcher is independent, so one wd fans out to ALL
-    /// watchers registered on it — a wd→single-id map made the first
-    /// registrant silently lose events to the overwrite). The JS thread
-    /// writes on add/remove, the worker reads when decoding events.
-    wd_map: HashMap<i32, Vec<u64>>,
 }
 
 impl FswShared {
@@ -2627,7 +2542,6 @@ impl FswShared {
         Self {
             queue: VecDeque::new(),
             commands: VecDeque::new(),
-            wd_map: HashMap::new(),
         }
     }
 }
@@ -2635,9 +2549,18 @@ impl FswShared {
 /// JS-thread watcher registration (fs.watch entries).
 struct FswWatchEntry {
     id: u64,
-    wd: i32,
+    /// The path as the JS caller passed it: file watches report its basename
+    /// as the event filename (Node passes the basename, never null).
     path: PathBuf,
+    /// The notify root actually registered — the watched directory itself
+    /// for directory watches, the parent directory for file watches. The
+    /// pump's fan-out matcher routes backend events by this root, and the
+    /// refcounted teardown counts entries per root.
+    notify_root: PathBuf,
     is_dir: bool,
+    /// windows only: bWatchSubtree recursion over the notify root (linux
+    /// recursive never reaches the backend — the JS face throws).
+    recursive: bool,
     persistent: bool,
 }
 
@@ -2650,127 +2573,37 @@ struct FswPollEntry {
 
 thread_local! {
     static FSW_NEXT_ID: Cell<u64> = const { Cell::new(1) };
-    /// windows synthetic wd allocator (inotify has no wd there).
-    #[cfg(windows)]
-    static FSW_NEXT_WD: Cell<i32> = const { Cell::new(1) };
     static FSW_WATCHERS: RefCell<Vec<FswWatchEntry>> = const { RefCell::new(Vec::new()) };
     static FSW_POLLERS: RefCell<Vec<FswPollEntry>> = const { RefCell::new(Vec::new()) };
-    /// Hub: worker thread + shared queues + inotify/wake fds. Materialized on
-    /// the first watcher, torn down (joined) when the last watcher closes.
+    /// Hub: notify watcher + shared queues + stat-poll worker. Materialized
+    /// on the first watcher, torn down (joined) when the last entry closes.
     static FSW_HUB: RefCell<Option<FswHub>> = const { RefCell::new(None) };
 }
 
-/// posix hub: inotify fd + wake pipe write end.
-#[cfg(not(windows))]
+/// Hub: the notify watcher (inotify / ReadDirectoryChangesW backend with its
+/// own internal thread) + the shared queues + the stat-poll worker.
 struct FswHub {
     shared: Arc<Mutex<FswShared>>,
-    inotify_fd: i32,
-    wake_w: i32,
+    /// Stat-poll deadline signal (watchFile face). The notify thread needs
+    /// no wake — the JS-thread pump drains the queue on the timer cadence.
+    poll_cv: Arc<::std::sync::Condvar>,
+    watcher: notify::RecommendedWatcher,
     handle: Option<::std::thread::JoinHandle<()>>,
 }
 
-/// windows hub: per-dir watches + wake event + worker thread.
-#[cfg(windows)]
-struct FswHub {
-    shared: Arc<Mutex<FswShared>>,
-    /// one entry per fs.watch directory (ReadDirectoryChangesW state).
-    watches: Arc<Mutex<Vec<FswDirWatch>>>,
-    /// auto-reset event: shutdown signal + prompt command pickup.
-    wake_event: fsw_win::Handle,
-    handle: Option<::std::thread::JoinHandle<()>>,
-}
-
-#[cfg(windows)]
-struct FswDirWatch {
-    wd: i32,
-    /// The DIRECTORY whose ReadDirectoryChangesW handle is open — the watched
-    /// path itself for directory watches, the parent directory for file
-    /// watches (ReadDirectoryChangesW needs a directory handle; the libuv/node
-    /// windows backend watches the parent and filters by the file's name).
-    path: PathBuf,
-    recursive: bool,
-    /// File watches only: enqueue events whose kernel name matches the
-    /// watched file's basename (windows paths are case-insensitive).
-    filter_name: Option<String>,
-    handle: fsw_win::Handle,
-    event: fsw_win::Handle,
-    overlapped: Box<fsw_win::Overlapped>,
-    buffer: Box<[u8; 64 * 1024]>,
-}
-
-// SAFETY: the raw pointers are owned machine-word HANDLEs plus the
-// exclusively-owned buffer/overlapped boxes — none reference thread-local
-// state, and the worker only ever touches entries through the table mutex.
-#[cfg(windows)]
-unsafe impl Send for FswDirWatch {}
-
-#[cfg(windows)]
-impl Drop for FswDirWatch {
-    fn drop(&mut self) {
-        // Cancel the pending overlapped read BEFORE closing the event/handle
-        // so no completion can write into the freed buffer.
-        unsafe {
-            fsw_win::CancelIo(self.handle);
-            fsw_win::CloseHandle(self.event);
-            fsw_win::CloseHandle(self.handle);
-        }
-    }
-}
-
-#[cfg(not(windows))]
 impl Drop for FswHub {
     fn drop(&mut self) {
-        // Best-effort synchronous teardown: signal shutdown, join the worker
-        // (the wake pipe makes the poll return immediately), close fds.
+        // Signal shutdown, wake the worker, join it. The notify watcher drops
+        // right after: its Drop retires the backend (removes every kernel
+        // watch and shuts its internal thread down).
         if let Ok(mut shared) = self.shared.lock() {
             shared.commands.push_back(FswCommand::Shutdown);
         }
-        fsw_write_wake(self.wake_w);
+        self.poll_cv.notify_all();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
-        if self.inotify_fd >= 0 {
-            unsafe { libc::close(self.inotify_fd) };
-        }
-        if self.wake_w >= 0 {
-            unsafe { libc::close(self.wake_w) };
-        }
     }
-}
-
-#[cfg(windows)]
-impl Drop for FswHub {
-    fn drop(&mut self) {
-        // Signal shutdown (the auto-reset wake event makes the worker's wait
-        // return immediately), then join; watches drop via the table Arc.
-        if let Ok(mut shared) = self.shared.lock() {
-            shared.commands.push_back(FswCommand::Shutdown);
-        }
-        unsafe { fsw_win::SetEvent(self.wake_event) };
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-        unsafe { fsw_win::CloseHandle(self.wake_event) };
-    }
-}
-
-#[cfg(not(windows))]
-fn fsw_write_wake(fd: i32) {
-    if fd < 0 {
-        return;
-    }
-    let byte = [b'p'];
-    // SAFETY: write one byte to a pipe we own; ignore EAGAIN/EINTR — the
-    // worker's poll timeout bounds the worst-case missed wake.
-    unsafe {
-        let _ = libc::write(fd, byte.as_ptr() as *const ::std::ffi::c_void, 1);
-    }
-}
-
-/// windows: wake via the auto-reset event (no pipe exists).
-#[cfg(windows)]
-fn fsw_write_wake_event(event: fsw_win::Handle) {
-    unsafe { fsw_win::SetEvent(event) };
 }
 
 fn fsw_next_id() -> u64 {
@@ -2817,198 +2650,114 @@ fn fsw_canonicalize(path: &str) -> PathBuf {
     PathBuf::from(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path))
 }
 
-/// Materialize the hub (worker thread + inotify fd + wake pipe) if absent.
-#[cfg(not(windows))]
-fn fsw_ensure_hub() -> bool {
-    FSW_HUB.with(|h| {
-        if h.borrow().is_some() {
-            return true;
-        }
-        // SAFETY: raw inotify/pipe setup via libc; fds checked below.
-        unsafe {
-            let inotify_fd = libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK);
-            if inotify_fd < 0 {
-                return false;
-            }
-            let mut pipe_fds = [-1i32, -1];
-            if libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) != 0 {
-                libc::close(inotify_fd);
-                return false;
-            }
-            let (wake_r, wake_w) = (pipe_fds[0], pipe_fds[1]);
-            let shared = Arc::new(Mutex::new(FswShared::new()));
-            let worker_shared = Arc::clone(&shared);
-            let spawned = ::std::thread::Builder::new()
-                .name("bao-fswatch".to_string())
-                .stack_size(128 * 1024)
-                .spawn(move || fsw_worker_main(worker_shared, inotify_fd, wake_r));
-            match spawned {
-                Ok(handle) => {
-                    // wake_r is owned by the worker loop exclusively now.
-                    *h.borrow_mut() = Some(FswHub {
-                        shared,
-                        inotify_fd,
-                        wake_w,
-                        handle: Some(handle),
-                    });
-                    true
-                }
-                Err(_) => {
-                    libc::close(inotify_fd);
-                    libc::close(wake_r);
-                    libc::close(wake_w);
-                    false
-                }
-            }
-        }
-    })
-}
-
-/// windows hub bootstrap: wake event + worker thread. Watches register
-/// directly into the shared table (JS thread issues the directory reads).
-#[cfg(windows)]
+/// Materialize the hub (notify watcher + stat-poll worker) if absent.
 fn fsw_ensure_hub() -> bool {
     FSW_HUB.with(|h| {
         if h.borrow().is_some() {
             return true;
         }
         let shared = Arc::new(Mutex::new(FswShared::new()));
-        let worker_shared = Arc::clone(&shared);
-        let watches = Arc::new(Mutex::new(Vec::new()));
-        let worker_watches = Arc::clone(&watches);
-        unsafe {
-            // auto-reset event: one SetEvent releases exactly one wait.
-            let wake_event = fsw_win::CreateEventW(
-                ::std::ptr::null_mut(),
-                0,
-                0,
-                ::std::ptr::null(),
-            );
-            if wake_event.is_null() {
-                return false;
-            }
-            let wake = SendHandle(wake_event);
-            let spawned = ::std::thread::Builder::new()
-                .name("bao-fswatch".to_string())
-                .stack_size(128 * 1024)
-                .spawn(move || {
-                    fsw_worker_main_windows(worker_shared, worker_watches, wake)
-                });
-            match spawned {
-                Ok(handle) => {
-                    *h.borrow_mut() = Some(FswHub {
-                        shared,
-                        watches,
-                        wake_event,
-                        handle: Some(handle),
+        let poll_cv = Arc::new(::std::sync::Condvar::new());
+        // notify's internal thread decodes the kernel events (inotify /
+        // ReadDirectoryChangesW) and invokes this handler with plain data.
+        // Backend errors (watch limit reached, backend io) are dropped here —
+        // the former worker-side decode loop dropped its errors the same way;
+        // the error-EVENT face of FSWatcher is a registered future wave.
+        let handler_shared = Arc::clone(&shared);
+        let watcher = notify::recommended_watcher(
+            move |res: notify::Result<notify::Event>| {
+                let Ok(event) = res else { return };
+                let Some(event_type) = fsw_notify_kind_to_node(&event.kind) else {
+                    return;
+                };
+                if event.paths.is_empty() {
+                    return;
+                }
+                if let Ok(mut guard) = handler_shared.lock() {
+                    guard.queue.push_back(PendingFsEvent::Notify {
+                        event_type,
+                        paths: event.paths,
                     });
-                    true
                 }
-                Err(_) => {
-                    fsw_win::CloseHandle(wake_event);
-                    false
-                }
+            },
+        );
+        let watcher = match watcher {
+            Ok(w) => w,
+            Err(_) => return false,
+        };
+        let worker_shared = Arc::clone(&shared);
+        let worker_cv = Arc::clone(&poll_cv);
+        let spawned = ::std::thread::Builder::new()
+            .name("bao-fswatch".to_string())
+            .stack_size(128 * 1024)
+            .spawn(move || fsw_worker_main(worker_shared, worker_cv));
+        match spawned {
+            Ok(handle) => {
+                *h.borrow_mut() = Some(FswHub {
+                    shared,
+                    poll_cv,
+                    watcher,
+                    handle: Some(handle),
+                });
+                true
             }
+            Err(_) => false, // the watcher drops here → backend retires cleanly
         }
     })
 }
 
-/// Worker thread (windows): wait on [wake, dir events…] with the stat-poll
-/// deadline as timeout; drain completed ReadDirectoryChangesW reads → queue;
-/// never touches JS.
-/// HANDLE is a process-wide machine word — safe to move across threads.
-#[cfg(windows)]
-struct SendHandle(fsw_win::Handle);
-#[cfg(windows)]
-unsafe impl Send for SendHandle {}
-
-/// Parse one completed FILE_NOTIFY_INFORMATION chain and fan the node
-/// events out to every watcher sharing this directory handle (windows
-/// worker).
-#[cfg(windows)]
-fn fsw_win_dispatch_notify_buffer(
-    shared: &Arc<Mutex<FswShared>>,
-    wd: i32,
-    filter_name: &Option<String>,
-    buf: &[u8],
-) {
-    // FileName sits at offsetof == 3×u32 (12); the Rust mirror
-    // struct's size_of is 16 (repr(C) tail padding), so the name
-    // offset must be computed from the field offsets — advancing
-    // by size_of skipped two UTF-16 chars of every name
-    // ("one.txt" → "e.txt").
-    const NAME_OFFSET: usize = 3 * ::std::mem::size_of::<u32>();
-    let mut off: usize = 0;
-    while off + NAME_OFFSET <= buf.len() {
-        // SAFETY: the kernel guarantees the aligned entry
-        // chain inside a completed buffer.
-        let info = unsafe { &*(buf[off..].as_ptr() as *const fsw_win::FileNotifyInformation) };
-        let name_len = (info.FileNameLength as usize) / ::std::mem::size_of::<u16>();
-        let name_ptr = (buf[off..].as_ptr() as *const u16)
-            .wrapping_add(NAME_OFFSET / ::std::mem::size_of::<u16>());
-        // SAFETY: name_ptr spans name_len UTF-16 code units of
-        // the completed kernel buffer (kernel ABI guarantee).
-        let name_slice = unsafe { ::std::slice::from_raw_parts(name_ptr, name_len) };
-        let name = String::from_utf16_lossy(name_slice);
-        // File watches (parent-dir backend) only deliver the
-        // watched file's own events — every other sibling's
-        // write would otherwise surface as this watcher's
-        // event. Windows names are case-insensitive.
-        let name_matches = match filter_name {
-            Some(f) => name.eq_ignore_ascii_case(f),
-            None => true,
-        };
-        let event_type = match info.Action {
-            fsw_win::FILE_ACTION_MODIFIED => "change",
-            _ => {
-                // ADDED / REMOVED / RENAMED_* → rename (Node).
-                "rename"
-            }
-        };
-        if name_matches {
-            if let Ok(mut qg) = shared.lock() {
-                let ids: Vec<u64> = qg.wd_map.get(&wd).cloned().unwrap_or_default();
-                for id in ids {
-                    qg.queue.push_back(PendingFsEvent::Inotify {
-                        id,
-                        event_type,
-                        filename: Some(name.clone()),
-                    });
-                }
-            }
-        }
-        if info.NextEntryOffset == 0 {
-            break;
-        }
-        off += info.NextEntryOffset as usize;
+/// notify EventKind → Node fs.watch event name (translation layer).
+/// Node/libuv mapping: content/metadata mutation → "change"; create, delete
+/// and any name change → "rename". Access events (open/close) never surface
+/// on fs.watch. Any/Other → "rename" mirrors the former inotify decode's
+/// "everything else → rename" tail.
+fn fsw_notify_kind_to_node(kind: &notify::EventKind) -> Option<&'static str> {
+    match kind {
+        notify::EventKind::Modify(notify::event::ModifyKind::Name(_)) => Some("rename"),
+        notify::EventKind::Modify(
+            notify::event::ModifyKind::Data(_)
+            | notify::event::ModifyKind::Metadata(_)
+            | notify::event::ModifyKind::Any
+            | notify::event::ModifyKind::Other,
+        ) => Some("change"),
+        notify::EventKind::Create(_) | notify::EventKind::Remove(_) => Some("rename"),
+        notify::EventKind::Access(_) => None,
+        notify::EventKind::Any | notify::EventKind::Other => Some("rename"),
     }
 }
 
-/// Re-issue the overlapped directory read for the next batch (windows
-/// worker).
-#[cfg(windows)]
-fn fsw_win_reissue_dir_read(w: &mut FswDirWatch) {
-    use ::std::os::windows::ffi::OsStrExt;
-    unsafe {
-        let _wide: Vec<u16> = ::std::ffi::OsStr::new(&w.path)
-            .encode_wide()
-            .chain(::std::iter::once(0))
-            .collect();
-        fsw_win::ReadDirectoryChangesW(
-            w.handle,
-            (*w.buffer).as_mut_ptr().cast(),
-            w.buffer.len() as u32,
-            w.recursive as i32,
-            fsw_win::FILE_NOTIFY_CHANGE_FILE_NAME
-                | fsw_win::FILE_NOTIFY_CHANGE_DIR_NAME
-                | fsw_win::FILE_NOTIFY_CHANGE_ATTRIBUTES
-                | fsw_win::FILE_NOTIFY_CHANGE_SIZE
-                | fsw_win::FILE_NOTIFY_CHANGE_LAST_WRITE,
-            ::std::ptr::null_mut(),
-            &mut *w.overlapped,
-            ::std::ptr::null_mut(),
-        );
+/// notify::Error → std::io::Error (the JS face throws io-style errors).
+/// PathNotFound must surface as ENOENT — the c1 gate asserts the exact code.
+fn fsw_notify_err_to_io(e: notify::Error) -> ::std::io::Error {
+    match e.kind {
+        notify::ErrorKind::Io(err) => err,
+        notify::ErrorKind::PathNotFound => ::std::io::Error::from_raw_os_error(2), // ENOENT
+        notify::ErrorKind::WatchNotFound => ::std::io::Error::other("fs.watch: no watch was found"),
+        notify::ErrorKind::MaxFilesWatch => {
+            ::std::io::Error::other("fs.watch: OS file watch limit reached")
+        }
+        notify::ErrorKind::Generic(msg) => ::std::io::Error::other(msg),
+        notify::ErrorKind::InvalidConfig(_) => {
+            ::std::io::Error::other("fs.watch: invalid watcher configuration")
+        }
     }
+}
+
+/// windows: recursive fs.watch takes the native bWatchSubtree semantics;
+/// linux never sees recursive here (the JS face throws
+/// ERR_FEATURE_UNAVAILABLE_ON_PLATFORM before the backend is reached).
+#[cfg(windows)]
+fn fsw_recursive_mode(recursive: bool) -> notify::RecursiveMode {
+    if recursive {
+        notify::RecursiveMode::Recursive
+    } else {
+        notify::RecursiveMode::NonRecursive
+    }
+}
+
+#[cfg(not(windows))]
+fn fsw_recursive_mode(_recursive: bool) -> notify::RecursiveMode {
+    notify::RecursiveMode::NonRecursive
 }
 
 /// One directory stat-poll registration (platform worker mains). Hoisted to
@@ -3112,208 +2861,38 @@ fn fsw_take_commands(shared: &Arc<Mutex<FswShared>>, polls: &mut Vec<PollSpec>) 
     false
 }
 
-#[cfg(windows)]
-fn fsw_worker_main_windows(
-    shared: Arc<Mutex<FswShared>>,
-    watches: Arc<Mutex<Vec<FswDirWatch>>>,
-    wake: SendHandle,
-) {
-    let wake_event = wake.0;
+/// Stat-poll worker (fs.watchFile face): wait on the poll condvar with the
+/// soonest deadline as timeout — bounded (≤250ms) so shutdown and prompt
+/// command pickup stay fast (the former per-platform wait loops' bound).
+/// Never touches JS: StatChange events cross to the JS thread as plain data
+/// through the shared queue.
+fn fsw_worker_main(shared: Arc<Mutex<FswShared>>, poll_cv: Arc<::std::sync::Condvar>) {
     let mut polls: Vec<PollSpec> = Vec::new();
-
-    loop {
-        // Commands (poll adds/removals + shutdown) under a short lock (e201
-        // REQ-ARCH-1: extracted to `fsw_take_commands`; shutdown batch not
-        // applied, as before).
-        if fsw_take_commands(&shared, &mut polls) {
-            break;
-        }
-
-        // Timeout: soonest poll deadline, bounded (≤250ms) so newly added
-        // directory watches join the wait set promptly.
-        let now = monotonic_ms();
-        let timeout_ms: i64 = polls
-            .iter()
-            .map(|p| p.next_due_ms.saturating_sub(now) as i64)
-            .min()
-            .map(|d| d.min(250))
-            .unwrap_or(250);
-        let timeout_i32: u32 = timeout_ms.clamp(0, i32::MAX as i64) as u32;
-
-        // Wait set: [wake, dir events…] (snapshot under the table lock).
-        let rc = {
-            let guard = watches.lock().unwrap_or_else(|e| e.into_inner());
-            let mut handles: Vec<fsw_win::Handle> = Vec::with_capacity(1 + guard.len());
-            handles.push(wake_event);
-            for w in guard.iter() {
-                handles.push(w.event);
-            }
-            // SAFETY: handles live in the table (guard held for the call).
-            unsafe {
-                fsw_win::WaitForMultipleObjects(
-                    handles.len() as u32,
-                    handles.as_ptr(),
-                    0,
-                    timeout_i32,
-                )
-            }
-        };
-
-        // Drain wake + completed directory reads → queue.
-        let _ = rc == fsw_win::WAIT_OBJECT_0 || rc == fsw_win::WAIT_TIMEOUT;
-        {
-            let mut guard = watches.lock().unwrap_or_else(|e| e.into_inner());
-            for w in guard.iter_mut() {
-                let mut transferred: u32 = 0;
-                // bWait = FALSE: only harvest an already-completed read.
-                let done = unsafe {
-                    fsw_win::GetOverlappedResult(
-                        w.handle,
-                        &*w.overlapped,
-                        &mut transferred,
-                        0,
-                    )
-                };
-                if done != 0 && transferred > 0 {
-                    // Parse the FILE_NOTIFY_INFORMATION chain → node events.
-                    let buf: &[u8] = &w.buffer[..transferred as usize];
-                    fsw_win_dispatch_notify_buffer(&shared, w.wd, &w.filter_name, buf);
-                }
-                if done != 0 {
-                    // Re-issue the directory read for the next batch.
-                    fsw_win_reissue_dir_read(w);
-                }
-            }
-        }
-
-        // Due stat polls (same predicate as the posix arm; e201 REQ-ARCH-1:
-        // extracted to `fsw_poll_due_dispatch`).
-        fsw_poll_due_dispatch(&shared, &mut polls);
-    }
-    // Worker exit: the wake event is hub-owned; nothing to close here.
-}
-
-/// Decode one inotify read batch into the shared queue, fanning every
-/// event out to EVERY watcher sharing this wd (same-path multi-watch: all
-/// watchers get their own event copy).
-#[cfg(not(windows))]
-fn fsw_decode_inotify_batch(buf: &[u8], shared: &Arc<Mutex<FswShared>>) {
-    let mut off = 0usize;
-    while off + ::std::mem::size_of::<libc::inotify_event>() <= buf.len() {
-        // SAFETY: the kernel guarantees struct-aligned inotify_event
-        // headers at these offsets (that is the inotify ABI).
-        let ev = unsafe { &*(buf[off..].as_ptr() as *const libc::inotify_event) };
-        let name: Option<String> = if ev.len > 0 {
-            let name_start = off + ::std::mem::size_of::<libc::inotify_event>();
-            let name_end = (name_start + ev.len as usize).min(buf.len());
-            let name_bytes: Vec<u8> = buf[name_start..name_end]
-                .iter()
-                .take_while(|&&b| b != 0)
-                .cloned()
-                .collect::<Vec<u8>>();
-            String::from_utf8(name_bytes).ok() // non-utf8 names are surfaced as absent (registered limit)
-        } else {
-            None
-        };
-        let ids: Vec<u64> = shared
-            .lock()
-            .ok()
-            .and_then(|g| g.wd_map.get(&ev.wd).cloned())
-            .unwrap_or_default();
-        for id in ids {
-            let event_type = if ev.mask & (libc::IN_MODIFY | libc::IN_ATTRIB) != 0 {
-                "change"
-            } else {
-                // CREATE / DELETE / MOVED_FROM / MOVED_TO /
-                // MOVE_SELF / DELETE_SELF / IGNORED → rename (Node).
-                "rename"
-            };
-            if let Ok(mut guard) = shared.lock() {
-                guard.queue.push_back(PendingFsEvent::Inotify {
-                    id,
-                    event_type,
-                    filename: name.clone(),
-                });
-            }
-        }
-        off += ::std::mem::size_of::<libc::inotify_event>() + ev.len as usize;
-    }
-}
-
-/// Worker thread: poll [inotify, wake] + stat-poll loop. Never touches JS.
-#[cfg(not(windows))]
-fn fsw_worker_main(shared: Arc<Mutex<FswShared>>, inotify_fd: i32, wake_r: i32) {
-    let mut polls: Vec<PollSpec> = Vec::new();
-    let mut inotify_buf = [0u8; 64 * 1024];
-
     loop {
         // Apply pending commands under a short lock (e201 REQ-ARCH-1:
-        // extracted to `fsw_take_commands`; shutdown batch not applied, as before).
+        // extracted to `fsw_take_commands`; shutdown batch not applied, as
+        // before).
         if fsw_take_commands(&shared, &mut polls) {
             break;
         }
 
-        // Timeout: soonest poll deadline, else block until inotify/wake.
+        // Timeout: soonest poll deadline, else the bounded idle wait.
         let now = monotonic_ms();
-        let timeout_ms: i64 = polls
+        let timeout_ms: u64 = polls
             .iter()
-            .map(|p| p.next_due_ms.saturating_sub(now) as i64)
+            .map(|p| p.next_due_ms.saturating_sub(now) as u64)
             .min()
-            .unwrap_or(-1);
-        let timeout_i32: i32 = if timeout_ms < 0 {
-            -1
-        } else {
-            timeout_ms.min(i32::MAX as i64) as i32
-        };
+            .unwrap_or(250)
+            .min(250);
 
-        let mut poll_fds = [
-            libc::pollfd { fd: inotify_fd, events: libc::POLLIN as i16, revents: 0 },
-            libc::pollfd { fd: wake_r, events: libc::POLLIN as i16, revents: 0 },
-        ];
-        // SAFETY: poll on fds we own with a bounded (or -1) timeout — woken
-        // by inotify events or the wake pipe, so -1 cannot pin shutdown.
-        let rc = unsafe { libc::poll(poll_fds.as_mut_ptr(), 2, timeout_i32) };
-        if rc < 0 {
-            let errno = unsafe { *libc::__errno_location() };
-            if errno == libc::EINTR {
-                continue;
-            }
-            break;
-        }
-
-        // Drain the wake pipe so it never fills.
-        if poll_fds[1].revents & (libc::POLLIN as i16) != 0 {
-            let mut scratch = [0u8; 64];
-            loop {
-                // SAFETY: read ≤64 bytes from the non-blocking wake pipe.
-                let n = unsafe {
-                    libc::read(wake_r, scratch.as_mut_ptr() as *mut ::std::ffi::c_void, 64)
-                };
-                if n <= 0 {
-                    break;
-                }
-            }
-        }
-
-        // Decode inotify events → queue.
-        if poll_fds[0].revents & (libc::POLLIN as i16 | libc::POLLHUP as i16) != 0 {
-            loop {
-                // SAFETY: read into our buffer from the non-blocking inotify fd.
-                let n = unsafe {
-                    libc::read(inotify_fd, inotify_buf.as_mut_ptr() as *mut ::std::ffi::c_void, inotify_buf.len())
-                };
-                if n <= 0 {
-                    break;
-                }
-                fsw_decode_inotify_batch(&inotify_buf[..n as usize], &shared);
-            }
-        }
+        // The wait releases the shared lock, so queue producers (notify
+        // thread) and registrants never block on the worker.
+        let guard = shared.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = poll_cv.wait_timeout(guard, ::std::time::Duration::from_millis(timeout_ms));
 
         // Due stat polls (e201 REQ-ARCH-1: extracted to `fsw_poll_due_dispatch`).
         fsw_poll_due_dispatch(&shared, &mut polls);
     }
-    // Worker exit: drop our copy of the wake read-end.
-    unsafe { libc::close(wake_r) };
 }
 
 fn monotonic_ms() -> u128 {
@@ -3323,34 +2902,29 @@ fn monotonic_ms() -> u128 {
         .unwrap_or(0)
 }
 
-/// windows arm: open the directory handle + issue the first overlapped
-/// ReadDirectoryChangesW + allocate the synthetic wd.
-#[cfg(windows)]
-fn fsw_add_inotify_watch(path: &str) -> ::std::result::Result<i32, ::std::io::Error> {
-    fsw_add_inotify_watch_ex(path, false)
-}
-
-#[cfg(windows)]
-fn fsw_add_inotify_watch_ex(
+/// Register one fs.watch with the notify backend. Directory watches watch
+/// the directory itself (recursive on windows — bWatchSubtree semantics).
+/// FILE watches subscribe the file's PARENT directory (face 2: notify's
+/// windows backend is directory-grained — the unified parent-dir
+/// subscription is one code path on both platforms); the watched file's
+/// basename filter lives in the pump's fan-out matcher. Missing paths are
+/// fail-closed ENOENT (never a silent fake watcher). Returns the absolute
+/// notify root actually registered (the fan-out matcher's routing key).
+fn fsw_add_watch_ex(
     path: &str,
     recursive: bool,
-) -> ::std::result::Result<i32, ::std::io::Error> {
-    use ::std::os::windows::ffi::OsStrExt;
+) -> ::std::result::Result<PathBuf, ::std::io::Error> {
     if !fsw_ensure_hub() {
         return ::std::result::Result::Err(::std::io::Error::other(
             "fs.watch: failed to start the watcher thread",
         ));
     }
-    // ReadDirectoryChangesW requires a DIRECTORY handle; fs.watch(<file>) must
-    // not fail with ERROR_INVALID_PARAMETER (87). Node/libuv's windows backend
-    // watches the file's parent directory and matches event names against the
-    // watched file's basename — mirror that: a non-dir path opens its parent
-    // and installs a name filter.
     let watch_path = Path::new(path);
-    let (dir_path, filter_name) = if watch_path.is_dir() {
-        (watch_path.to_path_buf(), None)
+    let (root, mode) = if watch_path.is_dir() {
+        (watch_path.to_path_buf(), fsw_recursive_mode(recursive))
     } else {
-        // fail-closed ENOENT for a missing file (same as opening it directly)
+        // fail-closed ENOENT for a missing file (same as opening it directly;
+        // Node parity — the former inotify add_watch surfaced the same errno).
         if !watch_path.exists() {
             return ::std::result::Result::Err(::std::io::Error::from_raw_os_error(2)); // ENOENT
         }
@@ -3359,142 +2933,57 @@ fn fsw_add_inotify_watch_ex(
             Some(p) => p.to_path_buf(),
             None => PathBuf::from("."),
         };
-        let name = watch_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        (parent, Some(name))
+        (parent, notify::RecursiveMode::NonRecursive)
     };
-    let wide: Vec<u16> = ::std::ffi::OsStr::new(&dir_path)
-        .encode_wide()
-        .chain(::std::iter::once(0))
-        .collect();
-    // SAFETY: wide is NUL-terminated; the returned handle is owned by the
-    // FswDirWatch entry inserted below.
-    let handle = unsafe {
-        fsw_win::CreateFileW(
-            wide.as_ptr(),
-            fsw_win::FILE_LIST_DIRECTORY,
-            fsw_win::FILE_SHARE_READ | fsw_win::FILE_SHARE_WRITE | fsw_win::FILE_SHARE_DELETE,
-            ::std::ptr::null_mut(),
-            fsw_win::OPEN_EXISTING,
-            fsw_win::FILE_FLAG_BACKUP_SEMANTICS | fsw_win::FILE_FLAG_OVERLAPPED,
-            ::std::ptr::null_mut(),
-        )
+    // notify absolutizes relative roots against the cwd internally; the
+    // fan-out matcher compares event paths against the same absolute form.
+    let abs_root = if root.is_absolute() {
+        root
+    } else {
+        ::std::env::current_dir()?.join(root)
     };
-    if handle.is_null() || handle == ::bun_windows_sys::INVALID_HANDLE_VALUE {
-        return ::std::result::Result::Err(::std::io::Error::last_os_error());
-    }
-    let event = unsafe {
-        fsw_win::CreateEventW(::std::ptr::null_mut(), 0, 0, ::std::ptr::null())
-    };
-    if event.is_null() {
-        unsafe { fsw_win::CloseHandle(handle) };
-        return ::std::result::Result::Err(::std::io::Error::last_os_error());
-    }
-    let mut overlapped: Box<fsw_win::Overlapped> =
-        Box::new(unsafe { ::std::mem::zeroed() });
-    overlapped.hEvent = event;
-    let mut buffer: Box<[u8; 64 * 1024]> = Box::new([0u8; 64 * 1024]);
-
-    let wd = FSW_NEXT_WD.with(|c| {
-        let v = c.get();
-        c.set(v + 1);
-        v as i32
+    // One notify registration PER ROOT: notify's backends do not refcount
+    // same-path re-watches (the windows server overwrites its WatchState map
+    // entry and leaves the previous read chain alive → duplicate event
+    // delivery; inotify merges masks into one kernel watch), so a second
+    // watcher sharing this root must NOT re-issue watch() — the pump's
+    // fan-out matcher already delivers each event to every entry on the
+    // root. Mirrors the register-once / unwatch-on-last-close pairing in
+    // fsw_close_entry.
+    let already_registered = FSW_WATCHERS.with(|w| {
+        w.borrow().iter().any(|e| e.notify_root == abs_root)
     });
-
+    if already_registered {
+        return ::std::result::Result::Ok(abs_root);
+    }
     FSW_HUB.with(|h| {
-        if let Some(hub) = h.borrow().as_ref() {
-            // SAFETY: buffer/overlapped live in the table entry for the life
-            // of the watch (CancelIo runs before their Drop — see FswDirWatch).
-            let rc = unsafe {
-                fsw_win::ReadDirectoryChangesW(
-                    handle,
-                    (*buffer).as_mut_ptr().cast(),
-                    buffer.len() as u32,
-                    recursive as i32,
-                    fsw_win::FILE_NOTIFY_CHANGE_FILE_NAME
-                        | fsw_win::FILE_NOTIFY_CHANGE_DIR_NAME
-                        | fsw_win::FILE_NOTIFY_CHANGE_ATTRIBUTES
-                        | fsw_win::FILE_NOTIFY_CHANGE_SIZE
-                        | fsw_win::FILE_NOTIFY_CHANGE_LAST_WRITE,
-                    ::std::ptr::null_mut(),
-                    &mut *overlapped,
-                    ::std::ptr::null_mut(),
-                )
-            };
-            if rc == 0 {
-                let e = ::std::io::Error::last_os_error();
-                unsafe {
-                    fsw_win::CloseHandle(event);
-                    fsw_win::CloseHandle(handle);
-                }
-                return ::std::result::Result::Err(e);
-            }
-            if let Ok(mut table) = hub.watches.lock() {
-                table.push(FswDirWatch {
-                    wd,
-                    path: dir_path,
-                    recursive,
-                    filter_name,
-                    handle,
-                    event,
-                    overlapped,
-                    buffer,
-                });
-            }
-        }
-        ::std::result::Result::Ok(wd)
+        let mut hub_ref = h.borrow_mut();
+        let Some(hub) = hub_ref.as_mut() else {
+            return ::std::result::Result::Err(::std::io::Error::other(
+                "fs.watch: watcher thread is gone",
+            ));
+        };
+        notify::Watcher::watch(&mut hub.watcher, &abs_root, mode)
+            .map(|()| abs_root.clone())
+            .map_err(fsw_notify_err_to_io)
     })
 }
 
-#[cfg(not(windows))]
-fn fsw_add_inotify_watch(path: &str) -> ::std::result::Result<i32, ::std::io::Error> {
-    if !fsw_ensure_hub() {
-        return ::std::result::Result::Err(::std::io::Error::other(
-            "fs.watch: failed to start the watcher thread",
-        ));
-    }
-    let c_path = bun_core::ZBox::from_bytes(path.as_bytes());
-    // Node/libuv inotify mask for fs.watch.
-    let mask = libc::IN_ATTRIB
-        | libc::IN_CREATE
-        | libc::IN_MODIFY
-        | libc::IN_MOVED_FROM
-        | libc::IN_MOVED_TO
-        | libc::IN_DELETE
-        | libc::IN_DELETE_SELF
-        | libc::IN_MOVE_SELF;
-    // SAFETY: c_path is NUL-terminated; fd is the hub's live inotify fd.
-    let wd = unsafe {
-        libc::inotify_add_watch(
-            FSW_HUB.with(|h| h.borrow().as_ref().map(|hub| hub.inotify_fd).unwrap_or(-1)),
-            c_path.as_ptr() as *const ::std::ffi::c_char,
-            mask,
-        )
-    };
-    if wd < 0 {
-        return ::std::result::Result::Err(::std::io::Error::last_os_error());
-    }
-    ::std::result::Result::Ok(wd)
-}
-
-fn fsw_register_watch(id: u64, wd: i32, path: String, is_dir: bool, persistent: bool) {
-    FSW_HUB.with(|h| {
-        if let Some(hub) = h.borrow().as_ref() {
-            if let Ok(mut guard) = hub.shared.lock() {
-                // Append, never overwrite: same-path add_watch returns the
-                // same wd, and every watcher on that wd keeps its events.
-                guard.wd_map.entry(wd).or_default().push(id);
-            }
-        }
-    });
+fn fsw_register_watch(
+    id: u64,
+    path: String,
+    notify_root: PathBuf,
+    is_dir: bool,
+    recursive: bool,
+    persistent: bool,
+) {
     FSW_WATCHERS.with(|w| {
         w.borrow_mut().push(FswWatchEntry {
             id,
-            wd,
             path: PathBuf::from(path),
+            notify_root,
             is_dir,
+            recursive,
             persistent,
         });
     });
@@ -3526,20 +3015,12 @@ fn fsw_register_poll(id: u64, path: String, interval_ms: u64, baseline: libc::st
     fsw_wake_worker();
 }
 
-#[cfg(not(windows))]
+/// Wake the stat-poll worker (command pickup). The notify backend thread
+/// needs no wake — the JS-thread pump drains the queue on the timer cadence.
 fn fsw_wake_worker() {
     FSW_HUB.with(|h| {
         if let Some(hub) = h.borrow().as_ref() {
-            fsw_write_wake(hub.wake_w);
-        }
-    });
-}
-
-#[cfg(windows)]
-fn fsw_wake_worker() {
-    FSW_HUB.with(|h| {
-        if let Some(hub) = h.borrow().as_ref() {
-            fsw_write_wake_event(hub.wake_event);
+            hub.poll_cv.notify_one();
         }
     });
 }
@@ -3553,30 +3034,25 @@ unsafe fn fsw_close_entry(cx: *mut JSContext, id: u64) {
 
     if let Some(idx) = watch {
         let entry = FSW_WATCHERS.with(|w| w.borrow_mut().remove(idx));
-        // Refcounted teardown: other watchers may share this wd (same-path
-        // multi-watch). The kernel watch + wd mapping go away only when the
-        // LAST watcher on the wd closes — dropping them earlier would silence
-        // the surviving watchers.
-        FSW_HUB.with(|h| {
-            if let Some(hub) = h.borrow().as_ref() {
-                let mut last_on_wd = false;
-                if let Ok(mut guard) = hub.shared.lock() {
-                    if let Some(ids) = guard.wd_map.get_mut(&entry.wd) {
-                        ids.retain(|&i| i != id);
-                        last_on_wd = ids.is_empty();
-                    }
-                    if last_on_wd {
-                        guard.wd_map.remove(&entry.wd);
-                    }
-                }
-                #[cfg(not(windows))]
-                if last_on_wd {
-                    unsafe { libc::inotify_rm_watch(hub.inotify_fd, entry.wd) };
-                }
-                // windows: dropping the FswDirWatch (table removal on last
-                // ref) runs CancelIo + closes handle/event — see Drop impl.
-            }
+        // Refcounted teardown at the notify-root level: notify does NOT
+        // refcount same-path re-watches (a second watch overwrites the
+        // kernel watch), so the backend watch goes away only when the LAST
+        // watcher on this root closes — removing it earlier would silence
+        // the surviving watchers (same contract the former wd_map carried).
+        let last_on_root = FSW_WATCHERS.with(|w| {
+            w.borrow().iter().all(|e| e.notify_root != entry.notify_root)
         });
+        if last_on_root {
+            FSW_HUB.with(|h| {
+                let mut hub_ref = h.borrow_mut();
+                if let Some(hub) = hub_ref.as_mut() {
+                    // Best-effort: a root whose directory died may already be
+                    // gone backend-side (notify reports WatchNotFound) — the
+                    // hub drop removes every remaining watch regardless.
+                    let _ = notify::Watcher::unwatch(&mut hub.watcher, &entry.notify_root);
+                }
+            });
+        }
     }
     if let Some(idx) = poll {
         FSW_POLLERS.with(|p| p.borrow_mut().remove(idx));
@@ -3739,66 +3215,130 @@ pub fn fs_watch_pump_all(raw_cx: *mut JSContext) {
         return;
     }
     for ev in events {
-        // SAFETY: raw_cx is the live JSContext on this thread (drain hook
-        // contract); dispatch only touches JS on this thread.
-        unsafe { fsw_dispatch_event(raw_cx, ev) };
+        match ev {
+            PendingFsEvent::Notify { event_type, paths } => {
+                for (id, filename) in fsw_match_watch_roots(&paths) {
+                    // SAFETY: raw_cx is the live JSContext on this thread
+                    // (drain hook contract); dispatch only touches JS here.
+                    unsafe { fsw_dispatch_watch_event(raw_cx, id, event_type, filename) };
+                }
+            }
+            PendingFsEvent::StatChange { id, prev, curr } => {
+                // SAFETY: as above.
+                unsafe { fsw_dispatch_stat_event(raw_cx, id, prev, curr) };
+            }
+        }
     }
 }
 
-/// Fire one event on its watcher object. Listener throws route through the
-/// unified uncaught-exception router — never silently swallowed.
-unsafe fn fsw_dispatch_event(raw_cx: *mut JSContext, ev: PendingFsEvent) {
-    let (id, event_name, argv): (u64, &str, Vec<mozjs::jsval::JSVal>) = match ev {
-        PendingFsEvent::Inotify { id, event_type, filename } => {
-            let mut argv = Vec::with_capacity(2);
-            let c_type = ZBox::from_bytes(event_type.as_bytes());
-            let type_str = JS_NewStringCopyZ(raw_cx, c_type.as_ptr());
-            if !type_str.is_null() {
-                argv.push(mozjs::jsval::StringValue(&*type_str));
-            }
-            // Filename resolution (Node semantics): directory watches report
-            // the event's name; FILE watches carry no kernel name — Node
-            // passes the watched file's basename instead of null.
-            let resolved_name: Option<String> = match filename {
-                Some(name) => Some(name),
-                None => FSW_WATCHERS.with(|w| {
-                    w.borrow().iter().find(|e| e.id == id).and_then(|e| {
-                        if e.is_dir {
-                            None
-                        } else {
-                            e.path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                        }
-                    })
-                }),
-            };
-            match resolved_name {
-                Some(name) => {
-                    let c_name = ZBox::from_bytes(name.as_bytes());
-                    let name_str = JS_NewStringCopyZ(raw_cx, c_name.as_ptr());
-                    if !name_str.is_null() {
-                        argv.push(mozjs::jsval::StringValue(&*name_str));
+/// Fan one backend event out to EVERY watcher whose notify root matches an
+/// affected path (same-path multi-watch: every watcher gets its own event
+/// copy — Node semantics). Returns (watcher id, filename) pairs.
+fn fsw_match_watch_roots(paths: &[PathBuf]) -> Vec<(u64, Option<String>)> {
+    FSW_WATCHERS.with(|w| {
+        w.borrow()
+            .iter()
+            .filter_map(|e| {
+                let hit = paths.iter().find(|p| fsw_event_matches_root(e, p))?;
+                let filename = if e.is_dir {
+                    // Directory watches report the event's name; the event on
+                    // the watched root itself (e.g. the directory deleted)
+                    // carries no name.
+                    if hit == &e.notify_root {
+                        None
+                    } else {
+                        hit.file_name().map(|n| n.to_string_lossy().into_owned())
                     }
-                }
-                None => argv.push(mozjs::jsval::NullValue()),
-            }
-            (id, "change", argv)
+                } else {
+                    // File watches always carry the watched file's basename
+                    // (Node passes the basename, never null).
+                    e.path.file_name().map(|n| n.to_string_lossy().into_owned())
+                };
+                Some((e.id, filename))
+            })
+            .collect()
+    })
+}
+
+/// Root match for one watcher entry against one backend event path.
+fn fsw_event_matches_root(e: &FswWatchEntry, p: &Path) -> bool {
+    if e.is_dir {
+        if e.recursive {
+            p.starts_with(&e.notify_root)
+        } else {
+            p.parent() == Some(e.notify_root.as_path()) || p == e.notify_root
         }
-        PendingFsEvent::StatChange { id, prev, curr } => {
-            let curr_obj = build_stats_object(raw_cx, &curr);
-            let prev_obj = build_stats_object(raw_cx, &prev);
-            let mut argv = Vec::with_capacity(2);
-            if !curr_obj.is_null() {
-                argv.push(mozjs::jsval::ObjectValue(curr_obj));
-            }
-            if !prev_obj.is_null() {
-                argv.push(mozjs::jsval::ObjectValue(prev_obj));
-            }
-            (id, "change", argv)
+    } else {
+        // File watch: the parent-dir subscription covers direct children
+        // only; the watched file's basename is the filter.
+        if p.parent() != Some(e.notify_root.as_path()) {
+            return false;
         }
-    };
-    fsw_emit_on_entry(raw_cx, id, event_name, argv);
+        match (p.file_name(), e.path.file_name()) {
+            (Some(a), Some(b)) => fsw_names_match(a, b),
+            _ => false,
+        }
+    }
+}
+
+/// windows paths are case-insensitive (libuv's fs.watch name filter too).
+#[cfg(windows)]
+fn fsw_names_match(a: &::std::ffi::OsStr, b: &::std::ffi::OsStr) -> bool {
+    a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
+}
+
+#[cfg(not(windows))]
+fn fsw_names_match(a: &::std::ffi::OsStr, b: &::std::ffi::OsStr) -> bool {
+    a == b
+}
+
+/// Fire one fs.watch backend event on its watcher object: (eventType,
+/// filename|null). The EE channel is always "change" — node's FSEventWrap
+/// emits every kernel event there with the translated name as the first
+/// callback arg. Listener throws route through the unified uncaught-
+/// exception router — never silently swallowed.
+unsafe fn fsw_dispatch_watch_event(
+    raw_cx: *mut JSContext,
+    id: u64,
+    event_type: &str,
+    filename: Option<String>,
+) {
+    let mut argv: Vec<mozjs::jsval::JSVal> = Vec::with_capacity(2);
+    let c_type = ZBox::from_bytes(event_type.as_bytes());
+    let type_str = JS_NewStringCopyZ(raw_cx, c_type.as_ptr());
+    if !type_str.is_null() {
+        argv.push(mozjs::jsval::StringValue(&*type_str));
+    }
+    match filename {
+        Some(name) => {
+            let c_name = ZBox::from_bytes(name.as_bytes());
+            let name_str = JS_NewStringCopyZ(raw_cx, c_name.as_ptr());
+            if !name_str.is_null() {
+                argv.push(mozjs::jsval::StringValue(&*name_str));
+            }
+        }
+        None => argv.push(mozjs::jsval::NullValue()),
+    }
+    fsw_emit_on_entry(raw_cx, id, "change", argv);
+}
+
+/// Fire one watchFile stat change on its StatWatcher: (curr, prev) Stats.
+unsafe fn fsw_dispatch_stat_event(
+    raw_cx: *mut JSContext,
+    id: u64,
+    prev: libc::stat,
+    curr: libc::stat,
+) {
+    let curr_obj = build_stats_object(raw_cx, &curr);
+    let prev_obj = build_stats_object(raw_cx, &prev);
+    let mut argv: Vec<mozjs::jsval::JSVal> = Vec::with_capacity(2);
+    if !curr_obj.is_null() {
+        argv.push(mozjs::jsval::ObjectValue(curr_obj));
+    }
+    if !prev_obj.is_null() {
+        argv.push(mozjs::jsval::ObjectValue(prev_obj));
+    }
+    fsw_emit_on_entry(raw_cx, id, "change", argv);
 }
 
 unsafe fn fsw_emit_on_entry(raw_cx: *mut JSContext, id: u64, event: &str, argv: Vec<mozjs::jsval::JSVal>) {

@@ -27,6 +27,11 @@ mozjs.workspace = true
 mozjs_sys.workspace = true
 log = "0.4"
 libc = "0.2"
+# @trace REQ-ENG-007 [dep:notify] — fs.watch/watchFile OS backend (task #69):
+# notify 8.2 RecommendedWatcher 收编两平台手写协议解码(inotify/OVERLAPPED-RDCW),
+# Node 语义四面(persistent 存活/文件级父目录订阅+basename 过滤/watchFile stat-poll/
+# EventKind→Node 名翻译)保留在 node_fs.rs。
+notify = { workspace = true }
 rusqlite = { version = "0.38", features = ["bundled"] }
 libffi = "5"
 serde_json = "1"
