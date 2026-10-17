@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "bao-browser"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "bao-mozjs",
  "bao-servo",
@@ -2500,7 +2500,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3603,7 +3603,7 @@ dependencies = [
 
 [[package]]
 name = "bun_lsquic_sys"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bun_boringssl_sys",
  "cc",
@@ -3832,7 +3832,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
