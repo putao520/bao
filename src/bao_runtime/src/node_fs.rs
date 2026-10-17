@@ -2895,11 +2895,15 @@ fn fsw_worker_main(shared: Arc<Mutex<FswShared>>, poll_cv: Arc<::std::sync::Cond
     }
 }
 
+/// Milliseconds on a monotonic (never-backwards) clock. Every caller uses
+/// this purely for relative durations (poll deadlines / timeouts) within the
+/// fsw worker; the origin (first call, process-wide) is arbitrary by design.
+/// The former SystemTime wall-clock form let a system clock rollback push
+/// watchFile deadlines into the future (stall) or past (burst) — Instant is
+/// immune (CLOCK_MONOTONIC / QPC).
 fn monotonic_ms() -> u128 {
-    ::std::time::SystemTime::now()
-        .duration_since(::std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
+    static START: ::std::sync::OnceLock<::std::time::Instant> = ::std::sync::OnceLock::new();
+    START.get_or_init(::std::time::Instant::now).elapsed().as_millis()
 }
 
 /// Register one fs.watch with the notify backend. Directory watches watch

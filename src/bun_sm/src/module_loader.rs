@@ -305,39 +305,13 @@ unsafe fn base_dir_from_private_cx(
     };
     let url = unsafe { mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)), jsstr) };
     let path_str = url.strip_prefix("file://")?;
-    let decoded = percent_decode_path(path_str);
+    // WHATWG pass-through percent-decode (inverse of [percent_encode_path]):
+    // malformed escapes and `+` survive verbatim; the canonical byte-level
+    // decoder lives in `bun_url::whatwg`.
+    let decoded = String::from_utf8_lossy(&bun_url::whatwg::percent_decode(path_str.as_bytes()))
+        .into_owned();
     let path = PathBuf::from(decoded);
     path.parent().map(|p| p.to_path_buf())
-}
-
-/// Percent-decode a percent-encoded path component (inverse of [percent_encode_path]).
-fn percent_decode_path(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = hex_digit(bytes[i + 1]);
-            let lo = hex_digit(bytes[i + 2]);
-            if let (Some(h), Some(l)) = (hi, lo) {
-                out.push((h << 4) | l);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn hex_digit(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
 }
 
 /// Inject an external resolver function (e.g. `bun_resolver::Resolver` bridge).
@@ -2281,9 +2255,9 @@ fn parse_data_url(url: &str) -> ::std::result::Result<String, String> {
     if is_base64 {
         // @trace REQ-ENG-005 [algorithm:base64]
         // Bun's contract (string-module.test.js) is that malformed base64
-        // raises a `Base64DecodeError`. We implement a small RFC 4648
-        // decoder here rather than pulling a new crate dep into bun_sm
-        // (which is otherwise dependency-free).
+        // raises a `Base64DecodeError`. We implement a small RFC 4648 decoder
+        // here rather than pulling in a base64 crate (percent-decoding, by
+        // contrast, delegates to `bun_url::whatwg::percent_decode`).
         match base64_decode(payload) {
             ::std::result::Result::Ok(bytes) => match ::std::str::from_utf8(&bytes) {
                 ::std::result::Result::Ok(s) => ::std::result::Result::Ok(s.to_owned()),
@@ -2294,43 +2268,16 @@ fn parse_data_url(url: &str) -> ::std::result::Result<String, String> {
             ::std::result::Result::Err(_) => Err("Base64DecodeError".to_string()),
         }
     } else {
-        // Percent-decode inline payload per RFC 3986 §2.1. Most JS module
-        // data: URLs are sent un-encoded, but we must handle %20, %2C, %0A,
-        // etc. so that quoted payloads still round-trip.
-        let decoded = percent_decode(payload);
+        // Percent-decode inline payload per RFC 3986 §2.1 (pass-through form:
+        // malformed escapes survive verbatim). Most JS module data: URLs are
+        // sent un-encoded, but we must handle %20, %2C, %0A, etc. so that
+        // quoted payloads still round-trip. Canonical decoder:
+        // `bun_url::whatwg::percent_decode` — lossily finalized for `String`,
+        // which is what JS expects for source text.
+        let decoded =
+            String::from_utf8_lossy(&bun_url::whatwg::percent_decode(payload.as_bytes()))
+                .into_owned();
         Ok(decoded)
-    }
-}
-
-/// Minimal percent-decoder. Accepts `%XX` hex escapes and passes other bytes
-/// through verbatim (data URLs are conventionally ASCII; non-ASCII bytes get
-/// passed through as UTF-8 which is what JS expects for source text).
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = hex_val(bytes[i + 1]);
-            let lo = hex_val(bytes[i + 2]);
-            if let (Some(h), Some(l)) = (hi, lo) {
-                out.push((h << 4) | l);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn hex_val(b: u8) -> ::std::option::Option<u8> {
-    match b {
-        b'0'..=b'9' => ::std::option::Option::Some(b - b'0'),
-        b'a'..=b'f' => ::std::option::Option::Some(b - b'a' + 10),
-        b'A'..=b'F' => ::std::option::Option::Some(b - b'A' + 10),
-        _ => ::std::option::Option::None,
     }
 }
 

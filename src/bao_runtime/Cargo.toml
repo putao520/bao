@@ -27,6 +27,8 @@ mozjs.workspace = true
 mozjs_sys.workspace = true
 log = "0.4"
 libc = "0.2"
+# node_os POSIX info face (uname/hostname/release/version) — typed safe API
+rustix.workspace = true
 # @trace REQ-ENG-007 [dep:notify] — fs.watch/watchFile OS backend (task #69):
 # notify 8.2 RecommendedWatcher 收编两平台手写协议解码(inotify/OVERLAPPED-RDCW),
 # Node 语义四面(persistent 存活/文件级父目录订阅+basename 过滤/watchFile stat-poll/

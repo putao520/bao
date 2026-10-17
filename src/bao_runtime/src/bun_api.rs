@@ -2,6 +2,7 @@
 // Bun.* namespace + process global + servers + test runner
 use ::std::cell::RefCell;
 use ::std::collections::HashMap;
+use ::std::io::IsTerminal;
 use ::std::io::Read;
 use ::std::path;
 use bun_core::ZBox;
@@ -1159,7 +1160,7 @@ unsafe fn populate_process_object(
                 fd.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
-            let is_tty = libc::isatty(1) == 1;
+            let is_tty = ::std::io::stdout().is_terminal();
             let tty_val = BooleanValue(is_tty);
             rooted!(&in(cx) let tv = tty_val);
             JS_DefineProperty(
@@ -1199,7 +1200,7 @@ unsafe fn populate_process_object(
                 fd.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
-            let is_tty = libc::isatty(2) == 1;
+            let is_tty = ::std::io::stderr().is_terminal();
             let tty_val = BooleanValue(is_tty);
             rooted!(&in(cx) let tv = tty_val);
             JS_DefineProperty(
@@ -1240,7 +1241,7 @@ unsafe fn populate_process_object(
                 fd.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
-            let is_tty = libc::isatty(0) == 1;
+            let is_tty = ::std::io::stdin().is_terminal();
             let tty_val = BooleanValue(is_tty);
             rooted!(&in(cx) let tv = tty_val);
             JS_DefineProperty(
@@ -5954,50 +5955,27 @@ unsafe fn serve_write_response_object(
                 res_mut.write_header(c_key.as_bytes(), c_v.as_bytes());
             }
         } else {
-            // Plain-object headers: property enumeration via `GetPropertyKeys`
-            // (mozjs Rust wrapper) + `IdVector` — the canonical pattern used in
-            // node_url.rs / node_util.rs for iterating JS object keys without
-            // raw AutoIdArray struct layout assumptions.
-            let mut ids = mozjs::rust::IdVector::new(cx_ref_resp);
-            let ok = GetPropertyKeys(
+            // Plain-object headers: own-enum string keys walked by the shared
+            // by-id property walker (IdVector + GetPropertyKeys + value fetch).
+            crate::for_each_string_property(
                 raw_cx,
                 headers_obj.handle().into(),
-                JSITER_OWNONLY,
-                ids.handle_mut(),
-            );
-            if ok {
-                for jsid in &*ids {
-                    if !jsid.is_string() {
-                        continue;
+                |key, _id, header_val, _| {
+                    if !header_val.is_string() {
+                        return;
                     }
-                    let key_str_ptr = jsid.to_string();
-                    let key = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)), NonNull::new_unchecked(key_str_ptr));
-                    let mut header_val = UndefinedValue();
-                    let c_key = ZBox::from_bytes(key.as_bytes());
-                    JS_GetProperty(
-                        raw_cx,
-                        headers_obj.handle().into(),
-                        c_key.as_ptr(),
-                        MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut header_val,
-                        },
-                    );
-                    let val_str = if header_val.is_string() {
-                        crate::js_to_rust_string(raw_cx, header_val)
-                    } else {
-                        continue;
-                    };
+                    let val_str = crate::js_to_rust_string(raw_cx, header_val);
 
                     // Skip Content-Length — uWS recomputes it from the body
                     // bytes passed to `end`.
                     if key.eq_ignore_ascii_case("content-length") {
-                        continue;
+                        return;
                     }
+                    let c_key = ZBox::from_bytes(key.as_bytes());
                     let c_v = ZBox::from_bytes(val_str.as_bytes());
                     res_mut.write_header(c_key.as_bytes(), c_v.as_bytes());
-                }
-            }
+                },
+            );
         }
     }
 
@@ -6505,40 +6483,22 @@ unsafe extern "C" fn bun_build(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         JS_GetProperty(cx, cfg_h, c"define".as_ptr(), def_val.handle_mut().into());
         if def_val.get().is_object() {
             rooted!(&in(cx_ref) let def_obj = def_val.get().to_object());
-            // Own enumerable string keys (Headers record parsing pattern).
-            let mut ids = mozjs::rust::IdVector::new(cx_ref);
-            if GetPropertyKeys(cx, def_obj.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
-                for jsid in &*ids {
-                    if !jsid.is_string() {
-                        continue;
-                    }
-                    let key_ptr = jsid.to_string();
-                    if key_ptr.is_null() {
-                        continue;
-                    }
-                    let key = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(key_ptr));
-                    let c_key = ZBox::from_bytes(key.as_bytes());
-                    rooted!(&in(cx_ref) let mut v_val = UndefinedValue());
-                    JS_GetProperty(
-                        cx,
-                        def_obj.handle().into(),
-                        c_key.as_ptr(),
-                        v_val.handle_mut().into(),
-                    );
-                    let value = if v_val.get().is_string() {
-                        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
-                            NonNull::new_unchecked(v_val.get().to_string()),
-                        )
-                    } else if v_val.get().is_number() {
-                        format!("{}", v_val.get().to_number())
-                    } else if v_val.get().is_boolean() {
-                        if v_val.get().to_boolean() { "true" } else { "false" }.to_string()
-                    } else {
-                        continue;
-                    };
-                    config.define.push((key, value));
-                }
-            }
+            // Own enumerable string keys (Headers record parsing pattern),
+            // walked by the shared by-id property walker.
+            crate::for_each_string_property(cx, def_obj.handle().into(), |key, _id, v_val, _| {
+                let value = if v_val.is_string() {
+                    jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+                        NonNull::new_unchecked(v_val.to_string()),
+                    )
+                } else if v_val.is_number() {
+                    format!("{}", v_val.to_number())
+                } else if v_val.is_boolean() {
+                    if v_val.to_boolean() { "true" } else { "false" }.to_string()
+                } else {
+                    return;
+                };
+                config.define.push((key.to_string(), value));
+            });
         }
     }
 
@@ -7702,12 +7662,28 @@ fn bunfile_display_path(src: &BunfileSrc) -> String {
     }
 }
 
-/// Map an io error to the Node-style errno code (same taxonomy as
-/// node_fs::throw_fs_error).
+/// Map an io error to the Node-style errno code — same taxonomy as
+/// node_fs::io_error_code (the fs single source; this is a local mirror
+/// because that fn is node_fs-private — keep both tables in sync).
+/// Divergence history: the kind-only table here silently downgraded EEXIST
+/// (and EINVAL/ENAMETOOLONG/ENOTEMPTY) to "ERR"; now item-for-item parity
+/// except node_fs's msg-contains shape-normalization arms, which service
+/// node_fs's synthetic rmdir errors — every bunfile error carries a real
+/// raw_os_error, so there is nothing to shape-repair on this face.
+/// @trace REQ-ENG-007
 fn bunfile_io_code(err: &::std::io::Error) -> &'static str {
+    match err.raw_os_error() {
+        Some(libc::EINVAL) => return "EINVAL",
+        Some(libc::ENAMETOOLONG) => return "ENAMETOOLONG",
+        Some(libc::ENOTEMPTY) => return "ENOTEMPTY",
+        #[cfg(windows)]
+        Some(145) => return "ENOTEMPTY",
+        _ => {}
+    }
     match err.kind() {
         ::std::io::ErrorKind::NotFound => "ENOENT",
         ::std::io::ErrorKind::PermissionDenied => "EACCES",
+        ::std::io::ErrorKind::AlreadyExists => "EEXIST",
         ::std::io::ErrorKind::IsADirectory => "EISDIR",
         ::std::io::ErrorKind::NotADirectory => "ENOTDIR",
         _ => "ERR",
@@ -9311,6 +9287,10 @@ unsafe extern "C" fn process_umask(_cx: *mut JSContext, _argc: u32, vp: *mut JSV
     #[cfg(windows)]
     let old = plat::umask(0o022);
     #[cfg(not(windows))]
+    // std::fs::umask is NOT a stable API — the `set_process_umask` feature
+    // doesn't exist on our pinned nightly (rustc E0635, 2026-10-17 probe), so
+    // this stays on libc. Read pattern: set+restore mirrors Node's
+    // uv_os_getumask (umask is write-only at the syscall level).
     let old = unsafe { libc::umask(0o022) };
     #[cfg(windows)]
     plat::umask(old);
@@ -10594,34 +10574,10 @@ unsafe extern "C" fn bun_file_url_to_path(cx: *mut JSContext, argc: u32, vp: *mu
     true
 }
 
-/// Minimal percent-decode for file paths (decode %XX sequences).
+/// Percent-decode a file path: WHATWG pass-through byte-level decode
+/// (`bun_url::whatwg::percent_decode`), finalized lossily for `String`.
 fn percent_decode_path(s: &str) -> String {
-    let mut result = Vec::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = hex_digit(bytes[i + 1]);
-            let lo = hex_digit(bytes[i + 2]);
-            if hi.is_some() && lo.is_some() {
-                result.push(hi.unwrap() << 4 | lo.unwrap());
-                i += 3;
-                continue;
-            }
-        }
-        result.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&result).into_owned()
-}
-
-fn hex_digit(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+    String::from_utf8_lossy(&bun_url::whatwg::percent_decode(s.as_bytes())).into_owned()
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

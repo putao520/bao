@@ -193,23 +193,27 @@ fn test_new_percent_encoded_spaces() {
 }
 
 #[test]
-fn test_new_plus_as_space() {
+fn test_new_plus_is_literal() {
+    // Chromium /json/new parity (devtools_http_handler.cc:681): decode runs
+    // with default `UnescapeRule::NORMAL` — `+` is never a space (that is the
+    // form-urlencoded rule, not the discovery contract).
     let req = "GET /json/new?https://example.com/hello+world HTTP/1.1";
     assert_eq!(
         parse_new_request(req),
-        Some("https://example.com/hello world".into())
+        Some("https://example.com/hello+world".into())
     );
 }
 
 #[test]
 fn test_new_percent_encoded_multibyte() {
-    // percent_decode treats each byte as char, so multi-byte UTF-8 chars
-    // are decoded byte-by-byte, producing latin1-ish output instead of UTF-8.
+    // Byte-level WHATWG decode (bun_url::whatwg::percent_decode): multi-byte
+    // UTF-8 escapes reconstruct the characters — the old Latin-1
+    // byte→char form mangled `中文` into `ä¸­æ`.
     let req = "GET /json/new?https%3A%2F%2Fexample.com%2F%E4%B8%AD%E6%96%87 HTTP/1.1";
-    let result = parse_new_request(req).unwrap();
-    assert!(result.starts_with("https://example.com/"));
-    // Each %XX byte becomes one char (not valid UTF-8 reconstruction)
-    assert!(!result.contains("?"));
+    assert_eq!(
+        parse_new_request(req),
+        Some("https://example.com/中文".into())
+    );
 }
 
 #[test]
@@ -217,7 +221,7 @@ fn test_new_mixed_encoding() {
     let req = "GET /json/new?https%3A%2F%2Fexample.com%2Fa+b%20c HTTP/1.1";
     assert_eq!(
         parse_new_request(req),
-        Some("https://example.com/a b c".into())
+        Some("https://example.com/a+b c".into())
     );
 }
 
@@ -238,19 +242,18 @@ fn test_new_empty_string() {
 
 #[test]
 fn test_new_percent_incomplete_hi() {
-    // % at end of URL with no following hex chars — defaults to 0x00
+    // `%` at end with no following hex chars passes through literally
+    // (WHATWG §percent-decode / Chromium escape.cc) — the old form emitted
+    // NUL and ate it.
     let req = "GET /json/new?test% HTTP/1.1";
-    let result = parse_new_request(req).unwrap();
-    // '0' (null char) from incomplete percent encoding
-    assert!(result.starts_with("test"));
+    assert_eq!(parse_new_request(req), Some("test%".into()));
 }
 
 #[test]
 fn test_new_percent_incomplete_lo() {
-    // %4 with only one hex digit — lo defaults to 0x00
+    // `%4` with only one hex digit passes through literally.
     let req = "GET /json/new?test%4 HTTP/1.1";
-    let result = parse_new_request(req).unwrap();
-    assert!(result.starts_with("test"));
+    assert_eq!(parse_new_request(req), Some("test%4".into()));
 }
 
 #[test]
@@ -273,9 +276,10 @@ fn test_new_percent_mixed_case_hex() {
 
 #[test]
 fn test_new_percent_invalid_hex_chars() {
-    // %GG — non-hex chars default to 0
+    // `%GG` — invalid escape passes through literally (the old form
+    // collapsed it to a NUL byte).
     let req = "GET /json/new?%GG HTTP/1.1";
-    assert_eq!(parse_new_request(req), Some("\0".into()));
+    assert_eq!(parse_new_request(req), Some("%GG".into()));
 }
 
 #[test]

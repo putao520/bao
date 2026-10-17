@@ -651,7 +651,7 @@ fn parse_data_url(url: &str) -> ::std::result::Result<(String, Vec<u8>), String>
         "text/plain;charset=US-ASCII".to_string()
     };
 
-    let decoded = percent_decode(data.as_bytes());
+    let decoded = bun_url::whatwg::percent_decode(data.as_bytes());
     if base64 {
         // Forgiving-base64: strip ASCII whitespace; missing padding is
         // tolerated by the decoder length estimate. A dangling single byte
@@ -685,33 +685,6 @@ fn parse_data_url(url: &str) -> ::std::result::Result<(String, Vec<u8>), String>
     } else {
         Ok((mime, decoded))
     }
-}
-
-/// WHATWG percent-decoder: `%XY` with two hex digits decodes to one byte;
-/// an invalid escape passes the `%` through literally.
-fn percent_decode(input: &[u8]) -> Vec<u8> {
-    fn hex_val(b: u8) -> Option<u8> {
-        match b {
-            b'0'..=b'9' => Some(b - b'0'),
-            b'a'..=b'f' => Some(b - b'a' + 10),
-            b'A'..=b'F' => Some(b - b'A' + 10),
-            _ => None,
-        }
-    }
-    let mut out = Vec::with_capacity(input.len());
-    let mut i = 0;
-    while i < input.len() {
-        if input[i] == b'%' && i + 2 < input.len() {
-            if let (Some(hi), Some(lo)) = (hex_val(input[i + 1]), hex_val(input[i + 2])) {
-                out.push(hi << 4 | lo);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(input[i]);
-        i += 1;
-    }
-    out
 }
 
 /// Reject `promise` with the realm's real `TypeError` (so `instanceof

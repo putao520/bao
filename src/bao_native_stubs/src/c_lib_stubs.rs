@@ -15,6 +15,12 @@
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+// Coverage-governance 分母排除 2026-10-17 核算(C 库桥锚点): 本模块唯一函数
+// `force_c_lib_stubs` 是链接器符号引用面(fn 指针 as usize cast,防 GC),全部
+// 真实符号由编译 C 库(libusockets/lshpack/lsquic/BoringSSL)与 owner crate
+// 提供,无独立可测产品语义。见 .plans/coverage-governance-20261017.md。
+#![coverage(off)]
+
 // ──────────────────────────────────────────────────────────────
 // lshpack — HPACK header compression for HTTP/2
 // Provided by compiled C library: bun_lsquic_sys (vendor/lshpack, merged)

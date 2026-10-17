@@ -1007,51 +1007,18 @@ fn collect_sandbox_properties(
 
     let raw_cx = unsafe { cx.raw_cx() };
     rooted!(&in(cx) let sandbox_root = sandbox);
-    let mut ids = IdVector::new(cx);
-    let ok = unsafe {
-        GetPropertyKeys(
-            raw_cx,
-            sandbox_root.handle().into(),
-            JSITER_OWNONLY,
-            ids.handle_mut(),
-        )
-    };
-    if !ok {
-        return props;
-    }
+    unsafe {
+        crate::for_each_string_property(raw_cx, sandbox_root.handle().into(), |key, _id, val, got| {
+            if !got {
+                return;
+            }
 
-    for jsid in &*ids {
-        // Only process string-keyed properties (skip symbols and int keys).
-        if !jsid.is_string() {
-            continue;
-        }
-        let key_str_ptr = jsid.to_string();
-        if key_str_ptr.is_null() {
-            continue;
-        }
-        let key = unsafe { jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)), NonNull::new_unchecked(key_str_ptr)) };
-
-        // Get the property value by id using the raw JS_GetPropertyById
-        // (takes *mut JSContext + raw Handle types from mozjs_sys).
-        let id_h = Handle::<jsid> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: jsid as *const jsid as *mut jsid,
-        };
-        let mut val = UndefinedValue();
-        let val_h = MutableHandle::<JS::Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut val,
-        };
-        let got = unsafe { JS_GetPropertyById(raw_cx, sandbox_root.handle().into(), id_h, val_h) };
-        if !got {
-            continue;
-        }
-
-        // Store key as Rust String, value as a rooted Box<Heap<Value>> —
-        // barrier-pinned (Heap::boxed) AND tracer-visible
-        // (RootedTraceableSet) across the realm switch below.
-        let heap_val = RootedTraceableBox::from_box(Heap::boxed(val));
-        props.push((key, heap_val));
+            // Store key as Rust String, value as a rooted Box<Heap<Value>> —
+            // barrier-pinned (Heap::boxed) AND tracer-visible
+            // (RootedTraceableSet) across the realm switch below.
+            let heap_val = RootedTraceableBox::from_box(Heap::boxed(val));
+            props.push((key.to_string(), heap_val));
+        });
     }
 
     props
@@ -1193,42 +1160,12 @@ unsafe fn copy_global_writes_to_sandbox(
     rooted!(&in(realm_cx) let global_root = global);
     rooted!(&in(realm_cx) let sandbox_root = sandbox);
 
-    let mut ids = IdVector::new(realm_cx);
-    let ok = unsafe {
-        GetPropertyKeys(
-            raw_cx,
-            global_root.handle().into(),
-            JSITER_OWNONLY,
-            ids.handle_mut(),
-        )
-    };
-    if !ok {
-        return;
-    }
-    for jsid in &*ids {
-        if !jsid.is_string() {
-            continue;
+    crate::for_each_string_property(raw_cx, global_root.handle().into(), |key, id, val, got| {
+        if baseline.iter().any(|b| b == key) {
+            return;
         }
-        let key_str_ptr = jsid.to_string();
-        if key_str_ptr.is_null() {
-            continue;
-        }
-        let key =
-            unsafe { jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)), NonNull::new_unchecked(key_str_ptr)) };
-        if baseline.iter().any(|b| b == &key) {
-            continue;
-        }
-        let id_h = Handle::<jsid> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: jsid as *const jsid as *mut jsid,
-        };
-        let mut val = UndefinedValue();
-        let val_h = MutableHandle::<JS::Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut val,
-        };
-        if !unsafe { JS_GetPropertyById(raw_cx, global_root.handle().into(), id_h, val_h) } {
-            continue;
+        if !got {
+            return;
         }
         // Set through the cross-compartment wrapper onto the caller-realm
         // sandbox object; SM wraps realm-owned values automatically.
@@ -1237,11 +1174,11 @@ unsafe fn copy_global_writes_to_sandbox(
             JS_SetPropertyById(
                 raw_cx,
                 sandbox_root.handle().into(),
-                id_h,
+                id,
                 val_root.handle().into(),
             );
         }
-    }
+    });
 }
 
 // ──────────────────────────────────────────────────────────────────────────

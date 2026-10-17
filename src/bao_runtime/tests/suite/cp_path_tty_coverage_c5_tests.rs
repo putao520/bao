@@ -1050,7 +1050,12 @@ fn c5_tty_pty_real_face_body() {
         }});
 
         // ── transport: WriteStream on the MASTER lands bytes on the slave ──
-        check("pty_master_write", function() {{ return new tty.WriteStream(M).write("Z") === true; }});
+        // "Z\n": by this point the ReadStream's setRawMode(false) restored
+        // ICANON, so the line discipline only releases the byte to the slave
+        // reader once the line completes — a bare "Z" would hang the Rust
+        // read below forever (latent, unmasked when getWindowSize was
+        // root-fixed; the first byte read is still 'Z').
+        check("pty_master_write", function() {{ return new tty.WriteStream(M).write("Z\n") === true; }});
 
         results.join("|")
     "#,

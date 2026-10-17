@@ -1,6 +1,11 @@
 // @trace REQ-ENG-001 [entity:NodeRuntime] REQ-ENG-006 REQ-IMPL-01 REQ-IMPL-02 REQ-IMPL-03 REQ-IMPL-04 REQ-IMPL-05 REQ-PURE-010 [level:library] [entity:NodeRuntime]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(unused_imports)]
+// C10 coverage-governance 分母排除注解面的工具链启用点(nightly-2026-07-20 上
+// `#[coverage]` 属性仍未稳,feature coverage_attribute,rust issue #84605):
+// 供 `src/webcore_faces.rs` 的 `#![coverage(off)]`(FFI link-time face 分母
+// 排除,2026-10-17 核算)使用,零语义影响。见 .plans/coverage-governance-20261017.md。
+#![feature(coverage_attribute)]
 // @trace REQ-PURE-010: bao_runtime (Rust) replaces deleted bun_runtime (Zig) — zero Zig deps, zero JSC refs
 // @trace REQ-IMPL-01: Phase 1 SpiderMonkey engine replacement (completed)
 // @trace REQ-IMPL-02: Phase 2 servo engine integration + rendering (completed)
@@ -245,6 +250,74 @@ pub unsafe fn jsstr_to_rust_string(
         Some(nn) => mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)), nn),
         None => String::new(),
     }
+}
+
+/// Iterate an object's own enumerable string-keyed properties, fetching each
+/// value by id (`JS_GetPropertyById` — no per-key C-string round trip, no
+/// by-name re-lookup). Shared replacement for the former
+/// `jsid.to_string → jsstr_to_string → ZBox → JS_GetProperty` traversal
+/// boilerplate (headers / env / exports / record-obj family).
+///
+/// For each own string key, invokes `f(name, id, value, fetch_ok)`:
+/// - `name`: Rust copy of the key
+/// - `id`: handle to the rooted jsid, for `JS_GetPropertyById` /
+///   `JS_SetPropertyById` follow-ups on the same key
+/// - `value`: fetched value (undefined when `fetch_ok` is false); the helper
+///   keeps it rooted for the callback's duration
+/// - `fetch_ok`: `false` when the property get failed (e.g. throwing getter);
+///   the callback decides skip/keep, matching each site's prior error handling
+///
+/// Non-string keys (symbols, array indices) are skipped. A failed get neither
+/// aborts the loop nor touches pending exceptions, and `GetPropertyKeys`
+/// failure skips the whole walk (all identical to the sites this consolidates).
+/// Returns `false` when enumeration itself failed (callback never runs) —
+/// call sites that distinguish "no walk" from "empty walk" consume it.
+///
+/// # Safety
+/// `cx` must be a live JSContext on the current thread and `obj` must be a
+/// rooted object handle.
+pub unsafe fn for_each_string_property<F>(
+    cx: *mut mozjs::jsapi::JSContext,
+    obj: mozjs::jsapi::Handle<*mut mozjs::jsapi::JSObject>,
+    mut f: F,
+) -> bool
+where
+    F: FnMut(
+        &str,
+        mozjs::jsapi::Handle<mozjs::jsapi::jsid>,
+        mozjs::jsapi::Value,
+        bool,
+    ),
+{
+    use mozjs::jsapi::{jsid, JS_GetPropertyById, JSITER_OWNONLY};
+    use mozjs::rooted;
+
+    let mut wrapped = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut ids = mozjs::rust::IdVector::new(&mut wrapped);
+    if !mozjs::rust::wrappers2::GetPropertyKeys(
+        &mut wrapped,
+        // SAFETY: `obj` is a live caller-rooted location (Safety contract above).
+        unsafe { mozjs::rust::Handle::from_raw(obj) },
+        JSITER_OWNONLY as u32,
+        ids.handle_mut(),
+    ) {
+        return false;
+    }
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let mut val = mozjs::jsval::UndefinedValue());
+    for jsid in &*ids {
+        if !jsid.is_string() {
+            continue;
+        }
+        let name = crate::jsstr_to_rust_string(cx, jsid.to_string());
+        let id_h = mozjs::jsapi::Handle::<jsid> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: jsid as *const jsid as *mut jsid,
+        };
+        let got = unsafe { JS_GetPropertyById(cx, obj.into(), id_h, val.handle_mut().into()) };
+        f(&name, id_h, val.handle().get(), got);
+    }
+    true
 }
 
 /// Force-link `bun_install` compilation unit so the linker resolves

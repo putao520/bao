@@ -187,35 +187,13 @@ unsafe fn read_opts_into(cx: *mut JSContext, oh: Handle<*mut JSObject>, cfg: &mu
         let mut wrapped = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped;
         rooted!(&in(cx_ref) let eo = env_v.to_object());
-        let mut ids = mozjs::rust::IdVector::new(cx_ref);
-        if GetPropertyKeys(cx, eo.handle().into(), JSITER_OWNONLY, ids.handle_mut()) {
-            let mut pairs = Vec::new();
-            for jsid in &*ids {
-                if !jsid.is_string() {
-                    continue;
-                }
-                let key_ptr = jsid.to_string();
-                if key_ptr.is_null() {
-                    continue;
-                }
-                let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)),
-                    ::std::ptr::NonNull::new_unchecked(key_ptr),
-                );
-                let c_key = ZBox::from_bytes(key.as_bytes());
-                let mut val = UndefinedValue();
-                if JS_GetProperty(
-                    cx,
-                    eo.handle().into(),
-                    c_key.as_ptr(),
-                    MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut val,
-                    },
-                ) && val.is_string()
-                {
-                    pairs.push((key, crate::js_to_rust_string(cx, val)));
-                }
+        let mut pairs = Vec::new();
+        let walk_ok = crate::for_each_string_property(cx, eo.handle().into(), |key, _id, val, got| {
+            if got && val.is_string() {
+                pairs.push((key.to_string(), crate::js_to_rust_string(cx, val)));
             }
+        });
+        if walk_ok {
             cfg.env_pairs = Some(pairs);
         }
     }

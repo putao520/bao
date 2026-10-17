@@ -432,6 +432,15 @@ pub(crate) fn new_tls_ctx() -> Result<*mut SSL_CTX, TlsError> {
     Ok(ctx)
 }
 
+/// Null-tolerant release-side counterpart of [`new_tls_ctx`]: the shared
+/// `SSL_CTX` ownership-contract point — [`TlsClient`](crate::TlsClient) and
+/// [`TlsServer`](crate::TlsServer) `Drop` bodies both route through here.
+pub(crate) fn free_ssl_ctx(ctx: *mut SSL_CTX) {
+    if !ctx.is_null() {
+        unsafe { SSL_CTX_free(ctx) };
+    }
+}
+
 // ─── TlsConnection ───────────────────────────────────────────────────
 
 /// Which side of the handshake this connection drives. The client and

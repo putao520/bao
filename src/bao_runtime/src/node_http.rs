@@ -1952,35 +1952,9 @@ unsafe fn res_write_head_headers(
         return;
     }
     let res_mut = Response::<false>::cast_res(uws_res);
-    // Iterate ALL properties of the headers object via IdVector + GetPropertyKeys.
-    let mut ids = mozjs::rust::IdVector::new(cx_ref);
-    if !w2::GetPropertyKeys(
-        cx_ref,
-        hdrs_obj.handle().into(),
-        JSITER_OWNONLY as u32,
-        ids.handle_mut(),
-    ) {
-        return;
-    }
-    for jsid in &*ids {
-        if !jsid.is_string() {
-            continue;
-        }
-        let key_str = jsid.to_string();
-        let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
-            NonNull::new_unchecked(key_str),
-        );
-        let mut hv = UndefinedValue();
-        let c_key = ZBox::from_bytes(key.as_bytes());
-        JS_GetProperty(
-            cx,
-            hdrs_obj.handle().into(),
-            c_key.as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut hv,
-            },
-        );
+    // Iterate ALL properties of the headers object (IdVector + GetPropertyKeys
+    // + by-id value fetch live in the shared walker).
+    crate::for_each_string_property(cx, hdrs_obj.handle().into(), |key, _id, hv, _| {
         if hv.is_string() {
             let val = crate::js_to_rust_string(cx, hv);
             // Convert header name to lowercase for uWS.
@@ -1988,7 +1962,7 @@ unsafe fn res_write_head_headers(
             let c_val = ZBox::from_bytes(val.as_bytes());
             (*res_mut).write_header(key_lower.as_bytes(), c_val.as_bytes());
         }
-    }
+    });
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

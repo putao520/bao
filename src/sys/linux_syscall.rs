@@ -112,7 +112,9 @@ pub(crate) fn openat2_beneath(dir: Fd, path: &ZStr, flags: i32, mode: Mode) -> R
 #[inline]
 pub(crate) fn read(fd: Fd, buf: &mut [u8]) -> Result<usize, i32> {
     let fd = fd.as_borrowed_fd();
-    retry(|| rustix::io::read(fd, buf))
+    // rustix 1.x read/pread take `Buf: Buffer<u8>` by value; `&mut buf[..]`
+    // reborrows per retry so the FnMut closure never moves `buf`.
+    retry(|| rustix::io::read(fd, &mut buf[..]))
 }
 
 #[inline]
@@ -124,7 +126,8 @@ pub(crate) fn write(fd: Fd, buf: &[u8]) -> Result<usize, i32> {
 #[inline]
 pub(crate) fn pread(fd: Fd, buf: &mut [u8], off: i64) -> Result<usize, i32> {
     let fd = fd.as_borrowed_fd();
-    retry(|| rustix::io::pread(fd, buf, off as u64))
+    // rustix 1.x pread takes `Buf: Buffer<u8>` by value (see `read` above).
+    retry(|| rustix::io::pread(fd, &mut buf[..], off as u64))
 }
 
 #[inline]
