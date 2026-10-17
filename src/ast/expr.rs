@@ -2279,11 +2279,9 @@ impl Data {
     // Rust has no field-by-tag reflection. Per-variant `as_*` accessors live
     // alongside the enum decl above (`e_string`/`e_object`/...).
     pub fn as_e_identifier(&self) -> Option<E::Identifier> {
-        if let Data::EIdentifier(i) = self {
-            Some(*i)
-        } else {
-            None
-        }
+        // Zig-port name (`Data.as(.e_identifier)` surface) — single decode
+        // body lives in [`Data::e_identifier`].
+        self.e_identifier()
     }
     pub fn as_e_inlined_enum(&self) -> Option<StoreRef<E::InlinedEnum>> {
         // Zig-port name (`Data.as(.e_inlined_enum)` surface) — single decode
