@@ -269,6 +269,15 @@ debug = 1
 inherits = "test"
 opt-level = 2
 strip = true
+# Compile-cache ROI-1 (audit 2026-10-17): `inherits = "test"` propagated the
+# user-level `[profile.dev] incremental = true` down the chain, so every
+# workspace-member compile under this batch profile passed `-C incremental`
+# and was silently skipped by sccache (Rust hit rate 1.46%, +430 misses per
+# experiment window; 88G of incremental artifacts that batch runs never use).
+# Batch runs have no edit-iterate loop; cacheable non-incremental compiles
+# are strictly better here. One full test-ci recompile on the next batch run
+# is the expected transition cost.
+incremental = false
 
 # opt-profile crash symbolization vehicle (v47 R2): identical codegen to
 # test-ci (opt-level 2, debug-assertions via the test->dev chain) but

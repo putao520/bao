@@ -335,13 +335,15 @@ impl WsConn {
                 frame.push(0x81); // FIN + text opcode
                 push_masked_len(&mut frame, payload.len());
                 frame.extend_from_slice(&key);
-                let mut masked = payload.to_vec();
-                apply_mask(&mut masked, &key);
-                // BCE-20260814-WS-TLS: the masked payload was never appended
-                // to the frame — every wss:// send() transmitted header+key
-                // only, dropping the message body (peer then misparsed the
-                // next frame's bytes as this frame's payload).
-                frame.extend_from_slice(&masked);
+                // BCE-20260814-WS-TLS: the payload must land in the frame —
+                // an earlier revision transmitted header+key only, dropping
+                // the message body (peer then misparsed the next frame's
+                // bytes as this frame's payload). Mask in place on the frame
+                // buffer (apply_mask is elementwise XOR, byte-identical to
+                // masking a copy) — no per-message payload copy.
+                let body_start = frame.len();
+                frame.extend_from_slice(payload);
+                apply_mask(&mut frame[body_start..], &key);
                 stream
                     .write_all(&frame)
                     .map_err(|e| format!("send failed: {}", e))

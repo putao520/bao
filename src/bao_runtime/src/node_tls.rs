@@ -1710,7 +1710,7 @@ unsafe fn tls_event_tasklet(ptr: *mut ServerShared) {
                         tls_define_str_prop(cx, sock.get(), "servername", name);
                     }
                     if let Some(proto) = &alpn {
-                        let p = String::from_utf8_lossy(proto).to_string();
+                        let p = String::from_utf8_lossy(proto).into_owned();
                         tls_define_str_prop(cx, sock.get(), "_alpnProtocol", &p);
                     }
                     if let Some(p) = &protocol {

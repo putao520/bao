@@ -7702,12 +7702,28 @@ fn bunfile_display_path(src: &BunfileSrc) -> String {
     }
 }
 
-/// Map an io error to the Node-style errno code (same taxonomy as
-/// node_fs::throw_fs_error).
+/// Map an io error to the Node-style errno code — same taxonomy as
+/// node_fs::io_error_code (the fs single source; this is a local mirror
+/// because that fn is node_fs-private — keep both tables in sync).
+/// Divergence history: the kind-only table here silently downgraded EEXIST
+/// (and EINVAL/ENAMETOOLONG/ENOTEMPTY) to "ERR"; now item-for-item parity
+/// except node_fs's msg-contains shape-normalization arms, which service
+/// node_fs's synthetic rmdir errors — every bunfile error carries a real
+/// raw_os_error, so there is nothing to shape-repair on this face.
+/// @trace REQ-ENG-007
 fn bunfile_io_code(err: &::std::io::Error) -> &'static str {
+    match err.raw_os_error() {
+        Some(libc::EINVAL) => return "EINVAL",
+        Some(libc::ENAMETOOLONG) => return "ENAMETOOLONG",
+        Some(libc::ENOTEMPTY) => return "ENOTEMPTY",
+        #[cfg(windows)]
+        Some(145) => return "ENOTEMPTY",
+        _ => {}
+    }
     match err.kind() {
         ::std::io::ErrorKind::NotFound => "ENOENT",
         ::std::io::ErrorKind::PermissionDenied => "EACCES",
+        ::std::io::ErrorKind::AlreadyExists => "EEXIST",
         ::std::io::ErrorKind::IsADirectory => "EISDIR",
         ::std::io::ErrorKind::NotADirectory => "ENOTDIR",
         _ => "ERR",
@@ -10594,34 +10610,10 @@ unsafe extern "C" fn bun_file_url_to_path(cx: *mut JSContext, argc: u32, vp: *mu
     true
 }
 
-/// Minimal percent-decode for file paths (decode %XX sequences).
+/// Percent-decode a file path: WHATWG pass-through byte-level decode
+/// (`bun_url::whatwg::percent_decode`), finalized lossily for `String`.
 fn percent_decode_path(s: &str) -> String {
-    let mut result = Vec::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = hex_digit(bytes[i + 1]);
-            let lo = hex_digit(bytes[i + 2]);
-            if hi.is_some() && lo.is_some() {
-                result.push(hi.unwrap() << 4 | lo.unwrap());
-                i += 3;
-                continue;
-            }
-        }
-        result.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&result).into_owned()
-}
-
-fn hex_digit(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+    String::from_utf8_lossy(&bun_url::whatwg::percent_decode(s.as_bytes())).into_owned()
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
