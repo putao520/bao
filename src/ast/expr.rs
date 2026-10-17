@@ -2286,11 +2286,9 @@ impl Data {
         }
     }
     pub fn as_e_inlined_enum(&self) -> Option<StoreRef<E::InlinedEnum>> {
-        if let Data::EInlinedEnum(i) = *self {
-            Some(i)
-        } else {
-            None
-        }
+        // Zig-port name (`Data.as(.e_inlined_enum)` surface) — single decode
+        // body lives in [`Data::e_inlined_enum`].
+        self.e_inlined_enum()
     }
 }
 

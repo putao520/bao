@@ -25,6 +25,9 @@ bun_collections = { path = "../collections", version = "0.2.0" }
 bun_threading = { path = "../threading", version = "^0.2.0" }
 bun_sys = { path = "../sys", version = "^0.2.0" }
 bun_transpiler = { path = "../transpiler", version = "^0.2.0" }
+# Canonical WHATWG pass-through percent-decode (module_loader file:/data:
+# payload + path faces) — replaces two byte-identical local copies.
+bun_url = { path = "../url", version = "^0.2.1" }
 libc = "0.2"
 log = "0.4"
 

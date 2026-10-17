@@ -170,9 +170,7 @@ impl TlsServer {
 
 impl Drop for TlsServer {
     fn drop(&mut self) {
-        if !self.ctx.is_null() {
-            unsafe { SSL_CTX_free(self.ctx) };
-        }
+        crate::connection::free_ssl_ctx(self.ctx);
     }
 }
 
