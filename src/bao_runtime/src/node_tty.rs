@@ -263,21 +263,20 @@ unsafe extern "C" fn tty_write_stream_ctor(cx: *mut JSContext, argc: u32, vp: *m
         JSPROP_ENUMERATE as u32,
     );
 
-    // columns / rows from ioctl TIOCGWINSZ (unix) / the visible console
-    // window extents (windows).
+    // columns / rows from TIOCGWINSZ (unix, via rustix tcgetwinsize) / the
+    // visible console window extents (windows).
     #[cfg(unix)]
-    let mut ws: libc::winsize = libc::winsize {
-        ws_row: 0,
-        ws_col: 0,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
+    let (has_size, ws_col, ws_row) = if is_tty {
+        // SAFETY: borrow_raw wraps the JS-supplied fd for the duration of the
+        // single tcgetwinsize call — the same obligation the raw
+        // ioctl(TIOCGWINSZ) form carried.
+        match rustix::termios::tcgetwinsize(unsafe { ::std::os::fd::BorrowedFd::borrow_raw(fd) }) {
+            Ok(ws) => (true, ws.ws_col as i32, ws.ws_row as i32),
+            Err(_) => (false, 0, 0),
+        }
+    } else {
+        (false, 0, 0)
     };
-    #[cfg(unix)]
-    let has_size = is_tty && libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) == 0;
-    #[cfg(unix)]
-    let ws_col = ws.ws_col as i32;
-    #[cfg(unix)]
-    let ws_row = ws.ws_row as i32;
     #[cfg(windows)]
     let (has_size, ws_col, ws_row) = match (is_tty, console_window_size(fd)) {
         (true, Some((cols, rows))) => (true, cols, rows),
@@ -412,22 +411,40 @@ unsafe extern "C" fn tty_set_raw_mode(cx: *mut JSContext, argc: u32, vp: *mut JS
 
     #[cfg(unix)]
     {
-        let mut term: libc::termios = ::std::mem::zeroed();
-        if libc::tcgetattr(fd, &mut term) != 0 {
-            JS_ReportErrorUTF8(cx, c"setRawMode: tcgetattr failed".as_ptr());
-            return false;
+        // SAFETY: borrow_raw wraps the JS-supplied fd for the duration of each
+        // termios call — the same obligation the raw tcgetattr/tcsetattr form
+        // carried.
+        let mut term = match rustix::termios::tcgetattr(unsafe {
+            ::std::os::fd::BorrowedFd::borrow_raw(fd)
+        }) {
+            Ok(t) => t,
+            Err(_) => {
+                JS_ReportErrorUTF8(cx, c"setRawMode: tcgetattr failed".as_ptr());
+                return false;
+            }
+        };
+
+        term.make_raw();
+        if !raw_flag {
+            // Restore the cooked-mode flags cfmakeraw cleared (same shape as
+            // the former cfmakeraw-then-OR pair).
+            term.input_modes |= rustix::termios::InputModes::ICRNL;
+            term.output_modes |=
+                rustix::termios::OutputModes::OPOST | rustix::termios::OutputModes::ONLCR;
+            term.local_modes |= rustix::termios::LocalModes::ICANON
+                | rustix::termios::LocalModes::ECHO
+                | rustix::termios::LocalModes::ECHOE
+                | rustix::termios::LocalModes::ECHOK
+                | rustix::termios::LocalModes::ISIG;
         }
 
-        if raw_flag {
-            libc::cfmakeraw(&mut term);
-        } else {
-            libc::cfmakeraw(&mut term);
-            term.c_iflag |= libc::ICRNL;
-            term.c_oflag |= libc::OPOST | libc::ONLCR;
-            term.c_lflag |= libc::ICANON | libc::ECHO | libc::ECHOE | libc::ECHOK | libc::ISIG;
-        }
-
-        if libc::tcsetattr(fd, libc::TCSANOW, &term) != 0 {
+        if rustix::termios::tcsetattr(
+            unsafe { ::std::os::fd::BorrowedFd::borrow_raw(fd) },
+            rustix::termios::OptionalActions::Now,
+            &term,
+        )
+        .is_err()
+        {
             JS_ReportErrorUTF8(cx, c"setRawMode: tcsetattr failed".as_ptr());
             return false;
         }
@@ -479,17 +496,21 @@ unsafe extern "C" fn tty_get_window_size(cx: *mut JSContext, _argc: u32, vp: *mu
         -1
     };
 
+    // unix: real TIOCGWINSZ via rustix — the former arm declared a zeroed
+    // winsize and read it back without ever issuing the ioctl, so this face
+    // returned undefined on every unix tty (root-fixed here alongside the
+    // rustix swap).
     #[cfg(unix)]
-    let mut ws: libc::winsize = libc::winsize {
-        ws_row: 0,
-        ws_col: 0,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
+    let (ws_col, ws_row) = if fd >= 0 {
+        // SAFETY: borrow_raw wraps the JS-supplied fd for the duration of the
+        // single tcgetwinsize call.
+        match rustix::termios::tcgetwinsize(unsafe { ::std::os::fd::BorrowedFd::borrow_raw(fd) }) {
+            Ok(ws) => (ws.ws_col as i32, ws.ws_row as i32),
+            Err(_) => (0, 0),
+        }
+    } else {
+        (0, 0)
     };
-    #[cfg(unix)]
-    let ws_col = ws.ws_col as i32;
-    #[cfg(unix)]
-    let ws_row = ws.ws_row as i32;
     #[cfg(windows)]
     let (ws_col, ws_row) = console_window_size(fd).unwrap_or((0, 0));
     let has_size = fd >= 0 && ws_col > 0;

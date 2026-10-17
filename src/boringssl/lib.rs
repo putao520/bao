@@ -7,7 +7,6 @@ use core::ptr;
 use std::cell::Cell;
 
 pub use bun_boringssl_sys as boring;
-use bun_cares_sys as c_ares;
 use bun_core::strings;
 
 // MOVE_DOWN: ported from `src/runtime/api/bun/x509.zig::isSafeAltName`.
@@ -242,7 +241,6 @@ pub extern "C" fn OPENSSL_memory_get_size(ptr: *const c_void) -> usize {
 pub use bun_sys::posix::INET6_ADDRSTRLEN;
 
 // Canonical cross-platform AF_* surface — handles the Windows ws2def.h split.
-use bun_sys::posix::AF::{INET as AF_INET, INET6 as AF_INET6};
 
 /// converts IP string to canonicalized IP string
 /// return null when the IP is invalid
@@ -253,28 +251,14 @@ pub fn canonicalize_ip<'a>(
     if addr_str.len() >= INET6_ADDRSTRLEN {
         return None;
     }
-    let mut ip_std_text = [0u8; INET6_ADDRSTRLEN + 1];
-    // we need a null terminated string as input
-    out_ip[..addr_str.len()].copy_from_slice(addr_str);
-    out_ip[addr_str.len()] = 0;
-
-    let mut af: c_int = AF_INET;
-    // get the standard text representation of the IP
-    // SAFETY: out_ip is NUL-terminated above; ip_std_text is large enough for any address.
-    unsafe {
-        if c_ares::ares_inet_pton(af, out_ip.as_ptr().cast(), ip_std_text.as_mut_ptr().cast()) <= 0
-        {
-            af = AF_INET6;
-            if c_ares::ares_inet_pton(af, out_ip.as_ptr().cast(), ip_std_text.as_mut_ptr().cast())
-                <= 0
-            {
-                return None;
-            }
-        }
-    }
-    // out_ip will contain the null-terminated canonicalized IP
-    // SAFETY: ip_std_text holds the in_addr/in6_addr written by ares_inet_pton above.
-    unsafe { c_ares::ntop(af, ip_std_text.as_ptr().cast(), &mut out_ip[..]) }
+    // std::net is the thin-library replacement for the former c-ares
+    // ares_inet_pton+ntop pair: same textual forms accepted (RFC 4291/5952,
+    // strict dotted-quad, no zone IDs) and Display emits the canonical text.
+    // Note the former form truncated the input at an embedded NUL (pton read
+    // the C string); std's parser rejects it instead — the strict direction.
+    let s = core::str::from_utf8(addr_str).ok()?;
+    let ip: core::net::IpAddr = s.parse().ok()?;
+    write_canonical_ip(&ip, out_ip)
 }
 
 /// converts ASN1_OCTET_STRING to canonicalized IP string
@@ -283,13 +267,35 @@ pub fn ip2_string<'a>(
     ip: &boring::ASN1_OCTET_STRING,
     out_ip: &'a mut [u8; INET6_ADDRSTRLEN + 1],
 ) -> Option<&'a [u8]> {
-    let af: c_int = match ip.length {
-        4 => AF_INET,
-        16 => AF_INET6,
+    // SAFETY: ip.data points at ip.length bytes owned by the BoringSSL
+    // GENERAL_NAME for the duration of this call (the same obligation the
+    // c_ares::ntop borrow carried).
+    let bytes = unsafe { core::slice::from_raw_parts(ip.data, ip.length as usize) };
+    let parsed = match bytes {
+        [a, b, c, d] => core::net::IpAddr::V4(core::net::Ipv4Addr::new(*a, *b, *c, *d)),
+        b if b.len() == 16 => core::net::IpAddr::V6(core::net::Ipv6Addr::from(
+            <[u8; 16]>::try_from(b).ok()?,
+        )),
         _ => return None,
     };
-    // SAFETY: ip.data points to ip.length bytes (4 or 16); out_ip is INET6_ADDRSTRLEN+1 bytes.
-    unsafe { c_ares::ntop(af, ip.data.cast(), &mut out_ip[..]) }
+    write_canonical_ip(&parsed, out_ip)
+}
+
+/// Write the canonical textual form (std Display == RFC 5952) into `out_ip`
+/// as a NUL-terminated string; return the text slice (excluding the NUL) —
+/// the same contract the former `c_ares::ntop` wrapper provided.
+fn write_canonical_ip<'a>(
+    ip: &core::net::IpAddr,
+    out_ip: &'a mut [u8; INET6_ADDRSTRLEN + 1],
+) -> Option<&'a [u8]> {
+    let text = ip.to_string();
+    let bytes = text.as_bytes();
+    if bytes.len() >= out_ip.len() {
+        return None;
+    }
+    out_ip[..bytes.len()].copy_from_slice(bytes);
+    out_ip[bytes.len()] = 0;
+    Some(&out_ip[..bytes.len()])
 }
 
 /// Matches a DNS name pattern (possibly with a leading `*.` wildcard) against
