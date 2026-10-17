@@ -28,6 +28,17 @@
 //! Linker GC prevention: a ctor in .init_array auto-calls force_link() at load
 //! time, so integration tests don't need explicit force_link() calls.
 
+// Coverage-governance 分母排除 2026-10-17 核算(no-op dispatch stubs + C 库桥
+// 锚点,lib.rs + c_lib_stubs.rs 两文件): 本 crate 全部符号为链接期 face —
+// force_link 的拖库引用(as usize cast / fn 指针)与 .init_array 链接锚,
+// 产品语义由各 owner crate 的真实实现承载(SYMBOL-OWNERSHIP 表),bao 侧零
+// 测试调用点。product_native_symbols 不在此列(bun_runtime 内 RealImpl,明令
+// 不排除)。见 .plans/coverage-governance-20261017.md。
+// nightly-2026-07-20 上 `#[coverage]` 属性仍未稳(feature coverage_attribute,
+// rust issue #84605)——crate 根 feature 门,C10 排除注解面唯一启用点。
+#![feature(coverage_attribute)]
+#![coverage(off)]
+
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 

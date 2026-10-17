@@ -223,6 +223,7 @@ mod vm_deep_tests;
 mod vm_edge_tests;
 mod wave_b_final_tests;
 mod web_api_deep_tests;
+mod web_api_gap_c10_tests;
 mod web_api_port_tests;
 mod web_api_subtle_edge_tests;
 mod web_api_tests;

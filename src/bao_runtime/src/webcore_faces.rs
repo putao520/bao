@@ -23,6 +23,12 @@
 //! Null = no Runtime on this thread (the caller's documented
 //! wrong-thread/degraded case).
 
+// Coverage-governance 分母排除 2026-10-17 核算(99 行 FFI link-time face):
+// servo 上游调用(`__bun_stdio_blob_store_new` / `__bun_js_vm_get` 由
+// MiniEventLoop 的 unsafe extern "Rust" 上向契约引用),bao 侧零测试调用点。
+// 见 .plans/coverage-governance-20261017.md。
+#![coverage(off)]
+
 use core::cell::Cell;
 
 use bun_sys::{Fd, Mode};

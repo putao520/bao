@@ -1,6 +1,11 @@
 // @trace REQ-ENG-001 [entity:NodeRuntime] REQ-ENG-006 REQ-IMPL-01 REQ-IMPL-02 REQ-IMPL-03 REQ-IMPL-04 REQ-IMPL-05 REQ-PURE-010 [level:library] [entity:NodeRuntime]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(unused_imports)]
+// C10 coverage-governance 分母排除注解面的工具链启用点(nightly-2026-07-20 上
+// `#[coverage]` 属性仍未稳,feature coverage_attribute,rust issue #84605):
+// 供 `src/webcore_faces.rs` 的 `#![coverage(off)]`(FFI link-time face 分母
+// 排除,2026-10-17 核算)使用,零语义影响。见 .plans/coverage-governance-20261017.md。
+#![feature(coverage_attribute)]
 // @trace REQ-PURE-010: bao_runtime (Rust) replaces deleted bun_runtime (Zig) — zero Zig deps, zero JSC refs
 // @trace REQ-IMPL-01: Phase 1 SpiderMonkey engine replacement (completed)
 // @trace REQ-IMPL-02: Phase 2 servo engine integration + rendering (completed)
