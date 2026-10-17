@@ -6,6 +6,16 @@ edition = "2021"
 repository.workspace = true
 readme = "README.md"
 license = "MIT"
+# Links key is load-bearing: without it, this crate's `cargo:rustc-link-lib`
+# emissions (build.rs) apply only to its own rlib compile and are never
+# forwarded to downstream/final links. Fresh whole-graph builds (e.g. the
+# instrumented coverage bin) then rely solely on the embedded rlib archive,
+# which single-pass ld cannot resolve when this rlib precedes the referencing
+# bun_uws_sys rlib — 44 undefined lsquic_* at link. Declaring links makes
+# cargo append the emitted -l flags at the end of every downstream link
+# (order-independent). Symptom of its absence: bao_bin link failure with
+# undefined lsquic_engine_* in a clean CARGO_TARGET_DIR.
+links = "lsquic"
 
 [build-dependencies]
 cc = "1"

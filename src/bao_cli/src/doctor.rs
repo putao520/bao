@@ -277,14 +277,23 @@ fn walk_target_for_mozjs() -> bool {
     let Ok(entries) = std::fs::read_dir("target") else {
         return false;
     };
+    // Collect all candidate profile dirs: top-level (when target-dir is customized,
+    // e.g. /var/cargo-builds/...) and standard subdirs (debug/ and release/ under
+    // target/ when target-dir is the default). This covers both layouts:
+    //   Layout A (default): target/{debug,release}/deps/
+    //   Layout B (custom target-dir): <custom>/debug/{build,deps,incremental}/
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if dir_mentions_mozjs(&path.join("debug")) {
+            // Layout A: target/debug/, target/release/
+            if dir_mentions_mozjs(&path) {
                 return true;
             }
-            if dir_mentions_mozjs(&path.join("release")) {
-                return true;
+            // Layout A nested: target/<dir>/debug/, target/<dir>/release/
+            for profile in ["debug", "release"] {
+                if dir_mentions_mozjs(&path.join(profile)) {
+                    return true;
+                }
             }
         }
     }

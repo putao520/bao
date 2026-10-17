@@ -1232,53 +1232,70 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                 },
             );
 
-            let sock_h = if sv.is_object() {
-                rooted!(&in(cx_ref) let sock_obj = sv.to_object());
-                sock_obj.handle().into()
-            } else {
-                opts_h
-            };
-
-            // Update callbacks in user data
+            // Update callbacks in user data. The socket{} wrapper's object
+            // root must own the WHOLE extraction window: a `rooted!` declared
+            // inside the if-arm dies at the arm boundary while the Handle
+            // taken from it is still consumed by every extract below
+            // (dangling rooted handle — SIGSEGV under GC pressure;
+            // UDP-RELOAD-DANGLING-ROOTED-HANDLE). Each arm scopes its own
+            // root around the shared helper call.
             let ud = get_udp_ud_mut(cx, this_h);
             if let Some(ud_ref) = ud {
-                if let Some(cb) = extract_js_callback(cx, sock_h, "data") {
-                    if let Some(ref old_key) = ud_ref.data_cb_key {
-                        gc_store_remove(cx, old_key);
-                    }
-                    let k = gc_store_unique_key(&format!("udp_data_reload"));
-                    gc_store_insert(cx, &k, cb);
-                    ud_ref.data_cb_key = Some(k);
-                }
-                if let Some(cb) = extract_js_callback(cx, sock_h, "drain") {
-                    if let Some(ref old_key) = ud_ref.drain_cb_key {
-                        gc_store_remove(cx, old_key);
-                    }
-                    let k = gc_store_unique_key(&format!("udp_drain_reload"));
-                    gc_store_insert(cx, &k, cb);
-                    ud_ref.drain_cb_key = Some(k);
-                }
-                if let Some(cb) = extract_js_callback(cx, sock_h, "close") {
-                    if let Some(ref old_key) = ud_ref.close_cb_key {
-                        gc_store_remove(cx, old_key);
-                    }
-                    let k = gc_store_unique_key(&format!("udp_close_reload"));
-                    gc_store_insert(cx, &k, cb);
-                    ud_ref.close_cb_key = Some(k);
-                }
-                if let Some(cb) = extract_js_callback(cx, sock_h, "error") {
-                    if let Some(ref old_key) = ud_ref.error_cb_key {
-                        gc_store_remove(cx, old_key);
-                    }
-                    let k = gc_store_unique_key(&format!("udp_error_reload"));
-                    gc_store_insert(cx, &k, cb);
-                    ud_ref.error_cb_key = Some(k);
+                if sv.is_object() {
+                    rooted!(&in(cx_ref) let sock_obj = sv.to_object());
+                    let sock_h = sock_obj.handle().into();
+                    reload_ud_callbacks(cx, ud_ref, sock_h);
+                } else {
+                    reload_ud_callbacks(cx, ud_ref, opts_h);
                 }
             }
         }
 
         args.rval().set(UndefinedValue());
         true
+    }
+
+    /// Apply one reload callback table (`data`/`drain`/`close`/`error`) from
+    /// `src_h` onto the socket's user data. Split out of `udp_reload` so the
+    /// socket{} object root can scope the entire extract+insert window (see
+    /// the dangling-rooted-handle note above).
+    unsafe fn reload_ud_callbacks(
+        cx: *mut JSContext,
+        ud_ref: &mut UdpUserData,
+        src_h: Handle<*mut JSObject>,
+    ) {
+        if let Some(cb) = extract_js_callback(cx, src_h, "data") {
+            if let Some(ref old_key) = ud_ref.data_cb_key {
+                gc_store_remove(cx, old_key);
+            }
+            let k = gc_store_unique_key(&format!("udp_data_reload"));
+            gc_store_insert(cx, &k, cb);
+            ud_ref.data_cb_key = Some(k);
+        }
+        if let Some(cb) = extract_js_callback(cx, src_h, "drain") {
+            if let Some(ref old_key) = ud_ref.drain_cb_key {
+                gc_store_remove(cx, old_key);
+            }
+            let k = gc_store_unique_key(&format!("udp_drain_reload"));
+            gc_store_insert(cx, &k, cb);
+            ud_ref.drain_cb_key = Some(k);
+        }
+        if let Some(cb) = extract_js_callback(cx, src_h, "close") {
+            if let Some(ref old_key) = ud_ref.close_cb_key {
+                gc_store_remove(cx, old_key);
+            }
+            let k = gc_store_unique_key(&format!("udp_close_reload"));
+            gc_store_insert(cx, &k, cb);
+            ud_ref.close_cb_key = Some(k);
+        }
+        if let Some(cb) = extract_js_callback(cx, src_h, "error") {
+            if let Some(ref old_key) = ud_ref.error_cb_key {
+                gc_store_remove(cx, old_key);
+            }
+            let k = gc_store_unique_key(&format!("udp_error_reload"));
+            gc_store_insert(cx, &k, cb);
+            ud_ref.error_cb_key = Some(k);
+        }
     }
 
     // ──── closed getter ────

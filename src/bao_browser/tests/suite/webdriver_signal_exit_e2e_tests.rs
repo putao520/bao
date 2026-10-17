@@ -8,6 +8,7 @@
 // to be gone within the 5s liveness bound. Pre-fix (e177/e184 RED) the
 // registry server's tokio face closed the HTTP listener on TERM but nothing
 // wired the signal to bao's pump loop — the process survived indefinitely,
+#[cfg(unix)]
 // spinning a core (12 residual processes measured in the e177 campaign).
 //
 //   T1  idle + SIGTERM → exit ≤5s, code 0

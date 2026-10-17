@@ -1,1 +1,2 @@
-Error: browser init error: invalid URL: relative URL without a base
+error: unrecognized subcommand 'unknown-cmd'
+Try 'bao --help' for more information.

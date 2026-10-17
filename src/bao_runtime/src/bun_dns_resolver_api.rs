@@ -229,6 +229,10 @@ fn resolve_host(host: &str, filter: FamilyFilter) -> Result<Vec<DnsRecord>, ::st
         w.push(0);
         w
     };
+    // GetAddrInfoW 取 `*const u16`;shadow 成裸指针(Vec 被 shadowed 绑定持有,
+    // 存活至作用域末,调用期指针有效;与 POSIX 臂 `host_c.as_ptr()` 同形)。
+    #[cfg(windows)]
+    let host_arg = host_arg.as_ptr();
 
     let hints = req.options.to_libc();
     let mut result_head: *mut platform_addrinfo = ::std::ptr::null_mut();

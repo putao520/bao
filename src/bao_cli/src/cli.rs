@@ -255,8 +255,26 @@ pub fn run() -> ::std::result::Result<(), i32> {
         || cli.config_dir.is_some()
         || cli.temporary_storage
         || cli.headless;
-    if browser_entry || cli.url.is_some() {
+    // Reject non-URL positional args (e.g. `bao unknown-command`) from routing
+    // to the browser entry. A bare positional is treated as a subcommand by
+    // clap (since `command: Option<Commands>` is optional), but when the sub-
+    // command doesn't match any variant clap silently drops it and the arg
+    // lands in `url` — causing the browser to initialise with an invalid URL
+    // instead of the command-line error path the test suite expects.
+    // Valid URL-like strings carry a scheme (`://` or scheme `:` before first
+    // `/`); anything else is rejected as an unknown command.
+    let url_is_valid = cli
+        .url
+        .as_deref()
+        .map(|s| s.contains("://") || s.split('/').next().map_or(false, |s| s.contains(':')))
+        .unwrap_or(false);
+    if browser_entry || (cli.url.is_some() && url_is_valid) {
         return run_browser_entry(&cli);
+    }
+    if cli.url.is_some() && !url_is_valid {
+        eprintln!("error: unrecognized subcommand '{}'", cli.url.as_deref().unwrap_or_default());
+        eprintln!("Try 'bao --help' for more information.");
+        return Err(1);
     }
     // --timeout only drives script execution entries (SM-EVOLUTION #24 S1
     // CLI wiring: `bao run` / top-level `-e`). On every other subcommand it

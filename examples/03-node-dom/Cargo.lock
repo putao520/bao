@@ -464,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "bao-browser"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "bao-mozjs",
  "bao-servo",
@@ -2377,7 +2377,7 @@ dependencies = [
 
 [[package]]
 name = "bao_crypto"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bun_boringssl_sys",
  "hex",
@@ -3651,7 +3651,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",

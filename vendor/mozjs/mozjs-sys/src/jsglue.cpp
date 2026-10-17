@@ -987,7 +987,19 @@ void DeleteRootedObjectVector(JS::PersistentRootedObjectVector* v) { delete v; }
 #endif
 
 // SpiderMonkey-in-Rust currently uses system malloc, not jemalloc.
+//
+// BAO fix (win-nextest-0xc0000409): the stats walk (JS::CollectRuntimeStats /
+// JS::AddServoSizeOf) can hand us a NULL pointer for an absent optional
+// allocation. glibc malloc_usable_size(NULL) and macOS malloc_size(NULL) both
+// return 0 by contract, but the MSVC CRT _msize(NULL) raises the
+// invalid-parameter handler -> _invoke_watson -> __fastfail, which surfaces as
+// process exit 0xc0000409 (ucrtbase abort) — the Windows-only crash signature
+// of the engine memory-metering tests. Guard the NULL case with the POSIX/macOS
+// contract so every platform agrees.
 static size_t MallocSizeOf(const void* aPtr) {
+  if (!aPtr) {
+    return 0;
+  }
 #if defined(__linux__) || defined(__wasi__) || defined(__FreeBSD__)
   return malloc_usable_size((void*)aPtr);
 #elif defined(__APPLE__)
@@ -1000,6 +1012,64 @@ static size_t MallocSizeOf(const void* aPtr) {
 #  error "unsupported platform"
 #endif
 }
+
+#if defined(_MSC_VER)
+#  include <stdio.h>
+#  include <stdlib.h>
+#  include <windows.h>
+#  include <signal.h>
+// BAO crash forensics (win-nextest-0xc0000409, second stage): the ucrtbase
+// abort() path raises SIGABRT BEFORE _invoke_watson/__fastfail, so a SIGABRT
+// handler gets the live stack while every frame is still in place. Print
+// module+offset per frame (module localization needs no PDB), then let
+// abort() proceed exactly as before — diagnosis only, zero behavior change.
+static void BaoSigabrtStackReporter(int) {
+  fprintf(stderr, "[bao-crash] SIGABRT stack (module+offset):\n");
+  void* frames[64];
+  USHORT n = CaptureStackBackTrace(0, 64, frames, nullptr);
+  for (USHORT i = 0; i < n; i++) {
+    HMODULE mod = nullptr;
+    char modpath[1024] = "(unknown)";
+    uintptr_t base = 0;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)frames[i], &mod)) {
+      GetModuleFileNameA(mod, modpath, sizeof(modpath));
+      base = (uintptr_t)mod;
+    }
+    fprintf(stderr, "  %02u %p %s+0x%zx\n", (unsigned)i, frames[i], modpath,
+            (uintptr_t)frames[i] - base);
+  }
+  fflush(stderr);
+}
+static const bool gBaoSigabrtInstalled = [] {
+  signal(SIGABRT, BaoSigabrtStackReporter);
+  return true;
+}();
+// BAO diagnostic (win-nextest-0xc0000409): the MSVC CRT silently __fastfail's
+// (process exit 0xc0000409, no message, no stack) on any invalid parameter —
+// which makes a stats-walk crash indistinguishable from a hundred other CRT
+// misuse sites. Fail loud instead: print the exact CRT call site, then abort
+// with a visible marker. If the MallocSizeOf NULL guard above ever becomes
+// insufficient, this pinpoints the real site instead of dying silently.
+// Registered at static init so every test binary links it in.
+static void BaoCrtInvalidParamHandler(const wchar_t* expression,
+                                      const wchar_t* function,
+                                      const wchar_t* file, unsigned int line,
+                                      uintptr_t) {
+  fprintf(stderr,
+          "[bao-crt] CRT invalid parameter: expression=%ls function=%ls "
+          "file=%ls line=%u\n",
+          expression ? expression : L"(null)", function ? function : L"(null)",
+          file ? file : L"(null)", line);
+  fflush(stderr);
+  abort();
+}
+static const bool gBaoCrtIphInstalled = [] {
+  _set_invalid_parameter_handler(BaoCrtInvalidParamHandler);
+  return true;
+}();
+#endif
 
 bool CollectServoSizes(JSContext* cx, JS::ServoSizes* sizes, GetSize gs) {
   mozilla::PodZero(sizes);

@@ -567,7 +567,8 @@ fn bao_cli_subcommand_install_argument_surface() {
 // page.rs 的 `url::Url::parse` 处失败 → `BrowserError::Init("invalid URL:
 // relative URL without a base")` → "Error: browser init error: ..." rc=1。
 // 脚本直跑通路仍不存在(脚本入口是 `bao run <file>` 或顶层 `-e`)。
-// 本测试钉住该真实契约:bare path 被 browser init 以 invalid URL 拒绝,
+// 本测试钉住该真实契约:bare path 经 97f32ed9 (REQ-BRW-002) 顶层 url 守卫被
+// 拦截为 unrecognized subcommand → rc=1 + "error: unrecognized subcommand …",
 // 防止未来 url 语义漂移时无声变化。
 
 #[test]
@@ -580,8 +581,8 @@ fn bao_cli_subcommand_external_script_path_treated_as_url_is_rejected_by_browser
 
     let mut passed = 0u32;
     let mut failed = 0u32;
-    const INVALID_URL_STDERR: &str =
-        "Error: browser init error: invalid URL: relative URL without a base";
+    const UNRECOGNIZED_SUBCMD_STDERR: &str =
+        "error: unrecognized subcommand";
 
     // ── §a 存在的脚本文件 → rc=1 + browser init invalid URL(不执行脚本)──
     let temp = fresh_temp_dir("external_script");
@@ -594,7 +595,7 @@ fn bao_cli_subcommand_external_script_path_treated_as_url_is_rejected_by_browser
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
             if output.status.code() == Some(1)
-                && stderr.contains(INVALID_URL_STDERR)
+                && stderr.contains(UNRECOGNIZED_SUBCMD_STDERR)
                 && !stdout.contains("bao-external-marker")
             {
                 eprintln!("PASS  §a::existing_script_rejected_rc1");
@@ -621,7 +622,7 @@ fn bao_cli_subcommand_external_script_path_treated_as_url_is_rejected_by_browser
     match run_bao_in(&temp, &["bao_sub_e2e_missing.js"]) {
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if output.status.code() == Some(1) && stderr.contains(INVALID_URL_STDERR) {
+            if output.status.code() == Some(1) && stderr.contains(UNRECOGNIZED_SUBCMD_STDERR) {
                 eprintln!("PASS  §b::missing_path_same_rejection");
                 passed += 1;
             } else {
