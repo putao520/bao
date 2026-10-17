@@ -13,6 +13,21 @@
 
 基线对照:Z.39 基线 line 74.74%(region 218547,口径未存档);本波 74.18% 为**可复现管道首建**(lcov 全文 `/tmp/goalA/coverage-final.lcov` + 判定器 `cov_analyze.py`)。口径差异=基线 scope 未存档,本表起以 bao 自有层为准。
 
+## 2026-10-18 farm 终测(battery-4,首次跨机可复现)
+
+**测量面**:farm 16.18.0.1 容器(64 核)+ `CARGO_BUILD_PROFILE=test-ci BAO_TEST_BAO_BIN=/t/test-ci/bao BAO_TEST_NETWORK=1 BAO_TEST_DNS=1 BAO_TEST_REAL_SERVO=1 DISPLAY=:99 cargo llvm-cov nextest -j 8 --run-ignored=all --ignore-run-fail -E 'not test(e2e_real_chrome) and not test(puppeteer)' --lcov`。lcov 全文 `/var/cargo-builds/bao-cov-final/coverage-final.lcov`(27.8MB)。
+
+| 口径 | LF | LH | line |
+|---|---|---|---|
+| **bao 自有层(同上口径)** | **150696** | **122947** | **81.59%** |
+| 全仓(lcov 全集) | 446812 | 195323 | 43.71% |
+
+**对照 74.18% 首建:+7.41pp**。分解:①分子 +11051 覆盖行(C2-C10 缺口波+#71 修复解锁面+#74 三缺陷负测试+#69 notify 后端+cli bin 面经 BAO_TEST_BAO_BIN 首次入主管道)②分母 −145(C10 `#[coverage(off)]` 分母排除首次机械生效:webcore_faces 99+bao_native_stubs 200 注解面出插桩)。**98% 字面值判定不变**(天花板核算:排除杠杆上限 +3.2pp,缺口由真功能代码构成;81.59% 为结构上限路径的当前实测点,续推=缺口排行+#76/#75 能力波)。
+
+**电池形态变化**:12008 tests(较首建 +325=C1-C10 新测),24 失败=农场环境面(node_dns c4 ×10=容器 DNS 形态/udp_ffi_shell ×2/spawn_sigterm_reset ×2/h3_fetch ×2/cluster ×4/cp_path_tty c5 ×2=#75/#76 已立案精确吻合)+puppeteer 族测量排除(内存墙,非覆盖结构)。**#77 判别落定**:cli-spawn 面家族红=测量 env 缺口(BAO_TEST_BAO_BIN 漏带),非产品回归——补带后 cli_faces/eng004/bao_cli_timeout 全绿。
+
+**farm 测量基建沉淀**(坑位入 memory llvm-cov-pipeline-pitfalls):本机多会话 OOM 四连(−j4→−j1 均破界)→farm 路线;farm 容器三坑=缺 cargo-nextest(装 `CARGO_HOME=/usr/local/cargo cargo install cargo-nextest --locked`,缺前缀落 /root/.cargo 随 --rm 消失)/llvm-tools 每 run 重下(rustup home 非持久,2 分钟容忍)/BAO_TEST_BAO_BIN 必带(spawn 面无 bin=大面积假红)。
+
 ## Goal C 六目标文件兑现(本波补测)
 
 | 文件 | 基线未覆盖行 | 本波 line | 载体 |
