@@ -162,17 +162,40 @@ impl ::std::io::Write for TlsStream {
     }
 }
 
-/// Connection backend — plain ws:// over TCP, or wss:// over TLS.
-enum WsConn {
-    /// Plain WebSocket reusing `bun_uws::WebSocketClient` (RFC 6455 codec +
-    /// handshake + masked client→server frames, all owned by bun_uws).
+/// Byte transport for one WebSocket connection. Both schemes share the same
+/// RFC 6455 frame codec and receive state (see `WsConn`) so wire semantics
+/// can never diverge between them again.
+enum WsTransport {
+    /// Plain ws:// reusing `bun_uws::WebSocketClient` (handshake + masked
+    /// client→server frames owned by bun_uws; reads go through the shared
+    /// `WsConn.decoder` below — one decode path for both transports).
     Plain(bun_uws::ws_client::WebSocketClient),
-    /// TLS WebSocket: a `TlsStream` driven through `bun_uws`'s codec/handshake.
+    /// wss:// over the BoringSSL `TlsConnection` via the `TlsStream` adapter.
     Tls {
         stream: TlsStream,
-        decoder: bun_uws::ws_codec::FrameDecoder,
+        /// Flips when a peer Close frame (or transport EOF) has been READ —
+        /// post-close frames still deliver until the handshake completes.
         closed: bool,
     },
+}
+
+/// An unfinished fragmented message (RFC 6455 §5.4): the first frame's opcode
+/// decides the message type; Continuation frames append until FIN.
+struct PartialMessage {
+    is_text: bool,
+    buf: Vec<u8>,
+}
+
+/// One live WebSocket connection: the byte transport plus the shared RFC 6455
+/// receive state — one frame decoder and one fragmentation assembly buffer,
+/// driven by a single `read_message` loop. (The former per-variant split had
+/// ws:// delivering a bare Continuation frame as a binary message while
+/// wss:// silently skipped it.)
+struct WsConn {
+    transport: WsTransport,
+    decoder: bun_uws::ws_codec::FrameDecoder,
+    /// Fragmented message in progress; `None` while idle.
+    partial: ::std::option::Option<PartialMessage>,
 }
 
 impl WsConn {
@@ -206,7 +229,11 @@ impl WsConn {
             };
             let client = bun_uws::ws_client::WebSocketClient::connect(&canonical)
                 .map_err(|e| format!("ws connect: {}", e))?;
-            Ok(WsConn::Plain(client))
+            Ok(WsConn {
+                transport: WsTransport::Plain(client),
+                decoder: bun_uws::ws_codec::FrameDecoder::new(),
+                partial: ::std::option::Option::None,
+            })
         }
     }
 
@@ -318,32 +345,29 @@ impl WsConn {
         // RFC 6455 client handshake over the TLS stream (bun_uws-owned).
         bun_uws::ws_handshake::client_handshake(&mut stream, host, &path)
             .map_err(|e| format!("ws handshake: {:?}", e))?;
-        Ok(WsConn::Tls {
-            stream,
+        Ok(WsConn {
+            transport: WsTransport::Tls {
+                stream,
+                closed: false,
+            },
             decoder: bun_uws::ws_codec::FrameDecoder::new(),
-            closed: false,
+            partial: ::std::option::Option::None,
         })
     }
 
     fn send_text(&mut self, text: &str) -> ::std::result::Result<(), String> {
-        match self {
-            WsConn::Plain(c) => c.send_text(text).map_err(|e| format!("send failed: {}", e)),
-            WsConn::Tls { stream, .. } => {
-                let payload = text.as_bytes();
-                let key = bun_uws::ws_codec::gen_mask_key();
-                let mut frame = Vec::with_capacity(payload.len() + 14);
-                frame.push(0x81); // FIN + text opcode
-                push_masked_len(&mut frame, payload.len());
-                frame.extend_from_slice(&key);
-                // BCE-20260814-WS-TLS: the payload must land in the frame —
-                // an earlier revision transmitted header+key only, dropping
-                // the message body (peer then misparsed the next frame's
-                // bytes as this frame's payload). Mask in place on the frame
+        match &mut self.transport {
+            WsTransport::Plain(c) => {
+                c.send_text(text).map_err(|e| format!("send failed: {}", e))
+            }
+            WsTransport::Tls { stream, .. } => {
+                // BCE-20260814-WS-TLS: the payload must land IN the frame —
+                // an earlier revision transmitted header+key only (the peer
+                // then misparsed the next frame's bytes as this frame's
+                // payload). encode_masked_frame masks in place on the frame
                 // buffer (apply_mask is elementwise XOR, byte-identical to
                 // masking a copy) — no per-message payload copy.
-                let body_start = frame.len();
-                frame.extend_from_slice(payload);
-                apply_mask(&mut frame[body_start..], &key);
+                let frame = encode_masked_frame(0x1, text.as_bytes());
                 stream
                     .write_all(&frame)
                     .map_err(|e| format!("send failed: {}", e))
@@ -351,74 +375,139 @@ impl WsConn {
         }
     }
 
+    /// Decode exactly one protocol frame from the transport, unmasking the
+    /// payload. `Ok(None)` = no complete frame available right now (WouldBlock
+    /// — the drain pump treats this as idle). Fatal I/O errors (EOF etc.)
+    /// propagate to `read_message`'s mapping. Reserved opcodes surface as an
+    /// InvalidData protocol error from the codec (RFC 6455 §5.2).
+    fn read_frame(
+        &mut self,
+    ) -> ::std::io::Result<
+        ::std::option::Option<(bun_uws::ws_codec::FrameHeader, Vec<u8>)>,
+    > {
+        let decoded = match &mut self.transport {
+            WsTransport::Plain(c) => self.decoder.decode_frame(c.stream_mut()),
+            WsTransport::Tls { stream, .. } => self.decoder.decode_frame(stream),
+        };
+        let header = match decoded {
+            ::std::result::Result::Ok(::std::option::Option::Some(h)) => h,
+            ::std::result::Result::Ok(::std::option::Option::None) => {
+                return Ok(::std::option::Option::None);
+            }
+            // Non-blocking drain-pump poll with no buffered frame: idle, not
+            // an error. The decoder keeps any half-frame bytes buffered across
+            // passes, so the next poll resumes cleanly.
+            ::std::result::Result::Err(ref e)
+                if e.kind() == ::std::io::ErrorKind::WouldBlock
+                    || e.kind() == ::std::io::ErrorKind::TimedOut =>
+            {
+                return Ok(::std::option::Option::None);
+            }
+            ::std::result::Result::Err(e) => return Err(e),
+        };
+        let payload = if header.mask {
+            let key = self.decoder.take_mask();
+            let mut p = self.decoder.take_payload(&header);
+            apply_mask(&mut p, &key);
+            p
+        } else {
+            self.decoder.take_payload(&header)
+        };
+        Ok(::std::option::Option::Some((header, payload)))
+    }
+
+    /// Next inbound message, shared by both transports. RFC 6455 §5.4
+    /// fragmentation is assembled across pump passes: a non-FIN Text/Binary
+    /// frame opens `self.partial`, Continuation frames append, and the FIN
+    /// bit completes the message as ONE dispatch. A bare Continuation (no
+    /// open fragmentation) or a data frame mid-fragment is a protocol error
+    /// — the connection fails (node oracle: error event + close 1006, the
+    /// offending message never delivered).
     fn read_message(&mut self) -> ::std::result::Result<WsMessage, String> {
-        match self {
-            WsConn::Plain(c) => match c.recv().map_err(|e| format!("recv: {}", e))? {
-                bun_uws::ws_client::RecvOutcome::Message(opcode, payload) => match opcode {
-                    bun_uws::ws_codec::Opcode::Text => Ok(WsMessage::Text(
-                        String::from_utf8_lossy(&payload).into_owned(),
-                    )),
-                    bun_uws::ws_codec::Opcode::Binary => Ok(WsMessage::Binary(payload)),
-                    _ => Ok(WsMessage::Binary(payload)),
-                },
-                bun_uws::ws_client::RecvOutcome::Closed => Ok(WsMessage::Close),
-                bun_uws::ws_client::RecvOutcome::Timeout => Err("wouldblock".to_string()),
-            },
-            WsConn::Tls {
-                stream,
-                decoder,
-                closed,
-            } => {
-                if *closed {
+        // Post-close short-circuit (wss): once the peer's Close frame (or
+        // transport EOF) has been read, every later read is a clean Close.
+        if let WsTransport::Tls { closed: true, .. } = self.transport {
+            return Ok(WsMessage::Close);
+        }
+        loop {
+            let (header, mut payload) = match self.read_frame() {
+                ::std::result::Result::Ok(::std::option::Option::Some(hp)) => hp,
+                ::std::result::Result::Ok(::std::option::Option::None) => {
+                    return Err("wouldblock".to_string());
+                }
+                ::std::result::Result::Err(ref e)
+                    if e.kind() == ::std::io::ErrorKind::UnexpectedEof =>
+                {
+                    // EOF is the peer going away, not a transport error — it
+                    // surfaces as a clean close (no onerror).
+                    if let WsTransport::Tls { closed, .. } = &mut self.transport {
+                        *closed = true;
+                    }
                     return Ok(WsMessage::Close);
                 }
-                let header = match decoder.decode_frame(stream) {
-                    Ok(Some(h)) => h,
-                    Ok(None) => return Err("wouldblock".to_string()),
-                    Err(ref e)
-                        if e.kind() == ::std::io::ErrorKind::WouldBlock
-                            || e.kind() == ::std::io::ErrorKind::TimedOut =>
-                    {
-                        return Err("wouldblock".to_string());
-                    }
-                    Err(ref e) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => {
+                ::std::result::Result::Err(e) => return Err(format!("recv: {}", e)),
+            };
+            match header.opcode {
+                bun_uws::ws_codec::Opcode::Close => {
+                    if let WsTransport::Tls { closed, .. } = &mut self.transport {
                         *closed = true;
-                        return Ok(WsMessage::Close);
                     }
-                    Err(e) => return Err(format!("recv: {}", e)),
-                };
-                let mut payload = if header.mask {
-                    let mask_key = decoder.take_mask();
-                    let mut p = decoder.take_payload(&header);
-                    apply_mask(&mut p, &mask_key);
-                    p
-                } else {
-                    decoder.take_payload(&header)
-                };
-                match header.opcode {
-                    bun_uws::ws_codec::Opcode::Text => Ok(WsMessage::Text(
-                        String::from_utf8_lossy(&payload).into_owned(),
-                    )),
-                    bun_uws::ws_codec::Opcode::Binary => Ok(WsMessage::Binary(payload)),
-                    bun_uws::ws_codec::Opcode::Close => {
-                        *closed = true;
-                        Ok(WsMessage::Close)
-                    }
-                    bun_uws::ws_codec::Opcode::Ping => {
-                        // Echo pong (RFC 6455 §5.5.2) using bun_uws codec mask.
-                        let key = bun_uws::ws_codec::gen_mask_key();
-                        let mut frame = vec![0x8A]; // FIN + pong
-                        push_masked_len(&mut frame, payload.len());
-                        frame.extend_from_slice(&key);
-                        apply_mask(&mut payload, &key);
-                        frame.extend_from_slice(&payload);
-                        stream
+                    return Ok(WsMessage::Close);
+                }
+                bun_uws::ws_codec::Opcode::Ping => {
+                    // RFC 6455 §5.5.2: echo a masked pong and keep reading.
+                    // Control frames may interleave a fragmented message —
+                    // the loop continues (the partial state is untouched).
+                    let key = bun_uws::ws_codec::gen_mask_key();
+                    let mut frame = vec![0x8A]; // FIN + pong
+                    push_masked_len(&mut frame, payload.len());
+                    frame.extend_from_slice(&key);
+                    apply_mask(&mut payload, &key);
+                    frame.extend_from_slice(&payload);
+                    match &mut self.transport {
+                        WsTransport::Plain(c) => c
+                            .stream_mut()
                             .write_all(&frame)
-                            .map_err(|e| format!("pong: {}", e))?;
-                        self.read_message()
+                            .map_err(|e| format!("pong: {}", e))?,
+                        WsTransport::Tls { stream, .. } => {
+                            stream.write_all(&frame).map_err(|e| format!("pong: {}", e))?
+                        }
                     }
-                    bun_uws::ws_codec::Opcode::Pong | bun_uws::ws_codec::Opcode::Continuation => {
-                        self.read_message()
+                    continue;
+                }
+                bun_uws::ws_codec::Opcode::Pong => continue,
+                bun_uws::ws_codec::Opcode::Text | bun_uws::ws_codec::Opcode::Binary => {
+                    if self.partial.is_some() {
+                        return Err(
+                            "protocol error: data frame while a fragmented message is in progress (RFC 6455 §5.4)"
+                                .to_string(),
+                        );
+                    }
+                    if header.fin {
+                        return Ok(data_message(header.opcode, payload));
+                    }
+                    // §5.4 fragmentation start: buffer it and keep reading
+                    // the continuation frames in this call.
+                    self.partial = ::std::option::Option::Some(PartialMessage {
+                        is_text: header.opcode == bun_uws::ws_codec::Opcode::Text,
+                        buf: payload,
+                    });
+                }
+                bun_uws::ws_codec::Opcode::Continuation => {
+                    let ::std::option::Option::Some(p) = &mut self.partial else {
+                        return Err(
+                            "protocol error: continuation frame without a preceding fragmented message (RFC 6455 §5.4)"
+                                .to_string(),
+                        );
+                    };
+                    p.buf.extend_from_slice(&payload);
+                    if header.fin {
+                        let p = self.partial.take().expect("partial checked above");
+                        return Ok(if p.is_text {
+                            WsMessage::Text(String::from_utf8_lossy(&p.buf).into_owned())
+                        } else {
+                            WsMessage::Binary(p.buf)
+                        });
                     }
                 }
             }
@@ -432,9 +521,9 @@ impl WsConn {
     /// only the frame is sent; the socket stays readable so the drain pump
     /// can observe the peer's Close reply and fire onclose.
     fn close(&mut self) -> ::std::result::Result<(), String> {
-        let frame = encode_masked_close_frame();
-        match self {
-            WsConn::Plain(c) => {
+        let frame = encode_masked_frame(0x8, &1000u16.to_be_bytes());
+        match &mut self.transport {
+            WsTransport::Plain(c) => {
                 if c.is_closed() {
                     return Ok(());
                 }
@@ -442,8 +531,8 @@ impl WsConn {
                     .write_all(&frame)
                     .map_err(|e| format!("close failed: {}", e))
             }
-            WsConn::Tls { stream, .. } => {
-                // Send the close frame only. Do NOT set the internal `closed`
+            WsTransport::Tls { stream, .. } => {
+                // Send the close frame only. Do NOT flip the internal `closed`
                 // flag here — `read_message` uses it to short-circuit, which
                 // would discard inbound frames still in flight (post-close
                 // messages are delivered until the close handshake completes,
@@ -458,11 +547,11 @@ impl WsConn {
     /// Switch the underlying socket between blocking and non-blocking so the
     /// initial drain loop can poll for buffered frames without hanging.
     fn set_nonblocking(&mut self, nonblocking: bool) {
-        match self {
-            WsConn::Plain(c) => {
+        match &mut self.transport {
+            WsTransport::Plain(c) => {
                 let _ = c.stream_mut().set_nonblocking(nonblocking);
             }
-            WsConn::Tls { stream, .. } => {
+            WsTransport::Tls { stream, .. } => {
                 let _ = stream.tcp.set_nonblocking(nonblocking);
             }
         }
@@ -487,16 +576,30 @@ fn split_authority_and_path(rest: &str, scheme: &str) -> (String, u16, String) {
     (host, port, path)
 }
 
-/// Masked close frame (FIN + Close, code 1000), client→server layout.
-fn encode_masked_close_frame() -> Vec<u8> {
+/// Map a complete (FIN) data frame to the JS-facing message — the opcode
+/// decides text vs binary (RFC 6455 §5.6: text payloads are UTF-8, decoded
+/// with U+FFFD replacement for invalid sequences).
+fn data_message(opcode: bun_uws::ws_codec::Opcode, payload: Vec<u8>) -> WsMessage {
+    match opcode {
+        bun_uws::ws_codec::Opcode::Text => {
+            WsMessage::Text(String::from_utf8_lossy(&payload).into_owned())
+        }
+        _ => WsMessage::Binary(payload),
+    }
+}
+
+/// Masked client→server frame (FIN + opcode + masked payload), RFC 6455 §5.1.
+/// Masking is applied in place on the frame buffer (apply_mask is elementwise
+/// XOR, byte-identical to masking a copy) — no per-message payload copy.
+fn encode_masked_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
     let key = bun_uws::ws_codec::gen_mask_key();
-    let mut frame = vec![0x88];
-    let payload = 1000u16.to_be_bytes();
+    let mut frame = Vec::with_capacity(payload.len() + 14);
+    frame.push(0x80 | opcode); // FIN + opcode
     push_masked_len(&mut frame, payload.len());
     frame.extend_from_slice(&key);
-    let mut masked = payload.to_vec();
-    apply_mask(&mut masked, &key);
-    frame.extend_from_slice(&masked);
+    let body_start = frame.len();
+    frame.extend_from_slice(payload);
+    apply_mask(&mut frame[body_start..], &key);
     frame
 }
 
@@ -729,6 +832,32 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     }
     let msg_val = *args.get(0).ptr;
 
+    // Node parity (node v24.19.0 oracle): send() stringifies non-string data
+    // per ES ToString — send(123) emits the text frame "123", send(null) →
+    // "null", send({toString}) → that result. Convert through the engine
+    // (WebIDL DOMString argument conversion) so a throwing conversion
+    // (Symbol) propagates as a real JS exception; the old unconditional
+    // `msg_val.to_string()` bit-cast was UB for any non-string value. The
+    // conversion runs before the readyState gate and OUTSIDE the registry
+    // borrow — a user toString() may re-enter JS (even send()/close()).
+    let message = if msg_val.is_string() {
+        jsstr_to_string(
+            &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+            NonNull::new_unchecked(msg_val.to_string()),
+        )
+    } else {
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let msg_root = msg_val);
+        let jsstr = mozjs::rust::ToString(&mut wrapped_cx, msg_root.handle());
+        if jsstr.is_null() {
+            // ToString threw (e.g. Symbol.toPrimitive) — propagate the
+            // pending exception unchanged.
+            return false;
+        }
+        jsstr_to_string(&wrapped_cx, NonNull::new_unchecked(jsstr))
+    };
+
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let this_obj = args.thisv().to_object());
     let mut idx_val = Int32Value(-1);
@@ -749,8 +878,7 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
             // Browser parity: send() while CONNECTING/CLOSED throws
             // InvalidStateError (never silently drops the message).
             Some(e) if e.client.is_some() => {
-                let s = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(msg_val.to_string()));
-                e.client.as_mut().unwrap().send_text(&s)
+                e.client.as_mut().unwrap().send_text(&message)
             }
             Some(e) if e.connect_slot.is_some() => {
                 Err("InvalidStateError: WebSocket is still connecting".to_string())

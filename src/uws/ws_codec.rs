@@ -135,7 +135,19 @@ impl FrameDecoder {
         let byte1 = self.take_byte();
 
         let fin = (byte0 & 0x80) != 0;
-        let opcode = Opcode::from_u8(byte0 & 0x0F).unwrap_or(Opcode::Close);
+        let opcode = match Opcode::from_u8(byte0 & 0x0F) {
+            Some(op) => op,
+            None => {
+                // RFC 6455 §5.2: opcodes 0x3..0x7 / 0xB..0xF are reserved —
+                // the connection MUST fail with a protocol error. The former
+                // `unwrap_or(Opcode::Close)` conflated a reserved frame with
+                // a clean peer close (node oracle: error + close 1006).
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("reserved websocket opcode 0x{:x}", byte0 & 0x0F),
+                ));
+            }
+        };
         let mask = (byte1 & 0x80) != 0;
         let mut payload_len = (byte1 & 0x7F) as u64;
 

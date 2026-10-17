@@ -15,11 +15,10 @@
 //   - connect_tls failure arms: EOF mid-handshake ("tls handshake stalled"),
 //     garbage bytes ("tls handshake: <ssl error>"), unresolvable/invalid
 //     host + wss default-port arm ("invalid address: ...")
-//   - illegal-frame characterization: a decoder-unknown opcode (0x3) is
-//     conflation-mapped to Opcode::Close by bun_uws::ws_codec's
-//     `from_u8(..).unwrap_or(Close)` — the connection ends as a CLEAN close
-//     on both the plain and TLS paths (pinned as-implemented; a stricter
-//     RFC 6455 decoder would fail with a protocol error instead)
+//   - illegal-frame semantics: a decoder-unknown opcode (0x3, reserved per
+//     RFC 6455 §5.2) FAILS the connection with a protocol error on both the
+//     plain and TLS paths — onerror(reason) + onclose, later frames never
+//     delivered (node v24 oracle: error + close 1006)
 //   - scheme-less URL fallback (constructor + WsConn::connect else-arms) and
 //     empty text/binary frames (zero-length Uint8Array dispatch arm)
 //   - ws_trigger_event handler-throw BCE path → uncaughtException routing
@@ -264,15 +263,16 @@ fn spawn_plain_ws_server(serve: impl FnOnce(&mut TcpStream) + Send + 'static) ->
 // ═════════════════════════════════════════════════════════════════════════
 // 1. wss:// read_message arms the happy path never drives: masked server
 //    frame (client take_mask arm), Ping→pong echo written back over TLS
-//    (asserted server-side), unsolicited Pong + Continuation recursive skip.
+//    (asserted server-side), unsolicited Pong skip.
 #[test]
 fn c10_ws_tls_probe_frames_ping_pong_continuation_masked() {
     let pong_seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let pong_sink = pong_seen.clone();
     let port = spawn_tls_ws_server(move |io| {
-        // ── probe script: masked text, binary, ping, unsolicited pong,
-        //    continuation-without-start (each drives a distinct client arm) ──
+        // ── probe script: masked text, binary, ping, unsolicited pong
+        //    (each drives a distinct client arm; a bare continuation is a
+        //    protocol error now — pinned by ws_reserved_opcode_tests) ──
         let mut enc = FrameEncoder::new();
         let masked = enc.encode_frame(Opcode::Text, b"tls-masked", Some([0x5a, 0xa5, 0x11, 0x99]));
         io.write_all(&masked).expect("masked text");
@@ -282,8 +282,6 @@ fn c10_ws_tls_probe_frames_ping_pong_continuation_masked() {
         io.write_all(&ping).expect("ping");
         let pong = enc.encode_frame(Opcode::Pong, b"p", None);
         io.write_all(&pong).expect("pong");
-        let cont = enc.encode_frame(Opcode::Continuation, b"cont", None);
-        io.write_all(&cont).expect("continuation");
         let _ = io.flush();
 
         // ── echo loop: client text → "echo:<t>"; record the client's Pong
@@ -353,10 +351,8 @@ fn c10_ws_tls_probe_frames_ping_pong_continuation_masked() {
     assert!(done, "wss probe transcript did not finish: {}", log);
 
     // Exact transcript: masked text (client-side unmask arm), binary, then —
-    // ping consumed by the TLS Ping arm (pong echoed back), unsolicited pong
-    // and the continuation SKIPPED by the recursive Pong|Continuation arm
-    // (the plain path's recv delivers a continuation as a binary message —
-    // that divergence is the ws_edge carrier's pin) — then the echo, no error.
+    // ping consumed by the shared Ping arm (pong echoed back) and the
+    // unsolicited pong skipped — then the echo, no error.
     assert_eq!(
         log, "open|t:tls-masked|b:1,ff,0,80,|t:echo:hi|close",
         "TLS probe-frame transcript diverged"
@@ -518,17 +514,16 @@ fn c10_ws_tls_handshake_failures_carry_reasons() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 4. Illegal-frame characterization: the codec has NO per-frame validation
-//    error — `Opcode::from_u8(byte0 & 0x0F).unwrap_or(Opcode::Close)`
-//    conflation-maps a decoder-unknown opcode (0x3, reserved) to Close, so a
-//    reserved-opcode frame ends the connection as a CLEAN close (never
-//    onerror), and frames after it are never delivered. Pinned as-implemented
-//    on the wss path; the plain path shares the same decoder decision.
+// 4. Illegal-frame semantics (RFC 6455 §5.2, node v24 oracle): a reserved
+//    opcode (0x3 — decoder-unknown) FAILS the connection with a protocol
+//    error — onerror(reason) + onclose, wasClean=false in node terms — and
+//    frames after it are never delivered. (The former decoder conflated a
+//    reserved frame to a clean peer close; that conflation was the defect.)
 #[test]
-fn c10_ws_reserved_opcode_frame_is_treated_as_peer_close() {
+fn c10_ws_reserved_opcode_frame_fails_connection() {
     let port = spawn_tls_ws_server(move |io| {
         let _ = io.write_all(&server_text_frame(b"before"));
-        // FIN + reserved opcode 3, empty payload: decoder-unknown.
+        // FIN + reserved opcode 3, empty payload: decoder-rejected.
         let _ = io.write_all(&[0x83, 0x00]);
         let _ = io.flush();
         std::thread::sleep(Duration::from_millis(300));
@@ -545,7 +540,7 @@ fn c10_ws_reserved_opcode_frame_is_treated_as_peer_close() {
         var ws = new WebSocket("wss://127.0.0.1:{port}/opcode3");
         ws.onopen = function () {{ __log.push("open"); }};
         ws.onmessage = function (ev) {{ __log.push("t:" + ev.data); }};
-        ws.onerror = function () {{ __log.push("error"); }};
+        ws.onerror = function (ev) {{ __log.push("error:" + (ev.data || "?")); }};
         ws.onclose = function () {{ __log.push("close:" + ws.readyState); __done = true; }};
         "setup-ok";
         "#,
@@ -555,12 +550,17 @@ fn c10_ws_reserved_opcode_frame_is_treated_as_peer_close() {
 
     let done = pump_until(&mut ctx, "__done", 12_000);
     let log = eval_string(&mut ctx, "__log.join('|')");
-    assert!(done, "reserved-opcode close did not surface: {}", log);
-    // Characterization: BEFORE is delivered; the reserved frame acts as a
-    // clean peer close (no error event); AFTER never arrives.
-    assert_eq!(
-        log, "open|t:before|close:3",
-        "reserved opcode 0x3 must be conflation-mapped to a clean close: {}",
+    assert!(done, "reserved-opcode failure did not surface: {}", log);
+    // BEFORE is delivered; the reserved frame fails the connection with the
+    // decoder's protocol-error reason; AFTER never arrives.
+    assert!(
+        log.starts_with("open|t:before|error:") && log.ends_with("|close:3"),
+        "reserved opcode 0x3 must fail the connection: {}",
+        log
+    );
+    assert!(
+        log.contains("reserved websocket opcode 0x3"),
+        "the protocol-error reason must name the reserved opcode: {}",
         log
     );
 }

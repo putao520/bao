@@ -229,6 +229,7 @@ mod web_api_subtle_edge_tests;
 mod web_api_tests;
 mod web_api_ws_edge_tests;
 mod web_socket_async_tests;
+mod ws_reserved_opcode_tests;
 mod yarn_tarball_name_tests;
 mod runtime_misc_edge_tests;
 mod zlib_deep_tests;

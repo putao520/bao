@@ -5,8 +5,9 @@
 //   - WsConn::connect (plain ws://) + RFC 6455 client handshake against a real
 //     in-process TcpListener server (compute_accept via bun_uws ws_handshake)
 //   - send_text / read_message opcode arms: Text, Binary, masked server frame
-//     (client-side unmask arm), Ping→pong echo, unsolicited Pong skip,
-//     Continuation skip
+//     (client-side unmask arm), Ping→pong echo, unsolicited Pong skip
+//   (bare Continuation / reserved opcodes are protocol errors — the adjacent
+//    `ws_reserved_opcode_tests` carrier pins that fail-the-connection face)
 //   - the drain pump dispatch family: ws_connect_dispatch (open + close-
 //     requested-while-connecting + connect-refused), ws_message_dispatch
 //     (text + binary), ws_closed_dispatch (clean close handshake)
@@ -63,26 +64,22 @@ fn drive_until(
     last
 }
 
-/// One RFC 6455 server connection: handshake, then a fixed probe-frame
-/// script (masked text / binary / ping / unsolicited pong / continuation),
-/// then an echo loop until the client closes.
-fn serve_connection(mut stream: TcpStream) {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
-        .ok();
+/// Complete the RFC 6455 server-side upgrade: read the client request and
+/// answer 101 with the computed accept. Returns false if the peer vanished.
+fn accept_ws_handshake(stream: &mut TcpStream) -> bool {
     // ── 1. read the client handshake request ──
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];
     loop {
         match stream.read(&mut chunk) {
-            Ok(0) => return,
+            Ok(0) => return false,
             Ok(n) => {
                 buf.extend_from_slice(&chunk[..n]);
                 if buf.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
             }
-            Err(_) => return,
+            Err(_) => return false,
         }
     }
     let text = String::from_utf8_lossy(&buf);
@@ -102,6 +99,19 @@ fn serve_connection(mut stream: TcpStream) {
         compute_accept(&key)
     );
     stream.write_all(response.as_bytes()).expect("write 101");
+    true
+}
+
+/// One RFC 6455 server connection: handshake, then a fixed probe-frame
+/// script (masked text / binary / ping / unsolicited pong), then an echo
+/// loop until the client closes.
+fn serve_connection(mut stream: TcpStream) {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .ok();
+    if !accept_ws_handshake(&mut stream) {
+        return;
+    }
 
     // ── 2. probe-frame script (server→client) ──
     let mut enc = FrameEncoder::new();
@@ -120,9 +130,6 @@ fn serve_connection(mut stream: TcpStream) {
     // Unsolicited pong → skipped silently (Pong arm).
     let pong = enc.encode_frame(Opcode::Pong, b"p", None);
     stream.write_all(pong).expect("pong");
-    // Continuation without a fragmented message → skipped (Continuation arm).
-    let cont = enc.encode_frame(Opcode::Continuation, b"cont", None);
-    stream.write_all(cont).expect("continuation");
 
     // ── 3. echo loop: text frames come back as "echo:<payload>" ──
     let mut dec = FrameDecoder::new();
@@ -253,13 +260,13 @@ fn ws_echo_server_full_message_and_close_handshake() {
     );
 
     // The full recorded wire history must match the server script exactly:
-    // masked text (unmasked by the client), binary bytes, the continuation
-    // frame delivered as a binary message (the Plain recv path's catch-all
-    // opcode arm — ping/pong are handled inside WebSocketClient::recv), then
-    // the two echoes, in order — and no error event.
+    // masked text (unmasked by the client), binary bytes, then the two
+    // echoes, in order — and no error event. (The shared read loop consumes
+    // ping/pong inside the read; a bare continuation would be a protocol
+    // error — pinned by ws_reserved_opcode_tests.)
     assert_eq!(
         final_state,
-        "true|true|t:masked-text;b:1,ff,0,80,;b:63,6f,6e,74,;t:echo:hello;t:echo:second",
+        "true|true|t:masked-text;b:1,ff,0,80,;t:echo:hello;t:echo:second",
         "WebSocket wire transcript diverged"
     );
 
@@ -385,5 +392,117 @@ fn ws_constructor_and_lifecycle_error_paths() {
     assert!(
         !bun_runtime::web_api::ws_has_pending(),
         "all sockets drained — registry must be empty"
+    );
+}
+
+/// ws_send argument conversion (REQ-BRW-12 C3): node v24.19.0 oracle — a
+/// non-string send() argument is stringified per ES ToString and transmitted
+/// as a text frame (123 → "123", null → "null", {toString} → that result);
+/// a throwing conversion (Symbol) propagates as a JS exception. The old
+/// unconditional `msg_val.to_string()` bit-cast was UB for non-strings — this
+/// carrier proves the value round-trips on the real wire instead of crashing.
+#[test]
+fn ws_send_non_string_arguments_convert_per_es_tostring() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_sink = seen.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let mut stream = match listener.incoming().next() {
+            Some(Ok(s)) => s,
+            _ => return,
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .ok();
+        if !accept_ws_handshake(&mut stream) {
+            return;
+        }
+        let mut dec = FrameDecoder::new();
+        loop {
+            let header = match dec.decode_frame(&mut stream) {
+                Ok(Some(h)) => h,
+                _ => return,
+            };
+            let payload = if header.mask {
+                let key = dec.take_mask();
+                let mut p = dec.take_payload(&header);
+                bun_uws::ws_codec::apply_mask(&mut p, &key);
+                p
+            } else {
+                dec.take_payload(&header)
+            };
+            match header.opcode {
+                Opcode::Text => {
+                    seen_sink
+                        .lock()
+                        .unwrap()
+                        .push(String::from_utf8_lossy(&payload).into_owned());
+                }
+                Opcode::Close => {
+                    let _ = stream.write_all(&[0x88, 0x02, 0x03, 0xE8]);
+                    return;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let mut ctx = JsContext::for_test().expect("JsContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+    let setup = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
+        globalThis.__sendlog = [];
+        globalThis.__senddone = false;
+        var ws = new WebSocket('ws://127.0.0.1:{port}/tostring');
+        ws.onopen = function () {{
+            ws.send(123);
+            ws.send(null);
+            ws.send({{ toString: function () {{ return 'obj-str'; }} }});
+            ws.send(true);
+            // Symbol has no primitive string form: the ToString conversion
+            // throws synchronously and nothing is sent.
+            try {{ ws.send(Symbol('boom')); __sendlog.push('symbol=NO-THROW'); }}
+            catch (e) {{ __sendlog.push('symbol=THREW:' + e.name); }}
+            ws.close();
+        }};
+        ws.onclose = function () {{ __senddone = true; }};
+        'setup-ok';
+        "#,
+            port = port
+        ),
+    );
+    assert_eq!(setup, "setup-ok");
+
+    let done = drive_until(
+        &mut ctx,
+        "String(__senddone)",
+        |s| s == "true",
+        Duration::from_secs(15),
+    );
+    assert_eq!(done, "true", "send-conversion socket must close cleanly");
+
+    // ES ToString semantics on the wire, exactly as the node oracle measured.
+    assert_eq!(
+        seen.lock().unwrap().clone(),
+        vec!["123", "null", "obj-str", "true"],
+        "non-string send() arguments must convert per ES ToString"
+    );
+    // A throwing conversion surfaces as a JS exception, not a crash and not
+    // a silent drop.
+    assert_eq!(
+        eval_string(&mut ctx, "__sendlog.join('|')"),
+        "symbol=THREW:TypeError",
+        "Symbol send() must throw TypeError synchronously"
+    );
+    assert!(
+        !bun_runtime::web_api::ws_has_pending(),
+        "conversion socket must deregister after close"
     );
 }
