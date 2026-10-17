@@ -56,15 +56,20 @@
 #   BAO_CLI_COV_JOBS         cargo -j               (default 4 — Rust CI discipline)
 #   BAO_CLI_COV_SKIP_BUILD=1 reuse an existing instrumented bin as-is
 #
-# LSQUIC LINK NOTE: on a cold private target dir the build-script link
-# directives for liblsquic.a/liblshpack.a have been observed missing from the
-# final link line (the shared workspace target links fine; a fresh dir loses
-# `cargo:rustc-link-lib=static=lsquic` between the build-script output and
-# the bao_bin link line — root cause not yet pinned, recorded here so the
-# workaround stays honest). The script therefore pre-builds `bun_lsquic_sys`
-# to materialize its out dir and appends `-L native=<out> -l static=lsquic
-# -l static=lshpack` to RUSTFLAGS explicitly. Same flags for every unit, so
-# fingerprints stay consistent across the two stages.
+# LSQUIC LINK NOTE (root-caused 2026-10-17, product-fixed): bun_lsquic_sys's
+# manifest had NO `links` key, so its build.rs `cargo:rustc-link-lib=static=lsquic`
+# directives were never forwarded to the final link line; the lsquic symbols
+# only resolved when an incremental shared target happened to place
+# libbun_lsquic_sys rlib after the referencing uws_sys rlib — fresh
+# whole-graph first-links lost the single-pass archive scan and died with 44
+# undefined lsquic_*. Fixed at the source: `links = "lsquic"` in
+# src/lsquic_sys/Cargo.toml makes cargo forward the directives to the tail of
+# every final link line. The stage below is kept as defense-in-depth
+# (materialize out dir + copy archives to a STABLE path + append -L/-l
+# explicitly); it is harmless alongside the manifest fix and keeps this
+# pipeline self-sufficient even if the manifest fix regresses. RUSTC_WRAPPER
+# is cleared: sccache buys nothing on an all-miss instrumented flag set and
+# its server has been observed deadlocking on exactly such builds.
 # ═══════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -101,14 +106,14 @@ log "llvm tools: $LLVM_BIN"
 command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1 \
     || die "cargo-nextest not found — run: cargo install cargo-nextest"
 
-# ── 0. lsquic native libs stage (see LSQUIC LINK NOTE above) ────────────
+# ── 0. lsquic native libs stage (defense-in-depth; see LSQUIC LINK NOTE) ─
 lsquic_out() {
     ls -td "$TARGET_DIR/$PROFILE"/build/bun_lsquic_sys-*/out 2>/dev/null | head -1
 }
 LSQ_OUT="$(lsquic_out)"
 if [ -z "$LSQ_OUT" ] || [ ! -f "$LSQ_OUT/liblsquic.a" ]; then
     log "materializing lsquic native libs (stage A, plain flags)"
-    env CARGO_TARGET_DIR="$TARGET_DIR" \
+    env CARGO_TARGET_DIR="$TARGET_DIR" RUSTC_WRAPPER="" \
         cargo build -p bun_lsquic_sys --profile "$PROFILE" --jobs "$JOBS" \
         > "$OUT_DIR/lsquic-stage.log" 2>&1 \
         || die "bun_lsquic_sys stage build failed — see $OUT_DIR/lsquic-stage.log"
@@ -138,6 +143,7 @@ else
     log "building instrumented bao_bin (profile=$PROFILE, jobs=$JOBS, target=$TARGET_DIR)"
     log "  first run on a fresh dir is a FULL cold instrumented engine build (O(hours) at -j4)"
     env CARGO_TARGET_DIR="$TARGET_DIR" \
+        RUSTC_WRAPPER="" \
         RUSTFLAGS="$INSTRUMENT_RUSTFLAGS" \
         cargo build -p bao_bin --profile "$PROFILE" --jobs "$JOBS" \
         > "$OUT_DIR/build.log" 2>&1 \

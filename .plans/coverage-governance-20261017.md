@@ -38,7 +38,7 @@
 | CLI 内部(测量法缺口) | cli.rs(498)/doctor.rs(229) | ~727 |
 
 **0% 触达文件(LF≥40)9 件=1337 行**,分类:
-- 测量法伪影(2→✅ 已解):bao_cli/src/{cli,doctor}.rs——原 spawn 二进制非 instrumented(llvm-cov nextest 模式不产 bin 目标);**bin-mode 脚本已落地(scripts/coverage-cli-bin-mode.sh),cli.rs/doctor.rs 计入可达测**(bin-mode 实测 71.18% / 86.96%,见 C9 台账)。注意口径:bin-mode 数字为 spawn-face 口径(instrumented bin 单独 export),与主管道 nextest 口径同分母不同数据源,加总看缺口、不可直接合并成单一 line%。LF 漂移说明:cli.rs 510 vs 本账旧值 498 = e-cliarg 等在飞 WIP 增行,非口径变化。
+- 测量法伪影(2→✅ 已解):bao_cli/src/{cli,doctor}.rs——原 spawn 二进制非 instrumented(llvm-cov nextest 模式不产 bin 目标);**bin-mode 脚本已落地(scripts/coverage-cli-bin-mode.sh),cli.rs/doctor.rs 计入可达测**(bin-mode 实测 71.18% / 86.96%;证据=/var/cargo-builds/bao-cli-cov-target/coverage-out/cli-bin-mode.lcov,主会话独立复算一致)。注意口径:bin-mode 数字为 spawn-face 口径(instrumented bin 单独 export),与主管道 nextest 口径同分母不同数据源,加总看缺口、不可直接合并成单一 line%。LF 漂移说明:cli.rs 510 vs 本账旧值 498 = e-cliarg 等在飞 WIP 增行,非口径变化。
 - 可达-未测(7):http/h3_client/{encode,PendingConnect}(219)/bao_crypto/certificate(126)/http/websocket(109)/bao_runtime/interrupt_bridge(94)/bun_password(404 实为低覆盖非 0)/dispatch(94)——后续波合同候选。
 
 ## 98% 收敛路径(后续波,非本波)
@@ -90,6 +90,11 @@
 7. 共享 CARGO_TARGET_DIR 撞车实锤:scoped 跑曾链接陈旧 rlib(mtime 新于源、内容旧),touch lib.rs 强制重建后消——**llvm-cov 终判务必安静树重建**
 8. c4 h2_listen_lifecycle_eaddrinuse 并发负载端口争用 flake(隔离复跑 PASS),非回归
 9. **插桩×C8a 交互缺陷 → ✅ 已根治(c8b-node,task #55)**:根因坐实=UDP-RELOAD-DANGLING-ROOTED-HANDLE——udp_reload 的 sock_obj RootedGuard 声明在 if 表达式臂内,臂末即 drop,而 sock_h(指向 guard 栈槽)被其后全部 extract_js_callback+gc_store_insert 消费;普通 profile 悬垂读碰巧合法(顶层 else 臂健康),插桩 GC 时序右移→必崩。**修法**=bun_udp.rs 提取共享 helper `reload_ud_callbacks`(四组 extract+gc_store 逐字保留),两臂各自以块作用域 rooted! 包住调用(root 活到块末覆盖全窗口),+56/-39 行为零变化。验证:插桩 49/49+普通 49/49(2 个 #[ignore] 撤除复活)+相邻族 162/162+RC=0。**缺陷登记状态→fixed;对应 2 ignore 撤除,C8a 忽略账 4→2**(余 2=SHELL-BYTES-NULL-ISHARED-CRASH/FFI-F32-RETURN-XMM0-CONVERSION,待各自根治单)
+
+10. **/tmp 大树被外部清理中途扫掉(2026-10-17,c9-binmode 实锤)**:47 分钟 instrumented 冷构建的 /tmp/bao-cli-cov-target 被外部清理机制砍到 593M(mozjs build 目录全失),构建报废重跑——**长构建产物一律落 /var/cargo-builds,禁 /tmp**(脚本默认路径已按此设)。
+11. **lsquic 原生库链接指令在 fresh 全图首链丢失 → ✅ 已根治(2026-10-17,c9-binmode 发现,主会话根因+产品修)**:**根因=src/lsquic_sys/Cargo.toml 缺 `links` key**——build.rs 的 `cargo:rustc-link-lib=static=lsquic/lshpack` 不向下游转发,符号只靠增量 accretion 时 lsquic rlib 恰排在引用方(uws_sys rlib)之后的单遍归档扫描侥幸解析;canonical 共享 target 天天绿系增量掩盖,fresh 全图首链(私有 instrumented target)确定性 44 个 undefined lsquic_*。最小 probe(独立 workspace+强制 us_quic_global_init 引用)无 RUSTFLAGS 同样复现=与插桩无关。**产品修=[package] 加 `links = "lsquic"`**(cargo 机制正名:声明后发射转发到最终链接行尾部,顺序无关,全构建形态受益);决定性实验=尾附 -llsquic/-llshpack 链接成功坐实顺序假设。脚本内两阶段 -L/-l 附加降级为纵深防御保留(防 manifest 修回退),RUSTC_WRAPPER="" 绕 sccache(插桩全 miss 零收益+server 死锁实证一并防)。
+
+12. **私有 target 双写者竞态(2026-10-17,c9-binmode vs 主会话接管期实锤)**:12:14 脚本 `rm -rf` 私有 target 与主会话 build4 并发相撞,中途文件消失致构建失败——「共享 target 撞车」教训(#7)的双写者变体。**裁定:私有 target 单一写者**,接管期间由接管方声明写权或停手;脚本幂等重建前先确认无并发写者。
 
 ### 测量法缺口(分母治理账追加)
 
