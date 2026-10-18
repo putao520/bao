@@ -240,3 +240,5 @@ mod runtime_misc_edge_tests;
 mod zlib_deep_tests;
 mod zlib_silent_tests;
 mod dispatch_bridge_c15_tests;
+mod util_tty_lib_coverage_c17_tests;
+mod fetch_async_coverage_c17_tests;
