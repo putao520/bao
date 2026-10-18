@@ -26,6 +26,7 @@
 
 #![allow(dead_code)]
 
+pub mod bin_resolver;
 pub mod capture_server;
 
 use bao_engine::context::JsContext;

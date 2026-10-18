@@ -30,124 +30,16 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Locate the bao binary built in this workspace (debug preferred).
+// BCE-20261018-STALEBIN: binary resolution + behavior canary are
+// single-point in common/bin_resolver.rs; this file keeps its source-mtime
+// gate over node_cluster.rs (verbatim legacy guard, now common::bin_resolver
+// gated form) and gains the nonce argv-reflection canary the inline ladder
+// lacked (the 2026-10-18 battery's poisoned stale artifact passed it).
+#[path = "common/mod.rs"]
+mod common;
+
 fn find_bao_binary() -> PathBuf {
-    // BAO_TEST_BAO_BIN: explicit override for copied-binary environments
-    // (the suite exe can run from a test dir where the workspace target tree
-    // does not exist — e.g. the Windows test box).
-    if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
-        let p = PathBuf::from(&p);
-        if p.is_file() {
-            return p;
-        }
-    }
-    // Profile-agnostic probe (BCE sweep with bao_cli_*_e2e): this suite exe
-    // sits at $TARGET/<profile>/deps/ — the bao binary sits at
-    // $TARGET/<profile>/bao for EVERY cargo profile (debug/release/test-ci/
-    // test-ci-dbg), so derive the sibling instead of guessing the profile.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
-            for name in ["bao", "bao.exe"] {
-                let candidate = profile_dir.join(name);
-                if candidate.is_file() {
-                    return candidate;
-                }
-            }
-        }
-    }
-    // Injected-target builds (CARGO_TARGET_DIR env, the farm/CI shape):
-    // the workspace target dir is NOT under the manifest — probe the env
-    // target first or every binary-seeking test fails with a false "not
-    // found" despite a fresh bao sitting in the real target tree.
-    if let Ok(t) = std::env::var("CARGO_TARGET_DIR") {
-        for profile in ["debug", "release"] {
-            for name in ["bao", "bao.exe"] {
-                let candidate = std::path::Path::new(&t).join(profile).join(name);
-                if candidate.is_file() {
-                    return candidate;
-                }
-            }
-        }
-    }
-    // Static config injection (.cargo/config.toml [build] target-dir — the
-    // single-compile-universe shape where the workspace target dir is NOT
-    // under the manifest): parse the key so binary-seeking tests resolve
-    // the real target tree in every shell shape (env, config, manifest).
-    {
-        let cfg = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .map(|root| root.join(".cargo/config.toml"));
-        if let Some(cfg) = cfg {
-            if let Ok(text) = std::fs::read_to_string(&cfg) {
-                if let Some(line) = text
-                    .lines()
-                    .find(|l| l.trim_start().starts_with("target-dir"))
-                {
-                    if let Some(idx) = line.find('"') {
-                        if let Some(dir) = line[idx + 1..].split('"').next() {
-                            for profile in ["debug", "release"] {
-                                for name in ["bao", "bao.exe"] {
-                                    let candidate =
-                                        std::path::Path::new(dir).join(profile).join(name);
-                                    if candidate.is_file() {
-                                        return candidate;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let target = manifest
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root")
-        .join("target");
-    for profile in ["debug", "release"] {
-        for name in ["bao", "bao.exe"] {
-            let candidate = target.join(profile).join(name);
-            if !candidate.exists() {
-                continue;
-            }
-            // Staleness guard: the cluster classification lives in
-            // src/node_cluster.rs — a binary older than that file measures
-            // the previous behavior, not the fix.
-            let bin_mtime = candidate.metadata().and_then(|m| m.modified()).ok();
-            let src_mtime = manifest
-                .join("src/node_cluster.rs")
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok();
-            if let (Some(b), Some(s)) = (bin_mtime, src_mtime) {
-                assert!(
-                    b >= s,
-                    "stale bao binary ({:?} older than node_cluster.rs) — rebuild with \
-                     `cargo build -p bao_bin` before running this regression",
-                    candidate
-                );
-            }
-            return candidate;
-        }
-    }
-    // Copied-binary environment fallback: deployed next to this suite exe.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for name in ["bao", "bao.exe"] {
-                let candidate = dir.join(name);
-                if candidate.is_file() {
-                    return candidate;
-                }
-            }
-        }
-    }
-    panic!(
-        "bao binary not found under {} — build it with `cargo build -p bao_bin` (or point BAO_TEST_BAO_BIN at the binary under test)",
-        target.display()
-    );
+    common::bin_resolver::find_bao_binary_gated(&["src/node_cluster.rs"])
 }
 
 /// Spawn `bao run <script>` with the cluster control vars scrubbed (primary

@@ -29,108 +29,14 @@ use std::process::{Command, Output};
 
 const GOLDEN_DIR: &str = "tests/golden/cli";
 
-/// Candidates from `.cargo/config.toml` [build] target-dir (both profiles,
-/// both OS spellings). The nested `if let` guards of the original ladder
-/// are no-op fallthroughs — early returns are equivalent.
-fn push_config_target_dir_candidates(
-    candidates: &mut Vec<std::path::PathBuf>,
-    root: &std::path::Path,
-) {
-    // .cargo/config.toml [build] target-dir (single-compile-universe shape).
-    let cfg = root.join(".cargo/config.toml");
-    let Ok(text) = std::fs::read_to_string(&cfg) else {
-        return;
-    };
-    let Some(line) = text
-        .lines()
-        .find(|l| l.trim_start().starts_with("target-dir"))
-    else {
-        return;
-    };
-    let Some(idx) = line.find('"') else {
-        return;
-    };
-    let Some(dir) = line[idx + 1..].split('"').next() else {
-        return;
-    };
-    for profile in ["debug", "release"] {
-        for name in ["bao", "bao.exe"] {
-            let candidate = std::path::Path::new(dir).join(profile).join(name);
-            if candidate.is_file() {
-                candidates.push(candidate);
-            }
-        }
-    }
-}
+// BCE-20261018-STALEBIN: binary resolution + behavior canary are
+// single-point in tests/common/mod.rs (nonce argv-reflection probe
+// included). The retired inline copies (cli_snapshot's `compat --help`
+// ladder, cli_faces' `--version` ladder) diverged on candidate order and
+// both lacked the identity arm that rejects a poisoned stale artifact.
+mod common;
 
-/// Locate the real `bao` binary (W8/p0-cluster find_bao_binary lineage:
-/// explicit override → sibling-of-test-exe → config target-dir → manifest
-/// target tree; both OS spellings probed everywhere).
-fn find_bao_binary() -> std::path::PathBuf {
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
-        let p = std::path::PathBuf::from(p);
-        if p.is_file() {
-            candidates.push(p);
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
-            for name in ["bao", "bao.exe"] {
-                let candidate = profile_dir.join(name);
-                if candidate.is_file() {
-                    candidates.push(candidate);
-                }
-            }
-        }
-    }
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest.parent().and_then(|p| p.parent()).expect("workspace root");
-    push_config_target_dir_candidates(&mut candidates, root);
-    let target = root.join("target");
-    for profile in ["debug", "release"] {
-        for name in ["bao", "bao.exe"] {
-            let candidate = target.join(profile).join(name);
-            if candidate.is_file() {
-                candidates.push(candidate);
-            }
-        }
-    }
-
-    // ── Freshness canary (battery-v7 stale-binary lesson) ──────────────────
-    // A binary whose `compat --help` does not exit 0 predates the current
-    // command set (e.g. a pre-W14 leftover in the resolved target dir).
-    // Snapshot-comparing against it would fabricate a golden "drift" that is
-    // really staleness — fail LOUD with the fix instead.
-    let mut last: Option<(std::path::PathBuf, String)> = None;
-    for candidate in candidates {
-        let out = Command::new(&candidate)
-            .args(["compat", "--help"])
-            .output();
-        match out {
-            Ok(o) if o.status.code() == Some(0) && !o.stdout.is_empty() => return candidate,
-            Ok(o) => {
-                last = Some((
-                    candidate.clone(),
-                    format!("compat --help exited {:?} (stdout {}B)", o.status.code(), o.stdout.len()),
-                ));
-            }
-            Err(e) => {
-                last = Some((candidate.clone(), format!("spawn failed: {e}")));
-            }
-        }
-    }
-    let detail = last
-        .map(|(p, why)| format!("last candidate {} : {why}", p.display()))
-        .unwrap_or_else(|| "no candidate binary found".into());
-    panic!(
-        "stale or unusable `bao` binary — {detail}.\n\
-         Rebuild the binary for THIS profile (cargo build -p bao_bin --profile test-ci --jobs 4) \
-         or point BAO_TEST_BAO_BIN at a fresh one.\n\
-         (The snapshot tests must never compare golden faces against a binary \
-         that predates the current command set — that fabricates drift.)"
-    );
-}
+use common::find_bao_binary;
 
 /// Capture one invocation: (stdout, stderr, exit code).
 ///

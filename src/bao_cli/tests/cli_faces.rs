@@ -28,66 +28,16 @@
 use std::process::{Command, Output, Stdio};
 
 // ═══════════════════════════════════════════════════════════════════════
-// Spawn helpers (same resolution ladder + display pinning as cli_snapshot)
+// Spawn helpers (display pinning; binary resolution shared in common/mod.rs)
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Locate the real `bao` binary. Ladder (first usable wins):
-/// BAO_TEST_BAO_BIN → sibling-of-test-exe → manifest target tree.
-/// A `--version` sanity canary rejects stale/unusable candidates loudly
-/// (same institutionalized lesson as cli_snapshot's `compat --help` canary).
-fn find_bao_binary() -> std::path::PathBuf {
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
-        let p = std::path::PathBuf::from(p);
-        if p.is_file() {
-            candidates.push(p);
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        // <target>/<profile>/deps/<test-bin> → <target>/<profile>/bao
-        if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
-            for name in ["bao", "bao.exe"] {
-                let candidate = profile_dir.join(name);
-                if candidate.is_file() {
-                    candidates.push(candidate);
-                }
-            }
-        }
-    }
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let target = manifest.parent().and_then(|p| p.parent()).expect("workspace root").join("target");
-    for profile in ["test-ci", "debug", "release"] {
-        for name in ["bao", "bao.exe"] {
-            let candidate = target.join(profile).join(name);
-            if candidate.is_file() {
-                candidates.push(candidate);
-            }
-        }
-    }
+// BCE-20261018-STALEBIN: binary resolution + behavior canary are
+// single-point in tests/common/mod.rs (nonce argv-reflection probe
+// included); this file's retired `--version`-only canary accepted a
+// mtime-fresh, behaviorally wrong stale artifact in the 2026-10-18 battery.
+mod common;
 
-    let mut last: Option<(std::path::PathBuf, String)> = None;
-    for candidate in candidates {
-        let out = Command::new(&candidate).arg("--version").output();
-        match out {
-            Ok(o) if o.status.code() == Some(0) && !o.stdout.is_empty() => return candidate,
-            Ok(o) => {
-                last = Some((
-                    candidate.clone(),
-                    format!("--version exited {:?} (stdout {}B)", o.status.code(), o.stdout.len()),
-                ));
-            }
-            Err(e) => last = Some((candidate.clone(), format!("spawn failed: {e}"))),
-        }
-    }
-    let detail = last
-        .map(|(p, why)| format!("last candidate {} : {why}", p.display()))
-        .unwrap_or_else(|| "no candidate binary found".into());
-    panic!(
-        "stale or unusable `bao` binary — {detail}.\n\
-         Rebuild for this profile (cargo build -p bao_bin --profile test-ci --jobs 4) \
-         or point BAO_TEST_BAO_BIN at a fresh one."
-    );
-}
+use common::find_bao_binary;
 
 /// Spawn descriptor: args + cwd override + env vars to add + extra vars to
 /// strip (DISPLAY/WAYLAND_DISPLAY are always stripped unless re-added via
