@@ -197,3 +197,5 @@ size/compile 双审计(`.plans/audits-20261017/{size,compile}-audit-report.md`)�
 **登记池清偿**:37 项登记+波内新发现同族 ~15 项全部处置(修/登记理由);4 crash 类全根治(shell panic/裸线程 SIGSEGV/clearLine abort/ws 分帧杀连接)。
 **登记保留(已批理由)**:U7 函数 proxy(SM 无公开 IsProxy JSAPI)/U6 余参联结/clearScreenDown C5 契约/fs readv async 之外的位移细分/node↔Bun serve throw 语义分歧(node 进程死亡 vs Bun 内部 catch——产品目标级,须先动 PRD/SPEC)。
 
+
+**全量终判(静点树,2026-10-18 23:1x)**:1792 tests / 1791 passed / 1 failed=cp_async_push_exit_latency_100x(已注册负载时序面,隔离绿)——**残留=0**;I 波守卫触发 0(无被假绿掩盖面);G/K 波 node_fs 二次残余新登记 4 项列后续池(readv async 已由 K 修/位移细分/writeFile encoding 已由 K 修/cb 收紧已由 K 修——终态=K 后全清)。
