@@ -39,41 +39,12 @@ const BUSY_SETTLE: Duration = Duration::from_millis(1500);
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-fn bao_path() -> Option<PathBuf> {
-    if let Ok(override_path) = std::env::var("BAO_BIN") {
-        let candidate = PathBuf::from(override_path);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
-        let candidate = PathBuf::from(p);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    // Profile-agnostic probe (same finder as bao_cli_e2e_tests): this suite
-    // exe sits at $TARGET/<profile>/deps/ — the bao binary sits at
-    // $TARGET/<profile>/bao for every cargo profile.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
-            for name in ["bao", "bao.exe"] {
-                let candidate = profile_dir.join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
-        for profile in ["test-ci", "debug", "release"] {
-            let candidate = PathBuf::from(&target_dir).join(profile).join("bao");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
+/// Resolve `bao` through the shared three-arm behavior canary
+/// (`common::bao_bin_canary`). Missing binary or a stale/poisoned candidate
+/// is a fail-closed panic: the signal-exit regression must never be measured
+/// against an unverified binary.
+fn bao_path() -> PathBuf {
+    common::bao_bin_canary::find_bao_binary()
 }
 
 /// Grab an OS-assigned free port by binding + releasing (the classic probe;
@@ -89,7 +60,7 @@ fn free_port() -> u16 {
 /// Spawn `bao --webdriver <port>` with piped stdio, in its own process group
 /// with PDEATHSIG armed (e204 reaping discipline — see `common::GroupChild`).
 fn spawn_bao_webdriver(port: u16) -> common::GroupChild {
-    let bao = bao_path().expect("bao binary not found — run `cargo build -p bao_bin` first");
+    let bao = bao_path();
     common::GroupChild::spawn(
         Command::new(bao)
             .args(["--webdriver", &port.to_string()])

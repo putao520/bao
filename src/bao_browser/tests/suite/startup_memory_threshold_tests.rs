@@ -46,64 +46,21 @@ const MEM_SAMPLE_INTERVAL_MS: u64 = 25;
 /// Hard ceiling for the sampling loop: keep-alive + generous exit slack.
 const MEM_PROBE_DEADLINE_MS: u64 = MEM_PROBE_ALIVE_MS + 5_000;
 
-// ─── bao binary locator (same sequence as bao_cli_timeout_e2e_tests) ───────
+// ─── bao binary locator (shared BCE-20261018-STALEBIN canary) ──────────────
 
-fn bao_path() -> Option<PathBuf> {
-    if let Ok(override_path) = std::env::var("BAO_BIN") {
-        let candidate = PathBuf::from(override_path);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
-        let candidate = PathBuf::from(p);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    // Profile-agnostic probe: this suite exe sits at $TARGET/<profile>/deps/,
-    // the bao binary at $TARGET/<profile>/bao for every cargo profile.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
-            for name in ["bao", "bao.exe"] {
-                let candidate = profile_dir.join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
-        for profile in ["test-ci", "debug", "release"] {
-            for name in ["bao", "bao.exe"] {
-                let candidate = PathBuf::from(&target_dir).join(profile).join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    let mut here = std::env::current_dir().ok()?;
-    for _ in 0..5 {
-        for profile in ["test-ci", "debug", "release"] {
-            for name in ["bao", "bao.exe"] {
-                let candidate = here.join("target").join(profile).join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-        if !here.pop() {
-            break;
-        }
-    }
-    None
+/// Resolve `bao` through the shared three-arm behavior canary
+/// (`common::bao_bin_canary`). This file's contract keeps the legacy
+/// "binary not built → skip" posture: see `skip_if_no_binary` for the
+/// `NotFound` path. A binary that EXISTS but fails the canary is a hard
+/// rejection (panic), never a skip.
+fn bao_path() -> PathBuf {
+    common::bao_bin_canary::find_bao_binary()
 }
 
 /// Spawn `bao <args>` with piped stdio via the shared reaping-discipline
 /// helper (own process group + PDEATHSIG + reap-on-drop).
 fn spawn_bao(args: &[&str]) -> common::GroupChild {
-    let bao = bao_path().expect("bao binary not found — run `cargo build -p bao_bin` first");
+    let bao = bao_path();
     common::GroupChild::spawn(
         Command::new(bao)
             .args(args)
@@ -131,13 +88,16 @@ fn read_vm_rss_kib(pid: u32) -> Option<u64> {
 }
 
 fn skip_if_no_binary() -> bool {
-    if bao_path().is_none() {
-        eprintln!(
-            "[startup-memory-thresholds] skip: bao binary not found (cargo build -p bao_bin first)"
-        );
-        return true;
+    match common::bao_bin_canary::try_find_bao_binary() {
+        Ok(_) => false,
+        Err(common::bao_bin_canary::BaoBinError::NotFound(why)) => {
+            eprintln!("[startup-memory-thresholds] skip: {why}");
+            true
+        }
+        // A candidate exists but failed the three-arm canary: stale/poisoned
+        // binaries are rejected loudly, never skipped (BCE-20261018-STALEBIN).
+        Err(common::bao_bin_canary::BaoBinError::Rejected(why)) => panic!("{why}"),
     }
-    false
 }
 
 // ─── 1. REQ-IMPL-05-C4 — startup latency < 2s (real binary) ────────────────

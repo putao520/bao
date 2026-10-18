@@ -31,66 +31,25 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "common/mod.rs"]
+mod common;
+
 const BAO_BIN: &str = "target/debug/bao";
 
-// ─── 辅助 — 定位 bao 二进制(镜像 bao_cli_e2e_tests.rs 的探测序) ─────────────
+// ─── 辅助 — 定位 bao 二进制(共享 BCE-20261018-STALEBIN canary) ─────────────
 
-fn bao_path() -> Option<PathBuf> {
-    if let Ok(override_path) = std::env::var("BAO_BIN") {
-        let candidate = PathBuf::from(override_path);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
-        let candidate = PathBuf::from(p);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    // Profile-agnostic probe: this suite exe sits at $TARGET/<profile>/deps/ —
-    // the bao binary sits at $TARGET/<profile>/bao for EVERY cargo profile.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
-            for name in ["bao", "bao.exe"] {
-                let candidate = profile_dir.join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
-        for profile in ["test-ci", "debug", "release"] {
-            for name in ["bao", "bao.exe"] {
-                let candidate = PathBuf::from(&target_dir).join(profile).join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    let mut here = std::env::current_dir().ok()?;
-    for _ in 0..5 {
-        for profile in ["test-ci", "debug", "release"] {
-            for name in ["bao", "bao.exe"] {
-                let candidate = here.join("target").join(profile).join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-        if !here.pop() {
-            break;
-        }
-    }
-    None
+/// Resolve `bao` through the shared three-arm behavior canary
+/// (`common::bao_bin_canary`). Missing binary or a stale/poisoned candidate
+/// is a fail-closed panic: the subcommand contract must never be measured
+/// against an unverified binary.
+fn bao_path() -> PathBuf {
+    common::bao_bin_canary::find_bao_binary()
 }
 
 /// Spawn bao with an explicit cwd (install/test discovery/build outdir 都是
 /// cwd 相对行为,必须钉在一次性临时目录里,避免污染仓库工作树)。
 fn run_bao_in(cwd: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
-    let bao = bao_path().expect("bao binary not found — run `cargo build` first");
+    let bao = bao_path();
     Command::new(bao)
         .args(args)
         .current_dir(cwd)
@@ -118,10 +77,7 @@ fn fresh_temp_dir(label: &str) -> PathBuf {
 #[test]
 // @trace REQ-CLI-001 [level:e2e]
 fn bao_cli_subcommand_doctor_never_exits_nonzero() {
-    let bao = match bao_path() {
-        Some(p) => p,
-        None => panic!("bao binary not found at ./{BAO_BIN} — run `cargo build` first"),
-    };
+    let bao = bao_path();
     eprintln!("using bao binary: {}", bao.display());
 
     let temp = fresh_temp_dir("doctor");
@@ -171,7 +127,7 @@ fn bao_cli_subcommand_doctor_never_exits_nonzero() {
 // @trace REQ-ENG-006 [level:e2e]
 fn bao_cli_subcommand_test_runner_exit_codes() {
     assert!(
-        bao_path().is_some(),
+        common::bao_bin_canary::bao_binary_available(),
         "bao binary not found at ./{BAO_BIN} — run `cargo build` first"
     );
 
@@ -372,7 +328,7 @@ fn bao_cli_subcommand_test_runner_exit_codes() {
 // @trace REQ-CLI-001 [level:e2e]
 fn bao_cli_subcommand_build_artifact_and_missing_entry() {
     assert!(
-        bao_path().is_some(),
+        common::bao_bin_canary::bao_binary_available(),
         "bao binary not found at ./{BAO_BIN} — run `cargo build` first"
     );
 
@@ -492,7 +448,7 @@ fn bao_cli_subcommand_build_artifact_and_missing_entry() {
 // @trace REQ-CLI-001 [level:e2e]
 fn bao_cli_subcommand_install_argument_surface() {
     assert!(
-        bao_path().is_some(),
+        common::bao_bin_canary::bao_binary_available(),
         "bao binary not found at ./{BAO_BIN} — run `cargo build` first"
     );
 
@@ -575,7 +531,7 @@ fn bao_cli_subcommand_install_argument_surface() {
 // @trace REQ-CLI-001 [level:e2e]
 fn bao_cli_subcommand_external_script_path_treated_as_url_is_rejected_by_browser_init() {
     assert!(
-        bao_path().is_some(),
+        common::bao_bin_canary::bao_binary_available(),
         "bao binary not found at ./{BAO_BIN} — run `cargo build` first"
     );
 

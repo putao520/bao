@@ -29,66 +29,18 @@ use std::time::Duration;
 #[path = "common/mod.rs"]
 mod common;
 
-const BAO_BIN: &str = "target/debug/bao";
+// ─── 辅助 — 定位 bao 二进制(共享 BCE-20261018-STALEBIN canary) ─────────────
 
-// ─── 辅助 — 定位 bao 二进制 ──────────────────────────────────────────────────
-
-fn bao_path() -> Option<PathBuf> {
-    if let Ok(override_path) = std::env::var("BAO_BIN") {
-        let candidate = PathBuf::from(override_path);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
-        let candidate = PathBuf::from(p);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    // Profile-agnostic probe (BCE sweep with the bao_runtime finders): this
-    // suite exe sits at $TARGET/<profile>/deps/ — the bao binary sits at
-    // $TARGET/<profile>/bao for EVERY cargo profile, so derive the sibling
-    // instead of hardcoding "debug" (test-ci runs never find a debug build).
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
-            for name in ["bao", "bao.exe"] {
-                let candidate = profile_dir.join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
-        for profile in ["test-ci", "debug", "release"] {
-            for name in ["bao", "bao.exe"] {
-                let candidate = PathBuf::from(&target_dir).join(profile).join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    let mut here = std::env::current_dir().ok()?;
-    for _ in 0..5 {
-        for profile in ["test-ci", "debug", "release"] {
-            for name in ["bao", "bao.exe"] {
-                let candidate = here.join("target").join(profile).join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-        if !here.pop() {
-            break;
-        }
-    }
-    None
+/// Resolve `bao` through the shared three-arm behavior canary
+/// (`common::bao_bin_canary`, single source shared with the bao_cdp_client
+/// suite). Missing binary or a stale/poisoned candidate is a fail-closed
+/// panic: these tests must never run against an unverified binary.
+fn bao_path() -> PathBuf {
+    common::bao_bin_canary::find_bao_binary()
 }
 
 fn run_bao(args: &[&str], stdin: Option<&str>) -> std::io::Result<std::process::Output> {
-    let bao = bao_path().expect("bao binary not found — run `cargo build` first");
+    let bao = bao_path();
     let mut cmd = Command::new(bao);
     cmd.args(args);
     if stdin.is_some() {
@@ -114,10 +66,7 @@ fn run_bao(args: &[&str], stdin: Option<&str>) -> std::io::Result<std::process::
 #[test]
 // @trace REQ-CLI-001 [level:e2e]
 fn bao_cli_e2e_full_lifecycle() {
-    let bao = match bao_path() {
-        Some(p) => p,
-        None => panic!("bao binary not found at ./{BAO_BIN} — run `cargo build` first"),
-    };
+    let bao = bao_path();
     eprintln!("using bao binary: {}", bao.display());
 
     let mut passed = 0u32;
@@ -391,7 +340,7 @@ fn bao_cli_e2e_full_lifecycle() {
 #[test]
 // @trace REQ-CLI-002 [level:e2e]
 fn bao_cli_browser_subcommand_starts() {
-    let bao = bao_path().expect("bao binary not found");
+    let bao = bao_path();
 
     // Act: 启动 bao browser,绑一个空闲端口
     let port = pick_free_port();

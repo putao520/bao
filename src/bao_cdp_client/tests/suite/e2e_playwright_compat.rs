@@ -32,6 +32,15 @@ use std::time::Duration;
 use bao_cdp_client::transport::{Transport, TransportKind, WebSocketTransport};
 use serde_json::{json, Value};
 
+// BCE-20261018-STALEBIN: single physical source for the `bao` binary
+// three-arm behavior canary, shared with the bao_browser suite helper.
+// `#[path]` inclusion adds no workspace dependency edge; `env!("CARGO_MANIFEST_DIR")`
+// expands in THIS crate, and this crate is a direct child of `src/` exactly
+// like bao_browser, so the helper's workspace-root derivation is identical.
+// One source = no copy drift (the BCE's root cause was divergent ladders).
+#[path = "../../../bao_browser/tests/suite/common/bao_bin_canary.rs"]
+mod bao_bin_canary;
+
 // ════════════════════════════════════════════════════════════════════
 // 公共辅助 — Frame encoding/decoding
 // ════════════════════════════════════════════════════════════════════
@@ -562,43 +571,11 @@ fn e2e_real_playwright_browser_context_isolation() {
         }
     }
 
-    // ── BAO_BIN 定位(BAO_TEST_BAO_BIN 覆盖 → sibling profile →
-    // CARGO_TARGET_DIR 注入;与 bao_cli_*_e2e 同款探测序)──
-    let bao = (|| -> Option<std::path::PathBuf> {
-        if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
-            let p = std::path::PathBuf::from(p);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-        // suite exe 在 $TARGET/<profile>/deps/ — bao 在 $TARGET/<profile>/。
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
-                for name in ["bao", "bao.exe"] {
-                    let candidate = profile_dir.join(name);
-                    if candidate.is_file() {
-                        return Some(candidate);
-                    }
-                }
-            }
-        }
-        if let Ok(t) = std::env::var("CARGO_TARGET_DIR") {
-            for profile in ["debug", "release"] {
-                for name in ["bao", "bao.exe"] {
-                    let candidate = std::path::Path::new(&t).join(profile).join(name);
-                    if candidate.is_file() {
-                        return Some(candidate);
-                    }
-                }
-            }
-        }
-        None
-    })()
-    .expect(
-        "bao binary not found — build with `cargo build -p bao_bin` (or point \
-         BAO_TEST_BAO_BIN at the binary under test); REQ-CDS-009 e2e is \
-         fail-closed, no skip",
-    );
+    // ── bao binary 定位(共享 BCE-20261018-STALEBIN 三臂 canary)──
+    // Pins BAO_TEST_BAO_BIN / BAO_BIN are canary-verified (version /
+    // `compat --help` / unknown-command nonce echo); a stale, poisoned, or
+    // missing binary panics — REQ-CDS-009 e2e is fail-closed, no skip.
+    let bao = bao_bin_canary::find_bao_binary();
 
     // Arrange — spawn 真引擎(headless + 随机 CDP 端口)
     let port = TcpListener::bind("127.0.0.1:0")
@@ -891,40 +868,8 @@ fn e2e_real_playwright_browser_context_partition_isolation() {
     });
     let page_url = format!("http://127.0.0.1:{origin_port}/c6");
 
-    // ── 引擎进程(crop of §4:BANO_BIN 探测序 + guard + stdio drain)──
-    let bao = (|| -> Option<std::path::PathBuf> {
-        if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
-            let p = std::path::PathBuf::from(p);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
-                for name in ["bao", "bao.exe"] {
-                    let candidate = profile_dir.join(name);
-                    if candidate.is_file() {
-                        return Some(candidate);
-                    }
-                }
-            }
-        }
-        if let Ok(t) = std::env::var("CARGO_TARGET_DIR") {
-            for profile in ["debug", "release"] {
-                for name in ["bao", "bao.exe"] {
-                    let candidate = std::path::Path::new(&t).join(profile).join(name);
-                    if candidate.is_file() {
-                        return Some(candidate);
-                    }
-                }
-            }
-        }
-        None
-    })()
-    .expect(
-        "bao binary not found — build with `cargo build -p bao_bin`; \
-         REQ-CDS-009 C6 e2e is fail-closed, no skip",
-    );
+    // ── 引擎进程(共享 BCE-20261018-STALEBIN 三臂 canary + guard + stdio drain)──
+    let bao = bao_bin_canary::find_bao_binary();
 
     let port = TcpListener::bind("127.0.0.1:0")
         .expect("bind :0")

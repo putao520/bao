@@ -2,6 +2,7 @@
 // Test helper utilities for deterministic wait conditions.
 // Replaces magic-number sleep polling with explicit timeout + predicate.
 
+pub mod bao_bin_canary;
 pub mod client_hello;
 pub mod h2_server;
 pub mod http_fixture;
