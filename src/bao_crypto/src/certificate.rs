@@ -36,10 +36,15 @@ impl X509Certificate {
             if x509.is_null() {
                 return Err(CryptoError::InvalidCertificate("d2i_X509 failed".into()));
             }
-            Ok(X509Certificate {
-                der_bytes: der.to_vec(),
-                x509,
-            })
+            // Canonicalize the stored DER through i2d rather than keeping the
+            // raw input slice: `d2i_X509` consumes the leading object and
+            // tolerates trailing bytes, so a raw copy would fold unrelated
+            // bytes into every fingerprint. node's X509Certificate
+            // fingerprints digest the certificate's canonical DER
+            // (`i2d_X509(cert)`), and from_pem already stores that form —
+            // this keeps both constructors on the same identity.
+            let der_bytes = encode_der(x509);
+            Ok(X509Certificate { der_bytes, x509 })
         }
     }
 

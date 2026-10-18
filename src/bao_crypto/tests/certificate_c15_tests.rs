@@ -135,12 +135,11 @@ fn pem_with_crlf_line_endings_parses_identically_c15() {
 
 /// DER with trailing bytes after the certificate: `d2i_X509` parses the
 /// leading object and tolerates (does not require consuming) the tail — the
-/// parsed certificate's identity fields are identical. REGISTERED DIVERGENCE
-/// (C15 登记项,不修): `from_der` fingerprints digest the RAW INPUT BUFFER
-/// (`der_bytes: der.to_vec()`), so a DER-with-tail parse reports a different
-/// fingerprint than the same certificate's PEM parse (which re-encodes via
-/// i2d). node's X509Certificate.fingerprint digests the canonical DER — this
-/// asymmetry is a product-side edge-case gap, pinned here as observed.
+/// parsed certificate's identity fields are identical. `from_der` stores the
+/// CANONICAL DER (re-encoded through `i2d_X509`, mirroring the PEM
+/// constructor), so the fingerprint digests the certificate — never the
+/// caller's input buffer — exactly like node's
+/// `X509Certificate.fingerprint` (canonical-DER digest).
 #[test]
 fn der_with_trailing_bytes_parses_the_head_c15() {
     let der = ec_der();
@@ -159,19 +158,21 @@ fn der_with_trailing_bytes_parses_the_head_c15() {
     assert_eq!(parsed.valid_from(), head.valid_from());
     assert_eq!(parsed.valid_to(), head.valid_to());
 
-    // REGISTERED: the fingerprint digests the raw (padded) buffer, so it
-    // diverges from both the canonical oracle and the PEM-parse fingerprint.
+    // The fingerprint is the canonical-DER digest: the tail never enters it,
+    // and the DER-with-tail parse agrees with both the openssl oracle and the
+    // PEM parse of the same certificate.
     let pem_cert = X509Certificate::from_pem(EC_PEM).expect("PEM parse");
-    assert_ne!(
+    assert_eq!(
         parsed.fingerprint_sha256(),
         EC_SHA256_FINGERPRINT,
-        "observed behavior: from_der fingerprint includes trailing bytes"
+        "from_der must digest the canonical DER, not the padded input buffer"
     );
-    assert_ne!(
+    assert_eq!(
         parsed.fingerprint_sha256(),
         pem_cert.fingerprint_sha256(),
-        "observed behavior: from_der(tail) fingerprint != from_pem fingerprint"
+        "from_der(tail) and from_pem must agree — one certificate, one fingerprint"
     );
+    assert_eq!(parsed.fingerprint_sha1(), pem_cert.fingerprint_sha1());
 }
 
 /// A DER buffer cut INSIDE the DER parses fine when the cut lands after the

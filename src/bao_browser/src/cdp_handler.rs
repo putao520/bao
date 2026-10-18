@@ -151,8 +151,8 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         } => with_page(pool, &target_id, |page| {
             cmd_query_selector_all(page, &selector)
         }),
-        BridgeCommand::GetOuterHtml { target_id, .. } => {
-            with_page(pool, &target_id, cmd_get_outer_html)
+        BridgeCommand::GetOuterHtml { target_id, node_id } => {
+            with_page(pool, &target_id, |page| cmd_get_outer_html(page, node_id))
         }
         BridgeCommand::SetAttributeValue {
             target_id,
@@ -1146,6 +1146,42 @@ const OVERLAY_RESOLVE_JS: &str = r#"var __baoResolve = function(id) {
 };
 "#;
 
+/// The inverse of the canonical positional address: a live node → its nodeId
+/// (`child = parent * 100 + index + 1`, root document = 1). A byte-level mirror
+/// of the `bao_cdp` devtools_dom `__baoCanonical` (pinned to that source of
+/// truth by [`tests::node_canonical_js_is_byte_identical_to_devtools_dom`]) —
+/// the query faces mint ids in the SAME identity space the document walk and
+/// the overlay resolver consume.
+const NODE_CANONICAL_JS: &str = r#"var __baoCanonical = function(node) {
+    var chain = [];
+    var n = node;
+    while (n && n !== document) {
+        var p = n.parentNode;
+        if (!p) return null;
+        var i = Array.prototype.indexOf.call(p.childNodes, n);
+        if (i < 0) return null;
+        chain.push(i);
+        n = p;
+    }
+    if (n !== document) return null;
+    var id = 1;
+    for (var k = chain.length - 1; k >= 0; k--) {
+        id = id * 100 + chain[k] + 1;
+        if (!Number.isSafeInteger(id)) return null;
+    }
+    return id;
+};
+"#;
+
+/// A page-side dead end (`{"__bao_err": "<reason>"}`) is an explicit command
+/// error — never a shape-only success carrying an empty payload.
+fn reject_page_error(value: &Value) -> Result<(), String> {
+    match value.get("__bao_err").and_then(|e| e.as_str()) {
+        Some(reason) => Err(reason.to_string()),
+        None => Ok(()),
+    }
+}
+
 /// JS body resolving the highlight node and returning its four box-model
 /// boxes as `{x,y,w,h}` viewport-pixel objects — the same
 /// getBoundingClientRect + computed border/padding/margin derivation the
@@ -1396,30 +1432,73 @@ fn cmd_get_document(page: &PageHandle) -> Result<Value, String> {
 }
 
 fn cmd_query_selector(page: &PageHandle, selector: &str) -> Result<Value, String> {
+    // Canonical positional nodeId (see NODE_CANONICAL_JS): a match yields the
+    // element's real addressable id, a miss keeps CDP's nodeId:0 convention.
+    // The former `e ? 1 : 0` collapsed every match onto the document node —
+    // every downstream style/outerHTML face then resolved `document` and
+    // produced an empty payload.
     let js = format!(
-        "(function() {{ var e = document.querySelector({}); return e ? 1 : 0; }})()",
-        serde_json::to_string(selector).unwrap_or_default()
+        r#"(function() {{
+{NODE_CANONICAL_JS}var el = document.querySelector({selector});
+if (!el) return JSON.stringify({{ nodeId: 0 }});
+var id = __baoCanonical(el);
+if (id === null) return JSON.stringify({{ __bao_err: "matched node is detached from the document or exceeds addressable node-id precision" }});
+return JSON.stringify({{ nodeId: id, backendNodeId: id }});
+}})()"#,
+        selector = serde_json::to_string(selector).unwrap_or_default()
     );
-    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
-    let node_id: i64 = result.trim().parse().unwrap_or(0);
-    Ok(serde_json::json!({ "nodeId": node_id }))
+    let result = page.evaluate_js_web(&js).map_err(to_browser_error)?;
+    let value = parse_js_result(&result)?;
+    reject_page_error(&value)?;
+    Ok(value)
 }
 
 fn cmd_query_selector_all(page: &PageHandle, selector: &str) -> Result<Value, String> {
+    // Every match's canonical nodeId in document order — the same identity
+    // space `DOM.getDocument` emits (children are P*100+i+1).
     let js = format!(
-        "(function() {{ return document.querySelectorAll({}).length; }})()",
-        serde_json::to_string(selector).unwrap_or_default()
+        r#"(function() {{
+{NODE_CANONICAL_JS}var list = document.querySelectorAll({selector});
+var ids = [];
+for (var i = 0; i < list.length; i++) {{
+    var id = __baoCanonical(list[i]);
+    if (id === null) return JSON.stringify({{ __bao_err: "matched node is detached from the document or exceeds addressable node-id precision" }});
+    ids.push(id);
+}}
+return JSON.stringify({{ nodeIds: ids }});
+}})()"#,
+        selector = serde_json::to_string(selector).unwrap_or_default()
     );
-    let count_str = page.evaluate_js(&js).map_err(to_browser_error)?;
-    let count: i64 = count_str.trim().parse().unwrap_or(0);
-    let ids: Vec<i64> = (1..=count).collect();
-    Ok(serde_json::json!({ "nodeIds": ids }))
+    let result = page.evaluate_js_web(&js).map_err(to_browser_error)?;
+    let value = parse_js_result(&result)?;
+    reject_page_error(&value)?;
+    Ok(value)
 }
 
-fn cmd_get_outer_html(page: &PageHandle) -> Result<Value, String> {
-    let js = "document.documentElement.outerHTML";
-    let html = page.evaluate_js(js).map_err(to_browser_error)?;
-    Ok(serde_json::json!({ "outerHTML": html }))
+/// DOM.getOuterHTML — the addressed node's real serialization.
+///
+/// Chrome resolves the `nodeId` first and fails the command for an unknown id
+/// ("No node with given id found"); the former implementation ignored the id
+/// and always serialized `document.documentElement`, so an unknown id looked
+/// like a successful read of the whole document. Document nodes serialize as
+/// their documentElement (Chrome's getOuterHTML on the root node).
+fn cmd_get_outer_html(page: &PageHandle, node_id: Option<i64>) -> Result<Value, String> {
+    let Some(node_id) = node_id else {
+        return Err("DOM.getOuterHTML: missing required parameter: nodeId".into());
+    };
+    let js = format!(
+        r#"(function() {{
+{OVERLAY_RESOLVE_JS}var el = __baoResolve({node_id});
+if (!el) return JSON.stringify({{ __bao_err: "No node with given id found" }});
+if (el.nodeType === 1) return JSON.stringify({{ outerHTML: el.outerHTML }});
+if (el === document) return JSON.stringify({{ outerHTML: document.documentElement ? document.documentElement.outerHTML : "" }});
+return JSON.stringify({{ __bao_err: "node has no outerHTML (only Element and Document nodes are serializable on this face)" }});
+}})()"#
+    );
+    let result = page.evaluate_js_web(&js).map_err(to_browser_error)?;
+    let value = parse_js_result(&result)?;
+    reject_page_error(&value)?;
+    Ok(value)
 }
 
 fn cmd_set_attribute(page: &PageHandle, name: &str, value: &str) -> Result<Value, String> {
@@ -1623,12 +1702,46 @@ fn cmd_set_viewport(_page: &PageHandle, _width: u32, _height: u32) -> Result<Val
     Ok(serde_json::json!({}))
 }
 
-fn cmd_set_user_agent(page: &PageHandle, ua: &str) -> Result<Value, String> {
-    let js = format!(
-        "Object.defineProperty(navigator, 'userAgent', {{ get: function() {{ return {}; }} }});",
+/// Emulation.setUserAgentOverride — target-scoped `navigator.userAgent`
+/// override, verified by readback.
+///
+/// Chrome implements this at the kernel/network layer; servo's embedding
+/// surface exposes no per-WebView UA override (the `user_agent` pref is
+/// process-global and would contaminate every other target, and the native /
+/// stealth accessor is PERMANENT where stealth installs it). The page realm's
+/// navigator instance is the only target-scoped carrier: an OWN accessor
+/// shadows the prototype getter without touching the native or stealth
+/// definitions. A refused define (or a readback mismatch) is an explicit
+/// error, never a fake ok.
+///
+/// Registered product boundaries: the override does not rewrite the HTTP
+/// `User-Agent` header and does not survive a navigation (both require the
+/// kernel face above).
+fn set_user_agent_js(ua: &str) -> String {
+    format!(
+        r#"(function() {{
+  var ua = {};
+  try {{
+    Object.defineProperty(navigator, 'userAgent', {{ get: function() {{ return ua; }}, configurable: true }});
+  }} catch (e) {{ return ''; }}
+  return navigator.userAgent === ua ? ua : '';
+}})()"#,
         serde_json::to_string(ua).unwrap_or_default(),
-    );
-    let _ = page.evaluate_js(&js).map_err(to_browser_error)?;
+    )
+}
+
+fn cmd_set_user_agent(page: &PageHandle, ua: &str) -> Result<Value, String> {
+    // Page Realm (not the Node Realm): the Node Realm's `navigator` is a
+    // cross-compartment wrapper and refuses the define with "can't redefine
+    // non-configurable property".
+    let got = page
+        .evaluate_js_web(&set_user_agent_js(ua))
+        .map_err(to_browser_error)?;
+    if got.trim() != ua {
+        return Err(format!(
+            "Emulation.setUserAgentOverride: the page realm refused the navigator.userAgent override (readback: {got:?})"
+        ));
+    }
     Ok(serde_json::json!({}))
 }
 
@@ -1707,12 +1820,32 @@ fn cmd_go_forward(page: &PageHandle) -> Result<Value, String> {
 }
 
 /// HeapProfiler.collectGarbage / Memory.forciblyPurgeJavaScriptMemory —
-/// triggers a real full GC on the page's script thread via servo's
-/// `navigator.servo.GarbageCollectAllContexts()` DOM API
-/// (ScriptToConstellationMessage::TriggerGarbageCollection → JS_GC).
+/// triggers a real full GC on the page's script thread.
+///
+/// Carrier = `Bun.gc()` in the page's Node Realm: same thread-local JSContext
+/// and ScriptThread as the page realm (separate compartment), and
+/// `bun_gc` runs `NonIncrementalGC(GCOptions::Shrink)` over the WHOLE
+/// runtime — every compartment, page realm included — so this is the real
+/// engine collection, not a page-visible stub.
+///
+/// The former carrier `navigator.servo.GarbageCollectAllContexts()` is gated
+/// behind `expose_servointernals_globally` / about:memory privileged pages
+/// (ServoInternals::is_servo_internal) and is simply absent on standard
+/// pages, which made this command fail unconditionally. Exposing
+/// ServoInternals globally (the pref route) would hand every page the
+/// preference read/write API — a security/fingerprint hole, so it is not a
+/// valid carrier.
 fn cmd_collect_garbage(page: &PageHandle) -> Result<Value, String> {
-    page.evaluate_js_web("navigator.servo.GarbageCollectAllContexts()")
+    let carrier_js = "(function() { if (typeof Bun === 'undefined' || typeof Bun.gc !== 'function') return 'missing'; Bun.gc(true); return 'done'; })()";
+    let out = page
+        .evaluate_js(carrier_js)
         .map_err(to_browser_error)?;
+    if out.trim() != "done" {
+        return Err(
+            "HeapProfiler.collectGarbage: no GC carrier on this page's realm (Bun.gc unavailable; navigator.servo is gated to privileged pages)"
+                .into(),
+        );
+    }
     Ok(serde_json::json!({}))
 }
 
@@ -2308,188 +2441,187 @@ fn cmd_debugger_unblackbox(_page: &PageHandle) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
-// CSS domain commands — JS evaluate for computed/matched/inline styles
+// CSS domain commands — page-realm JS evaluate for computed/matched/inline
+// styles over the canonical positional nodeId space.
+//
+// Root cause of the former empty payloads (C14 登记项): the faces resolved the
+// id through an ad-hoc `data-node-id` / `body.childNodes[n-3]` scheme that
+// never matched the ids QuerySelector returned (`e ? 1 : 0` — always the
+// document node, which fails the Element guard), and they evaluated in the
+// NODE realm where `getComputedStyle`/CSSOM live only behind cross-compartment
+// proxies. Both are fixed here: ids are canonical (`__baoResolve`) and the
+// evaluation runs in the page realm (`evaluate_js_web`).
 // ---------------------------------------------------------------------------
 
-/// Resolve a CDP nodeId to a DOM element via JS evaluate.
-/// nodeId in our CDP implementation maps to a synthetic data-node-id attribute,
-/// or falls back to traversing the DOM tree by index.
-fn resolve_node_by_id(page: &PageHandle, node_id: i64) -> Result<String, String> {
-    if node_id <= 0 {
-        // nodeId 1 = document, 2 = html element
-        let js: String = match node_id {
-            0 | 1 => "document".to_string(),
-            2 => "document.documentElement".to_string(),
-            _ => {
-                let idx = node_id - 3;
-                format!("document.documentElement.childNodes[{}]", idx)
-            }
-        };
-        let result = page.evaluate_js(&js).map_err(to_browser_error)?;
-        Ok(result)
-    } else {
-        // Try data-node-id attribute first, then fall back to DOM traversal
-        let js = format!(
-            "(function() {{ var el = document.querySelector('[data-node-id=\"{}\"]'); if (el) return 'found'; return 'not-found'; }})()",
-            node_id
-        );
-        let found = page.evaluate_js(&js).map_err(to_browser_error)?;
-        if found.trim() == "found" {
-            Ok(format!(
-                "document.querySelector('[data-node-id=\"{}\"]')",
-                node_id
-            ))
-        } else {
-            // Fall back to body.childNodes traversal
-            Ok(format!("document.body.childNodes[{}]", node_id - 3))
-        }
-    }
+/// Evaluate a CSS query body against the element addressed by `node_id`.
+/// Unknown ids and non-element nodes are explicit command errors (Chrome
+/// semantics), never an empty style list; the body must end by returning
+/// `JSON.stringify({...})` or a `{"__bao_err": ...}` page-side dead end.
+fn eval_css_node(page: &PageHandle, node_id: i64, body: &str) -> Result<Value, String> {
+    let js = format!(
+        r#"(function() {{
+{OVERLAY_RESOLVE_JS}var el = __baoResolve({node_id});
+if (!el) return JSON.stringify({{ __bao_err: "No node with given id found" }});
+if (el.nodeType !== 1) return JSON.stringify({{ __bao_err: "node is not an element (styles require an Element node)" }});
+{body}
+}})()"#,
+        body = body,
+    );
+    let result = page.evaluate_js_web(&js).map_err(to_browser_error)?;
+    let value = parse_js_result(&result)?;
+    reject_page_error(&value)?;
+    Ok(value)
 }
 
 fn cmd_css_get_computed_style(page: &PageHandle, node_id: i64) -> Result<Value, String> {
-    let node_ref = resolve_node_by_id(page, node_id)?;
-    let js = format!(
-        r#"(function() {{
-            var el = {node_ref};
-            if (!el || !el.nodeType || el.nodeType !== 1) return JSON.stringify({{"computedStyle": []}});
-            try {{
-                var styles = getComputedStyle(el);
-                var result = [];
-                for (var i = 0; i < styles.length; i++) {{
-                    var name = styles[i];
-                    result.push({{ name: name, value: styles.getPropertyValue(name) }});
-                }}
-                return JSON.stringify({{"computedStyle": result}});
-            }} catch(e) {{
-                return JSON.stringify({{"computedStyle": []}});
-            }}
-        }})()"#,
-        node_ref = node_ref
-    );
-    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
-    parse_js_result(&result)
+    // Every property is the engine's real computed value.
+    eval_css_node(
+        page,
+        node_id,
+        r#"var styles = window.getComputedStyle(el);
+var out = [];
+for (var i = 0; i < styles.length; i++) {
+    var name = styles[i];
+    out.push({ name: name, value: styles.getPropertyValue(name) });
+}
+return JSON.stringify({ computedStyle: out });"#,
+    )
 }
 
 /// CSS.getMatchedStylesForNode payload: walks document.styleSheets for
 /// selector-matching rules (origin regular vs user-agent by sheet href) and
-/// the element inline style; every face failure collapses to the empty
-/// matchedCSSRules/inlineStyle-null shape.
-fn css_get_matched_styles_js(node_ref: &str) -> String {
+/// the element inline style. A sheet whose `cssRules` throws (cross-origin
+/// sheet) is skipped — the spec-correct "no accessible rules", not a hidden
+/// failure.
+const CSS_MATCHED_STYLES_BODY: &str = r#"var rules = [];
+var sheets = document.styleSheets;
+for (var s = 0; s < sheets.length; s++) {
+    var cssRules = null;
+    try { cssRules = sheets[s].cssRules; } catch (e1) { cssRules = null; }
+    if (!cssRules) continue;
+    for (var r = 0; r < cssRules.length; r++) {
+        var sheetRule = cssRules[r];
+        if (!sheetRule || typeof sheetRule.selectorText !== "string" || !sheetRule.style) continue;
+        var matching = [];
+        var selectors = sheetRule.selectorText.split(",");
+        var anyMatch = false;
+        for (var si = 0; si < selectors.length; si++) {
+            var sel = selectors[si].replace(/^\s+|\s+$/g, "");
+            if (!sel) continue;
+            try { if (el.matches(sel)) { anyMatch = true; matching.push(si); } } catch (e2) { /* invalid selector token: the spec-correct no-match */ }
+        }
+        if (!anyMatch) continue;
+        var rule = {
+            rule: {
+                selectorList: { selectors: [{ text: sheetRule.selectorText }] },
+                style: { cssProperties: [], shorthandEntries: [] },
+                origin: sheets[s].href ? "regular" : "user-agent",
+                sourceURL: sheets[s].href || ""
+            },
+            matchingSelectors: matching
+        };
+        var decls = sheetRule.style;
+        for (var d = 0; d < decls.length; d++) {
+            rule.rule.style.cssProperties.push({
+                name: decls[d],
+                value: decls.getPropertyValue(decls[d]),
+                important: decls.getPropertyPriority(decls[d]) === "important"
+            });
+        }
+        rules.push(rule);
+    }
+}
+var inlineStyle = null;
+if (el.style && el.style.length > 0) {
+    inlineStyle = { cssProperties: [], shorthandEntries: [] };
+    for (var i = 0; i < el.style.length; i++) {
+        inlineStyle.cssProperties.push({
+            name: el.style[i],
+            value: el.style.getPropertyValue(el.style[i]),
+            important: el.style.getPropertyPriority(el.style[i]) === "important"
+        });
+    }
+}
+var attributesStyle = null;
+if (el.getAttribute('style')) {
+    attributesStyle = { cssProperties: [], shorthandEntries: [] };
+    var styleText = el.getAttribute('style');
+    var pairs = styleText.split(';');
+    for (var p = 0; p < pairs.length; p++) {
+        var kv = pairs[p].trim();
+        if (kv) {
+            var colon = kv.indexOf(':');
+            if (colon > 0) {
+                var attrName = kv.substring(0, colon).trim();
+                var attrValue = kv.substring(colon + 1).trim();
+                var attrImportant = attrValue.endsWith(' !important');
+                if (attrImportant) attrValue = attrValue.substring(0, attrValue.length - 11).trim();
+                attributesStyle.cssProperties.push({
+                    name: attrName, value: attrValue, important: attrImportant
+                });
+            }
+        }
+    }
+}
+return JSON.stringify({ matchedCSSRules: rules, inlineStyle: inlineStyle, attributesStyle: attributesStyle });"#;
+
+fn css_get_matched_styles_js(node_id: i64) -> String {
     format!(
         r#"(function() {{
-            var el = {node_ref};
-            if (!el || !el.nodeType || el.nodeType !== 1) return JSON.stringify({{"matchedCSSRules": [], "inlineStyle": null, "attributesStyle": null}});
-            try {{
-                var rules = [];
-                var sheets = document.styleSheets;
-                for (var s = 0; s < sheets.length; s++) {{
-                    try {{
-                        var cssRules = sheets[s].cssRules || sheets[s].rules;
-                        for (var r = 0; r < cssRules.length; r++) {{
-                            try {{
-                                if (cssRules[r].selectorText && el.matches(cssRules[r].selectorText)) {{
-                                    var rule = {{
-                                        rule: {{
-                                            selectorList: {{ selectors: [{{ text: cssRules[r].selectorText }}] }},
-                                            style: {{ cssProperties: [], shorthandEntries: [] }},
-                                            origin: sheets[s].href ? "regular" : "user-agent",
-                                            sourceURL: sheets[s].href || ""
-                                        }},
-                                        matchingSelectors: [r]
-                                    }};
-                                    var decls = cssRules[r].style;
-                                    for (var d = 0; d < decls.length; d++) {{
-                                        rule.rule.style.cssProperties.push({{
-                                            name: decls[d],
-                                            value: decls.getPropertyValue(decls[d]),
-                                            important: decls.getPropertyPriority(decls[d]) === "important"
-                                        }});
-                                    }}
-                                    rules.push(rule);
-                                }}
-                            }} catch(e2) {{}}
-                        }}
-                    }} catch(e1) {{}}
-                }}
-                var inlineStyle = null;
-                if (el.style && el.style.length > 0) {{
-                    inlineStyle = {{ cssProperties: [], shorthandEntries: [] }};
-                    for (var i = 0; i < el.style.length; i++) {{
-                        inlineStyle.cssProperties.push({{
-                            name: el.style[i],
-                            value: el.style.getPropertyValue(el.style[i]),
-                            important: el.style.getPropertyPriority(el.style[i]) === "important"
-                        }});
-                    }}
-                }}
-                return JSON.stringify({{"matchedCSSRules": rules, "inlineStyle": inlineStyle, "attributesStyle": null}});
-            }} catch(e) {{
-                return JSON.stringify({{"matchedCSSRules": [], "inlineStyle": null, "attributesStyle": null}});
-            }}
-        }})()"#,
+{OVERLAY_RESOLVE_JS}var el = __baoResolve({node_id});
+if (!el) return JSON.stringify({{ __bao_err: "No node with given id found" }});
+if (el.nodeType !== 1) return JSON.stringify({{ __bao_err: "node is not an element (styles require an Element node)" }});
+{CSS_MATCHED_STYLES_BODY}
+}})()"#
     )
 }
 
 fn cmd_css_get_matched_styles(page: &PageHandle, node_id: i64) -> Result<Value, String> {
-    let node_ref = resolve_node_by_id(page, node_id)?;
-    let js = css_get_matched_styles_js(&node_ref);
-    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
-    parse_js_result(&result)
+    let js = css_get_matched_styles_js(node_id);
+    let result = page.evaluate_js_web(&js).map_err(to_browser_error)?;
+    let value = parse_js_result(&result)?;
+    reject_page_error(&value)?;
+    Ok(value)
 }
 
 /// CSS.getInlineStylesForNode payload: the element inline style plus an
 /// attributesStyle parsed off the raw `style` attribute text.
-fn css_get_inline_styles_js(node_ref: &str) -> String {
-    format!(
-        r#"(function() {{
-            var el = {node_ref};
-            if (!el || !el.nodeType || el.nodeType !== 1) return JSON.stringify({{"inlineStyle": null}});
-            try {{
-                var inlineStyle = null;
-                if (el.style && el.style.length > 0) {{
-                    inlineStyle = {{ cssProperties: [], shorthandEntries: [] }};
-                    for (var i = 0; i < el.style.length; i++) {{
-                        inlineStyle.cssProperties.push({{
-                            name: el.style[i],
-                            value: el.style.getPropertyValue(el.style[i]),
-                            important: el.style.getPropertyPriority(el.style[i]) === "important"
-                        }});
-                    }}
-                }}
-                var attributesStyle = null;
-                if (el.getAttribute('style')) {{
-                    attributesStyle = {{ cssProperties: [], shorthandEntries: [] }};
-                    var styleText = el.getAttribute('style');
-                    var pairs = styleText.split(';');
-                    for (var p = 0; p < pairs.length; p++) {{
-                        var kv = pairs[p].trim();
-                        if (kv) {{
-                            var colon = kv.indexOf(':');
-                            if (colon > 0) {{
-                                var name = kv.substring(0, colon).trim();
-                                var value = kv.substring(colon + 1).trim();
-                                var important = value.endsWith(' !important');
-                                if (important) value = value.substring(0, value.length - 11).trim();
-                                attributesStyle.cssProperties.push({{
-                                    name: name, value: value, important: important
-                                }});
-                            }}
-                        }}
-                    }}
-                }}
-                return JSON.stringify({{"inlineStyle": inlineStyle, "attributesStyle": attributesStyle}});
-            }} catch(e) {{
-                return JSON.stringify({{"inlineStyle": null}});
-            }}
-        }})()"#,
-    )
+const CSS_INLINE_STYLES_BODY: &str = r#"var inlineStyle = null;
+if (el.style && el.style.length > 0) {
+    inlineStyle = { cssProperties: [], shorthandEntries: [] };
+    for (var i = 0; i < el.style.length; i++) {
+        inlineStyle.cssProperties.push({
+            name: el.style[i],
+            value: el.style.getPropertyValue(el.style[i]),
+            important: el.style.getPropertyPriority(el.style[i]) === "important"
+        });
+    }
 }
+var attributesStyle = null;
+if (el.getAttribute('style')) {
+    attributesStyle = { cssProperties: [], shorthandEntries: [] };
+    var styleText = el.getAttribute('style');
+    var pairs = styleText.split(';');
+    for (var p = 0; p < pairs.length; p++) {
+        var kv = pairs[p].trim();
+        if (kv) {
+            var colon = kv.indexOf(':');
+            if (colon > 0) {
+                var name = kv.substring(0, colon).trim();
+                var value = kv.substring(colon + 1).trim();
+                var important = value.endsWith(' !important');
+                if (important) value = value.substring(0, value.length - 11).trim();
+                attributesStyle.cssProperties.push({
+                    name: name, value: value, important: important
+                });
+            }
+        }
+    }
+}
+return JSON.stringify({ inlineStyle: inlineStyle, attributesStyle: attributesStyle });"#;
 
 fn cmd_css_get_inline_styles(page: &PageHandle, node_id: i64) -> Result<Value, String> {
-    let node_ref = resolve_node_by_id(page, node_id)?;
-    let js = css_get_inline_styles_js(&node_ref);
-    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
-    parse_js_result(&result)
+    eval_css_node(page, node_id, CSS_INLINE_STYLES_BODY)
 }
 
 // ---------------------------------------------------------------------------
@@ -3609,78 +3741,59 @@ mod tests {
         assert_eq!(b64, ""); // empty input -> empty base64
     }
 
-    // ─── cmd_query_selector JS construction (pure logic) ────────────────
+    // ─── query-face node identity (source pins) ─────────────────────────
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
 
     #[test]
-    fn cmd_query_selector_js_construction_valid_selector() {
-        let selector = "div.main";
-        let js = format!(
-            "(function() {{ var e = document.querySelector({}); return e ? 1 : 0; }})()",
-            serde_json::to_string(selector).unwrap_or_default()
+    fn cmd_query_selector_uses_canonical_node_identity() {
+        let source = include_str!("cdp_handler.rs");
+        // Needles assembled via concat! so this test's own source text never
+        // satisfies (or trips) the assertion.
+        let positive = concat!("var id = __baoCanonical", "(el);");
+        assert!(
+            source.contains(positive),
+            "querySelector must mint a canonical nodeId"
         );
-        assert!(js.contains("document.querySelector"));
-        assert!(js.contains("\"div.main\""));
-    }
-
-    #[test]
-    fn cmd_query_selector_js_construction_empty_selector() {
-        let selector = "";
-        let json_str = serde_json::to_string(selector).unwrap_or_default();
-        assert_eq!(json_str, "\"\"");
-    }
-
-    #[test]
-    fn cmd_query_selector_js_construction_special_chars() {
-        let selector = "div[data-attr='value']";
-        let json_str = serde_json::to_string(selector).unwrap_or_default();
-        // serde_json should escape the single quotes properly
-        assert!(json_str.contains("div[data-attr"));
-    }
-
-    #[test]
-    fn cmd_query_selector_js_construction_unicode() {
-        let selector = "div.中文类名";
-        let json_str = serde_json::to_string(selector).unwrap_or_default();
-        assert!(json_str.contains("中文类名"));
-    }
-
-    // ─── cmd_query_selector_all JS construction (pure logic) ────────────
-    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
-
-    #[test]
-    fn cmd_query_selector_all_js_construction() {
-        let selector = "li.item";
-        let js = format!(
-            "(function() {{ return document.querySelectorAll({}).length; }})()",
-            serde_json::to_string(selector).unwrap_or_default()
+        let stale = concat!("return e ? 1 :", " 0;");
+        assert!(
+            !source.contains(stale),
+            "the 1/0 placeholder id must never return (it collapsed every match onto the document)"
         );
-        assert!(js.contains("document.querySelectorAll"));
-        assert!(js.contains(".length"));
+        assert!(source.contains(concat!("nodeId", ": 0")));
     }
 
     #[test]
-    fn cmd_query_selector_all_count_to_node_ids() {
-        // When count is 3, nodeIds should be [1, 2, 3]
-        let count: i64 = 3;
-        let ids: Vec<i64> = (1..=count).collect();
-        assert_eq!(ids, vec![1, 2, 3]);
+    fn cmd_query_selector_all_uses_canonical_node_identity() {
+        let source = include_str!("cdp_handler.rs");
+        let positive = concat!("var id = __baoCanonical", "(list[i]);");
+        assert!(
+            source.contains(positive),
+            "querySelectorAll must mint canonical nodeIds in document order"
+        );
+        let stale = concat!("(1..=count)", ".collect()");
+        assert!(
+            !source.contains(stale),
+            "the synthetic [1..=count] id range must never return"
+        );
     }
 
     #[test]
-    fn cmd_query_selector_all_zero_count() {
-        let count: i64 = 0;
-        let ids: Vec<i64> = (1..=count).collect();
-        assert!(ids.is_empty());
-    }
-
-    #[test]
-    fn cmd_query_selector_all_large_count() {
-        let count: i64 = 100;
-        let ids: Vec<i64> = (1..=count).collect();
-        assert_eq!(ids.len(), 100);
-        assert_eq!(ids[0], 1);
-        assert_eq!(ids[99], 100);
+    fn node_canonical_js_is_byte_identical_to_devtools_dom() {
+        // The inverse of the positional identity is shared with bao_cdp's
+        // devtools_dom prelude — a drift would desynchronize the query faces
+        // from the DOM.getDocument walk.
+        let truth = include_str!("../../bao_cdp/src/devtools_dom.rs");
+        let start = truth
+            .find("var __baoCanonical")
+            .expect("__baoCanonical moved in bao_cdp devtools_dom");
+        let end = truth[start..]
+            .find("var __baoDecls")
+            .expect("__baoDecls missing after __baoCanonical");
+        let canonical = truth[start..start + end].trim_end();
+        assert!(
+            super::NODE_CANONICAL_JS.contains(canonical),
+            "the mirrored canonical-izer drifted from the devtools_dom source of truth"
+        );
     }
 
     // ─── cmd_set_attribute JS construction (pure logic) ─────────────────
@@ -3854,21 +3967,19 @@ mod tests {
 
     #[test]
     fn cmd_set_user_agent_js_construction() {
-        let ua = "Mozilla/5.0 Test";
-        let js = format!(
-            "Object.defineProperty(navigator, 'userAgent', {{ get: function() {{ return {}; }} }});",
-            serde_json::to_string(ua).unwrap_or_default(),
-        );
-        assert!(js.contains("Object.defineProperty"));
-        assert!(js.contains("navigator"));
-        assert!(js.contains("userAgent"));
+        let js = super::set_user_agent_js("Mozilla/5.0 Test");
+        assert!(js.contains("Object.defineProperty(navigator, 'userAgent'"));
+        assert!(js.contains("\"Mozilla/5.0 Test\""));
+        // Readback gate: the builder returns the UA only when the define took
+        // effect; a refused define yields '' → explicit command error.
+        assert!(js.contains("navigator.userAgent === ua ? ua : ''"));
     }
 
     #[test]
     fn cmd_set_user_agent_js_empty_string() {
-        let ua = "";
-        let json_str = serde_json::to_string(ua).unwrap_or_default();
-        assert_eq!(json_str, "\"\"");
+        let js = super::set_user_agent_js("");
+        assert!(js.contains("var ua = \"\";"));
+        assert!(js.contains("navigator.userAgent === ua ? ua : ''"));
     }
 
     // ─── cmd_get_document JS template (pure logic) ─────────────────────
@@ -3916,14 +4027,28 @@ mod tests {
         assert_eq!(50usize.min(20), 20);
     }
 
-    // ─── cmd_get_outer_html JS expression (pure logic) ─────────────────
+    // ─── cmd_get_outer_html node resolution ─────────────────────────────
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
 
     #[test]
-    fn cmd_get_outer_html_js_is_simple_expression() {
-        let js = "document.documentElement.outerHTML";
-        assert!(js.contains("document.documentElement"));
-        assert!(js.contains("outerHTML"));
+    fn cmd_get_outer_html_resolves_the_addressed_node() {
+        let source = include_str!("cdp_handler.rs");
+        // The nodeId must be consumed (the former dispatch ignored it: `..`).
+        let ignored = concat!("BridgeCommand::GetOuterHtml { target_id,", " .. }");
+        assert!(
+            !source.contains(ignored),
+            "GetOuterHtml must pass node_id to the handler"
+        );
+        let unknown = concat!("No node with", " given id found");
+        assert!(
+            source.contains(unknown),
+            "unknown nodeId must be an explicit not-found error"
+        );
+        let missing = concat!("missing required parameter:", " nodeId");
+        assert!(
+            source.contains(missing),
+            "a missing nodeId must be an explicit parameter error"
+        );
     }
 
     // ─── cmd_reload response structure (pure logic) ────────────────────
@@ -3989,13 +4114,21 @@ mod tests {
     }
 
     #[test]
-    fn collect_garbage_uses_servo_gc_api() {
-        // Real GC path: navigator.servo.GarbageCollectAllContexts() →
-        // TriggerGarbageCollection → JS_GC on the script thread.
+    fn collect_garbage_uses_real_engine_gc_carrier() {
+        // Real GC path: Node Realm Bun.gc → NonIncrementalGC(Shrink) over the
+        // whole thread-local JSContext (page realm included). The former
+        // navigator.servo carrier is privileged-page-only and must not be
+        // executed again (it fails on every standard page).
         let source = include_str!("cdp_handler.rs");
+        let carrier = concat!("Bun", ".gc(true)");
         assert!(
-            source.contains("navigator.servo.GarbageCollectAllContexts()"),
-            "GC must go through servo's real GC DOM API"
+            source.contains(carrier),
+            "GC must go through the real engine GC carrier"
+        );
+        let stale = concat!("evaluate_js_web(\"navigator", ".servo");
+        assert!(
+            !source.contains(stale),
+            "the privileged-page navigator.servo carrier must not be executed"
         );
     }
 

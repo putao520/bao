@@ -282,23 +282,35 @@ fn bridge_dom_faces_on_live_page() {
     let ids = all["nodeIds"].as_array().expect("nodeIds");
     assert!(ids.len() >= 2, "two divs in probe html: {all}");
 
-    // GetOuterHtml:命中元素序列化;未命中 → 错误臂(1419-1423)。
+    // GetOuterHtml:按 canonical nodeId 解析并序列化该元素。
     let outer = ok_response(
         BridgeCommand::GetOuterHtml { target_id: tid.clone(), node_id: Some(node_id) },
         pool,
     );
     let html = outer["outerHTML"].as_str().unwrap_or_default();
     assert!(html.contains("alpha"), "outerHTML of #a: {outer}");
-    // 未知 nodeId:resolve_node_by_id 合成轴回落 — 返回整文档序列化而非错误
-    // (**登记项**:未知 nodeId 静默回落 document,无 not-found 判别,候选缺陷
-    // 面;characterization 钉死现行为)。
-    let fallback = ok_response(
+    assert!(!html.contains("c14-probe"), "the addressed node is #a, not the document: {outer}");
+    // 未知 nodeId:Chrome 语义 = 显式 "No node with given id found" 错误,
+    // 绝不静默回落整文档序列化。
+    let err = err_response(
         BridgeCommand::GetOuterHtml { target_id: tid.clone(), node_id: Some(999_999) },
         pool,
     );
+    assert!(err.contains("No node with given id found"), "{err}");
+    // 缺 nodeId = 缺必填参数错误。
+    let err = err_response(
+        BridgeCommand::GetOuterHtml { target_id: tid.clone(), node_id: None },
+        pool,
+    );
+    assert!(err.contains("missing required parameter: nodeId"), "{err}");
+    // nodeId 1 = document 根:序列化 documentElement(Chrome 同形)。
+    let doc_outer = ok_response(
+        BridgeCommand::GetOuterHtml { target_id: tid.clone(), node_id: Some(1) },
+        pool,
+    );
     assert!(
-        fallback["outerHTML"].as_str().unwrap_or_default().contains("c14-probe"),
-        "unknown nodeId falls back to document serialization: {fallback}"
+        doc_outer["outerHTML"].as_str().unwrap_or_default().contains("c14-probe"),
+        "document node serializes its documentElement: {doc_outer}"
     );
 
     // SetAttributeValue(1425-1433):载体 = document.querySelector('[data-cdp]')
@@ -398,14 +410,15 @@ fn bridge_input_viewport_ua_and_script_faces() {
         BridgeCommand::SetViewport { target_id: tid.clone(), width: 800, height: 600, device_scale_factor: None },
         pool,
     );
-    // SetUserAgent:defineProperty(navigator,'userAgent') 载体在 servo 页面
-    // (UA 属性 non-configurable)显式失败 — **登记项**(Chrome 的 UA override
-    // 是内核面非页面 JS;候选缺陷,characterization 钉死现行为)。
-    let err = err_response(
+    // SetUserAgent:page realm 的 navigator 实例上装 own accessor(遮蔽原型
+    // getter,不动 servo/stealth 的原型定义),命令以读回校验成功;随后独立
+    // evaluate 再读一次确认覆写对页面可见。
+    let _ = ok_response(
         BridgeCommand::SetUserAgent { target_id: tid.clone(), user_agent: "c14-ua/1".into() },
         pool,
     );
-    assert!(err.contains("redefine"), "{err}");
+    let ua = page.evaluate_js_web("navigator.userAgent").expect("read back UA");
+    assert_eq!(ua, "c14-ua/1", "UA override is visible in the page realm: {ua:?}");
 
     // AddScriptToEvaluateOnNewDocument:合法 source → vendor 铸造 identifier;
     // 空 source → 显式错误(1643-1650)。
@@ -535,12 +548,12 @@ fn bridge_sw_performance_gc_and_debugger_faces() {
     let page = probe_page(pool, PROBE_HTML);
     let tid = page.id().to_string();
 
-    // HeapProfiler.collectGarbage:载体 = navigator.servo.GarbageCollectAllContexts,
-    // 标准页面无 navigator.servo 暴露 → 显式 JS 错误映射(1713-1717 错误臂)。
-    // **登记项**:collectGarbage 在缺 navigator.servo 暴露的页面恒失败,候选
-    // 缺陷面(暴露轴缺口),characterization 钉死现行为。
-    let err = err_response(BridgeCommand::HeapProfilerCollectGarbage { target_id: tid.clone() }, pool);
-    assert!(err.contains("GarbageCollectAllContexts"), "{err}");
+    // HeapProfiler.collectGarbage:载体 = Node Realm 的 Bun.gc()
+    // (NonIncrementalGC(Shrink) 覆盖整个 thread-local JSContext,含 page
+    // realm);命令成功即真 GC 完成,页面随后仍可正常求值。
+    let _ = ok_response(BridgeCommand::HeapProfilerCollectGarbage { target_id: tid.clone() }, pool);
+    let alive = page.evaluate_js("1+1").expect("page still evaluable after GC");
+    assert_eq!(alive.trim(), "2", "page realm survives the collectGarbage round-trip: {alive:?}");
 
     // Performance.getMetrics:活文档真值(Timestamp/Documents/Frames/Nodes),
     // 非零填(1723-1744)。
@@ -603,37 +616,66 @@ fn bridge_css_faces_on_live_page() {
     let page = probe_page(pool, "<!DOCTYPE html><html><body><p id='p' style='color: red'>x</p></body></html>");
     let tid = page.id().to_string();
 
-    // 正 nodeId 轴:data-node-id 合成属性寻址(QuerySelector 铸造的真实 id)。
+    // 正 nodeId 轴:QuerySelector 返回 canonical 位置 id,样式面解析到该元素。
     let hit = ok_response(
         BridgeCommand::QuerySelector { target_id: tid.clone(), selector: "#p".into() },
         pool,
     );
     let node_id = hit["nodeId"].as_i64().expect("nodeId");
-    assert!(node_id > 0);
+    assert!(node_id > 1, "canonical element id (document is 1): {hit}");
+    assert_eq!(hit["backendNodeId"], json!(node_id), "backendNodeId ≡ nodeId: {hit}");
     let computed = ok_response(
         BridgeCommand::CssGetComputedStyleForNode { target_id: tid.clone(), node_id },
         pool,
     );
-    // 形状契约:computedStyle 数组键在位。**登记项**:活样式节点(#p 继承
-    // body color)经该面返回空数组 — computed 读取轴不产出条目,候选缺陷面
-    // (读取轴缺口),characterization 钉死现形状。
+    // computed 读取轴真实产出:name/value 对非空,且含颜色真值。
     let props = computed["computedStyle"].as_array().cloned().unwrap_or_default();
+    assert!(!props.is_empty(), "computed style must produce entries: {computed}");
     assert!(
         props.iter().all(|p| p.get("name").is_some() && p.get("value").is_some()),
         "computed style entries are name/value pairs: {props:?}"
     );
+    let color = props
+        .iter()
+        .find(|p| p["name"] == "color")
+        .expect("computed style carries color");
+    assert!(
+        color["value"].as_str().unwrap_or_default().to_lowercase().contains("rgb"),
+        "computed color is a resolved color: {color}"
+    );
 
-    // matched/inline 轴:**登记项** — 真实 nodeId(#p 携带
-    // style='color: red')经该面仍返回全空形状({matchedCSSRules:[],
-    // inlineStyle:null}),CSS 读取轴不产出条目,候选缺陷面(读取轴缺口);
-    // characterization 钉死现形状(三键在位且为空)。
+    // matched/inline 轴:同一 nodeId 解析到 #p,inline style(color: red)
+    // 真实回读;页面无 author stylesheet,matchedCSSRules 保持空。
     let matched = ok_response(
         BridgeCommand::CssGetMatchedStylesForNode { target_id: tid.clone(), node_id },
         pool,
     );
-    assert_eq!(matched["matchedCSSRules"], json!([]), "matched rules shape: {matched}");
-    assert!(matched["inlineStyle"].is_null(), "inlineStyle shape: {matched}");
-    assert!(matched["attributesStyle"].is_null(), "attributesStyle shape: {matched}");
+    assert_eq!(matched["matchedCSSRules"], json!([]), "no author stylesheet in fixture: {matched}");
+    let inline = matched["inlineStyle"]
+        .as_object()
+        .expect("inlineStyle present for #p: style='color: red'");
+    let inline_props = inline["cssProperties"].as_array().expect("cssProperties");
+    assert!(
+        inline_props.iter().any(|p| p["name"] == "color"),
+        "inline declarations include color: {matched}"
+    );
+    let attrs = matched["attributesStyle"]
+        .as_object()
+        .expect("attributesStyle parsed off the style attribute");
+    assert!(
+        attrs["cssProperties"].as_array().map(|p| p.iter().any(|e| e["name"] == "color")).unwrap_or(false),
+        "attributesStyle includes color: {matched}"
+    );
+
+    // inline 专用面同源:同 nodeId 产出同一 inlineStyle。
+    let inline_only = ok_response(
+        BridgeCommand::CssGetInlineStylesForNode { target_id: tid.clone(), node_id },
+        pool,
+    );
+    assert!(
+        inline_only["inlineStyle"].as_object().is_some(),
+        "getInlineStylesForNode produces the element's declarations: {inline_only}"
+    );
 
     // bogus nodeId → 错误臂(2336-2341 正分支之外)。
     let err = err_response(
