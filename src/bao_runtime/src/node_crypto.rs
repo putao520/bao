@@ -1688,7 +1688,14 @@ unsafe extern "C" fn crypto_get_random_values(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 || !(*args.get(0).ptr).is_object() {
+    // node contract: only real TypedArrays (ArrayBuffer views) are accepted —
+    // a plain Array must throw instead of being silently filled element-wise
+    // (C11 wave; node v24.19.0 oracle: getRandomValues([1,2,3]) throws a
+    // DOMException, code 17 TYPE_MISMATCH_ERR).
+    if argc == 0
+        || !(*args.get(0).ptr).is_object()
+        || !unsafe { JS_IsTypedArrayObject((*args.get(0).ptr).to_object()) }
+    {
         return throw_type_error(cx, "getRandomValues() requires a typed array");
     }
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -5824,9 +5831,14 @@ unsafe extern "C" fn crypto_scrypt(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         (16384, 8, 1)
     };
 
-    let has_callback = argc > 4 && (*args.get(4).ptr).is_object();
+    let has_callback = argc > 1 && {
+        let last = *args.get(argc - 1).ptr;
+        last.is_object() && IsCallable(last.to_object())
+    };
+    // node accepts the callback as the LAST argument when callable — scrypt (node: scrypt(pw, salt, keylen[, options], cb) — cb is the last arg; the fixed index-4 gate rejected the legal four-arg form).
+    // (C11 wave; last-callable gate matches every legal node form.)
     if has_callback {
-        let callback = (*args.get(4).ptr).to_object();
+        let callback = (*args.get(argc - 1).ptr).to_object();
         spawn_crypto_async(cx, "scrypt", callback, move || {
             bao_crypto::kdf::scrypt(&password, &salt, n, r, p, keylen)
                 .map_err(|e| format!("scrypt: {}", e))
@@ -6552,9 +6564,14 @@ unsafe extern "C" fn crypto_generate_key_pair(
         }
     }
 
-    let has_callback = argc > 2 && (*args.get(2).ptr).is_object();
+    let has_callback = argc > 1 && {
+        let last = *args.get(argc - 1).ptr;
+        last.is_object() && IsCallable(last.to_object())
+    };
+    // node accepts the callback as the LAST argument when callable — generateKeyPair (node: generateKeyPair(type[, options], cb) — the fixed index-2 gate rejected the legal two-arg form).
+    // (C11 wave; last-callable gate matches every legal node form.)
     if has_callback {
-        let callback = (*args.get(2).ptr).to_object();
+        let callback = (*args.get(argc - 1).ptr).to_object();
         let kt = key_type.clone();
         spawn_crypto_async(cx, "generateKeyPair", callback, move || {
             let kp_type = match kt.to_lowercase().as_str() {
@@ -6840,11 +6857,27 @@ unsafe extern "C" fn crypto_generate_key(cx: *mut JSContext, argc: u32, vp: *mut
         }
     }
 
-    let has_callback = argc > 2 && (*args.get(2).ptr).is_object();
+    // node accepts the callback as the LAST argument when callable — generateKey (node: generateKey(type[, options], cb) — the fixed index-2 gate rejected the legal two-arg form).
+    // (C11 wave; last-callable gate matches every legal node form.)
+    // node contract: same length-in-bits + type validation as the sync face
+    // (C11 wave; node v24.19.0 oracle probes).
+    match _type.as_str() {
+        "aes" | "hmac" | "camellia" | "chacha20" => {}
+        other => {
+            return throw_type_error(
+                cx,
+                &format!("generateKey: unsupported key type '{}'", other),
+            );
+        }
+    }
+    let has_callback = argc > 1 && {
+        let last = *args.get(argc - 1).ptr;
+        last.is_object() && IsCallable(last.to_object())
+    };
     if has_callback {
-        let callback = (*args.get(2).ptr).to_object();
+        let callback = (*args.get(argc - 1).ptr).to_object();
         spawn_crypto_async(cx, "generateKey", callback, move || {
-            let mut buf = vec![0u8; length];
+            let mut buf = vec![0u8; length.div_ceil(8)];
             bao_crypto::random::rand_bytes(&mut buf)
                 .map(|_| buf)
                 .map_err(|e| format!("generateKey: {}", e))
@@ -6898,7 +6931,20 @@ unsafe extern "C" fn crypto_generate_key_sync(
         }
     }
 
-    let mut buf = vec![0u8; length];
+    // node contract: options.length is in BITS (generateKeySync('aes',
+    // {length:128}).export().length === 16) and the key type is validated —
+    // unknown types throw instead of silently producing a secret key (C11
+    // wave; node v24.19.0 oracle probes: 16-byte export / ERR for bad type).
+    match _type.as_str() {
+        "aes" | "hmac" | "camellia" | "chacha20" => {}
+        other => {
+            return throw_type_error(
+                cx,
+                &format!("generateKeySync: unsupported key type '{}'", other),
+            );
+        }
+    }
+    let mut buf = vec![0u8; length.div_ceil(8)];
     bao_crypto::random::rand_bytes(&mut buf).unwrap();
     let idx = alloc_key_object(buf);
     let obj = make_key_object_js(cx, idx, "secret", None);
@@ -6950,9 +6996,14 @@ unsafe extern "C" fn crypto_hkdf(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         32
     };
 
-    let has_callback = argc > 5 && (*args.get(5).ptr).is_object();
+    let has_callback = argc > 1 && {
+        let last = *args.get(argc - 1).ptr;
+        last.is_object() && IsCallable(last.to_object())
+    };
+    // node accepts the callback as the LAST argument when callable — generatePrime (node: generatePrime(size[, options], cb) — the fixed index-2 gate rejected the legal two-arg form).
+    // (C11 wave; last-callable gate matches every legal node form.)
     if has_callback {
-        let callback = (*args.get(5).ptr).to_object();
+        let callback = (*args.get(argc - 1).ptr).to_object();
         let hash = parse_hkdf_hash(&digest);
         spawn_crypto_async(cx, "hkdf", callback, move || {
             bao_crypto::kdf::hkdf(hash, &salt, &ikm, &info, keylen)
@@ -6996,9 +7047,14 @@ unsafe extern "C" fn crypto_check_prime(cx: *mut JSContext, argc: u32, vp: *mut 
         Vec::new()
     };
 
-    let has_callback = argc > 1 && (*args.get(1).ptr).is_object();
+    let has_callback = argc > 1 && {
+        let last = *args.get(argc - 1).ptr;
+        last.is_object() && IsCallable(last.to_object())
+    };
+    // node accepts the callback as the LAST argument when callable — checkPrime (node: checkPrime(candidate[, options], cb) — the fixed index-1 gate mis-captured the options object as the callback in the three-arg form).
+    // (C11 wave; last-callable gate matches every legal node form.)
     if has_callback {
-        let callback = (*args.get(1).ptr).to_object();
+        let callback = (*args.get(argc - 1).ptr).to_object();
         spawn_crypto_async(cx, "checkPrime", callback, move || {
             let is_prime = check_prime_boringssl(&candidate);
             Ok(vec![if is_prime { 1u8 } else { 0u8 }])
@@ -7739,9 +7795,16 @@ unsafe extern "C" fn crypto_generate_prime(cx: *mut JSContext, argc: u32, vp: *m
     } else {
         true
     };
-    let has_callback = argc > 2 && (*args.get(2).ptr).is_object();
+    // node accepts generatePrime(size[, options], callback) — the callback is
+    // the LAST argument when callable; the fixed index-2 gate rejected the
+    // legal two-arg form (C11 wave; node v24.19.0 oracle: generatePrime(32,
+    // cb) delivers (err, bytes)).
+    let has_callback = argc > 1 && {
+        let last = *args.get(argc - 1).ptr;
+        last.is_object() && IsCallable(last.to_object())
+    };
     if has_callback {
-        let callback = (*args.get(2).ptr).to_object();
+        let callback = (*args.get(argc - 1).ptr).to_object();
         spawn_crypto_async(cx, "generatePrime", callback, move || {
             let bn = bun_boringssl_sys::BN_new();
             if bn.is_null() {

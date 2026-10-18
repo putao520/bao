@@ -423,11 +423,12 @@ fn c1_read_write_sync_boundary_faces() {
         }});
         ck("readsync_badfd_throws", function() {{
             var b = Buffer.alloc(2);
-            // node: EBADF; bao io_error_code has no EBADF arm → "ERR".
-            return codeof(function() {{ fs.readSync(987654, b, 0, 2, 0); }}) === "ERR";
+            // node: EBADF (C11 wave: io_error_code gained the EBADF arm).
+            return codeof(function() {{ fs.readSync(987654, b, 0, 2, 0); }}) === "EBADF";
         }});
         ck("writesync_badfd_throws", function() {{
-            return codeof(function() {{ fs.writeSync(987654, Buffer.from("x"), 0, 1, 0); }}) === "ERR";
+            // C11 wave: EBADF arm (was "ERR").
+            return codeof(function() {{ fs.writeSync(987654, Buffer.from("x"), 0, 1, 0); }}) === "EBADF";
         }});
         R.join("|")
     "#,
@@ -478,17 +479,21 @@ fn c1_fd_ops_sync_faces() {
         fs.closeSync(fd);
 
         ck("closeSync_badfd_throws", function() {{
-            // node: EBADF; bao io_error_code has no EBADF arm → "ERR".
-            return codeof(function() {{ fs.closeSync(987654); }}) === "ERR";
+            // node: EBADF (C11 wave: io_error_code gained the EBADF arm —
+            // refreshed from the pre-fix "ERR" pin per the oracle).
+            return codeof(function() {{ fs.closeSync(987654); }}) === "EBADF";
         }});
         ck("fsyncSync_badfd_throws", function() {{
-            return codeof(function() {{ fs.fsyncSync(987654); }}) === "ERR";
+            // C11 wave: EBADF arm (was "ERR").
+            return codeof(function() {{ fs.fsyncSync(987654); }}) === "EBADF";
         }});
         ck("fchmodSync_badfd_throws", function() {{
-            return codeof(function() {{ fs.fchmodSync(987654, 0o600); }}) === "ERR";
+            // C11 wave: EBADF arm (was "ERR").
+            return codeof(function() {{ fs.fchmodSync(987654, 0o600); }}) === "EBADF";
         }});
         ck("futimesSync_badfd_throws", function() {{
-            return codeof(function() {{ fs.futimesSync(987654, 0, 0); }}) === "ERR";
+            // C11 wave: EBADF arm (was "ERR").
+            return codeof(function() {{ fs.futimesSync(987654, 0, 0); }}) === "EBADF";
         }});
         ck("lchmodSync_fallback_chmod", function() {{
             fs.lchmodSync(p, 0o640);
@@ -549,10 +554,12 @@ fn c1_readv_writev_sync_faces() {
         }});
         ck("readvSync_badfd_throws", function() {{
             // node: EBADF; bao io_error_code has no EBADF arm → "ERR".
-            return codeof(function() {{ fs.readvSync(987654, [Buffer.alloc(2)], 0); }}) === "ERR";
+            // C11 wave: EBADF arm (was "ERR").
+            return codeof(function() {{ fs.readvSync(987654, [Buffer.alloc(2)], 0); }}) === "EBADF";
         }});
         ck("writevSync_badfd_throws", function() {{
-            return codeof(function() {{ fs.writevSync(987654, [Buffer.from("x")]); }}) === "ERR";
+            // C11 wave: EBADF arm (was "ERR").
+            return codeof(function() {{ fs.writevSync(987654, [Buffer.from("x")]); }}) === "EBADF";
         }});
         R.join("|")
     "#,

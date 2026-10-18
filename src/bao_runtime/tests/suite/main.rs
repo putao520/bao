@@ -88,6 +88,7 @@ mod final_remaining_integration_tests;
 mod fs_async_callback_tests;
 mod fs_buffer_write_tests;
 mod fs_coverage_c1_tests;
+mod fs_crypto_coverage_c11_tests;
 mod fs_deep_tests;
 mod fs_upstream_semantics_tests;
 mod fs_watch_events_tests;

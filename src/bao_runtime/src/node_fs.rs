@@ -630,6 +630,11 @@ fn truncate_len_from_val(len_val: JSVal) -> i64 {
 fn io_error_code(err: &::std::io::Error) -> &'static str {
     match err.raw_os_error() {
         Some(libc::EINVAL) => return "EINVAL",
+        // Bad file descriptor: every fd-taking fs call on a closed/invalid fd
+        // reports code="EBADF" in node (C1 registry #7 — node v24.19.0 oracle
+        // probe: readSync(9999, ...) → EBADF); without this arm the errno
+        // fell through to the generic "ERR".
+        Some(libc::EBADF) => return "EBADF",
         Some(libc::ENAMETOOLONG) => return "ENAMETOOLONG",
         // POSIX rmdir(non-empty) is ENOTEMPTY(39); Windows
         // RemoveDirectory reports ERROR_DIR_NOT_EMPTY(145) — both are the
@@ -878,6 +883,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             (c"mkdtempSync", fs_mkdtemp_sync, 1)
             (c"fchmodSync", fs_fchmod_sync, 2)
             (c"fchownSync", fs_fchown_sync, 3)
+            (c"fstatSync", fs_fstat_sync, 1)
             (c"fdatasyncSync", fs_fdatasync_sync, 1)
             (c"fsyncSync", fs_fsync_sync, 1)
             (c"ftruncateSync", fs_ftruncate_sync, 2)
@@ -947,6 +953,46 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 fs_obj.handle().into(),
                 c_name.as_ptr(),
                 val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+
+        // fs.constants namespace — node exposes F_OK/R_OK/W_OK/X_OK on both
+        // fs and fs.constants, plus the copy-file modifiers. The missing
+        // namespace made `fs.constants.R_OK` a TypeError and any script
+        // touching it died mid-scheduling (C11 wave; node v24.19.0 oracle:
+        // fs.constants.R_OK === 4, fs.constants.COPYFILE_EXCL === 1).
+        rooted!(&in(cx) let constants_obj = unsafe { w2::JS_NewPlainObject(cx) });
+        if !constants_obj.get().is_null() {
+            for (name, value) in constants {
+                let c_cn = ZBox::from_bytes(name.as_bytes());
+                rooted!(&in(cx) let cval = mozjs::jsval::Int32Value(*value));
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    constants_obj.handle().into(),
+                    c_cn.as_ptr(),
+                    cval.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            let copyfile: &[(&str, i32)] = &[("COPYFILE_EXCL", 1)];
+            for (name, value) in copyfile {
+                let c_cn = ZBox::from_bytes(name.as_bytes());
+                rooted!(&in(cx) let cval = mozjs::jsval::Int32Value(*value));
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    constants_obj.handle().into(),
+                    c_cn.as_ptr(),
+                    cval.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            rooted!(&in(cx) let cobj_val = mozjs::jsval::ObjectValue(constants_obj.get()));
+            JS_DefineProperty(
+                cx.raw_cx(),
+                fs_obj.handle().into(),
+                c"constants".as_ptr(),
+                cobj_val.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
         }
@@ -4188,6 +4234,43 @@ unsafe extern "C" fn fs_fstat(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     }
 }
 
+/// fstatSync(fd) — the sync face of fs.fstat, mirroring its closure (node
+/// contract: Stats of the open fd; a closed/invalid fd throws EBADF via the
+/// shared io_error_code arm; node v24.19.0 oracle: fstatSync_ebadf=EBADF).
+/// The C11 wave: fstatSync was absent from the registration table entirely.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_fstat_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd = if argc > 0 && (*args.get(0).ptr).is_int32() {
+        (*args.get(0).ptr).to_int32()
+    } else {
+        -1
+    };
+    #[cfg(unix)]
+    {
+        let mut stat_buf: libc::stat = ::std::mem::zeroed();
+        let rv = unsafe { libc::fstat(fd, &mut stat_buf) };
+        if rv == 0 {
+            let posix = posix_stat_from_libc(&stat_buf);
+            let stats = create_stats_object(cx, &posix);
+            args.rval().set(mozjs::jsval::ObjectValue(stats));
+            true
+        } else {
+            throw_fs_error(
+                cx,
+                "fstat",
+                &format!("fd:{}", fd),
+                &::std::io::Error::last_os_error(),
+            )
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        args.rval().set(UndefinedValue());
+        true
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn fs_ftruncate(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -4714,7 +4797,14 @@ unsafe extern "C" fn fs_open(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         0o644
     };
 
-    if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 3) {
+    // Callback form: fs.open(path, flags[, mode], cb) — the callback sits at
+    // index 2 (or 3 with an explicit mode). Scanning from index 1 matches
+    // both shapes (extract_callback_and_encoding only captures callables, so
+    // the string/int flags and mode args are not mis-captured). C1 registry
+    // #9: the previous start index of 3 made the plain fs.open(p, flags, cb)
+    // form never deliver its callback (node v24.19.0 oracle: fs.open(path,
+    // 'w', cb) → cb(null, fd)).
+    if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 1) {
         spawn_fs_async(cx, "open", path.clone(), callback, None, move || {
             #[cfg(unix)]
             {
@@ -4760,6 +4850,12 @@ fn parse_open_flags(s: &str) -> i32 {
     }
     if s.contains('a') {
         flags |= libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND;
+    }
+    if s.contains('x') {
+        // node contract: 'x' (wx / ax / x+) → O_EXCL; open of an existing
+        // path fails with EEXIST (C1 registry #1; node v24.19.0 oracle probe:
+        // openSync(existing, 'wx') → EEXIST).
+        flags |= libc::O_EXCL;
     }
     if s.contains('+') {
         flags = (flags & !(libc::O_WRONLY | libc::O_RDONLY)) | libc::O_RDWR;
@@ -4892,6 +4988,35 @@ unsafe extern "C" fn fs_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
             unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length) };
         if bytes_read >= 0 {
             buf.truncate(bytes_read as usize);
+            // node contract: read(buffer, offset, length, position) ALSO fills the
+            // caller's buffer window [offset, offset + bytesRead) — the data previously
+            // landed only in the fresh result buffer, leaving the caller's zero-filled
+            // (C11 wave; readv C1 #3 sibling; node v24.19.0 oracle:
+            // fh.read(b,0,2,0) fills b).
+            {
+                let buf_arg = *args.get(1).ptr;
+                if buf_arg.is_object() {
+                    let off_rb: u32 = if argc > 2 {
+                        let v = *args.get(2).ptr;
+                        if v.is_int32() { v.to_int32().max(0) as u32 } else { 0 }
+                    } else {
+                        0
+                    };
+                    let mut wrapped_rb =
+                        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+                    let cx_rb = &mut wrapped_rb;
+                    rooted!(&in(cx_rb) let caller_rb = buf_arg.to_object());
+                    for (i_rb, &byte_rb) in buf.iter().enumerate() {
+                        rooted!(&in(cx_rb) let bv_rb = mozjs::jsval::Int32Value(byte_rb as i32));
+                        JS_SetElement(
+                            cx,
+                            caller_rb.handle().into(),
+                            off_rb + i_rb as u32,
+                            bv_rb.handle().into(),
+                        );
+                    }
+                }
+            }
             let buf_obj = crate::globals::create_buffer_object(cx, &buf);
             if buf_obj.is_null() {
                 args.rval().set(UndefinedValue());
@@ -6471,6 +6596,35 @@ unsafe extern "C" fn fs_promises_read(cx: *mut JSContext, argc: u32, vp: *mut JS
             unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length) };
         if bytes_read >= 0 {
             buf.truncate(bytes_read as usize);
+            // node contract: read(buffer, offset, length, position) ALSO fills the
+            // caller's buffer window [offset, offset + bytesRead) — the data previously
+            // landed only in the fresh result buffer, leaving the caller's zero-filled
+            // (C11 wave; readv C1 #3 sibling; node v24.19.0 oracle:
+            // fh.read(b,0,2,0) fills b).
+            {
+                let buf_arg = *args.get(1).ptr;
+                if buf_arg.is_object() {
+                    let off_rb: u32 = if argc > 2 {
+                        let v = *args.get(2).ptr;
+                        if v.is_int32() { v.to_int32().max(0) as u32 } else { 0 }
+                    } else {
+                        0
+                    };
+                    let mut wrapped_rb =
+                        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+                    let cx_rb = &mut wrapped_rb;
+                    rooted!(&in(cx_rb) let caller_rb = buf_arg.to_object());
+                    for (i_rb, &byte_rb) in buf.iter().enumerate() {
+                        rooted!(&in(cx_rb) let bv_rb = mozjs::jsval::Int32Value(byte_rb as i32));
+                        JS_SetElement(
+                            cx,
+                            caller_rb.handle().into(),
+                            off_rb + i_rb as u32,
+                            bv_rb.handle().into(),
+                        );
+                    }
+                }
+            }
             let buf_obj = crate::globals::create_buffer_object(cx, &buf);
             if !buf_obj.is_null() {
                 rooted!(&in(cx_ref) let val = mozjs::jsval::ObjectValue(buf_obj));
@@ -9207,6 +9361,35 @@ unsafe extern "C" fn fh_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         };
         if bytes_read >= 0 {
             buf.truncate(bytes_read as usize);
+            // node contract: read(buffer, offset, length, position) ALSO fills the
+            // caller's buffer window [offset, offset + bytesRead) — the data previously
+            // landed only in the fresh result buffer, leaving the caller's zero-filled
+            // (C11 wave; readv C1 #3 sibling; node v24.19.0 oracle:
+            // fh.read(b,0,2,0) fills b).
+            {
+                let buf_arg = *args.get(0).ptr;
+                if buf_arg.is_object() {
+                    let off_rb: u32 = if argc > 1 {
+                        let v = *args.get(1).ptr;
+                        if v.is_int32() { v.to_int32().max(0) as u32 } else { 0 }
+                    } else {
+                        0
+                    };
+                    let mut wrapped_rb =
+                        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+                    let cx_rb = &mut wrapped_rb;
+                    rooted!(&in(cx_rb) let caller_rb = buf_arg.to_object());
+                    for (i_rb, &byte_rb) in buf.iter().enumerate() {
+                        rooted!(&in(cx_rb) let bv_rb = mozjs::jsval::Int32Value(byte_rb as i32));
+                        JS_SetElement(
+                            cx,
+                            caller_rb.handle().into(),
+                            off_rb + i_rb as u32,
+                            bv_rb.handle().into(),
+                        );
+                    }
+                }
+            }
             let buf_obj = crate::globals::create_buffer_object(cx, &buf);
             if !buf_obj.is_null() {
                 rooted!(&in(cx_ref) let result_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
@@ -10139,14 +10322,34 @@ unsafe fn create_dir_object(cx: *mut JSContext, dir_path: &str) -> *mut JSObject
         1,
         JSPROP_ENUMERATE as u32,
     );
-    JS_DefineFunction(
-        cx,
-        dir.handle().into(),
-        c"\x5B\x5D".as_ptr(),
-        Some(dir_symbol_iterator),
-        0,
-        0,
-    );
+    // Symbol.asyncIterator — for-await-of over the Dir itself (node
+    // contract: `dir[Symbol.asyncIterator]` is a function; sync for..of is a
+    // TypeError). C1 registry #15: the previous registration used the literal
+    // string name "[]" so the iterator was never discoverable and
+    // dir_symbol_iterator/dir_iterator_next were unreachable. Registered via
+    // the well-known symbol PropertyKey (bao_GetWellKnownSymbolKeyRaw — the
+    // PropertyKey sret-divergent under MSVC; same idiom as node_url.rs /
+    // bun_sqlite.rs).
+    let sym_ai_key = mozjs_sys::jsapi::JS::PropertyKey {
+        asBits_: mozjs::glue::bao_GetWellKnownSymbolKeyRaw(
+            cx,
+            mozjs_sys::jsapi::JS::SymbolCode::asyncIterator as u32,
+        ),
+    };
+    let ai_f = JS_NewFunction(cx, Some(dir_symbol_iterator), 0, 0, c"[Symbol.asyncIterator]".as_ptr());
+    if !ai_f.is_null() {
+        let ai_obj = JS_GetFunctionObject(ai_f);
+        if !ai_obj.is_null() {
+            rooted!(&in(cx_ref) let ai_val = mozjs::jsval::ObjectValue(ai_obj));
+            JS_DefinePropertyById2(
+                cx,
+                dir.handle().into(),
+                Handle::from_marked_location(&sym_ai_key),
+                ai_val.handle().into(),
+                0,
+            );
+        }
+    }
 
     dir.get()
 }
