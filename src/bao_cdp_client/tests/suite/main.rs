@@ -15,6 +15,7 @@ mod bridge_a_class;
 mod bridge_dispatcher;
 mod bridge_e_class;
 mod cdp_full_chain_tests;
+mod cdp_gap_coverage_c14_tests;
 mod cdp_timing_tests;
 mod d_class_local_state;
 mod debugger_sm_api_tests;
