@@ -239,3 +239,4 @@ mod yarn_tarball_name_tests;
 mod runtime_misc_edge_tests;
 mod zlib_deep_tests;
 mod zlib_silent_tests;
+mod dispatch_bridge_c15_tests;
