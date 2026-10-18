@@ -38,6 +38,14 @@ fn fresh_ctx() -> JsContext {
 /// Each label is asserted individually so the failure names the exact branch.
 fn assert_battery(ctx: &mut JsContext, battery: &str) {
     let results = eval_string(ctx, battery);
+    // An Err from ctx.eval stringifies to "" (eval_string's catch-all arm),
+    // and the split loop below would then pass vacuously. An empty result can
+    // only mean the script aborted (uncaught throw / non-string return), so
+    // fail loudly instead of reporting a fake green battery.
+    assert!(
+        !results.is_empty(),
+        "dns battery aborted before producing results (uncaught throw or non-string return)"
+    );
     let mut failures = Vec::new();
     for item in results.split('|') {
         if item.is_empty() {
@@ -500,8 +508,9 @@ fn dns_lookup_service_full_matrix() {
     );
 }
 
-/// getServers/setServers element filtering (strings kept, non-strings
-/// dropped), the no-arg / non-array no-op arms, and the reset-to-empty arm.
+/// getServers/setServers validation (node v24 oracle): non-string elements
+/// throw ERR_INVALID_ARG_TYPE naming servers[i], no-arg / non-array throw the
+/// Array-type error, all before mutation; plus the reset-to-empty arm.
 #[test]
 fn dns_servers_roundtrip_and_filters() {
     let mut ctx = fresh_ctx();
@@ -522,18 +531,40 @@ fn dns_servers_roundtrip_and_filters() {
             return dns.getServers().join(',') === '8.8.8.8,1.1.1.1';
         });
 
-        // Non-string elements are dropped, strings kept (element filter arm).
-        dns.setServers([1, '9.9.9.9', {}, '8.8.4.4']);
-        check("setServers_drops_nonstrings", function() {
-            return dns.getServers().join(',') === '9.9.9.9,8.8.4.4';
+        // Non-string elements throw ERR_INVALID_ARG_TYPE naming the servers[i]
+        // slot, before any mutation (node v24.19.0 oracle).
+        var elemErr = null;
+        try { dns.setServers([1, '9.9.9.9', {}, '8.8.4.4']); }
+        catch (e) { elemErr = { name: e.name, code: e.code, msg: String(e.message) }; }
+        check("setServers_nonstring_element_throws", function() {
+            return elemErr !== null && elemErr.name === 'TypeError' &&
+                   elemErr.code === 'ERR_INVALID_ARG_TYPE' &&
+                   elemErr.msg === 'The "servers[0]" argument must be of type string. Received type number (1)';
+        });
+        check("setServers_unchanged_after_element_throw", function() {
+            return dns.getServers().join(',') === '8.8.8.8,1.1.1.1';
         });
 
-        // No-arg and non-object arms are silent no-ops (list unchanged).
+        // No-arg and non-array arms throw the Array-type validation error
+        // (the current list stays unchanged).
         dns.setServers(['5.5.5.5']);
-        dns.setServers();
-        check("setServers_noarg_noop", function() { return dns.getServers().join(',') === '5.5.5.5'; });
-        dns.setServers('not-an-array');
-        check("setServers_nonobject_noop", function() { return dns.getServers().join(',') === '5.5.5.5'; });
+        var noArgErr = null;
+        try { dns.setServers(); }
+        catch (e) { noArgErr = { code: e.code, msg: String(e.message) }; }
+        check("setServers_noarg_throws", function() {
+            return noArgErr !== null && noArgErr.code === 'ERR_INVALID_ARG_TYPE' &&
+                   noArgErr.msg === 'The "servers" argument must be an instance of Array. Received undefined';
+        });
+        var nonObjErr = null;
+        try { dns.setServers('not-an-array'); }
+        catch (e) { nonObjErr = { code: e.code, msg: String(e.message) }; }
+        check("setServers_nonarray_throws", function() {
+            return nonObjErr !== null && nonObjErr.code === 'ERR_INVALID_ARG_TYPE' &&
+                   nonObjErr.msg === 'The "servers" argument must be an instance of Array. Received type string (\'not-an-array\')';
+        });
+        check("setServers_unchanged_after_throws", function() {
+            return dns.getServers().join(',') === '5.5.5.5';
+        });
 
         // Empty array resets the list.
         dns.setServers([]);
@@ -572,7 +603,8 @@ fn dns_set_default_result_order_validation() {
         check("defaultOrder_invalid_throws", function() {
             try { dns.setDefaultResultOrder('bogus'); return false; }
             catch(e) {
-                return String(e.message).indexOf('must be "ipv4first", "ipv6first", or "verbatim"') !== -1;
+                return e.name === 'TypeError' && e.code === 'ERR_INVALID_ARG_VALUE' &&
+                       String(e.message) === "The argument 'dnsOrder' must be one of: 'verbatim', 'ipv4first', 'ipv6first'. Received 'bogus'";
             }
         });
         // The failed set leaves the previous value intact.

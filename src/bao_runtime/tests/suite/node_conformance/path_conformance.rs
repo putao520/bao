@@ -197,8 +197,13 @@ fn test_path_conformance_matches_glob() {
         r##"
         {scaffold}
         var path = require('path');
-        check("matchesGlob_basic", function() {{
-            return path.matchesGlob("/foo/bar.js", "*.js") === true;
+        // Node v24 oracle: a single `*` never crosses '/', so the two-segment
+        // path does not match; the globstar form is the cross-segment arm.
+        check("matchesGlob_single_star_within_segment", function() {{
+            return path.matchesGlob("/foo/bar.js", "*.js") === false;
+        }});
+        check("matchesGlob_globstar_crosses_segments", function() {{
+            return path.matchesGlob("/foo/bar.js", "**/*.js") === true;
         }});
         results.join("|")
         "##,

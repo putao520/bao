@@ -9,15 +9,15 @@
 // Offline-first (localhost / hosts-file / local stub resolvers only), one
 // env-gated real-uplink shape test (BAO_TEST_DNS) mirroring the C4 gate form.
 //
-// 语义真源 = 本机 node v24.19.0 oracle 实测;以下为 oracle 分歧登记项
-// (characterization 钉死 bao 现行形态,只登记不修):
+// 语义真源 = 本机 node v24.19.0 oracle 实测;C13 登记的 4 项 parity 偏离
+// 已于 D 波根治,以下断言即 oracle 形态:
 //
-// | # | 面 | bao 现行(本文件钉死) | node v24 oracle | 判类 |
-// |---|----|----------------------|-----------------|------|
-// | 1 | setDefaultResultOrder 非法值 | 普通 Error(无 code),消息 'dns.setDefaultResultOrder order must be "ipv4first", "ipv6first", or "verbatim"' | ERR_INVALID_ARG_VALUE,消息 "The argument 'dnsOrder' must be one of: ..." | parity 偏离(错误码+消息形态) |
-// | 2 | getDefaultResultOrder 默认值 | 'verbatim'(DNS_JS 初始字面) | 'verbatim' | 一致(回归钉) |
-// | 3 | resolveAny 查询类型 | DNS_JS 落 `_resolveRR(hostname, "A")` — 实发 A 查询,返回 A 记录数组 | 发 ANY 聚合查询,返回带 type 字段的混合记录数组 | parity 偏离(能力缺口) |
-// | 4 | setServers 非 string 元素 | native 静默丢弃非 string 元素,合法元素保留(C4 已钉同形) | throw ERR_INVALID_ARG_TYPE,消息含 'servers[0]' | parity 偏离(校验缺失) |
+// | # | 面 | 现行为(本文件钉死) | node v24 oracle |
+// |---|----|----------------------|-----------------|
+// | 1 | setDefaultResultOrder 非法值 | TypeError + code ERR_INVALID_ARG_VALUE,消息 "The argument 'dnsOrder' must be one of: ..." | 同 |
+// | 2 | getDefaultResultOrder 默认值 | 'verbatim'(DNS_JS 初始字面) | 'verbatim'(一致) |
+// | 3 | resolveAny 查询类型 | 单发 ANY 查询,聚合带 type 字段的记录(localhost 形如 `{address:'127.0.0.1',ttl:0,type:'A'}`) | 同 |
+// | 4 | setServers 非 string 元素 | throw ERR_INVALID_ARG_TYPE,消息含 'servers[0]'(数组/元素双校验,throw 前零变更) | 同 |
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
@@ -138,10 +138,9 @@ fn dns_resolve46_options_slot_and_callback_forms() {
 
 /// The default-result-order getter/set matrix: the 'verbatim' default, the
 /// three legal orders round-trip through the getter, and each illegal value
-/// throws without mutating the current order.
-/// 登记项 #1: bao throws a plain Error (no .code) with the
-/// 'dns.setDefaultResultOrder order must be ...' message; node v24 throws
-/// ERR_INVALID_ARG_VALUE with the "must be one of" message.
+/// throws a TypeError with Node's ERR_INVALID_ARG_VALUE code + exact message
+/// (D-wave oracle flip; node v24.19.0 emits the same shape and inspection).
+/// The failed set never mutates the current order.
 #[test]
 fn dns_default_result_order_getter_matrix() {
     let mut ctx = fresh_ctx();
@@ -164,22 +163,37 @@ fn dns_default_result_order_getter_matrix() {
         dns.setDefaultResultOrder('verbatim');
         check("order_set_verbatim_back", function() { return dns.getDefaultResultOrder() === 'verbatim'; });
 
-        // Illegal values: throw, and leave the current order untouched.
-        var msg1 = '';
+        // Illegal values: TypeError + ERR_INVALID_ARG_VALUE + Node's exact
+        // enum-validation message, and the current order stays untouched.
+        var badStr = null;
         try { dns.setDefaultResultOrder('bogus'); }
-        catch (e) { msg1 = String(e.message); }
-        check("order_bad_string_throws", function() {
-            return msg1.indexOf('must be') !== -1 && msg1.indexOf('ipv4first') !== -1 &&
-                   msg1.indexOf('verbatim') !== -1;
+        catch (e) { badStr = { name: e.name, code: e.code, msg: String(e.message) }; }
+        check("order_bad_string_typeerror", function() {
+            return badStr !== null && badStr.name === 'TypeError';
+        });
+        check("order_bad_string_err_value_code", function() {
+            return badStr !== null && badStr.code === 'ERR_INVALID_ARG_VALUE';
+        });
+        check("order_bad_string_msg", function() {
+            return badStr !== null && badStr.msg ===
+                "The argument 'dnsOrder' must be one of: 'verbatim', 'ipv4first', 'ipv6first'. Received 'bogus'";
         });
         check("order_unchanged_after_bad_string", function() { return dns.getDefaultResultOrder() === 'verbatim'; });
 
-        var threw42 = false;
-        try { dns.setDefaultResultOrder(42); } catch (e) { threw42 = true; }
-        check("order_bad_number_throws", function() { return threw42; });
-        var threwNull = false;
-        try { dns.setDefaultResultOrder(null); } catch (e) { threwNull = true; }
-        check("order_bad_null_throws", function() { return threwNull; });
+        var badNum = null;
+        try { dns.setDefaultResultOrder(42); }
+        catch (e) { badNum = { code: e.code, msg: String(e.message) }; }
+        check("order_bad_number_msg", function() {
+            return badNum !== null && badNum.code === 'ERR_INVALID_ARG_VALUE' &&
+                   badNum.msg === "The argument 'dnsOrder' must be one of: 'verbatim', 'ipv4first', 'ipv6first'. Received 42";
+        });
+        var badNull = null;
+        try { dns.setDefaultResultOrder(null); }
+        catch (e) { badNull = { code: e.code, msg: String(e.message) }; }
+        check("order_bad_null_msg", function() {
+            return badNull !== null && badNull.code === 'ERR_INVALID_ARG_VALUE' &&
+                   badNull.msg.indexOf('Received null') !== -1;
+        });
         check("order_unchanged_after_bad_others", function() { return dns.getDefaultResultOrder() === 'verbatim'; });
 
         // The promises namespace exposes the same pair.
@@ -211,16 +225,28 @@ fn dns_module_rr_wrappers_any_naptr_and_explicit_rrtypes() {
             catch(e) { results.push(label + " ERR:" + (e.message || e)); }
         }
 
-        // resolveAny module-level: 登记项 #3 — bao 落 A 查询,对 localhost
-        // fulfill with the A record (node 发 ANY 聚合;此处钉 bao 现行形态).
+        // resolveAny module-level: one ANY query, mixed records with the
+        // Node object shape ({address, ttl, type} for A). localhost answers
+        // exactly one A record with ttl 0 on both engines.
         var any = dns.resolveAny('localhost');
-        check("resolveAny_is_A_query_fulfills", function() {
-            return Array.isArray(any) && any.length === 1 && any[0] === '127.0.0.1';
+        check("resolveAny_any_query_aggregates", function() {
+            return Array.isArray(any) && any.length === 1 && any[0] !== null &&
+                   typeof any[0] === 'object' && any[0].address === '127.0.0.1' &&
+                   typeof any[0].ttl === 'number' && any[0].type === 'A';
         });
         var anyCb = null;
         dns.resolveAny('localhost', function(err, rec) { anyCb = { err: err, rec: rec }; });
         check("resolveAny_cb_records", function() {
-            return anyCb.err === null && Array.isArray(anyCb.rec) && anyCb.rec[0] === '127.0.0.1';
+            return anyCb.err === null && Array.isArray(anyCb.rec) && anyCb.rec.length === 1 &&
+                   anyCb.rec[0].address === '127.0.0.1' && anyCb.rec[0].type === 'A';
+        });
+
+        // Explicit rrtype ANY rides the same aggregate path (node v24
+        // accepts dns.resolve(host, 'ANY', cb)).
+        check("resolve_explicit_any_aggregates", function() {
+            var r = dns.resolve('localhost', 'ANY');
+            return Array.isArray(r) && r.length === 1 && r[0].address === '127.0.0.1' &&
+                   r[0].type === 'A';
         });
 
         // resolveNaptr module-level mirror arms.
@@ -416,10 +442,11 @@ fn dns_promises_remaining_family_and_promisify_symbols() {
         check("p_srv_rejected_coded", function() { return stateOf('srv').indexOf('rej:') === 0; });
         check("p_txt_rejected_coded", function() { return stateOf('txt').indexOf('rej:') === 0; });
         check("p_naptr_rejected_coded", function() { return stateOf('naptr').indexOf('rej:') === 0; });
-        // 登记项 #3: resolveAny rides the A query — localhost fulfills with
-        // the A record through the promise wrapper too.
-        check("p_any_fulfilled_a_record", function() {
-            return stateOf('any').indexOf('ok:["127.0.0.1"]') === 0;
+        // resolveAny rides the ANY aggregate query: localhost fulfills with
+        // the Node A-record object, key order address/ttl/type.
+        check("p_any_fulfilled_any_record", function() {
+            return stateOf('any').indexOf(
+                'ok:[{"address":"127.0.0.1","ttl":0,"type":"A"}]') === 0;
         });
         check("p_mx_rejected_coded", function() { return stateOf('mx').indexOf('rej:') === 0; });
         check("p_lookupService_fulfilled", function() { return stateOf('lookupService').indexOf('ok:') === 0; });
@@ -483,12 +510,46 @@ fn dns_resolver_rrtype_passthrough_constants_and_server_validation() {
         for (var k in codes) { if (dns[k] !== codes[k]) { codesOk = false; break; } }
         check("error_constants_table_24", function() { return codesOk; });
 
-        // setServers element handling: 登记项 #4 — non-string elements are
-        // silently dropped (native filter), strings kept; node v24 throws
-        // ERR_INVALID_ARG_TYPE with the servers[0] index instead.
-        dns.setServers([1, '9.9.9.9', {}, '8.8.4.4']);
-        check("setservers_drops_nonstrings", function() {
-            return dns.getServers().join(',') === '9.9.9.9,8.8.4.4';
+        // setServers element handling (oracle flip): a non-string element
+        // throws ERR_INVALID_ARG_TYPE naming its servers[i] slot, before any
+        // mutation; the array itself must be an Array (Node validation).
+        dns.setServers(['9.9.9.9']);
+        var ssErr = null;
+        try { dns.setServers([1, '9.9.9.9', {}, '8.8.4.4']); }
+        catch (e) { ssErr = { name: e.name, code: e.code, msg: String(e.message) }; }
+        check("setservers_nonstring_element_throws", function() {
+            return ssErr !== null && ssErr.name === 'TypeError' &&
+                   ssErr.code === 'ERR_INVALID_ARG_TYPE' &&
+                   ssErr.msg === 'The "servers[0]" argument must be of type string. Received type number (1)';
+        });
+        check("setservers_unchanged_after_throw", function() {
+            return dns.getServers().join(',') === '9.9.9.9';
+        });
+        var ssObj = '';
+        try { dns.setServers([{}, '8.8.4.4']); }
+        catch (e) { ssObj = String(e.message); }
+        check("setservers_object_element_msg", function() {
+            return ssObj === 'The "servers[0]" argument must be of type string. Received an instance of Object';
+        });
+        var ssNonArray = null;
+        try { dns.setServers('not-an-array'); }
+        catch (e) { ssNonArray = { code: e.code, msg: String(e.message) }; }
+        check("setservers_nonarray_throws", function() {
+            return ssNonArray !== null && ssNonArray.code === 'ERR_INVALID_ARG_TYPE' &&
+                   ssNonArray.msg === 'The "servers" argument must be an instance of Array. Received type string (\'not-an-array\')';
+        });
+        check("setservers_unchanged_after_nonarray", function() {
+            return dns.getServers().join(',') === '9.9.9.9';
+        });
+
+        // The Resolver instance shares the same validation surface.
+        var rSrv = new dns.Resolver();
+        var rsErr = null;
+        try { rSrv.setServers([null]); }
+        catch (e) { rsErr = { code: e.code, msg: String(e.message) }; }
+        check("resolver_setservers_element_throws", function() {
+            return rsErr !== null && rsErr.code === 'ERR_INVALID_ARG_TYPE' &&
+                   rsErr.msg === 'The "servers[0]" argument must be of type string. Received null';
         });
 
         // Restores the shared registry for the neighboring tests

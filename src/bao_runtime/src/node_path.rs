@@ -2178,52 +2178,152 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
     }
 
-    // path.matchesGlob(path, pattern) — pure JS glob matcher. Bun's
-    // implementation (~/code/rust/bun/src/js/node/path.ts:matchesGlob) uses
-    // `Bun.Glob` (native); here we express the same boolean result with a
-    // minimal regex-based glob translator covering the standard wildcard
-    // syntax (`*`, `?`, `**`, character classes) so behaviour matches Node.
+    // path.matchesGlob(path, pattern) — pure JS glob matcher. Node v24 routes
+    // this through internal/fs/glob's matchGlobPattern → minimatch with
+    // `platform: 'posix'`, `dot: false`, `nonegate: true`, `nocomment: true`
+    // and `optimizationLevel: 2`. The matcher below mirrors that observable
+    // semantics on the path-parts level:
+    //   - both sides split on runs of '/' (slashSplit), then the *path* runs
+    //     through minimatch's levelTwoFileOptimize (interior '.'/'' dropped,
+    //     'x/..' pairs collapsed, a trailing '' survives);
+    //   - a non-globstar part matches exactly one path part; `*`/`?`/classes
+    //     never cross '/' (single `*` is within-segment) and, with dot:false,
+    //     a magic segment never matches a part starting with '.';
+    //   - `**` as a whole part swallows zero or more parts, never '.'/'..'
+    //     or dot-prefixed parts (minimatch matchOne GLOBSTAR recursion);
+    //   - a path trailing slash (final '' part) may satisfy a pattern that
+    //     has ran out of parts (minimatch's last-part empty rule).
     unsafe {
         let matches_src = r#"(function(p){
-  function globToRegExp(pattern) {
-    // Anchor the pattern; translate `**` → `.*`, `*` → `.*`, `?` → `.`,
-    // and escape regex metacharacters in literals. Mirrors Bun.Glob's
-    // full-path glob semantics (a single `*` matches across path segments),
-    // which is what Node.js' path.matchesGlob surfaces.
+  function splitGlob(s) {
+    // minimatch slashSplit: coalesce any run of '/' (preserveMultipleSlashes
+    // is off here, so 'a//b' and 'a/b' are the same path shape).
+    return s.split(/\/+/);
+  }
+  function hasMagic(seg) {
+    return /[*?\[]/.test(seg);
+  }
+  function escapeRe(c) {
+    return '.+^${}()|[]\\'.indexOf(c) >= 0 ? '\\' + c : c;
+  }
+  // One path part against one pattern part (never crosses '/').
+  function matchSegment(fileSeg, patSeg) {
+    if (patSeg === '') {
+      return fileSeg === '';
+    }
+    // minimatch starRE fast path: any run of '*' matches one non-empty part
+    // that does not start with '.' (dot:false). This also keeps the empty
+    // string from matching '*' (starTest requires length !== 0).
+    if (/^\*+$/.test(patSeg)) {
+      return fileSeg.length !== 0 && fileSeg.charAt(0) !== '.';
+    }
+    // minimatch dotStarRE fast path (dot:false): `.*` matches dot-prefixed
+    // parts but never the special '.' / '..' path parts.
+    if (/^\.\*+$/.test(patSeg)) {
+      return fileSeg !== '.' && fileSeg !== '..' && fileSeg.charAt(0) === '.';
+    }
+    // dot:false — a magic part that does not itself start with a literal
+    // '.' never matches a dot-prefixed path part.
+    if (fileSeg.charAt(0) === '.' && patSeg.charAt(0) !== '.' && hasMagic(patSeg)) {
+      return false;
+    }
     var s = '^';
-    for (var i = 0; i < pattern.length; i++) {
-      var c = pattern.charAt(i);
+    for (var i = 0; i < patSeg.length; i++) {
+      var c = patSeg.charAt(i);
       if (c === '*') {
-        if (pattern.charAt(i + 1) === '*') {
-          s += '.*';
-          i++;
-        } else {
-          s += '.*';
-        }
+        s += '.*';
       } else if (c === '?') {
         s += '.';
       } else if (c === '[') {
         // Character class: copy the body through, flipping a leading `!`
-        // negation to regex `^` (#71: the old escape-everything form turned
-        // `[ab]` into a literal-bracket string that never matched).
-        // Unterminated class falls back to a literal bracket.
-        var close = pattern.indexOf(']', i + 1);
+        // negation to regex `^` (#71). Unterminated class is a literal '['.
+        var close = patSeg.indexOf(']', i + 1);
         if (close === -1) {
           s += '\\[';
         } else {
-          var body = pattern.slice(i + 1, close);
+          var body = patSeg.slice(i + 1, close);
           var neg = body.charAt(0) === '!';
           if (neg) body = body.slice(1);
           s += '[' + (neg ? '^' : '') + body + ']';
           i = close;
         }
-      } else if ('.+^${}()|[]\\'.indexOf(c) >= 0) {
-        s += '\\' + c;
       } else {
-        s += c;
+        s += escapeRe(c);
       }
     }
-    return new RegExp(s + '$');
+    return new RegExp(s + '$').test(fileSeg);
+  }
+  // minimatch path-part optimization: levelTwoFileOptimize for the subject
+  // and firstPhasePreProcess's equivalent '<e>'/'<p>/..' reduction for the
+  // pattern (both run at optimizationLevel: 2). '/<e>/' interior '.' and ''
+  // parts drop out, '/x/../' collapses, a trailing '' part is retained.
+  function optimizeParts(parts, isPattern) {
+    var did = false;
+    do {
+      did = false;
+      for (var i = 1; i < parts.length - 1; i++) {
+        var part = parts[i];
+        if (i === 1 && part === '' && parts[0] === '') continue;
+        if (part === '.' || part === '') {
+          parts.splice(i, 1);
+          i--;
+          did = true;
+        }
+      }
+      if (parts[0] === '.' && parts.length === 2 &&
+          (parts[1] === '.' || parts[1] === '')) {
+        parts.pop();
+        did = true;
+      }
+      var dd = 0;
+      while ((dd = parts.indexOf('..', dd + 1)) !== -1) {
+        var prev = parts[dd - 1];
+        if (prev && prev !== '.' && prev !== '..' && prev !== '**') {
+          // firstPhasePreProcess keeps a '.' when '<e>/..' precedes '**'.
+          var needDot = isPattern && dd === 1 && parts[dd + 1] === '**';
+          parts.splice(dd - 1, 2);
+          if (needDot) {
+            parts.splice(dd - 1, 0, '.');
+          }
+          if (parts.length === 0) parts.push('');
+          dd -= 2;
+          did = true;
+        }
+      }
+    } while (did);
+    return parts.length === 0 ? [''] : parts;
+  }
+  // minimatch matchOne (partial=false): globstar recursion + last-part rule.
+  function matchParts(file, pattern) {
+    var fi = 0, pi = 0, fl = file.length, pl = pattern.length;
+    for (; fi < fl && pi < pl; fi++, pi++) {
+      var p = pattern[pi];
+      var f = file[fi];
+      if (p === '**') {
+        var pr = pi + 1;
+        if (pr === pl) {
+          for (; fi < fl; fi++) {
+            if (file[fi] === '.' || file[fi] === '..' ||
+                file[fi].charAt(0) === '.') return false;
+          }
+          return true;
+        }
+        var fr = fi;
+        while (fr < fl) {
+          if (matchParts(file.slice(fr), pattern.slice(pr))) return true;
+          var swallowee = file[fr];
+          if (swallowee === '.' || swallowee === '..' ||
+              swallowee.charAt(0) === '.') break;
+          fr++;
+        }
+        return false;
+      }
+      if (!matchSegment(f, p)) return false;
+    }
+    if (fi === fl && pi === pl) return true;
+    if (fi === fl) return false;
+    if (pi === pl) return fi === fl - 1 && file[fi] === '';
+    return false;
   }
   p.matchesGlob = function matchesGlob(path, pattern) {
     if (typeof path !== 'string') {
@@ -2232,7 +2332,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     if (typeof pattern !== 'string') {
       throw new TypeError('The "pattern" argument must be of type string.');
     }
-    return globToRegExp(pattern).test(path);
+    return matchParts(optimizeParts(splitGlob(path), false),
+                      optimizeParts(splitGlob(pattern), true));
   };
 })"#;
         let mut msrc = mozjs::rust::transform_str_to_source_text(matches_src);

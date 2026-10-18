@@ -23,6 +23,9 @@
 // c-ares (bun_cares_sys) synchronous integration: Channel::init + ares_query
 // per RR type with the matching parse thunk, driven synchronously with
 // ares_getsock + poll + ares_process_fd until the callback fires.
+// dns.resolveAny issues one ANY query and parses the mixed answer section via
+// the c-ares DNS record API (ares_dns_parse + ares_dns_record_rr_*), matching
+// Node's QueryAnyWrap / AnyTraits::Parse aggregation.
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 use bun_core::ZBox;
@@ -213,6 +216,77 @@ enum DnsRRData {
     },
     Srv(Vec<(u16, u16, u16, ::std::string::String)>), // (priority, weight, port, name)
     Naptr(Vec<NaptrRecord>),
+    /// dns.resolveAny / dns.resolve(host, "ANY"): the aggregate RR list from
+    /// a single ANY query, bucketed in Node's emission order.
+    Any(Vec<AnyRecord>),
+}
+
+/// One record in Node's `dns.resolveAny` result array. Shapes mirror
+/// lib/dns.js + src/cares_wrap.cc AnyTraits::Parse: A/AAAA carry
+/// {address, ttl, type}; CNAME/NS/PTR {value, type}; MX {exchange, priority,
+/// type}; SRV {priority, weight, port, name, type}; TXT {entries, type};
+/// NAPTR the six-field object; SOA the seven-field object; TLSA
+/// {certUsage, selector, match, data} (ArrayBuffer, no type per Node);
+/// CAA {critical, <tag>: <value>, type}.
+enum AnyRecord {
+    A {
+        address: ::std::string::String,
+        ttl: u32,
+    },
+    Aaaa {
+        address: ::std::string::String,
+        ttl: u32,
+    },
+    Cname {
+        value: ::std::string::String,
+    },
+    Mx {
+        priority: u16,
+        exchange: ::std::string::String,
+    },
+    Ns {
+        value: ::std::string::String,
+    },
+    Ptr {
+        value: ::std::string::String,
+    },
+    Soa {
+        nsname: ::std::string::String,
+        hostmaster: ::std::string::String,
+        serial: u32,
+        refresh: u32,
+        retry: u32,
+        expire: u32,
+        minttl: u32,
+    },
+    Srv {
+        priority: u16,
+        weight: u16,
+        port: u16,
+        name: ::std::string::String,
+    },
+    Txt {
+        entries: Vec<::std::string::String>,
+    },
+    Naptr {
+        flags: ::std::string::String,
+        service: ::std::string::String,
+        regexp: ::std::string::String,
+        replacement: ::std::string::String,
+        order: u16,
+        preference: u16,
+    },
+    Tlsa {
+        cert_usage: u8,
+        selector: u8,
+        match_type: u8,
+        data: Vec<u8>,
+    },
+    Caa {
+        critical: u8,
+        tag: ::std::string::String,
+        value: ::std::string::String,
+    },
 }
 
 struct NaptrRecord {
@@ -267,12 +341,16 @@ thread_local! {
     static QUERY_RESULT: RefCell<Option<DnsRRData>> = const { RefCell::new(None) };
     static QUERY_DONE: AtomicBool = const { AtomicBool::new(false) };
     static QUERY_ERROR: RefCell<Option<::std::string::String>> = const { RefCell::new(None) };
+    /// Raw DNS response bytes for the ANY query (c-ares owns `abuf` only for
+    /// the duration of the callback), parsed after the drive loop returns.
+    static ANY_RAW: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
 }
 
 fn query_reset() {
     QUERY_RESULT.with(|r| *r.borrow_mut() = None);
     QUERY_DONE.with(|d| d.store(false, Ordering::SeqCst));
     QUERY_ERROR.with(|e| *e.borrow_mut() = None);
+    ANY_RAW.with(|b| *b.borrow_mut() = None);
 }
 
 fn query_set_error(err: ::std::string::String) {
@@ -750,6 +828,393 @@ impl cares::ReplyHandler<cares::struct_ares_naptr_reply> for NaptrHandler {
     }
 }
 
+// ── c-ares DNS record API (for the ANY aggregate query) ──────────────
+//
+// dns.resolveAny issues a single ANY query and aggregates the RRs of the
+// answer section (Node: QueryAnyWrap + AnyTraits::Parse). The legacy
+// per-type ares_parse_*_reply thunks cannot represent a mixed answer, so the
+// raw message is read through the c-ares record API. The bindgen surface in
+// bun_cares_sys predates that API; the entry points below are declared here.
+// They are exported by system libcares >= 1.27 (the Unix supply) and by the
+// vendored Windows build (record/ares_dns_parse.c + record/ares_dns_record.c
+// are both in its source list).
+#[repr(C)]
+struct AresDnsRecord {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct AresDnsRr {
+    _private: [u8; 0],
+}
+
+unsafe extern "C" {
+    fn ares_dns_parse(
+        buf: *const u8,
+        buf_len: usize,
+        flags: ::std::ffi::c_uint,
+        dnsrec: *mut *mut AresDnsRecord,
+    ) -> ::std::ffi::c_int;
+    fn ares_dns_record_destroy(dnsrec: *mut AresDnsRecord);
+    fn ares_dns_record_rr_cnt(dnsrec: *const AresDnsRecord, sect: ::std::ffi::c_int) -> usize;
+    fn ares_dns_record_rr_get(
+        dnsrec: *const AresDnsRecord,
+        sect: ::std::ffi::c_int,
+        idx: usize,
+    ) -> *const AresDnsRr;
+    fn ares_dns_rr_get_type(rr: *const AresDnsRr) -> ::std::ffi::c_int;
+    fn ares_dns_rr_get_ttl(rr: *const AresDnsRr) -> ::std::ffi::c_uint;
+    fn ares_dns_rr_get_str(
+        rr: *const AresDnsRr,
+        key: ::std::ffi::c_int,
+    ) -> *const ::std::ffi::c_char;
+    fn ares_dns_rr_get_u8(rr: *const AresDnsRr, key: ::std::ffi::c_int) -> u8;
+    fn ares_dns_rr_get_u16(rr: *const AresDnsRr, key: ::std::ffi::c_int) -> u16;
+    fn ares_dns_rr_get_u32(rr: *const AresDnsRr, key: ::std::ffi::c_int) -> u32;
+    fn ares_dns_rr_get_addr(
+        rr: *const AresDnsRr,
+        key: ::std::ffi::c_int,
+    ) -> *const ::std::ffi::c_void;
+    fn ares_dns_rr_get_addr6(
+        rr: *const AresDnsRr,
+        key: ::std::ffi::c_int,
+    ) -> *const ::std::ffi::c_void;
+    fn ares_dns_rr_get_bin(
+        rr: *const AresDnsRr,
+        key: ::std::ffi::c_int,
+        len: *mut usize,
+    ) -> *const u8;
+}
+
+const ARES_SECTION_ANSWER: ::std::ffi::c_int = 1;
+const ARES_REC_TYPE_A: ::std::ffi::c_int = 1;
+const ARES_REC_TYPE_NS: ::std::ffi::c_int = 2;
+const ARES_REC_TYPE_CNAME: ::std::ffi::c_int = 5;
+const ARES_REC_TYPE_SOA: ::std::ffi::c_int = 6;
+const ARES_REC_TYPE_PTR: ::std::ffi::c_int = 12;
+const ARES_REC_TYPE_MX: ::std::ffi::c_int = 15;
+const ARES_REC_TYPE_TXT: ::std::ffi::c_int = 16;
+const ARES_REC_TYPE_AAAA: ::std::ffi::c_int = 28;
+const ARES_REC_TYPE_SRV: ::std::ffi::c_int = 33;
+const ARES_REC_TYPE_NAPTR: ::std::ffi::c_int = 35;
+const ARES_REC_TYPE_TLSA: ::std::ffi::c_int = 52;
+const ARES_REC_TYPE_CAA: ::std::ffi::c_int = 257;
+
+// ares_dns_rr_key_t values: (record type * 100) + field ordinal, per
+// c-ares ares_dns_record.h.
+const ARES_RR_A_ADDR: ::std::ffi::c_int = ARES_REC_TYPE_A * 100 + 1;
+const ARES_RR_NS_NSDNAME: ::std::ffi::c_int = ARES_REC_TYPE_NS * 100 + 1;
+const ARES_RR_CNAME_CNAME: ::std::ffi::c_int = ARES_REC_TYPE_CNAME * 100 + 1;
+const ARES_RR_SOA_MNAME: ::std::ffi::c_int = ARES_REC_TYPE_SOA * 100 + 1;
+const ARES_RR_SOA_RNAME: ::std::ffi::c_int = ARES_REC_TYPE_SOA * 100 + 2;
+const ARES_RR_SOA_SERIAL: ::std::ffi::c_int = ARES_REC_TYPE_SOA * 100 + 3;
+const ARES_RR_SOA_REFRESH: ::std::ffi::c_int = ARES_REC_TYPE_SOA * 100 + 4;
+const ARES_RR_SOA_RETRY: ::std::ffi::c_int = ARES_REC_TYPE_SOA * 100 + 5;
+const ARES_RR_SOA_EXPIRE: ::std::ffi::c_int = ARES_REC_TYPE_SOA * 100 + 6;
+const ARES_RR_SOA_MINIMUM: ::std::ffi::c_int = ARES_REC_TYPE_SOA * 100 + 7;
+const ARES_RR_PTR_DNAME: ::std::ffi::c_int = ARES_REC_TYPE_PTR * 100 + 1;
+const ARES_RR_MX_PREFERENCE: ::std::ffi::c_int = ARES_REC_TYPE_MX * 100 + 1;
+const ARES_RR_MX_EXCHANGE: ::std::ffi::c_int = ARES_REC_TYPE_MX * 100 + 2;
+const ARES_RR_TXT_DATA: ::std::ffi::c_int = ARES_REC_TYPE_TXT * 100 + 1;
+const ARES_RR_AAAA_ADDR: ::std::ffi::c_int = ARES_REC_TYPE_AAAA * 100 + 1;
+const ARES_RR_SRV_PRIORITY: ::std::ffi::c_int = ARES_REC_TYPE_SRV * 100 + 2;
+const ARES_RR_SRV_WEIGHT: ::std::ffi::c_int = ARES_REC_TYPE_SRV * 100 + 3;
+const ARES_RR_SRV_PORT: ::std::ffi::c_int = ARES_REC_TYPE_SRV * 100 + 4;
+const ARES_RR_SRV_TARGET: ::std::ffi::c_int = ARES_REC_TYPE_SRV * 100 + 5;
+const ARES_RR_NAPTR_ORDER: ::std::ffi::c_int = ARES_REC_TYPE_NAPTR * 100 + 1;
+const ARES_RR_NAPTR_PREFERENCE: ::std::ffi::c_int = ARES_REC_TYPE_NAPTR * 100 + 2;
+const ARES_RR_NAPTR_FLAGS: ::std::ffi::c_int = ARES_REC_TYPE_NAPTR * 100 + 3;
+const ARES_RR_NAPTR_SERVICES: ::std::ffi::c_int = ARES_REC_TYPE_NAPTR * 100 + 4;
+const ARES_RR_NAPTR_REGEXP: ::std::ffi::c_int = ARES_REC_TYPE_NAPTR * 100 + 5;
+const ARES_RR_NAPTR_REPLACEMENT: ::std::ffi::c_int = ARES_REC_TYPE_NAPTR * 100 + 6;
+const ARES_RR_TLSA_CERT_USAGE: ::std::ffi::c_int = ARES_REC_TYPE_TLSA * 100 + 1;
+const ARES_RR_TLSA_SELECTOR: ::std::ffi::c_int = ARES_REC_TYPE_TLSA * 100 + 2;
+const ARES_RR_TLSA_MATCH: ::std::ffi::c_int = ARES_REC_TYPE_TLSA * 100 + 3;
+const ARES_RR_TLSA_DATA: ::std::ffi::c_int = ARES_REC_TYPE_TLSA * 100 + 4;
+const ARES_RR_CAA_CRITICAL: ::std::ffi::c_int = ARES_REC_TYPE_CAA * 100 + 1;
+const ARES_RR_CAA_TAG: ::std::ffi::c_int = ARES_REC_TYPE_CAA * 100 + 2;
+const ARES_RR_CAA_VALUE: ::std::ffi::c_int = ARES_REC_TYPE_CAA * 100 + 3;
+
+/// Raw-response callback for the ANY query. c-ares owns `abuf` only while
+/// this callback runs, so copy the message for the post-drive-loop parse.
+unsafe extern "C" fn any_response_callback(
+    _ctx: *mut ::std::ffi::c_void,
+    status: ::std::ffi::c_int,
+    _timeouts: ::std::ffi::c_int,
+    abuf: *mut u8,
+    alen: ::std::ffi::c_int,
+) {
+    if status != 0 {
+        query_set_error(status_to_code(cares::Error::get(status)).to_string());
+        return;
+    }
+    if abuf.is_null() || alen <= 0 {
+        query_set_error("EBADRESP".to_string());
+        return;
+    }
+    // SAFETY: c-ares guarantees abuf/alen describe the response message for
+    // the duration of the callback.
+    let bytes = unsafe { ::std::slice::from_raw_parts(abuf, alen as usize) }.to_vec();
+    ANY_RAW.with(|b| *b.borrow_mut() = Some(bytes));
+    QUERY_DONE.with(|d| d.store(true, Ordering::SeqCst));
+}
+
+/// Owns an `ares_dns_record_t` and destroys it on drop (including early
+/// returns mid-parse).
+struct DnsRecordGuard(*mut AresDnsRecord);
+
+impl Drop for DnsRecordGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: record came from ares_dns_parse and is destroyed once.
+            unsafe { ares_dns_record_destroy(self.0) };
+        }
+    }
+}
+
+/// SAFETY: `rr` is a live record from the owning `ares_dns_record_t`.
+unsafe fn rr_str(rr: *const AresDnsRr, key: ::std::ffi::c_int) -> Option<::std::string::String> {
+    // SAFETY: c-ares accessor; returns NULL or a NUL-terminated string.
+    let p = unsafe { ares_dns_rr_get_str(rr, key) };
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: non-null C string owned by the record.
+    Some(unsafe { ::std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned())
+}
+
+/// SAFETY: `rr` is a live record from the owning `ares_dns_record_t`.
+unsafe fn rr_bin(rr: *const AresDnsRr, key: ::std::ffi::c_int) -> Vec<u8> {
+    let mut len = 0usize;
+    // SAFETY: c-ares accessor; writes `len` only when the key matches.
+    let p = unsafe { ares_dns_rr_get_bin(rr, key, &raw mut len) };
+    if p.is_null() || len == 0 {
+        return Vec::new();
+    }
+    // SAFETY: c-ares returns a buffer valid for `len` bytes.
+    unsafe { ::std::slice::from_raw_parts(p, len) }.to_vec()
+}
+
+/// SAFETY: `rr` is a live record; `af` selects the matching accessor.
+unsafe fn rr_ip_text(
+    rr: *const AresDnsRr,
+    key: ::std::ffi::c_int,
+    af: ::std::ffi::c_int,
+) -> Option<::std::string::String> {
+    // SAFETY: accessor for the key's datatype (INADDR vs INADDR6).
+    let p = unsafe {
+        if af == AF_INET {
+            ares_dns_rr_get_addr(rr, key)
+        } else {
+            ares_dns_rr_get_addr6(rr, key)
+        }
+    };
+    if p.is_null() {
+        return None;
+    }
+    let mut buf = [0u8; 46];
+    // SAFETY: p points to a 4/16-byte address matching `af`; buf is 46 bytes.
+    let rendered = unsafe {
+        cares::ares_inet_ntop(
+            af,
+            p,
+            buf.as_mut_ptr(),
+            buf.len() as cares::ares_socklen_t,
+        )
+    };
+    if rendered.is_null() {
+        return None;
+    }
+    // SAFETY: ares_inet_ntop wrote a NUL-terminated address into buf.
+    Some(unsafe { ::std::ffi::CStr::from_ptr(rendered) }.to_string_lossy().into_owned())
+}
+
+/// Parse a raw ANY response into Node's resolveAny record list. The
+/// emission order mirrors AnyTraits::Parse: A-or-CNAME, AAAA, MX, NS, TXT,
+/// SRV, PTR, NAPTR, SOA, TLSA, CAA.
+fn parse_any_response(raw: &[u8]) -> ::std::result::Result<Vec<AnyRecord>, ::std::string::String> {
+    let mut rec: *mut AresDnsRecord = ::std::ptr::null_mut();
+    // SAFETY: raw holds a complete DNS message; out pointer is valid.
+    let status = unsafe { ares_dns_parse(raw.as_ptr(), raw.len(), 0, &raw mut rec) };
+    if status != 0 {
+        return Err(status_to_code(cares::Error::get(status)).to_string());
+    }
+    if rec.is_null() {
+        return Err("EBADRESP".to_string());
+    }
+    let _guard = DnsRecordGuard(rec);
+
+    // SAFETY: rec is a live parsed record for the guard's lifetime.
+    let rr_count = unsafe { ares_dns_record_rr_cnt(rec, ARES_SECTION_ANSWER) };
+
+    let mut a_records: Vec<AnyRecord> = Vec::new();
+    let mut cname_records: Vec<AnyRecord> = Vec::new();
+    let mut aaaa_records: Vec<AnyRecord> = Vec::new();
+    let mut mx_records: Vec<AnyRecord> = Vec::new();
+    let mut ns_records: Vec<AnyRecord> = Vec::new();
+    let mut txt_records: Vec<AnyRecord> = Vec::new();
+    let mut srv_records: Vec<AnyRecord> = Vec::new();
+    let mut ptr_records: Vec<AnyRecord> = Vec::new();
+    let mut naptr_records: Vec<AnyRecord> = Vec::new();
+    let mut soa_record: Option<AnyRecord> = None;
+    let mut tlsa_records: Vec<AnyRecord> = Vec::new();
+    let mut caa_records: Vec<AnyRecord> = Vec::new();
+
+    for i in 0..rr_count {
+        // SAFETY: index within rr_count; may return NULL defensively.
+        let rr = unsafe { ares_dns_record_rr_get(rec, ARES_SECTION_ANSWER, i) };
+        if rr.is_null() {
+            continue;
+        }
+        // SAFETY: rr is live for the guard's lifetime.
+        match unsafe { ares_dns_rr_get_type(rr) } {
+            ARES_REC_TYPE_A => {
+                // SAFETY: rr is live; AF_INET selects the INADDR accessor.
+                if let Some(address) = unsafe { rr_ip_text(rr, ARES_RR_A_ADDR, AF_INET) } {
+                    let ttl = unsafe { ares_dns_rr_get_ttl(rr) };
+                    a_records.push(AnyRecord::A { address, ttl });
+                }
+            }
+            ARES_REC_TYPE_AAAA => {
+                if let Some(address) = unsafe { rr_ip_text(rr, ARES_RR_AAAA_ADDR, AF_INET6) } {
+                    let ttl = unsafe { ares_dns_rr_get_ttl(rr) };
+                    aaaa_records.push(AnyRecord::Aaaa { address, ttl });
+                }
+            }
+            ARES_REC_TYPE_CNAME => {
+                if let Some(value) = unsafe { rr_str(rr, ARES_RR_CNAME_CNAME) } {
+                    cname_records.push(AnyRecord::Cname { value });
+                }
+            }
+            ARES_REC_TYPE_MX => {
+                // SAFETY: live rr, MX keys.
+                let priority = unsafe { ares_dns_rr_get_u16(rr, ARES_RR_MX_PREFERENCE) };
+                let exchange =
+                    unsafe { rr_str(rr, ARES_RR_MX_EXCHANGE) }.unwrap_or_default();
+                mx_records.push(AnyRecord::Mx { priority, exchange });
+            }
+            ARES_REC_TYPE_NS => {
+                if let Some(value) = unsafe { rr_str(rr, ARES_RR_NS_NSDNAME) } {
+                    ns_records.push(AnyRecord::Ns { value });
+                }
+            }
+            ARES_REC_TYPE_TXT => {
+                // c-ares exposes TXT data as one BINP blob; on libcares 1.27
+                // (no ares_dns_rr_get_abin) a multi-string TXT record arrives
+                // concatenated, so it surfaces as a single chunk.
+                let data = unsafe { rr_bin(rr, ARES_RR_TXT_DATA) };
+                txt_records.push(AnyRecord::Txt {
+                    entries: vec![::std::string::String::from_utf8_lossy(&data).into_owned()],
+                });
+            }
+            ARES_REC_TYPE_SRV => {
+                // SAFETY: live rr, SRV keys.
+                let priority = unsafe { ares_dns_rr_get_u16(rr, ARES_RR_SRV_PRIORITY) };
+                let weight = unsafe { ares_dns_rr_get_u16(rr, ARES_RR_SRV_WEIGHT) };
+                let port = unsafe { ares_dns_rr_get_u16(rr, ARES_RR_SRV_PORT) };
+                let name = unsafe { rr_str(rr, ARES_RR_SRV_TARGET) }.unwrap_or_default();
+                srv_records.push(AnyRecord::Srv {
+                    priority,
+                    weight,
+                    port,
+                    name,
+                });
+            }
+            ARES_REC_TYPE_PTR => {
+                if let Some(value) = unsafe { rr_str(rr, ARES_RR_PTR_DNAME) } {
+                    ptr_records.push(AnyRecord::Ptr { value });
+                }
+            }
+            ARES_REC_TYPE_NAPTR => {
+                // SAFETY: live rr, NAPTR keys.
+                let order = unsafe { ares_dns_rr_get_u16(rr, ARES_RR_NAPTR_ORDER) };
+                let preference = unsafe { ares_dns_rr_get_u16(rr, ARES_RR_NAPTR_PREFERENCE) };
+                let flags = unsafe { rr_str(rr, ARES_RR_NAPTR_FLAGS) }.unwrap_or_default();
+                let service = unsafe { rr_str(rr, ARES_RR_NAPTR_SERVICES) }.unwrap_or_default();
+                let regexp = unsafe { rr_str(rr, ARES_RR_NAPTR_REGEXP) }.unwrap_or_default();
+                let replacement =
+                    unsafe { rr_str(rr, ARES_RR_NAPTR_REPLACEMENT) }.unwrap_or_default();
+                naptr_records.push(AnyRecord::Naptr {
+                    flags,
+                    service,
+                    regexp,
+                    replacement,
+                    order,
+                    preference,
+                });
+            }
+            ARES_REC_TYPE_SOA => {
+                // Node's AnyTraits keeps only the first SOA record.
+                if soa_record.is_none() {
+                    // SAFETY: live rr, SOA keys.
+                    let nsname = unsafe { rr_str(rr, ARES_RR_SOA_MNAME) }.unwrap_or_default();
+                    let hostmaster = unsafe { rr_str(rr, ARES_RR_SOA_RNAME) }.unwrap_or_default();
+                    soa_record = Some(AnyRecord::Soa {
+                        nsname,
+                        hostmaster,
+                        serial: unsafe { ares_dns_rr_get_u32(rr, ARES_RR_SOA_SERIAL) },
+                        refresh: unsafe { ares_dns_rr_get_u32(rr, ARES_RR_SOA_REFRESH) },
+                        retry: unsafe { ares_dns_rr_get_u32(rr, ARES_RR_SOA_RETRY) },
+                        expire: unsafe { ares_dns_rr_get_u32(rr, ARES_RR_SOA_EXPIRE) },
+                        minttl: unsafe { ares_dns_rr_get_u32(rr, ARES_RR_SOA_MINIMUM) },
+                    });
+                }
+            }
+            ARES_REC_TYPE_TLSA => {
+                // SAFETY: live rr, TLSA keys.
+                let data = unsafe { rr_bin(rr, ARES_RR_TLSA_DATA) };
+                if !data.is_empty() {
+                    tlsa_records.push(AnyRecord::Tlsa {
+                        cert_usage: unsafe { ares_dns_rr_get_u8(rr, ARES_RR_TLSA_CERT_USAGE) },
+                        selector: unsafe { ares_dns_rr_get_u8(rr, ARES_RR_TLSA_SELECTOR) },
+                        match_type: unsafe { ares_dns_rr_get_u8(rr, ARES_RR_TLSA_MATCH) },
+                        data,
+                    });
+                }
+            }
+            ARES_REC_TYPE_CAA => {
+                // SAFETY: live rr, CAA keys.
+                let critical = unsafe { ares_dns_rr_get_u8(rr, ARES_RR_CAA_CRITICAL) };
+                let tag = unsafe { rr_str(rr, ARES_RR_CAA_TAG) }.unwrap_or_default();
+                let value = ::std::string::String::from_utf8_lossy(&unsafe {
+                    rr_bin(rr, ARES_RR_CAA_VALUE)
+                })
+                .into_owned();
+                caa_records.push(AnyRecord::Caa {
+                    critical,
+                    tag,
+                    value,
+                });
+            }
+            _ => {
+                // Unknown RR types are not emitted by Node's per-type
+                // parsers (HINFO/unknown/RAW_RR all fall through).
+            }
+        }
+    }
+
+    let mut out: Vec<AnyRecord> = Vec::new();
+    // Node emits A records when the answer carries any, otherwise CNAME.
+    if !a_records.is_empty() {
+        out.extend(a_records);
+    } else {
+        out.extend(cname_records);
+    }
+    out.extend(aaaa_records);
+    out.extend(mx_records);
+    out.extend(ns_records);
+    out.extend(txt_records);
+    out.extend(srv_records);
+    out.extend(ptr_records);
+    out.extend(naptr_records);
+    if let Some(soa) = soa_record {
+        out.push(soa);
+    }
+    out.extend(tlsa_records);
+    out.extend(caa_records);
+    Ok(out)
+}
+
 // ── Resolve RR type dispatch ─────────────────────────────────────────
 
 /// Resolve a hostname for the given RR type synchronously using c-ares.
@@ -957,6 +1422,24 @@ fn resolve_rr_cares(
                 );
             }
         }
+        cares::NSType::ns_t_any => {
+            // Single ANY query; the mixed answer is parsed after the drive
+            // loop through the record API (see parse_any_response).
+            let mut name_buf = [0u8; 1024];
+            let name_ptr = nul_terminate(&mut name_buf, hostname.as_bytes());
+            // SAFETY: ares_query FFI; name_ptr NUL-terminated; the callback
+            // only copies the response into thread-local storage.
+            unsafe {
+                cares::ares_query(
+                    channel_ptr,
+                    name_ptr,
+                    cares::NSClass::ns_c_in,
+                    cares::NSType::ns_t_any,
+                    Some(any_response_callback),
+                    ::std::ptr::null_mut(),
+                );
+            }
+        }
         _ => {
             // Unknown RR type — destroy channel and return error.
             unsafe { cares::Channel::destroy(channel_ptr) };
@@ -993,12 +1476,16 @@ fn resolve_rr_cares(
 
     // Collect the result.
     if let Some(err) = QUERY_ERROR.with(|e| e.borrow_mut().take()) {
-        Err(err)
-    } else {
-        QUERY_RESULT
-            .with(|r| r.borrow_mut().take())
-            .ok_or_else(|| "ENODATA".to_string())
+        return Err(err);
     }
+    // ANY answers are kept as raw bytes (the record API needs the whole
+    // message); parse them before the generic QUERY_RESULT lookup.
+    if let Some(raw) = ANY_RAW.with(|b| b.borrow_mut().take()) {
+        return parse_any_response(&raw).map(DnsRRData::Any);
+    }
+    QUERY_RESULT
+        .with(|r| r.borrow_mut().take())
+        .ok_or_else(|| "ENODATA".to_string())
 }
 
 /// Drive the c-ares channel by polling its sockets and processing ready fds.
@@ -1318,43 +1805,63 @@ const DNS_JS: &str = r#"
   // Default result order
   var _defaultResultOrder = "verbatim";
 
-  // Node ERR_INVALID_ARG_TYPE (TypeError) helper — mirrors Node's
-  // determineSpecificType (lib/internal/validators.js) for every shape the
+  // Node determineSpecificType (lib/internal/validators.js) — the "Received
+  // ..." fragment shared by ERR_INVALID_ARG_TYPE and ERR_INVALID_ARG_VALUE.
+  function _typeDescription(value) {
+    if (value === null) {
+      return "null";
+    }
+    if (value === undefined) {
+      return "undefined";
+    }
+    if (Array.isArray(value)) {
+      return "an instance of Array";
+    }
+    switch (typeof value) {
+      case "function":
+        return "function " + (value.name || "");
+      case "string":
+        // Node inspect truncates >27 chars: first 24 + "..."
+        var shown = value.length > 27 ? value.slice(0, 24) + "..." : value;
+        return "type string ('" + shown + "')";
+      case "number":
+        return "type number (" + String(value) + ")";
+      case "boolean":
+        return "type boolean (" + String(value) + ")";
+      case "bigint":
+        return "type bigint (" + String(value) + "n)";
+      case "symbol":
+        return "type symbol (" + String(value) + ")";
+      default:
+        return "an instance of " +
+          ((value && value.constructor && value.constructor.name) || "Object");
+    }
+  }
+
+  // Node ERR_INVALID_ARG_TYPE (TypeError) helper for every shape the
   // resolve*/reverse callback checks can reject.
   function _invalidArgType(name, expected, value) {
-    var received;
-    if (value === null) {
-      received = "null";
-    } else if (Array.isArray(value)) {
-      received = "an instance of Array";
-    } else {
-      switch (typeof value) {
-        case "function":
-          received = "function " + (value.name || "");
-          break;
-        case "string":
-          // Node inspect truncates >27 chars: first 24 + "..."
-          var shown = value.length > 27 ? value.slice(0, 24) + "..." : value;
-          received = "type string ('" + shown + "')";
-          break;
-        case "number":
-          received = "type number (" + String(value) + ")";
-          break;
-        case "boolean":
-          received = "type boolean (" + String(value) + ")";
-          break;
-        case "undefined":
-          received = "type undefined";
-          break;
-        default:
-          received = "an instance of " +
-            ((value && value.constructor && value.constructor.name) || "Object");
-      }
-    }
     var err = new TypeError('The "' + name + '" argument must be of type ' +
-      expected + '. Received ' + received);
+      expected + '. Received ' + _typeDescription(value));
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
+  }
+
+  // Node's server list validation (dns.setServers / Resolver#setServers):
+  // the argument must be an Array and every element a string; the first bad
+  // element throws with its servers[i] slot name before any mutation.
+  function _validateServers(servers) {
+    if (!Array.isArray(servers)) {
+      var err = new TypeError('The "servers" argument must be an instance of ' +
+        'Array. Received ' + _typeDescription(servers));
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    for (var i = 0; i < servers.length; i++) {
+      if (typeof servers[i] !== "string") {
+        _invalidArgType("servers[" + i + "]", "string", servers[i]);
+      }
+    }
   }
 
   // Callback-slot validation: a present-but-non-function callback throws
@@ -1489,7 +1996,7 @@ const DNS_JS: &str = r#"
     if (arguments.length > 2) callback = arguments[2];
     _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      return _resolveRR(hostname, "A", [], callback);
+      return _resolveRR(hostname, "ANY", [], callback);
     }
     if (callback) callback(null, []);
     return [];
@@ -1517,10 +2024,11 @@ const DNS_JS: &str = r#"
     return this._servers.slice();
   };
   Resolver.prototype.setServers = function(servers) {
+    _validateServers(servers);
     if (typeof __dns_set_servers === "function") {
       __dns_set_servers(servers);
     }
-    this._servers = Array.isArray(servers) ? servers.slice() : [];
+    this._servers = servers.slice();
   };
   Resolver.prototype.cancel = function() {};
 
@@ -1662,7 +2170,7 @@ const DNS_JS: &str = r#"
     if (arguments.length > 2) callback = arguments[2];
     _validateCallback(callback);
     if (typeof __dns_resolve_rr === "function") {
-      return _resolveRR(hostname, "A", [], callback);
+      return _resolveRR(hostname, "ANY", [], callback);
     }
     if (callback) callback(null, []);
     return [];
@@ -1710,14 +2218,65 @@ const DNS_JS: &str = r#"
   }
 
   function setServers(servers) {
+    _validateServers(servers);
     if (typeof __dns_set_servers === "function") {
       __dns_set_servers(servers);
     }
   }
 
+  // Node's validateEnum('dnsOrder', ['verbatim','ipv4first','ipv6first'])
+  // throws ERR_INVALID_ARG_VALUE (TypeError) with the inspected value.
+  function _inspectArgValue(value) {
+    if (typeof value === "string") {
+      return "'" + value.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+    }
+    if (value === null) {
+      return "null";
+    }
+    if (value === undefined) {
+      return "undefined";
+    }
+    if (typeof value === "symbol" || typeof value === "number" ||
+        typeof value === "boolean" || typeof value === "bigint") {
+      return String(value) + (typeof value === "bigint" ? "n" : "");
+    }
+    if (typeof value === "function") {
+      return "[Function: " + (value.name || "anonymous") + "]";
+    }
+    if (value instanceof String) {
+      return "[String: '" + String(value) + "']";
+    }
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        return "[]";
+      }
+      var items = [];
+      for (var ai = 0; ai < value.length; ai++) {
+        items.push(_inspectArgValue(value[ai]));
+      }
+      return "[ " + items.join(", ") + " ]";
+    }
+    if (typeof value === "object") {
+      var keys = Object.keys(value);
+      if (keys.length === 0) {
+        return "{}";
+      }
+      var props = [];
+      for (var ki = 0; ki < keys.length; ki++) {
+        props.push(keys[ki] + ": " + _inspectArgValue(value[keys[ki]]));
+      }
+      return "{ " + props.join(", ") + " }";
+    }
+    return String(value);
+  }
+
   function setDefaultResultOrder(order) {
-    if (["ipv4first", "ipv6first", "verbatim"].indexOf(order) === -1) {
-      throw new Error('dns.setDefaultResultOrder order must be "ipv4first", "ipv6first", or "verbatim"');
+    if (["verbatim", "ipv4first", "ipv6first"].indexOf(order) === -1) {
+      var err = new TypeError("The argument 'dnsOrder' must be one of: " +
+        "'verbatim', 'ipv4first', 'ipv6first'. Received " +
+        _inspectArgValue(order));
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
     }
     _defaultResultOrder = order;
   }
@@ -2600,6 +3159,239 @@ unsafe fn throw_resolve_error(
     false
 }
 
+/// Build the `dns.resolveAny` JS array from parsed aggregate records.
+/// Object key order mirrors Node's DictionaryTemplates (address, ttl, type /
+/// value, type / ...), which keeps `JSON.stringify` output byte-identical to
+/// the Node oracle for the offline localhost case.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn any_records_to_js(
+    cx: *mut JSContext,
+    cx_wrap: &mut mozjs::context::JSContext,
+    records: &[AnyRecord],
+) -> *mut JSObject {
+    macro_rules! def_str {
+        ($obj:expr, $name:literal, $value:expr) => {{
+            let zb = ZBox::from_bytes(($value).as_bytes());
+            let js = JS_NewStringCopyZ(cx, zb.as_ptr());
+            if !js.is_null() {
+                rooted!(&in(cx_wrap) let s_val = StringValue(&*js));
+                JS_DefineProperty(
+                    cx,
+                    $obj.handle().into(),
+                    $name.as_ptr(),
+                    s_val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }};
+    }
+    macro_rules! def_num {
+        ($obj:expr, $name:literal, $value:expr) => {{
+            rooted!(&in(cx_wrap) let n_val = DoubleValue($value as f64));
+            JS_DefineProperty(
+                cx,
+                $obj.handle().into(),
+                $name.as_ptr(),
+                n_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }};
+    }
+
+    let arr_obj = w2::NewArrayObject1(cx_wrap, 0);
+    if arr_obj.is_null() {
+        return arr_obj;
+    }
+    rooted!(&in(cx_wrap) let arr_root = arr_obj);
+    let mut idx = 0u32;
+
+    for record in records {
+        let entry_obj = JS_NewPlainObject(cx);
+        if entry_obj.is_null() {
+            continue;
+        }
+        rooted!(&in(cx_wrap) let entry_root = entry_obj);
+        match record {
+            AnyRecord::A { address, ttl } => {
+                def_str!(entry_root, c"address", address);
+                def_num!(entry_root, c"ttl", *ttl);
+                def_str!(entry_root, c"type", "A");
+            }
+            AnyRecord::Aaaa { address, ttl } => {
+                def_str!(entry_root, c"address", address);
+                def_num!(entry_root, c"ttl", *ttl);
+                def_str!(entry_root, c"type", "AAAA");
+            }
+            AnyRecord::Cname { value } => {
+                def_str!(entry_root, c"value", value);
+                def_str!(entry_root, c"type", "CNAME");
+            }
+            AnyRecord::Mx { priority, exchange } => {
+                def_str!(entry_root, c"exchange", exchange);
+                def_num!(entry_root, c"priority", *priority);
+                def_str!(entry_root, c"type", "MX");
+            }
+            AnyRecord::Ns { value } => {
+                def_str!(entry_root, c"value", value);
+                def_str!(entry_root, c"type", "NS");
+            }
+            AnyRecord::Ptr { value } => {
+                def_str!(entry_root, c"value", value);
+                def_str!(entry_root, c"type", "PTR");
+            }
+            AnyRecord::Soa {
+                nsname,
+                hostmaster,
+                serial,
+                refresh,
+                retry,
+                expire,
+                minttl,
+            } => {
+                def_str!(entry_root, c"nsname", nsname);
+                def_str!(entry_root, c"hostmaster", hostmaster);
+                def_num!(entry_root, c"serial", *serial);
+                def_num!(entry_root, c"refresh", *refresh);
+                def_num!(entry_root, c"retry", *retry);
+                def_num!(entry_root, c"expire", *expire);
+                def_num!(entry_root, c"minttl", *minttl);
+                def_str!(entry_root, c"type", "SOA");
+            }
+            AnyRecord::Srv {
+                priority,
+                weight,
+                port,
+                name,
+            } => {
+                def_num!(entry_root, c"priority", *priority);
+                def_num!(entry_root, c"weight", *weight);
+                def_num!(entry_root, c"port", *port);
+                def_str!(entry_root, c"name", name);
+                def_str!(entry_root, c"type", "SRV");
+            }
+            AnyRecord::Txt { entries } => {
+                let txt_arr = w2::NewArrayObject1(cx_wrap, 0);
+                if !txt_arr.is_null() {
+                    rooted!(&in(cx_wrap) let txt_root = txt_arr);
+                    let mut chunk_idx = 0u32;
+                    for entry in entries {
+                        let zb = ZBox::from_bytes(entry.as_bytes());
+                        let js = JS_NewStringCopyZ(cx, zb.as_ptr());
+                        if !js.is_null() {
+                            rooted!(&in(cx_wrap) let chunk_val = StringValue(&*js));
+                            JS_DefineElement(
+                                cx,
+                                txt_root.handle().into(),
+                                chunk_idx,
+                                chunk_val.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                            chunk_idx += 1;
+                        }
+                    }
+                    rooted!(&in(cx_wrap) let entries_val = ObjectValue(txt_root.get()));
+                    JS_DefineProperty(
+                        cx,
+                        entry_root.handle().into(),
+                        c"entries".as_ptr(),
+                        entries_val.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+                def_str!(entry_root, c"type", "TXT");
+            }
+            AnyRecord::Naptr {
+                flags,
+                service,
+                regexp,
+                replacement,
+                order,
+                preference,
+            } => {
+                def_str!(entry_root, c"flags", flags);
+                def_str!(entry_root, c"service", service);
+                def_str!(entry_root, c"regexp", regexp);
+                def_str!(entry_root, c"replacement", replacement);
+                def_num!(entry_root, c"order", *order);
+                def_num!(entry_root, c"preference", *preference);
+                def_str!(entry_root, c"type", "NAPTR");
+            }
+            AnyRecord::Tlsa {
+                cert_usage,
+                selector,
+                match_type,
+                data,
+            } => {
+                // Node emits a real ArrayBuffer for `data` (and no `type`
+                // property on TLSA records).
+                let ab = mozjs_sys::jsapi::JS::NewArrayBuffer(cx, data.len());
+                if !ab.is_null() {
+                    rooted!(&in(cx_wrap) let ab_root = ab);
+                    if !data.is_empty() {
+                        let mut is_shared = false;
+                        let data_ptr = mozjs_sys::jsapi::JS::GetArrayBufferData(
+                            ab_root.get(),
+                            &mut is_shared,
+                            ::std::ptr::null(),
+                        );
+                        if !data_ptr.is_null() {
+                            ::std::ptr::copy_nonoverlapping(
+                                data.as_ptr(),
+                                data_ptr,
+                                data.len(),
+                            );
+                        }
+                    }
+                    rooted!(&in(cx_wrap) let ab_val = ObjectValue(ab_root.get()));
+                    JS_DefineProperty(
+                        cx,
+                        entry_root.handle().into(),
+                        c"data".as_ptr(),
+                        ab_val.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+                def_num!(entry_root, c"certUsage", *cert_usage);
+                def_num!(entry_root, c"selector", *selector);
+                def_num!(entry_root, c"match", *match_type);
+            }
+            AnyRecord::Caa {
+                critical,
+                tag,
+                value,
+            } => {
+                def_num!(entry_root, c"critical", *critical);
+                def_str!(entry_root, c"type", "CAA");
+                // Node adds the CAA property/tag as a dynamic key
+                // ({ critical, type, [tag]: value }).
+                let tag_zb = ZBox::from_bytes(tag.as_bytes());
+                let tag_js = JS_NewStringCopyZ(cx, tag_zb.as_ptr());
+                if !tag_js.is_null() {
+                    rooted!(&in(cx_wrap) let tag_val = StringValue(&*tag_js));
+                    JS_DefineProperty(
+                        cx,
+                        entry_root.handle().into(),
+                        tag_zb.as_ptr().cast::<::std::ffi::c_char>(),
+                        tag_val.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+                def_str!(entry_root, c"value", value);
+            }
+        }
+        rooted!(&in(cx_wrap) let entry_val = ObjectValue(entry_root.get()));
+        JS_DefineElement(
+            cx,
+            arr_root.handle().into(),
+            idx,
+            entry_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+        idx += 1;
+    }
+    arr_root.get()
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     // Generic per-RR-type resolve. Every RR type — including A/AAAA — goes
@@ -3159,6 +3951,30 @@ unsafe extern "C" fn dns_resolve_rr(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                 Ok(_) => {}
             }
             args.rval().set(ObjectValue(arr_root.get()));
+        }
+        "ANY" => {
+            // dns.resolveAny / dns.resolve(host, "ANY"): one ANY query whose
+            // answer section is aggregated into the Node mixed-record array.
+            match resolve_rr_cares(&hostname, cares::NSType::ns_t_any) {
+                Ok(DnsRRData::Any(records)) => {
+                    let arr_obj = any_records_to_js(cx, &mut cx_wrap, &records);
+                    if arr_obj.is_null() {
+                        args.rval().set(UndefinedValue());
+                        return true;
+                    }
+                    args.rval().set(ObjectValue(arr_obj));
+                }
+                Err(code) => return throw_resolve_error(cx, "queryAny", &code, &hostname),
+                Ok(_) => {
+                    let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
+                    if arr_obj.is_null() {
+                        args.rval().set(UndefinedValue());
+                        return true;
+                    }
+                    rooted!(&in(cx_wrap) let arr_root = arr_obj);
+                    args.rval().set(ObjectValue(arr_root.get()));
+                }
+            }
         }
         _ => {
             // Unknown RR type — return empty array.

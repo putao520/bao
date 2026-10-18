@@ -13,13 +13,14 @@
 // cwd-bound resolve/relative shapes.
 // All offline — pure string surface, no sockets, cwd-shape assertions only.
 //
-// 语义真源 = 本机 node v24.19.0 oracle 实测。登记项(characterization 钉死
-// bao 现行形态,只登记不修):
+// 语义真源 = 本机 node v24.19.0 oracle 实测。C13 登记的 2 项 matchesGlob
+// parity 偏离已于 D 波根治(按 node internal/fs/glob → minimatch
+// platform:'posix' / dot:false 的 path-parts 语义重写),以下断言即 oracle:
 //
-// | # | 面 | bao 现行(本文件钉死) | node v24 oracle | 判类 |
-// |---|----|----------------------|-----------------|------|
-// | 1 | matchesGlob single-`*` 段语义 | `*`→`.*` 跨段匹配(matchesGlob('src/a/b.js','*/b.js')===true) | false(picomatch 段内语义,`*` 不跨 `/`) | parity 偏离 |
-// | 2 | matchesGlob 空串 | matchesGlob('', '*') === true(`.*` 匹配空串) | false | parity 偏离(同根:#1) |
+// | # | 面 | 现行为(本文件钉死) | node v24 oracle |
+// |---|----|----------------------|-----------------|
+// | 1 | matchesGlob single-`*` 段语义 | 段内匹配:matchesGlob('src/a/b.js','*/b.js')===false,matchesGlob('a/b.js','*/b.js')===true | 同 |
+// | 2 | matchesGlob 空串 | matchesGlob('', '*') === false | 同 |
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
@@ -290,10 +291,9 @@ fn pathc13_posix_core_regression_pins() {
 }
 
 /// matchesGlob negation / unterminated-class / regex-metachar / empty arms,
-/// plus the registered single-star cross-segment divergence (#1 in the file
-/// header): bao's translator maps `*` to `.*` (crosses path segments, and an
-/// empty string matches), while node v24 keeps picomatch's within-segment
-/// semantics — characterization pins the bao behavior.
+/// plus the D-wave oracle flip for single-`*` semantics: the translator now
+/// mirrors node v24's minimatch path-parts matching, so `*` stays within one
+/// segment and the empty string never matches `*`.
 #[test]
 fn pathc13_matchesglob_negation_metachar_and_star_semantics() {
     let mut ctx = fresh_ctx();
@@ -330,13 +330,22 @@ fn pathc13_matchesglob_negation_metachar_and_star_semantics() {
         // ** crosses segments (C5 pinned the true arm; the complement here).
         check("glob_dblstar_crosses_true", function() { return p.matchesGlob('src/a/b.js', '**/*.js') === true; });
 
-        // 登记项 #1/#2: single `*` crosses segments and matches the empty
-        // string (bao `.*` translation) — node v24 answers false on both.
-        check("glob_single_star_crosses_segments_bao", function() {
-            return p.matchesGlob('src/a/b.js', '*/b.js') === true;
+        // Oracle flip #1: a single `*` never crosses '/'. The same pattern
+        // does match when the subject has exactly one leading segment.
+        check("glob_single_star_within_segment", function() {
+            return p.matchesGlob('src/a/b.js', '*/b.js') === false;
         });
-        check("glob_empty_matches_star_bao", function() {
-            return p.matchesGlob('', '*') === true;
+        check("glob_single_star_same_depth_true", function() {
+            return p.matchesGlob('a/b.js', '*/b.js') === true;
+        });
+        // Oracle flip #2: `*` requires a non-empty segment, so '' is false.
+        check("glob_empty_does_not_match_star", function() {
+            return p.matchesGlob('', '*') === false;
+        });
+        // `**` (globstar) still spans segments and also matches the empty
+        // path (minimatch: a trailing `**` swallows zero parts).
+        check("glob_empty_matches_globstar", function() {
+            return p.matchesGlob('', '**') === true;
         });
 
         results.join('|')
