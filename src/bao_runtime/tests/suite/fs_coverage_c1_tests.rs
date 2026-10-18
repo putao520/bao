@@ -405,21 +405,27 @@ fn c1_read_write_sync_boundary_faces() {
         }});
         fs.closeSync(fd);
 
-        // Observed shape: fs.writeSync writes the FULL data at the fd cursor —
-        // the (offset, length, position) refinement args are not applied
-        // (node parity gap, registered in the wave report). Assertions pin
-        // the actual behavior; one fd across both writes so the cursor
-        // advance is observable.
-        ck("writesync_full_buffer_at_cursor", function() {{
+        // node v24.19.0 oracle: writeSync(fd, buf, offset=2, length=2,
+        // position=0) writes only buf[2..4] ("CD") at absolute position 0 and
+        // leaves the fd cursor untouched (pwrite) → n=2; the cursor form then
+        // writes "XY" at cursor 0 → n2=2; file becomes "XY23456789".
+        ck("writesync_offset_length_position", function() {{
             var wfd = fs.openSync(p, "r+");
             var n = fs.writeSync(wfd, Buffer.from("ABCDEF"), 2, 2, 0);
             var n2 = fs.writeSync(wfd, Buffer.from("XY"));
             fs.closeSync(wfd);
             var c = fs.readFileSync(p, "utf8");
-            // Observed: writes replace in place from the cursor, file length
-            // stays 10 ("ABCDEF" @0, "XY" @6, tail "89" intact).
-            if (n === 6 && n2 === 2 && c === "ABCDEFXY89") return true;
+            if (n === 2 && n2 === 2 && c === "XY23456789") return true;
             throw new Error("n=" + n + " n2=" + n2 + " content=" + c);
+        }});
+        ck("writesync_string_position_form", function() {{
+            fs.writeFileSync(p, "ABCDEFGHIJ");
+            var wfd = fs.openSync(p, "r+");
+            var n = fs.writeSync(wfd, "XY", 3);
+            fs.closeSync(wfd);
+            var c = fs.readFileSync(p, "utf8");
+            if (n === 2 && c === "ABCXYFGHIJ") return true;
+            throw new Error("n=" + n + " content=" + c);
         }});
         ck("readsync_badfd_throws", function() {{
             var b = Buffer.alloc(2);
@@ -436,7 +442,7 @@ fn c1_read_write_sync_boundary_faces() {
         p = js_escape(&f),
     );
     let results = run_checks(&mut ctx, &body);
-    assert_eq!(results.len(), 12);
+    assert_eq!(results.len(), 13);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -544,12 +550,23 @@ fn c1_readv_writev_sync_faces() {
             var fd = fs.openSync(p, "r");
             var b1 = Buffer.alloc(2);
             var b2 = Buffer.alloc(2);
+            // node v24.19.0 oracle: readvSync fills the caller's Buffers in
+            // order (file holds "AABB" from writevSync above) → b1="AA",
+            // b2="BB", n=4.
             var n = fs.readvSync(fd, [b1, b2], 0);
             fs.closeSync(fd);
-            // Observed: readvSync returns the byte total but reads into a
-            // temp copy — the caller's Buffers stay zeroed (node parity gap,
-            // registered in the wave report).
-            if (n === 4 && b1.toString("hex") === "0000" && b2.toString("hex") === "0000") return true;
+            if (n === 4 && b1.toString() === "AA" && b2.toString() === "BB") return true;
+            throw new Error("n=" + n + " b1=" + b1.toString("hex") + " b2=" + b2.toString("hex"));
+        }});
+        ck("readvSync_position_short_read", function() {{
+            var fd = fs.openSync(p, "r");
+            var b1 = Buffer.alloc(2);
+            var b2 = Buffer.alloc(2);
+            // node oracle: position 1 over "AABB" reads 3 bytes → b1="AB",
+            // b2="B\0", n=3 (short read stops at EOF).
+            var n = fs.readvSync(fd, [b1, b2], 1);
+            fs.closeSync(fd);
+            if (n === 3 && b1.toString("hex") === "4142" && b2.toString("hex") === "4200") return true;
             throw new Error("n=" + n + " b1=" + b1.toString("hex") + " b2=" + b2.toString("hex"));
         }});
         ck("readvSync_badfd_throws", function() {{
@@ -567,7 +584,7 @@ fn c1_readv_writev_sync_faces() {
         p = js_escape(&f),
     );
     let results = run_checks(&mut ctx, &body);
-    assert_eq!(results.len(), 4);
+    assert_eq!(results.len(), 5);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -963,11 +980,23 @@ fn c1_promises_filehandle_surface() {
                 ck("open_returns_handle", typeof fh.fd === "number" && fh.fd >= 0);
                 await fh.writeFile("fh body");
                 ck("fh_writeFile", (await fsp.readFile(p, "utf8")) === "fh body");
-                // Observed: fh.readFile resolves a raw Buffer — the encoding
-                // argument is ignored (node returns a decoded string; parity
-                // gap registered in the wave report).
-                var fhBody = await fh.readFile("utf8");
-                ck("fh_readFile_buffer", Buffer.isBuffer(fhBody) && fhBody.toString("utf8") === "fh body");
+                // K wave (node v24.19.0 oracle): fh.writeFile advances the
+                // cursor to EOF, and fh.readFile reads from the CURRENT
+                // cursor — so it resolves "" here (probe: readFile after
+                // writeFile === "").
+                var eofRead = await fh.readFile("utf8");
+                ck("fh_readFile_cursor_at_eof", eofRead === "");
+                // C1 #13 fixed (kept): a fresh handle reads from 0 and the
+                // encoding argument decodes a string; the no-argument form
+                // resolves a Buffer.
+                var fhro = await fsp.open(p, "r");
+                var fhBody = await fhro.readFile("utf8");
+                ck("fh_readFile_encoding", typeof fhBody === "string" && fhBody === "fh body");
+                var fhro2 = await fsp.open(p, "r");
+                var fhBuf = await fhro2.readFile();
+                ck("fh_readFile_buffer", Buffer.isBuffer(fhBuf) && fhBuf.toString("utf8") === "fh body");
+                await fhro.close();
+                await fhro2.close();
                 var r = await fh.read(Buffer.alloc(2), 0, 2, 0);
                 ck("fh_read_bytesRead", r.bytesRead === 2 && Buffer.isBuffer(r.buffer) && r.buffer.toString("utf8") === "fh");
                 var w = await fh.write("XX", 0, 0, 0); // fh_write: data=arg0, position=arg3
@@ -1056,7 +1085,7 @@ fn c1_fsp_subpath_and_filehandle_ctor() {
                 var fh = fsp.FileHandle(fd);
                 ck("ctor_fd_prop", fh.fd === fd);
                 var ctorBody = await fh.readFile("utf8");
-                ck("ctor_readFile_buffer", Buffer.isBuffer(ctorBody) && ctorBody.toString("utf8") === "ctor body");
+                ck("ctor_readFile_encoding", typeof ctorBody === "string" && ctorBody === "ctor body");
                 await fh.close();
                 var threw = "";
                 try {{ fsp.FileHandle(-1); }} catch (e) {{ threw = String(e.message || e); }}
@@ -1116,16 +1145,18 @@ fn c1_async_cb_write_side_batch() {
     let sched = format!(
         r#"
         var fs = require('fs');
-        globalThis.__c1w = {{ n: 0, want: 12, log: {{}} }};
+        globalThis.__c1w = {{ n: 0, want: 13, log: {{}} }};
         function got(k, err) {{
             globalThis.__c1w.log[k] = err ? String(err.code || err.message || err) : null;
             globalThis.__c1w.n++;
         }}
         var d = "{d}";
-        // fs.writeFile has no callback face (sync-only impl, cb ignored —
-        // parity gap registered in the wave report): schedule bare.
-        fs.writeFile(d + "/w.txt", "written");
-        fs.appendFile(d + "/w.txt", "+ap", function(e) {{ got("appendFile", e); }});
+        // K wave: fs.writeFile requires a callback (node ERR_INVALID_ARG_TYPE
+        // otherwise); the callback face is now the only async face.
+        fs.writeFile(d + "/w.txt", "written", function(e) {{ got("writeFile", e); }});
+        // K wave: writeFile is now genuinely async (cb face) — give appendFile
+        // its own file so completion order cannot truncate the append away.
+        fs.appendFile(d + "/w2.txt", "+ap", function(e) {{ got("appendFile", e); }});
         fs.mkdir(d + "/made", function(e) {{ got("mkdir", e); }});
         fs.rename("{src}", d + "/renamed.txt", function(e) {{ got("rename", e); }});
         fs.chmod("{chmod}", 0o600, function(e) {{ got("chmod", e); }});
@@ -1163,11 +1194,14 @@ fn c1_async_cb_write_side_batch() {
         var d = "{d}";
         ck("all_errs_null", function() {{
             var L = globalThis.__c1w.log;
-            var keys = ["appendFile","mkdir","rename","chmod","chown","truncate","utimes","lutimes","symlink","link","copyFile","rm"];
+            var keys = ["writeFile","appendFile","mkdir","rename","chmod","chown","truncate","utimes","lutimes","symlink","link","copyFile","rm"];
             for (var i = 0; i < keys.length; i++) if (L[keys[i]] !== null) return false;
             return true;
         }});
-        ck("write_append_content", function() {{ return fs.readFileSync(d + "/w.txt", "utf8") === "written+ap"; }});
+        ck("write_append_content", function() {{
+            return fs.readFileSync(d + "/w.txt", "utf8") === "written" &&
+                   fs.readFileSync(d + "/w2.txt", "utf8") === "+ap";
+        }});
         ck("mkdir_side_effect", function() {{ return fs.statSync(d + "/made").isDirectory(); }});
         ck("rename_side_effect", function() {{ return fs.existsSync(d + "/renamed.txt"); }});
         ck("chmod_side_effect", function() {{ return (fs.statSync(d + "/chmod.txt").mode & 0o777) === 0o600; }});
@@ -1686,10 +1720,10 @@ fn c1_rm_rmdir_faces() {
             fs.rmSync(d + "/p.txt");
             return !fs.existsSync(d + "/p.txt");
         }});
-        ck("rmSync_missing_throws_enoent", function() {{
-            // node: force option silences ENOENT; bao rmSync ignores force
-            // (parity gap, registered in the wave report) → throws.
-            return codeof(function() {{ fs.rmSync(d + "/absent.txt", {{ force: true }}); }}) === "ENOENT";
+        ck("rmSync_force_silences_enoent", function() {{
+            // node v24.19.0 oracle: {{force:true}} swallows ENOENT for a
+            // missing path (force:false / absent flag still throws).
+            return codeof(function() {{ fs.rmSync(d + "/absent.txt", {{ force: true }}); }}) === "NOTHROW";
         }});
         ck("rmSync_missing_no_force_enoent", function() {{
             return codeof(function() {{ fs.rmSync(d + "/absent.txt"); }}) === "ENOENT";
@@ -1844,4 +1878,163 @@ fn c1_truncate_utimes_time_faces() {
     let results = run_checks(&mut ctx, &body);
     assert_eq!(results.len(), 3);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// 23. K wave — node:fs second-wave residuals (node v24.19.0 oracle probes):
+//     fs.readv async backfills the caller iovecs; fs.read async hands the
+//     CALLER's buffer to the callback; fh.readFile reads from the cursor.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn c1_readv_async_backfills_caller_buffers() {
+    let mut ctx = setup_ctx();
+    let dir = tmp_dir("kwreadv");
+    let f = dir.join("rv.txt");
+    std::fs::write(&f, "0123456789").unwrap();
+
+    let sched = format!(
+        r#"
+        var fs = require('fs');
+        globalThis.__krv = {{ n: 0, want: 3, log: {{}} }};
+        var f = "{f}";
+        (function() {{
+            var fd = fs.openSync(f, "r");
+            globalThis.__krv.fd = fd;
+            // positional form: pread at 4, cursor untouched
+            var b1 = Buffer.alloc(2), b2 = Buffer.alloc(3);
+            fs.readv(fd, [b1, b2], 4, function(e, n) {{
+                globalThis.__krv.log.pos = {{
+                    err: e ? String(e.code || e.message) : null,
+                    n: n,
+                    b1: b1.toString("utf8"),
+                    b2: b2.toString("utf8"),
+                }};
+                globalThis.__krv.n++;
+            }});
+            // cursor form: no position → reads at the current cursor (0)
+            var c1 = Buffer.alloc(2), c2 = Buffer.alloc(3);
+            fs.readv(fd, [c1, c2], function(e, n) {{
+                globalThis.__krv.log.cur = {{
+                    err: e ? String(e.code || e.message) : null,
+                    n: n,
+                    b1: c1.toString("utf8"),
+                    b2: c2.toString("utf8"),
+                }};
+                globalThis.__krv.n++;
+            }});
+            // fs.read async: callback receives the SAME caller buffer, filled
+            var rb = Buffer.alloc(4);
+            fs.read(fd, rb, 1, 3, 0, function(e, n, buf) {{
+                globalThis.__krv.log.read = {{
+                    err: e ? String(e.code || e.message) : null,
+                    n: n,
+                    ident: buf === rb,
+                    hex: rb.toString("hex"),
+                }};
+                globalThis.__krv.n++;
+            }});
+        }})();
+        'scheduled'
+    "#,
+        f = js_escape(&f),
+    );
+    assert_eq!(eval_string_full(&mut ctx, &sched), "scheduled");
+    assert!(
+        pump_until(&mut ctx, "globalThis.__krv.n >= globalThis.__krv.want", 20_000),
+        "readv/read async callbacks incomplete (n={} log={})",
+        eval_string(&mut ctx, "String(globalThis.__krv.n)"),
+        eval_string(&mut ctx, "JSON.stringify(globalThis.__krv.log)")
+    );
+
+    assert_eq!(
+        eval_string(&mut ctx, "JSON.stringify(globalThis.__krv.log.pos)"),
+        r#"{"err":null,"n":5,"b1":"45","b2":"678"}"#,
+        "readv(fd,[b1,b2],4,cb) must fill the caller buffers at position 4"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "JSON.stringify(globalThis.__krv.log.cur)"),
+        r#"{"err":null,"n":5,"b1":"01","b2":"234"}"#,
+        "readv(fd,[b1,b2],cb) must read from the current cursor"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "JSON.stringify(globalThis.__krv.log.read)"),
+        r#"{"err":null,"n":3,"ident":true,"hex":"00303132"}"#,
+        "read(fd,rb,1,3,0,cb) must fill the caller buffer at offset 1 and hand it back"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn c1_fh_readfile_reads_from_cursor() {
+    let mut ctx = setup_ctx();
+    let dir = tmp_dir("kwfhread");
+    let f = dir.join("cur.txt");
+    std::fs::write(&f, "0123456789").unwrap();
+
+    let sched = format!(
+        r#"
+        globalThis.__kfh = {{ done: false, posRead: null, whole: null, cursorRead: null, rest: null, rest2: null }};
+        (async function() {{
+            var fsp = require('fs').promises;
+            var fh = await fsp.open("{f}", "r");
+            // explicit position: pread semantics — does NOT advance the cursor
+            var rb = Buffer.alloc(2);
+            var r1 = await fh.read(rb, 0, 2, 0);
+            globalThis.__kfh.posRead = r1.bytesRead;
+            // readFile: from the CURRENT cursor (still 0) to EOF; the read
+            // itself advances the cursor to EOF (node oracle sequence).
+            globalThis.__kfh.whole = String(await fh.readFile());
+            // cursor is now at EOF → a cursor read and a readFile both yield 0
+            var rb2 = Buffer.alloc(2);
+            var r2 = await fh.read(rb2, 0, 2, null);
+            globalThis.__kfh.cursorRead = rb2.toString("utf8") + ":" + r2.bytesRead;
+            globalThis.__kfh.rest = String(await fh.readFile());
+            await fh.close();
+            // continuation from a MID cursor: a cursor-form write advances the
+            // cursor to 2, then readFile continues from there (node oracle:
+            // after fh.write("XX") → readFile === "23456789").
+            var fh2 = await fsp.open("{f}", "r+");
+            await fh2.write("XY");
+            globalThis.__kfh.rest2 = String(await fh2.readFile());
+            await fh2.close();
+            globalThis.__kfh.done = true;
+        }})();
+        'scheduled'
+    "#,
+        f = js_escape(&f),
+    );
+    assert_eq!(eval_string_full(&mut ctx, &sched), "scheduled");
+    assert!(
+        pump_until(&mut ctx, "globalThis.__kfh.done === true", 20_000),
+        "fh.readFile cursor flow did not settle"
+    );
+
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__kfh.posRead)"),
+        "2",
+        "fh.read(rb,0,2,0) must read 2 bytes"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__kfh.whole)"),
+        "0123456789",
+        "fh.readFile after an explicit-position read must read the whole file (cursor still 0)"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__kfh.cursorRead)"),
+        ":0",
+        "fh.read(rb,0,2,null) at EOF must read 0 bytes"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__kfh.rest)"),
+        "",
+        "fh.readFile at EOF must resolve empty (cursor semantics, not from-0)"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__kfh.rest2)"),
+        "23456789",
+        "fh.readFile must continue from the mid cursor left by the write (node v24.19.0 oracle)"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    bun_runtime::shutdown_thread_sm();
 }

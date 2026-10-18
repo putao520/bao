@@ -39,14 +39,17 @@
 //      scans from index 1 and only captures callables (C1 #9; node probe:
 //      fs.open(path,'w',cb) → cb(null, fd)).
 //
-// C1 registry items re-checked against the oracle and pinned as
-// characterization (NOT fixed — see the wave report):
+// C1 registry items re-checked against the oracle:
 //   #14 fh double-close: node v24.19.0 probe shows the SECOND close
 //      RESOLVES (NO_THROW), so bao's permissive double-close matches node —
 //      the C1 entry ("node: ERR_INVALID_HANDLE") is falsified by the oracle.
-//   #4 rmSync force, #12 fs.exists cb arg shape, #13 fh.readFile encoding,
-//      #17 fs.cp callback: still characterizations below (bao behavior
-//      pinned, deviation from node registered in the wave report).
+//   #2 writeSync (offset,length,position), #3 readvSync caller-buffer
+//      fill, #4 rmSync {force}, #10 fs.writeFile cb, #13 fh.readFile
+//      encoding, #17 fs.cp cb, and writeFileSync options.flag are FIXED in
+//      the fs6 wave and now asserted against the node v24.19.0 oracle (see
+//      c11_fs_sync_gap_faces / c11_fs_registry_fixed_faces).
+//   #12 fs.exists cb arg shape and #5/#6 utimesSync/lutimesSync remain
+//      registered gaps (characterization below).
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
@@ -172,12 +175,20 @@ fn c11_fs_fix_wx_ax_eexist() {
         ck("openSync_wxplus_existing_eexist", function() {{ return codeof(function() {{ fs.openSync(ex, "wx+"); }}) === "EEXIST"; }});
         ck("openSync_wx_fresh_opens", function() {{ var fd = fs.openSync(fr, "wx"); fs.closeSync(fd); return fs.existsSync(fr); }});
         ck("openSync_ax_fresh_opens", function() {{ var fd2 = fs.openSync(fr + "2", "ax"); fs.closeSync(fd2); return fs.existsSync(fr + "2"); }});
-        // Characterization (C11 new registry entry): writeFileSync ignores
-        // the options.flag field entirely (fs_write_bytes is a plain
-        // truncate-write); node v24 oracle honors it (wx → EEXIST).
-        ck("char_writesync_ignores_flag_wx", function() {{
+        // C11 registry fixed: writeFileSync now honors options.flag. node
+        // v24.19.0 oracle: wx on existing → EEXIST (content preserved);
+        // a appends; r+ overwrites from 0 without truncating; w truncates.
+        ck("writefilesync_flag_wx_eexist", function() {{
             var outcome = codeof(function() {{ fs.writeFileSync(ex, "b", {{ flag: "wx" }}); }});
-            return outcome === "NOTHROW" && fs.readFileSync(ex, "utf8") === "b";
+            return outcome === "EEXIST" && fs.readFileSync(ex, "utf8") === "aa";
+        }});
+        ck("writefilesync_flag_a_appends", function() {{
+            fs.writeFileSync(ex, "b", {{ flag: "a" }});
+            return fs.readFileSync(ex, "utf8") === "aab";
+        }});
+        ck("writefilesync_flag_rplus_no_truncate", function() {{
+            fs.writeFileSync(ex, "ZZ", {{ flag: "r+" }});
+            return fs.readFileSync(ex, "utf8") === "ZZb";
         }});
         ck("plain_w_still_truncates", function() {{ fs.writeFileSync(ex, "z"); return fs.readFileSync(ex, "utf8") === "z"; }});
         R.join("|");
@@ -388,12 +399,10 @@ fn c11_fs_callback_path_family() {
             var F = "{fp}", D = "{d}";
             fs.writeFileSync(F + ".rf", "payload");
             fs.readFile(F + ".rf", "utf8", function(e, v) {{ rec("readFile", e, v === "payload"); }});
-            // Characterization (C1 #10, re-confirmed): fs.writeFile has no
-            // callback branch — the callback is silently dropped. Pinned
-            // separately below; excluded from the delivery count. Writes to
-            // its own file: delivery order is unordered across workers, so
-            // no other assert may read this path.
-            fs.writeFile(F + ".wc", "ww", function(e) {{ rec("writeFile_char", e, true); }});
+            // C1 #10 fixed: writeFile delivers its callback (node shape
+            // cb(err)). Writes to its own file: delivery order is unordered
+            // across workers, so no other assert may read this path.
+            fs.writeFile(F + ".wc", "ww", function(e) {{ rec("writeFile", e, true); }});
             fs.appendFile(F + ".wa", "+a", function(e) {{ rec("appendFile", e, fs.readFileSync(F + ".wa", "utf8") === "+a"); }});
             fs.stat(F, function(e, st) {{ rec("stat", e, st && typeof st.size === "number"); }});
             fs.lstat(F, function(e, st) {{ rec("lstat", e, st && typeof st.size === "number"); }});
@@ -435,25 +444,25 @@ fn c11_fs_callback_path_family() {
     );
     pump_require_with_log(
         &mut ctx,
-        "globalThis.__cb.n >= 19",
+        "globalThis.__cb.n >= 20",
         "globalThis.__cb.log.join('|')",
-        "path-family callbacks all delivered (19 delivering APIs)",
+        "path-family callbacks all delivered (20 delivering APIs)",
     );
     let log = eval_string(&mut ctx, "globalThis.__cb.log.join('|')");
     let failures: Vec<&str> = log
         .split('|')
-        .filter(|l| !l.ends_with(":ok:true") && !l.contains("writeFile_char"))
+        .filter(|l| !l.ends_with(":ok:true"))
         .collect();
     assert!(
         failures.is_empty(),
         "path-family cb results not ok:\n{}",
         failures.join("\n")
     );
-    // C1 #10 pin: writeFile's callback never fires (bounded silence window).
-    let wf_fired = pump_until(&mut ctx, "globalThis.__cb.log.join('|').indexOf('writeFile_char') >= 0", 3_000);
+    // C1 #10 fixed: fs.writeFile's callback fires with a nullish error.
     assert!(
-        !wf_fired,
-        "fs.writeFile callback form now fires — re-audit C1 #10 (was pinned as silent)"
+        log.split('|').any(|l| l == "writeFile:ok:true"),
+        "fs.writeFile callback form did not deliver — log: {}",
+        log
     );
 }
 
@@ -850,48 +859,61 @@ fn c11_fs_sync_gap_faces() {
         r#"
         {prelude}
         var F = "{fp}", D = "{d}";
-        // Characterization (C1 #2, re-probed): writeSync IGNORES the
-        // (offset, length, position) triple — the full buffer is written at
-        // the cursor position given by the 4th arg. node v24 oracle: n=3 and
-        // body "ABCDECDIJ" (bytes 2..5 at position 5). bao probe: n=10, full
-        // "ABCDEFGHIJ" written. Pinned as-is; deviation registered.
-        ck("char_writeSync_ignores_offset_length", function() {{
+        // C1 #2 fixed — node v24.19.0 oracle: writeSync(fd, buf, offset=2,
+        // length=3, position=5) writes buf[2..5] ("CDE") at absolute
+        // position 5, leaves the fd cursor at 0 (pwrite) → n=3, body
+        // "ABCDECDEIJ".
+        ck("writeSync_offset_length_position", function() {{
             var fd = fs.openSync(F, "r+");
             var n = fs.writeSync(fd, Buffer.from("ABCDEFGHIJ"), 2, 3, 5);
             fs.closeSync(fd);
-            return n === 10 && fs.readFileSync(F).toString() === "ABCDEFGHIJ";
+            return n === 3 && fs.readFileSync(F).toString() === "ABCDECDEIJ";
         }});
-        ck("writeSync_cursor_form_appends", function() {{
+        ck("writeSync_cursor_form_at_offset", function() {{
+            // pwrite above left the cursor at 0 → "zz" overwrites the head.
             var fd2 = fs.openSync(F, "r+");
             var n2 = fs.writeSync(fd2, Buffer.from("zz"));
             fs.closeSync(fd2);
-            return n2 === 2;
+            return n2 === 2 && fs.readFileSync(F).toString() === "zzCDECDEIJ";
         }});
         ck("readSync_position_form", function() {{
             var fd3 = fs.openSync(F, "r");
             var b = Buffer.alloc(3);
             var n3 = fs.readSync(fd3, b, 0, 3, 5);
             fs.closeSync(fd3);
-            return n3 === 3 && b.toString() === "FGH";
+            return n3 === 3 && b.toString() === "CDE";
         }});
-        // Note: after char_writeSync + writeSync_cursor_form above the file
-        // holds "zzCDEFGHIJ", so position 5 yields "FGH" (same bytes the
-        // node oracle form would produce on the untouched payload).
-        // Characterization (C1 #3, re-probed): readvSync reports the total
-        // byte count but the caller's Buffers stay zero-filled (the data
-        // lands in an internal temp copy). node v24 oracle: n=5 with
-        // b1="AB"/b2="CDE". Pinned as-is; deviation registered.
-        var __rv_diag = "";
-        ck("char_readvSync_buffers_stay_zero", function() {{
+        // C1 #3 fixed — readvSync fills the caller's Buffers (iovec points at
+        // their storage); node oracle on "zzCDECDEIJ" from position 0:
+        // n=5, b1="zz", b2="CDE".
+        ck("readvSync_fills_caller_buffers", function() {{
             var fd4 = fs.openSync(F, "r");
             var b1 = Buffer.alloc(2), b2 = Buffer.alloc(3);
             var n4 = fs.readvSync(fd4, [b1, b2], 0);
             fs.closeSync(fd4);
-            var z1 = true, z2 = true;
-            for (var i = 0; i < b1.length; i++) if (b1[i] !== 0) z1 = false;
-            for (var j = 0; j < b2.length; j++) if (b2[j] !== 0) z2 = false;
-            __rv_diag = "n=" + n4 + " b1=" + Array.prototype.join.call(b1, ",") + " b2=" + Array.prototype.join.call(b2, ",");
-            return n4 === 5 && z1 && z2;
+            return n4 === 5 && b1.toString() === "zz" && b2.toString() === "CDE";
+        }});
+        ck("readvSync_cursor_form", function() {{
+            fs.writeFileSync(F + ".rv", "ABCDE");
+            var fd5 = fs.openSync(F + ".rv", "r");
+            var b1 = Buffer.alloc(2), b2 = Buffer.alloc(3);
+            var n5 = fs.readvSync(fd5, [b1, b2]);
+            fs.closeSync(fd5);
+            return n5 === 5 && b1.toString() === "AB" && b2.toString() === "CDE";
+        }});
+        ck("writeSync_string_position_form", function() {{
+            fs.writeFileSync(F + ".sp", "0123456789");
+            var fd6 = fs.openSync(F + ".sp", "r+");
+            var n6 = fs.writeSync(fd6, "XY", 4);
+            fs.closeSync(fd6);
+            return n6 === 2 && fs.readFileSync(F + ".sp", "utf8") === "0123XY6789";
+        }});
+        ck("writevSync_position_form", function() {{
+            fs.writeFileSync(F + ".wvp", "0123456789");
+            var fd7 = fs.openSync(F + ".wvp", "r+");
+            var n7 = fs.writevSync(fd7, [Buffer.from("aa"), Buffer.from("bb")], 4);
+            fs.closeSync(fd7);
+            return n7 === 4 && fs.readFileSync(F + ".wvp", "utf8") === "0123aabb89";
         }});
         ck("writevSync_concatenates", function() {{
             var fd5 = fs.openSync(F + ".v", "w");
@@ -941,7 +963,6 @@ fn c11_fs_sync_gap_faces() {
             return Array.isArray(m) && m.join(",") === "a.txt";
         }});
         ck("openAsBlob_face", function() {{ return typeof fs.openAsBlob === "function"; }});
-        if (R.join("|").indexOf("char_readvSync FAIL") >= 0) R.push("readv_diag=" + __rv_diag + " PASS");
         R.join("|");
         "#,
         prelude = CHECK_PRELUDE,
@@ -952,12 +973,13 @@ fn c11_fs_sync_gap_faces() {
 }
 
 // ===========================================================================
-// Characterization registry — C1 entries pinned as-is (deviations from node
-// recorded; NOT silently asserted green).
+// Former characterization registry — the C1 #4/#10/#13/#17 deviations are
+// FIXED this wave and now pinned to the node v24.19.0 oracle. Remaining
+// entries (#5/#6: utimesSync/lutimesSync unregistered) are still gaps.
 // ===========================================================================
 
 #[test]
-fn c11_fs_characterization_registry() {
+fn c11_fs_registry_fixed_faces() {
     let mut ctx = setup_ctx();
     let dir = tmp_dir("char");
     let f = dir.join("f.txt");
@@ -968,10 +990,10 @@ fn c11_fs_characterization_registry() {
         r#"
         {prelude}
         var F = "{fp}";
-        // C1 #4: rmSync({{force:true}}) on a missing path — node swallows
-        // ENOENT; bao still throws (registered deviation, unfixed).
-        ck("char_rmSync_force_still_throws", function() {{
-            return codeof(function() {{ fs.rmSync("{dir_absent}", {{ force: true }}); }}) === "ENOENT";
+        // C1 #4 fixed: rmSync({{force:true}}) on a missing path resolves
+        // (node swallows ENOENT; the unforced form still throws).
+        ck("rmSync_force_silences_enoent", function() {{
+            return codeof(function() {{ fs.rmSync("{dir_absent}", {{ force: true }}); }}) === "NOTHROW";
         }});
         // C1 #5/#6: utimesSync / lutimesSync are NOT registered on the sync
         // face (node has both; fchownSync/lchownSync exist). Registered gap.
@@ -1025,18 +1047,30 @@ fn c11_fs_characterization_registry() {
         "fs.exists cb did not observe false for an absent path"
     );
 
-    // C1 #13: fh.readFile ignores the encoding argument — always Buffer.
-    // node oracle: fh.readFile('utf8') → string. Deviation registered.
+    // C1 #13 fixed: fh.readFile(options) decodes per encoding. node
+    // v24.19.0 oracle: no arg → Buffer; 'utf8' and {encoding:'utf8'} → the
+    // decoded string; {encoding:'hex'} → hex.
     eval_string(
         &mut ctx,
         &format!(
             r#"
-            globalThis.__fhenc = {{ done: false, type: null }};
+            globalThis.__fhenc = {{ done: false, plain: null, str: null, obj: null, hex: null }};
             (async function() {{
                 var fsp = require('fs').promises;
                 var fh = await fsp.open("{fp}", "r");
-                var v = await fh.readFile("utf8");
-                globalThis.__fhenc.type = (typeof v === "string") ? "string" : (v && v.constructor && v.constructor.name) || typeof v;
+                var v = await fh.readFile();
+                globalThis.__fhenc.plain = Buffer.isBuffer(v) ? "Buffer" : typeof v;
+                await fh.close();
+                fh = await fsp.open("{fp}", "r");
+                v = await fh.readFile("utf8");
+                globalThis.__fhenc.str = typeof v + ":" + v;
+                await fh.close();
+                fh = await fsp.open("{fp}", "r");
+                v = await fh.readFile({{ encoding: "utf8" }});
+                globalThis.__fhenc.obj = typeof v + ":" + v;
+                await fh.close();
+                fh = await fsp.open("{fp}", "r");
+                globalThis.__fhenc.hex = await fh.readFile({{ encoding: "hex" }});
                 await fh.close();
                 globalThis.__fhenc.done = true;
             }})();
@@ -1048,15 +1082,27 @@ fn c11_fs_characterization_registry() {
     pump_require(
         &mut ctx,
         "globalThis.__fhenc.done === true",
-        "fh.readFile characterization settled",
+        "fh.readFile encoding face settled",
     );
-    // Pin the observed bao behavior (Uint8Array — C1 #13's "Buffer" label
-    // was imprecise; the substance stands: the encoding argument is ignored
-    // and a binary carrier is delivered; node v24.19.0 oracle: string).
     assert_eq!(
-        eval_string(&mut ctx, "String(globalThis.__fhenc.type)"),
-        "Uint8Array",
-        "fh.readFile encoding characterization changed — re-audit C1 #13"
+        eval_string(&mut ctx, "String(globalThis.__fhenc.plain)"),
+        "Buffer",
+        "fh.readFile() must resolve a Buffer"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__fhenc.str)"),
+        "string:body",
+        "fh.readFile('utf8') must decode a string (C1 #13)"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__fhenc.obj)"),
+        "string:body",
+        "fh.readFile({{encoding:'utf8'}}) must decode a string (C1 #13)"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__fhenc.hex)"),
+        "626f6479",
+        "fh.readFile({{encoding:'hex'}}) must hex-encode"
     );
 
     // C1 #14: fh double close — node v24 oracle probe says the second close
@@ -1091,25 +1137,113 @@ fn c11_fs_characterization_registry() {
         "fh double-close now throws — matches the (corrected) node contract; re-audit C1 #14"
     );
 
-    // C1 #17: fs.cp callback form — node invokes cb(err); bao never calls
-    // the callback (registered deviation, unfixed). Pump for a bounded
-    // window and pin the observed silence.
+    // C1 #17 fixed: fs.cp delivers its callback with the node (err) shape —
+    // success cb(null) after the copy lands, error cb(code) on a failed copy.
     eval_string(
         &mut ctx,
         &format!(
             r#"
-            globalThis.__cpc = {{ fired: false }};
+            globalThis.__cpc = {{ fired: false, code: null }};
+            globalThis.__cpce = {{ fired: false, code: null }};
             var fs2 = require('fs');
-            fs2.cp("{fp}", "{fp}.cpdst", function() {{ globalThis.__cpc.fired = true; }});
+            fs2.cp("{fp}", "{fp}.cpdst", function(e) {{
+                globalThis.__cpc.fired = true;
+                globalThis.__cpc.code = e ? ((e && e.code) || String(e)) : null;
+            }});
+            fs2.cp("{fp}.missing_src", "{fp}.cpdst2", function(e) {{
+                globalThis.__cpce.fired = true;
+                globalThis.__cpce.code = e ? ((e && e.code) || String(e)) : null;
+            }});
             'scheduled'
             "#,
             fp = fp
         ),
     );
-    let fired = pump_until(&mut ctx, "globalThis.__cpc.fired === true", 3_000);
+    pump_require(
+        &mut ctx,
+        "globalThis.__cpc.fired === true && globalThis.__cpce.fired === true",
+        "fs.cp delivered both callbacks (C1 #17)",
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__cpc.code)"),
+        "null",
+        "fs.cp success callback must receive a nullish error"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__cpce.code)"),
+        "ENOENT",
+        "fs.cp failure callback must receive the node error code"
+    );
     assert!(
-        !fired,
-        "fs.cp callback form now fires — re-audit C1 #17 (was pinned as never-delivered)"
+        f.with_extension("txt.cpdst").exists(),
+        "fs.cp callback fired before the copy landed"
+    );
+
+    // writeFile options.flag through the async and promise faces (node:
+    // wx → EEXIST; a → append). Sequenced from the first callback so the
+    // two writes never race.
+    eval_string(
+        &mut ctx,
+        &format!(
+            r#"
+            globalThis.__wfx = {{ stage: 0, body1: null, code: null }};
+            require('fs').writeFile("{fp}.wf", "a", {{ flag: "wx" }}, function(e) {{
+                globalThis.__wfx.body1 = require('fs').readFileSync("{fp}.wf", "utf8");
+                require('fs').writeFile("{fp}.wf", "b", {{ flag: "wx" }}, function(e2) {{
+                    globalThis.__wfx.code = e2 ? ((e2 && e2.code) || String(e2)) : null;
+                    globalThis.__wfx.stage = 2;
+                }});
+            }});
+            'scheduled'
+            "#,
+            fp = fp
+        ),
+    );
+    pump_require(
+        &mut ctx,
+        "globalThis.__wfx.stage === 2",
+        "writeFile flag chain settled",
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__wfx.body1)"),
+        "a"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__wfx.code)"),
+        "EEXIST",
+        "fs.writeFile {{flag:'wx'}} on an existing file must fail EEXIST"
+    );
+
+    eval_string(
+        &mut ctx,
+        &format!(
+            r#"
+            globalThis.__pwf = {{ done: false, body: null, code: null }};
+            (async function() {{
+                var fsp = require('fs').promises;
+                await fsp.writeFile("{fp}.pwf", "a", {{ flag: "wx" }});
+                try {{ await fsp.writeFile("{fp}.pwf", "b", {{ flag: "wx" }}); }}
+                catch (e) {{ globalThis.__pwf.code = (e && e.code) || String(e); }}
+                globalThis.__pwf.body = require('fs').readFileSync("{fp}.pwf", "utf8");
+                globalThis.__pwf.done = true;
+            }})();
+            'scheduled'
+            "#,
+            fp = fp
+        ),
+    );
+    pump_require(
+        &mut ctx,
+        "globalThis.__pwf.done === true",
+        "promises.writeFile flag face settled",
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__pwf.code)"),
+        "EEXIST"
+    );
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__pwf.body)"),
+        "a"
     );
 }
 
@@ -1486,4 +1620,177 @@ fn c11_crypto_async_error_paths() {
         "crypto async error paths delivered no error:\n{}",
         bad.join("\n")
     );
+}
+
+// ===========================================================================
+// K wave — node:fs second-wave residuals (node v24.19.0 oracle probes).
+//   ③ writeFile/appendFile family: string data honors options.encoding.
+//   ④ fs.write / fs.writeFile require a function callback.
+// ===========================================================================
+
+/// ③ sync faces: writeFileSync honors the encoding shorthand string and the
+/// {encoding} option (latin1 "é" → 0xE9, hex "6162" → 0x61 0x62; default and
+/// unknown encodings stay UTF-8), appendFileSync honors it too.
+#[test]
+fn c11_fs_writefile_sync_encoding() {
+    let mut ctx = setup_ctx();
+    let dir = tmp_dir("kwenc");
+    let f = dir.join("enc.txt");
+    let (d, fp) = (js_escape(&dir), js_escape(&f));
+
+    let body = format!(
+        r#"
+        {prelude}
+        var F = "{fp}", D = "{d}";
+        ck("writeFileSync_latin1_obj", function() {{
+            fs.writeFileSync(F, "é", {{ encoding: "latin1" }});
+            return fs.readFileSync(F).toString("hex") === "e9";
+        }});
+        ck("writeFileSync_latin1_shorthand", function() {{
+            fs.writeFileSync(F, "é", "latin1");
+            return fs.readFileSync(F).toString("hex") === "e9";
+        }});
+        ck("writeFileSync_hex", function() {{
+            fs.writeFileSync(F, "6162", {{ encoding: "hex" }});
+            return fs.readFileSync(F).toString("hex") === "6162";
+        }});
+        ck("writeFileSync_utf16le", function() {{
+            fs.writeFileSync(F, "ab", {{ encoding: "utf16le" }});
+            return fs.readFileSync(F).toString("hex") === "61006200";
+        }});
+        ck("writeFileSync_default_utf8", function() {{
+            fs.writeFileSync(F, "é");
+            return fs.readFileSync(F).toString("hex") === "c3a9";
+        }});
+        ck("writeFileSync_binary_data_ignores_encoding", function() {{
+            fs.writeFileSync(F, Buffer.from([0xE9]), {{ encoding: "hex" }});
+            return fs.readFileSync(F).toString("hex") === "e9";
+        }});
+        ck("appendFileSync_latin1", function() {{
+            fs.writeFileSync(F, "");
+            fs.appendFileSync(F, "é", {{ encoding: "latin1" }});
+            return fs.readFileSync(F).toString("hex") === "e9";
+        }});
+        R.join("|")
+    "#,
+        prelude = CHECK_PRELUDE,
+        fp = fp,
+        d = d,
+    );
+    let results = run_checks(&mut ctx, &body);
+    assert_eq!(results.len(), 7);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ③ async faces: fs.writeFile(cb), fs.promises.writeFile and
+/// FileHandle.writeFile all encode string data per options.encoding.
+#[test]
+fn c11_fs_writefile_async_encoding() {
+    let mut ctx = setup_ctx();
+    let dir = tmp_dir("kwenc2");
+    let f = dir.join("enc2.txt");
+    let fp = js_escape(&f);
+
+    let sched = format!(
+        r#"
+        var fs = require('fs');
+        globalThis.__kwenc2 = {{ n: 0, want: 3, cb: null, promises: null, fh: null }};
+        (async function() {{
+            var F = "{fp}";
+            await fs.promises.writeFile(F, "é", {{ encoding: "latin1" }});
+            globalThis.__kwenc2.promises = fs.readFileSync(F).toString("hex");
+            globalThis.__kwenc2.n++;
+            var fh = await fs.promises.open(F, "w");
+            await fh.writeFile("é", {{ encoding: "latin1" }});
+            await fh.close();
+            globalThis.__kwenc2.fh = fs.readFileSync(F).toString("hex");
+            globalThis.__kwenc2.n++;
+            fs.writeFile(F, "é", {{ encoding: "latin1" }}, function(e) {{
+                globalThis.__kwenc2.cb = e
+                    ? "ERR:" + String(e.code || e.message)
+                    : fs.readFileSync(F).toString("hex");
+                globalThis.__kwenc2.n++;
+            }});
+        }})();
+        'scheduled'
+        "#,
+        fp = fp,
+    );
+    assert_eq!(eval_string_full(&mut ctx, &sched), "scheduled");
+    pump_require(
+        &mut ctx,
+        "globalThis.__kwenc2.n >= globalThis.__kwenc2.want",
+        "writeFile async encoding faces settled",
+    );
+    for (key, what) in [
+        ("promises", "promises.writeFile latin1"),
+        ("fh", "FileHandle.writeFile latin1"),
+        ("cb", "fs.writeFile cb latin1"),
+    ] {
+        assert_eq!(
+            eval_string(&mut ctx, &format!("String(globalThis.__kwenc2.{key})")),
+            "e9",
+            "{what} must encode string data per options.encoding"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ④ fs.write / fs.writeFile require a FUNCTION callback: missing cb, the
+/// legacy string-encoding third arg and an options object all throw
+/// ERR_INVALID_ARG_TYPE (node v24.19.0 oracle). writeSync keeps its sync
+/// contract — no throw there.
+#[test]
+fn c11_fs_write_requires_callback() {
+    let mut ctx = setup_ctx();
+    let dir = tmp_dir("kwcb");
+    let f = dir.join("cb.txt");
+    let (d, fp) = (js_escape(&dir), js_escape(&f));
+
+    let body = format!(
+        r#"
+        {prelude}
+        var F = "{fp}", D = "{d}";
+        ck("writeFile_missing_cb", function() {{
+            return codeof(function() {{ fs.writeFile(F, "x"); }}) === "ERR_INVALID_ARG_TYPE";
+        }});
+        ck("writeFile_string_cb", function() {{
+            return codeof(function() {{ fs.writeFile(F, "x", "utf8"); }}) === "ERR_INVALID_ARG_TYPE";
+        }});
+        ck("writeFile_options_object_cb", function() {{
+            return codeof(function() {{ fs.writeFile(F, "x", {{}}); }}) === "ERR_INVALID_ARG_TYPE";
+        }});
+        ck("write_missing_cb", function() {{
+            return codeof(function() {{
+                var fd = fs.openSync(F, "w");
+                fs.write(fd, Buffer.from("x"));
+            }}) === "ERR_INVALID_ARG_TYPE";
+        }});
+        ck("write_string_position_no_cb", function() {{
+            return codeof(function() {{
+                var fd = fs.openSync(F, "w");
+                fs.write(fd, "x", 0);
+            }}) === "ERR_INVALID_ARG_TYPE";
+        }});
+        ck("write_object_cb", function() {{
+            return codeof(function() {{
+                var fd = fs.openSync(F, "w");
+                fs.write(fd, Buffer.from("x"), {{}});
+            }}) === "ERR_INVALID_ARG_TYPE";
+        }});
+        ck("writeSync_still_synchronous", function() {{
+            var fd = fs.openSync(F, "w");
+            var n = fs.writeSync(fd, "ok");
+            fs.closeSync(fd);
+            return n === 2 && fs.readFileSync(F, "utf8") === "ok";
+        }});
+        R.join("|")
+    "#,
+        prelude = CHECK_PRELUDE,
+        fp = fp,
+        d = d,
+    );
+    let results = run_checks(&mut ctx, &body);
+    assert_eq!(results.len(), 7);
+    let _ = std::fs::remove_dir_all(&dir);
 }

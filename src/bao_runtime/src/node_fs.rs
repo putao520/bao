@@ -57,6 +57,9 @@ enum FsAsyncResult {
     OkI32(i32),
     OkOpen(i32),
     OkRead { bytes_read: i32, buffer: Vec<u8> },
+    /// readv completion: `buffer` is the concatenation of everything read;
+    /// the dispatch scatters it back into the rooted caller views.
+    OkReadv { bytes_read: i32, buffer: Vec<u8> },
     OkWrite(i32),
     OkDirnames(Vec<String>),
     OkStatfs(StatfsResult),
@@ -89,6 +92,13 @@ struct FsAsyncCtx {
     /// Prevents duplicate tasklet scheduling (single completion per op; the
     /// CAS also makes an accidental double complete_post a no-op).
     has_scheduled: AtomicBool,
+    /// Caller-owned destination views that the completion writes back into
+    /// (fs.read's `buffer`, fs.readv's `buffers`). Rooted here so a moving
+    /// GC updates the slots across the worker window; empty/None for every
+    /// op that does not backfill caller memory.
+    writeback: ::std::option::Option<RawValueRootGuard>,
+    /// Byte offset into the first writeback view (fs.read's `offset`).
+    writeback_offset: usize,
 }
 
 /// Process-global count of in-flight fs async ops (spawn-side ++, retired by
@@ -155,6 +165,25 @@ unsafe fn complete_post(ctx: *mut FsAsyncCtx) {
             }
         }
     }
+}
+
+/// Byte window of a caller-owned typed-array view. Used by the async
+/// read/readv completion to backfill the buffers the caller passed (node
+/// contract: the callback receives the SAME buffer object, filled). Returns
+/// None for detached/non-view objects.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn view_byte_slot(view: JSVal) -> ::std::option::Option<(*mut u8, usize)> {
+    if !view.is_object() {
+        return ::std::option::Option::None;
+    }
+    let obj = view.to_object();
+    let mut is_shared = false;
+    let data = JS_GetUint8ArrayData(obj, &mut is_shared, ::std::ptr::null());
+    if data.is_null() {
+        return ::std::option::Option::None;
+    }
+    let len = JS_GetTypedArrayByteLength(obj) as usize;
+    ::std::option::Option::Some((data as *mut u8, len))
 }
 
 unsafe fn fs_async_defer_callback(ctx_ptr: *mut FsAsyncCtx) {
@@ -352,17 +381,89 @@ unsafe fn fs_async_defer_callback(ctx_ptr: *mut FsAsyncCtx) {
             JS_ClearPendingException(cx);
         }
         Some(Ok(FsAsyncResult::OkRead { bytes_read, buffer })) => {
-            let buf_obj = crate::globals::create_buffer_object(cx, &buffer);
-            let buf_val = if buf_obj.is_null() {
-                UndefinedValue()
-            } else {
-                mozjs::jsval::ObjectValue(buf_obj)
+            // node contract: read(fd, buffer, ...) fills the CALLER's view and
+            // hands that same object to the callback. Backfill the rooted
+            // view (GC-stable slot) before dispatching; the fresh Buffer is
+            // only a fallback when no caller view was captured.
+            let mut caller_view: ::std::option::Option<JSVal> = ::std::option::Option::None;
+            if let ::std::option::Option::Some(root) = ctx.writeback.as_ref() {
+                if root.len() > 0 {
+                    let view = root.get(0);
+                    if let ::std::option::Option::Some((slot, len)) = unsafe { view_byte_slot(view) }
+                    {
+                        let off = ctx.writeback_offset.min(len);
+                        let n = buffer.len().min(len - off);
+                        if n > 0 {
+                            unsafe {
+                                ::std::ptr::copy_nonoverlapping(buffer.as_ptr(), slot.add(off), n)
+                            };
+                        }
+                        caller_view = ::std::option::Option::Some(view);
+                    }
+                }
+            }
+            let buf_val = match caller_view {
+                ::std::option::Option::Some(v) => v,
+                ::std::option::Option::None => {
+                    let buf_obj = crate::globals::create_buffer_object(cx, &buffer);
+                    if buf_obj.is_null() {
+                        UndefinedValue()
+                    } else {
+                        mozjs::jsval::ObjectValue(buf_obj)
+                    }
+                }
             };
             rooted!(&in(realm_cx) let buf_rooted = buf_val);
             rooted!(&in(realm_cx) let br_val = mozjs::jsval::Int32Value(bytes_read));
             let args_arr = [UndefinedValue(), br_val.get(), buf_rooted.get()];
             let cb_args = HandleValueArray {
                 length_: 3,
+                elements_: args_arr.as_ptr(),
+            };
+            let mut rval = UndefinedValue();
+            JS_CallFunctionValue(
+                cx,
+                global_rooted.handle().into(),
+                cb_val.handle().into(),
+                &cb_args,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            );
+            JS_ClearPendingException(cx);
+        }
+        Some(Ok(FsAsyncResult::OkReadv { bytes_read, buffer })) => {
+            // Scatter the contiguous read result back into the rooted caller
+            // views, in iovec order. node's readv callback is (err, n).
+            if let ::std::option::Option::Some(root) = ctx.writeback.as_ref() {
+                let mut consumed = 0usize;
+                for i in 0..root.len() {
+                    if consumed >= buffer.len() {
+                        break;
+                    }
+                    let view = root.get(i);
+                    if let ::std::option::Option::Some((slot, len)) = unsafe { view_byte_slot(view) }
+                    {
+                        if len == 0 || slot.is_null() {
+                            continue;
+                        }
+                        let n = (buffer.len() - consumed).min(len);
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                buffer.as_ptr().add(consumed),
+                                slot,
+                                n,
+                            )
+                        };
+                        consumed += n;
+                    }
+                }
+            }
+            rooted!(&in(realm_cx) let br_val = mozjs::jsval::Int32Value(bytes_read));
+            let args_arr = [UndefinedValue(), br_val.get()];
+            let cb_args = HandleValueArray {
+                length_: 2,
                 elements_: args_arr.as_ptr(),
             };
             let mut rval = UndefinedValue();
@@ -677,6 +778,27 @@ unsafe fn spawn_fs_async<F>(
 ) where
     F: FnOnce() -> ::std::result::Result<FsAsyncResult, ::std::io::Error> + Send + 'static,
 {
+    unsafe {
+        spawn_fs_async_writeback(cx, op_name, path, callback, encoding, None, 0, work);
+    }
+}
+
+/// Full spawn form carrying caller-owned destination views. `writeback` is a
+/// rooted guard (spans the worker window); `writeback_offset` applies to the
+/// first view (fs.read's `offset`; ignored by readv).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn spawn_fs_async_writeback<F>(
+    cx: *mut JSContext,
+    op_name: &str,
+    path: String,
+    callback: *mut JSObject,
+    encoding: Option<String>,
+    writeback: ::std::option::Option<RawValueRootGuard>,
+    writeback_offset: usize,
+    work: F,
+) where
+    F: FnOnce() -> ::std::result::Result<FsAsyncResult, ::std::io::Error> + Send + 'static,
+{
     // Heap-root the callback value for the async window via the RAII guard
     // (stable heap slot the GC updates in place; unrooted when the
     // FsAsyncCtx Box drops, with the correct registered address).
@@ -704,6 +826,8 @@ unsafe fn spawn_fs_async<F>(
         concurrent_task:
             bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext::default(),
         has_scheduled: AtomicBool::new(false),
+        writeback,
+        writeback_offset,
     });
     // Increment BEFORE the Box can ever drop (Drop retires it) so the pump
     // liveness view can never miss an in-flight op.
@@ -1272,13 +1396,16 @@ unsafe fn js_string_from_utf8(cx: *mut JSContext, text: &str) -> *mut JSString {
     )
 }
 
+/// Decode `data` into the JS value node returns for the given encoding:
+/// `None` → Buffer (binary-safe), `Some(enc)` → decoded String. Single source
+/// for every read face (readFileSync/readFile/promises.readFile/FileHandle.
+/// readFile) so encoding behavior cannot drift between them.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn return_string_content(
+unsafe fn content_jsval(
     cx: *mut JSContext,
-    args: &CallArgs,
     data: &[u8],
     encoding: ::std::option::Option<&str>,
-) -> bool {
+) -> JSVal {
     match encoding {
         // @trace REQ-ENG-005 [entity:Buffer]
         // Node.js: readFileSync(path) with NO encoding returns a Buffer
@@ -1288,9 +1415,9 @@ unsafe fn return_string_content(
         None => {
             let buf_obj = crate::globals::create_buffer_object(cx, data);
             if buf_obj.is_null() {
-                args.rval().set(UndefinedValue());
+                UndefinedValue()
             } else {
-                args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+                mozjs::jsval::ObjectValue(buf_obj)
             }
         }
         Some("utf-8" | "utf8" | "text") => {
@@ -1300,9 +1427,9 @@ unsafe fn return_string_content(
             let s = ::std::string::String::from_utf8_lossy(data);
             let js_str = js_string_from_utf8(cx, &s);
             if js_str.is_null() {
-                args.rval().set(UndefinedValue());
+                UndefinedValue()
             } else {
-                args.rval().set(mozjs::jsval::StringValue(&*js_str));
+                mozjs::jsval::StringValue(&*js_str)
             }
         }
         Some("hex") => {
@@ -1310,9 +1437,9 @@ unsafe fn return_string_content(
             let c_str = ZBox::from_bytes(hex.as_bytes());
             let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
             if js_str.is_null() {
-                args.rval().set(UndefinedValue());
+                UndefinedValue()
             } else {
-                args.rval().set(mozjs::jsval::StringValue(&*js_str));
+                mozjs::jsval::StringValue(&*js_str)
             }
         }
         Some("base64") => {
@@ -1323,9 +1450,9 @@ unsafe fn return_string_content(
             let c_str = ZBox::from_bytes(encoded.as_bytes());
             let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
             if js_str.is_null() {
-                args.rval().set(UndefinedValue());
+                UndefinedValue()
             } else {
-                args.rval().set(mozjs::jsval::StringValue(&*js_str));
+                mozjs::jsval::StringValue(&*js_str)
             }
         }
         Some("latin1" | "binary") => {
@@ -1337,21 +1464,31 @@ unsafe fn return_string_content(
             let s: ::std::string::String = data.iter().map(|&b| b as char).collect();
             let js_str = js_string_from_utf8(cx, &s);
             if js_str.is_null() {
-                args.rval().set(UndefinedValue());
+                UndefinedValue()
             } else {
-                args.rval().set(mozjs::jsval::StringValue(&*js_str));
+                mozjs::jsval::StringValue(&*js_str)
             }
         }
         Some(_) => {
             let s = ::std::string::String::from_utf8_lossy(data);
             let js_str = js_string_from_utf8(cx, &s);
             if js_str.is_null() {
-                args.rval().set(UndefinedValue());
+                UndefinedValue()
             } else {
-                args.rval().set(mozjs::jsval::StringValue(&*js_str));
+                mozjs::jsval::StringValue(&*js_str)
             }
         }
     }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn return_string_content(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    data: &[u8],
+    encoding: ::std::option::Option<&str>,
+) -> bool {
+    args.rval().set(content_jsval(cx, data, encoding));
     true
 }
 
@@ -1377,6 +1514,314 @@ fn fs_append_bytes(path: &str, bytes: &[u8]) -> ::std::io::Result<()> {
         .append(true)
         .open(path)?;
     file.write_all(bytes)
+}
+
+/// Write a whole file honoring node's `options.flag` (C1 registry sibling:
+/// writeFileSync ignored `flag` entirely — `fs_write_bytes` is an
+/// unconditional truncate-write, so `{flag:"wx"}` silently clobbered an
+/// existing file instead of failing EEXIST, and `{flag:"a"}` truncated
+/// instead of appending). Node v24.19.0 oracle:
+///   flag wx on existing → EEXIST (content preserved);
+///   flag a  → appends; flag r+ → overwrite from position 0, no truncate;
+///   flag r  → EBADF on write (open succeeds read-only).
+/// Flags outside the node set fail loudly (EINVAL) instead of silently
+/// degrading to the default truncate form.
+fn write_file_with_flag(
+    path: &str,
+    bytes: &[u8],
+    flag: &str,
+) -> ::std::io::Result<()> {
+    use ::std::io::Write;
+    let mut opts = ::std::fs::OpenOptions::new();
+    match flag {
+        "w" | "w+" | "wx" | "wx+" => {
+            opts.write(true).truncate(true);
+            if flag.starts_with("wx") {
+                opts.create_new(true);
+            } else {
+                opts.create(true);
+            }
+        }
+        "a" | "a+" | "ax" | "ax+" | "as" | "as+" => {
+            opts.write(true).append(true);
+            if flag.starts_with("ax") {
+                opts.create_new(true);
+            } else {
+                opts.create(true);
+            }
+        }
+        "r+" | "rs+" | "sr+" => {
+            opts.write(true);
+        }
+        "r" | "rs" => {
+            // Node opens read-only, then the write syscall reports EBADF.
+            return ::std::result::Result::Err(::std::io::Error::from_raw_os_error(
+                libc::EBADF,
+            ));
+        }
+        _ => {
+            return ::std::result::Result::Err(::std::io::Error::new(
+                ::std::io::ErrorKind::InvalidInput,
+                format!("Unknown file open flag: {}", flag),
+            ));
+        }
+    }
+    let mut file = opts.open(path)?;
+    file.write_all(bytes)
+}
+
+/// Coerce a positional fs argument to the node `number` contract. `null`,
+/// `undefined`, and non-numeric values yield None so callers apply node's
+/// defaults (offset 0 / length = rest / position = current fd cursor).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn fs_number_arg(v: JSVal) -> Option<f64> {
+    if v.is_number() {
+        Some(v.to_number())
+    } else if v.is_int32() {
+        Some(v.to_int32() as f64)
+    } else {
+        None
+    }
+}
+
+/// `options[key]` as a string (GetProperty); None when absent/not a string.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn get_string_option(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    opt_index: u32,
+    key: &str,
+) -> Option<::std::string::String> {
+    if args.argc_ <= opt_index {
+        return None;
+    }
+    let opt_val = *args.get(opt_index).ptr;
+    if !opt_val.is_object() {
+        return None;
+    }
+    let mut wrapped_cx_opt =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref_opt = &mut wrapped_cx_opt;
+    rooted!(&in(cx_ref_opt) let obj = opt_val.to_object());
+    let c_key = ZBox::from_bytes(key.as_bytes());
+    let mut val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c_key.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut val,
+        },
+    );
+    if val.is_string() {
+        let s = val.to_string();
+        if !s.is_null() {
+            return Some(crate::jsstr_to_rust_string(cx, s));
+        }
+    }
+    None
+}
+
+/// writeFile / writeFileSync options: node accepts either the encoding
+/// shorthand string or an object carrying `encoding` and `flag`.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn write_file_options(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    opt_index: u32,
+) -> (Option<::std::string::String>, Option<::std::string::String>) {
+    let encoding = get_encoding_opt(cx, args, opt_index);
+    let flag = get_string_option(cx, args, opt_index, "flag");
+    (encoding, flag)
+}
+
+/// UTF-16 code units of a JSString (node's Buffer.from(string, enc) operates
+/// on code units, not on the UTF-8 projection: latin1/hex/base64 take the
+/// LOW BYTE of each unit and utf16le emits the units verbatim).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn js_string_code_units(
+    cx: *mut JSContext,
+    s: *mut JSString,
+) -> ::std::vec::Vec<u16> {
+    if s.is_null() {
+        return ::std::vec::Vec::new();
+    }
+    if JS_DeprecatedStringHasLatin1Chars(s) {
+        let mut length: usize = 0;
+        let ptr = JS_GetLatin1StringCharsAndLength(cx, ::std::ptr::null(), s, &mut length);
+        if ptr.is_null() {
+            return ::std::vec::Vec::new();
+        }
+        let mut out = ::std::vec::Vec::with_capacity(length);
+        for i in 0..length {
+            out.push(unsafe { *ptr.add(i) } as u16);
+        }
+        out
+    } else {
+        let mut length: usize = 0;
+        let ptr = JS_GetTwoByteStringCharsAndLength(cx, ::std::ptr::null(), s, &mut length);
+        if ptr.is_null() {
+            return ::std::vec::Vec::new();
+        }
+        unsafe { ::std::slice::from_raw_parts(ptr, length) }.to_vec()
+    }
+}
+
+fn base64_alphabet_index(b: u8, url_safe: bool) -> ::std::option::Option<u8> {
+    match b {
+        b'A'..=b'Z' => ::std::option::Option::Some(b - b'A'),
+        b'a'..=b'z' => ::std::option::Option::Some(b - b'a' + 26),
+        b'0'..=b'9' => ::std::option::Option::Some(b - b'0' + 52),
+        b'+' => ::std::option::Option::Some(62),
+        b'/' => ::std::option::Option::Some(63),
+        b'-' if url_safe => ::std::option::Option::Some(62),
+        b'_' if url_safe => ::std::option::Option::Some(63),
+        _ => ::std::option::Option::None,
+    }
+}
+
+/// node `Buffer.from(str, 'base64'|'base64url')`: walk code units, keep the
+/// low byte, skip non-alphabet units, stop at '=' (literal or low-byte 0x3D),
+/// then decode 4→3.
+fn base64_low_byte_decode_units(units: &[u16], url_safe: bool) -> ::std::vec::Vec<u8> {
+    let mut cleaned: ::std::vec::Vec<u8> = ::std::vec::Vec::with_capacity(units.len());
+    for &unit in units {
+        let low = (unit & 0xFF) as u8;
+        if low == b'=' {
+            break;
+        }
+        if let ::std::option::Option::Some(idx) = base64_alphabet_index(low, url_safe) {
+            cleaned.push(idx);
+        }
+    }
+    let mut out = ::std::vec::Vec::with_capacity(cleaned.len() * 3 / 4);
+    let mut i = 0;
+    while i + 1 < cleaned.len() {
+        let c0 = cleaned[i] as u32;
+        let c1 = cleaned[i + 1] as u32;
+        let triplet = (c0 << 18) | (c1 << 12);
+        out.push(((triplet >> 16) & 0xFF) as u8);
+        if i + 2 < cleaned.len() {
+            let triplet = triplet | ((cleaned[i + 2] as u32) << 6);
+            out.push(((triplet >> 8) & 0xFF) as u8);
+            if i + 3 < cleaned.len() {
+                let triplet = triplet | cleaned[i + 3] as u32;
+                out.push((triplet & 0xFF) as u8);
+            }
+        }
+        i += 4;
+    }
+    out
+}
+
+/// Node `Buffer.from(str, encoding)` byte projection. Single source for the
+/// whole writeFile/appendFile family (sync/async/promises/FileHandle), so the
+/// options.encoding honored on one face cannot drift from the others.
+/// None/absent/unknown → UTF-8 (bao's long-standing permissive posture).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn encode_write_string(
+    cx: *mut JSContext,
+    s: *mut JSString,
+    encoding: ::std::option::Option<&str>,
+) -> ::std::vec::Vec<u8> {
+    let enc = encoding.unwrap_or("").to_ascii_lowercase();
+    match enc.as_str() {
+        "latin1" | "binary" | "ascii" => js_string_code_units(cx, s)
+            .iter()
+            .map(|u| *u as u8)
+            .collect(),
+        "utf16le" | "utf-16le" | "ucs2" | "ucs-2" => {
+            let units = js_string_code_units(cx, s);
+            let mut out = ::std::vec::Vec::with_capacity(units.len() * 2);
+            for unit in units {
+                out.extend_from_slice(&unit.to_le_bytes());
+            }
+            out
+        }
+        "hex" => {
+            // Pairs of low bytes; stop at the first non-hex pair and discard
+            // a trailing odd digit (node's lenient decode, mirroring the
+            // Buffer.from face).
+            let units = js_string_code_units(cx, s);
+            let mut out = ::std::vec::Vec::with_capacity(units.len() / 2);
+            let mut i = 0;
+            while i + 1 < units.len() {
+                let hi = ((units[i] & 0xFF) as u8 as char).to_digit(16);
+                let lo = ((units[i + 1] & 0xFF) as u8 as char).to_digit(16);
+                match (hi, lo) {
+                    (::std::option::Option::Some(h), ::std::option::Option::Some(l)) => {
+                        out.push(((h << 4) | l) as u8);
+                        i += 2;
+                    }
+                    _ => break,
+                }
+            }
+            out
+        }
+        "base64" => base64_low_byte_decode_units(&js_string_code_units(cx, s), false),
+        "base64url" => base64_low_byte_decode_units(&js_string_code_units(cx, s), true),
+        _ => crate::jsstr_to_rust_string(cx, s).into_bytes(),
+    }
+}
+
+/// Node's validateFunction message tail for the "Received ..." clause: the
+/// last argument is the callback slot the caller failed to fill with a
+/// function (`undefined` when absent, `type string ('utf8')` for the legacy
+/// third-arg encoding form, `an instance of Object` for an options object).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn describe_received_fs_arg(cx: *mut JSContext, args: &CallArgs) -> ::std::string::String {
+    if args.argc_ == 0 {
+        return "undefined".to_string();
+    }
+    let v = *args.get(args.argc_ - 1).ptr;
+    if v.is_undefined() {
+        "undefined".to_string()
+    } else if v.is_null() {
+        "null".to_string()
+    } else if v.is_string() {
+        let s = v.to_string();
+        if s.is_null() {
+            "type string".to_string()
+        } else {
+            format!(
+                "type string ({:?})",
+                crate::jsstr_to_rust_string(cx, s)
+            )
+        }
+    } else if v.is_int32() {
+        format!("type number ({})", v.to_int32())
+    } else if v.is_double() {
+        format!("type number ({})", v.to_double())
+    } else if v.is_boolean() {
+        format!("type boolean ({})", v.to_boolean())
+    } else if v.is_object() {
+        "an instance of Object".to_string()
+    } else {
+        "an unexpected value".to_string()
+    }
+}
+
+/// Data argument → bytes for the writeFile/appendFile family. Strings honor
+/// options.encoding; Buffer/TypedArray/DataView/ArrayBuffer inputs are raw.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn write_file_data_bytes(
+    cx: *mut JSContext,
+    data_val: JSVal,
+    encoding: ::std::option::Option<&str>,
+) -> ::std::vec::Vec<u8> {
+    if data_val.is_string() {
+        let s = data_val.to_string();
+        if s.is_null() {
+            ::std::vec::Vec::new()
+        } else {
+            encode_write_string(cx, s, encoding)
+        }
+    } else if data_val.is_object() {
+        crate::node_crypto::extract_buffer_bytes(cx, data_val)
+    } else {
+        ::std::vec::Vec::new()
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1469,21 +1914,15 @@ unsafe extern "C" fn fs_write_file_sync(cx: *mut JSContext, argc: u32, vp: *mut 
     } else {
         UndefinedValue()
     };
+    // Node: writeFileSync(file, data[, options]) — options.flag is honored
+    // (C1/C11 registry: it was ignored, always truncate-write) and a string
+    // data argument is encoded per options.encoding (node v24.19.0 oracle:
+    // latin1 "é" → 0xE9, hex "6162" → 0x61 0x62).
+    let (encoding, flag) = write_file_options(cx, &args, 2);
+    let flag = flag.unwrap_or_else(|| "w".to_string());
 
-    let result = if data_val.is_string() {
-        let s = data_val.to_string();
-        if !s.is_null() {
-            let rust_str = crate::jsstr_to_rust_string(cx, s);
-            fs_write_bytes(&path, rust_str.as_bytes())
-        } else {
-            fs_write_bytes(&path, &[] as &[u8])
-        }
-    } else if data_val.is_object() {
-        let bytes = crate::node_crypto::extract_buffer_bytes(cx, data_val);
-        fs_write_bytes(&path, &bytes)
-    } else {
-        fs_write_bytes(&path, &[] as &[u8])
-    };
+    let bytes = write_file_data_bytes(cx, data_val, encoding.as_deref());
+    let result = write_file_with_flag(&path, &bytes, &flag);
 
     match result {
         ::std::result::Result::Ok(()) => {
@@ -1611,18 +2050,9 @@ unsafe extern "C" fn fs_append_file_sync(cx: *mut JSContext, argc: u32, vp: *mut
     } else {
         UndefinedValue()
     };
-    let data = if data_val.is_string() {
-        let s = data_val.to_string();
-        if !s.is_null() {
-            crate::jsstr_to_rust_string(cx, s).into_bytes()
-        } else {
-            Vec::new()
-        }
-    } else if data_val.is_object() {
-        crate::node_crypto::extract_buffer_bytes(cx, data_val)
-    } else {
-        Vec::new()
-    };
+    // appendFile(string, options.encoding) — same encode face as writeFile.
+    let encoding = get_encoding_opt(cx, &args, 2);
+    let data = write_file_data_bytes(cx, data_val, encoding.as_deref());
 
     match fs_append_bytes(&path, &data) {
         ::std::result::Result::Ok(()) => {
@@ -1855,6 +2285,26 @@ unsafe extern "C" fn fs_rmdir_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     }
 }
 
+/// Node `rm(path[, options])` / `rmSync` core. `force: true` silences ENOENT
+/// only (node: "exceptions are ignored if path does not exist"); every other
+/// errno still surfaces. C1 #4 / C11 registry: bao ignored the force flag and
+/// threw ENOENT for a missing path (node v24.19.0 oracle: NOTHROW).
+fn rm_with_options(path: &str, recursive: bool, force: bool) -> ::std::io::Result<()> {
+    let result = if recursive {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    };
+    match result {
+        ::std::result::Result::Err(e)
+            if force && e.kind() == ::std::io::ErrorKind::NotFound =>
+        {
+            ::std::result::Result::Ok(())
+        }
+        other => other,
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn fs_rm_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -1868,12 +2318,8 @@ unsafe extern "C" fn fs_rm_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         return false;
     }
     let recursive = get_bool_option(cx, &args, 1, "recursive");
-    let result = if recursive {
-        fs::remove_dir_all(&path)
-    } else {
-        fs::remove_file(&path)
-    };
-    match result {
+    let force = get_bool_option(cx, &args, 1, "force");
+    match rm_with_options(&path, recursive, force) {
         ::std::result::Result::Ok(()) => {
             args.rval().set(UndefinedValue());
             true
@@ -2131,6 +2577,20 @@ unsafe extern "C" fn fs_cp(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> boo
         ::std::result::Result::Err(b) => return b,
     };
     let error_on_exist = get_bool_option(cx, &args, 2, "errorOnExist");
+
+    // Node: fs.cp(src, dest[, options], callback). The callback branch was
+    // missing (C1 #17: a supplied cb was never delivered — the copy ran
+    // synchronously and the completion was silent). Deliver on the carrier
+    // with the node-shaped (err) contract, including copy failures.
+    if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 2) {
+        spawn_fs_async(cx, "cp", from.clone(), callback, None, move || {
+            cp_recursive(Path::new(&from), Path::new(&to), error_on_exist)
+                .map(|_| FsAsyncResult::OkVoid)
+        });
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
     let res = cp_recursive(Path::new(&from), Path::new(&to), error_on_exist);
     if let ::std::result::Result::Err(e) = res {
         let msg = format!("cp: {}", e);
@@ -3486,31 +3946,34 @@ unsafe extern "C" fn fs_write_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     } else {
         UndefinedValue()
     };
-    // Buffer/TypedArray data must write its raw bytes here too — the sync
-    // face carried the extract_buffer_bytes branch but this async face
-    // silently wrote 0 bytes for Buffer input (BUG-351 class residual).
-    let bytes = if data_val.is_string() {
-        let s = data_val.to_string();
-        if !s.is_null() {
-            crate::jsstr_to_rust_string(cx, s).into_bytes()
-        } else if data_val.is_object() {
-            crate::node_crypto::extract_buffer_bytes(cx, data_val)
-        } else {
-            Vec::new()
+    // Buffer/TypedArray data must write its raw bytes here too; strings are
+    // encoded per options.encoding (node v24.19.0 oracle: latin1 "é" → 0xE9).
+    let (encoding, flag) = write_file_options(cx, &args, 2);
+    let flag = flag.unwrap_or_else(|| "w".to_string());
+    let bytes = write_file_data_bytes(cx, data_val, encoding.as_deref());
+
+    // Node: writeFile(file, data[, options], callback) REQUIRES the callback
+    // (ERR_INVALID_ARG_TYPE on a missing/non-function cb). The former
+    // no-callback sync fallback diverged from node and is gone; callers that
+    // want the synchronous face use writeFileSync.
+    let callback = match extract_callback_and_encoding(cx, &args, 2) {
+        Some((callback, _)) => callback,
+        None => {
+            return crate::bun_inspect_api::throw_invalid_arg_type(
+                cx,
+                &format!(
+                    "The \"cb\" argument must be of type function. Received {}",
+                    describe_received_fs_arg(cx, &args)
+                ),
+            );
         }
-    } else if data_val.is_object() {
-        crate::node_crypto::extract_buffer_bytes(cx, data_val)
-    } else {
-        Vec::new()
     };
 
-    match fs_write_bytes(&path, &bytes) {
-        ::std::result::Result::Ok(()) => {
-            args.rval().set(UndefinedValue());
-            true
-        }
-        ::std::result::Result::Err(e) => throw_fs_error(cx, "writeFile", &path, &e),
-    }
+    spawn_fs_async(cx, "writeFile", path.clone(), callback, None, move || {
+        write_file_with_flag(&path, &bytes, &flag).map(|_| FsAsyncResult::OkVoid)
+    });
+    args.rval().set(UndefinedValue());
+    true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -3641,18 +4104,9 @@ unsafe extern "C" fn fs_append_file(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     } else {
         UndefinedValue()
     };
-    let data = if data_val.is_string() {
-        let s = data_val.to_string();
-        if !s.is_null() {
-            crate::jsstr_to_rust_string(cx, s).into_bytes()
-        } else {
-            Vec::new()
-        }
-    } else if data_val.is_object() {
-        crate::node_crypto::extract_buffer_bytes(cx, data_val)
-    } else {
-        Vec::new()
-    };
+    // appendFile(string, options.encoding) — same encode face as writeFile.
+    let encoding = get_encoding_opt(cx, &args, 2);
+    let data = write_file_data_bytes(cx, data_val, encoding.as_deref());
 
     if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 2) {
         spawn_fs_async(cx, "appendFile", path.clone(), callback, None, move || {
@@ -4943,20 +5397,74 @@ unsafe extern "C" fn fs_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     } else {
         65536
     };
+    // node contract: read(fd, buffer, offset, length, position) — a numeric
+    // position reads at that ABSOLUTE offset without moving the cursor
+    // (pread semantics); null/absent reads at the cursor (advancing it).
+    // Previously position was parsed but ignored — every read landed at the
+    // cursor (node v24.19.0 oracle: fs.read(fd, b, 1, 2, 0) reads file[0..2]).
+    let pos = if argc > 4 {
+        fs_number_arg(*args.get(4).ptr)
+    } else {
+        ::std::option::Option::None
+    };
+    let (use_pread, position) = (pos.is_some(), pos.unwrap_or(0.0) as i64);
 
     if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 5) {
-        spawn_fs_async(
+        // node contract: the callback receives the SAME buffer object the
+        // caller passed, filled at [offset, offset + bytesRead). Root it for
+        // the worker window; fail closed (rather than silently not filling)
+        // if the root registration fails.
+        let buf_arg = if argc > 1 {
+            *args.get(1).ptr
+        } else {
+            UndefinedValue()
+        };
+        let writeback_offset: usize = if argc > 2 {
+            let v = *args.get(2).ptr;
+            if v.is_int32() {
+                v.to_int32().max(0) as usize
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        let writeback: ::std::option::Option<RawValueRootGuard> = if buf_arg.is_object() {
+            match RawValueRootGuard::new(cx, ::std::slice::from_ref(&buf_arg), c"fs_read_buffer") {
+                ::std::option::Option::Some(g) => ::std::option::Option::Some(g),
+                ::std::option::Option::None => {
+                    JS_ReportErrorUTF8(cx, c"read: failed to root the caller buffer".as_ptr());
+                    return false;
+                }
+            }
+        } else {
+            ::std::option::Option::None
+        };
+        spawn_fs_async_writeback(
             cx,
             "read",
             format!("fd:{}", fd),
             callback,
             None,
+            writeback,
+            writeback_offset,
             move || {
                 let mut buf = vec![0u8; length];
                 #[cfg(unix)]
                 {
-                    let bytes_read = unsafe {
-                        libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length)
+                    let bytes_read = if use_pread {
+                        unsafe {
+                            libc::pread(
+                                fd,
+                                buf.as_mut_ptr() as *mut ::std::ffi::c_void,
+                                length,
+                                position,
+                            )
+                        }
+                    } else {
+                        unsafe {
+                            libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length)
+                        }
                     };
                     if bytes_read >= 0 {
                         buf.truncate(bytes_read as usize);
@@ -4970,6 +5478,7 @@ unsafe extern "C" fn fs_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
                 }
                 #[cfg(not(unix))]
                 {
+                    let _ = (use_pread, position);
                     Ok(FsAsyncResult::OkRead {
                         bytes_read: 0,
                         buffer: buf,
@@ -4984,8 +5493,18 @@ unsafe extern "C" fn fs_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     let mut buf = vec![0u8; length];
     #[cfg(unix)]
     {
-        let bytes_read =
-            unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length) };
+        let bytes_read = if use_pread {
+            unsafe {
+                libc::pread(
+                    fd,
+                    buf.as_mut_ptr() as *mut ::std::ffi::c_void,
+                    length,
+                    position,
+                )
+            }
+        } else {
+            unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length) }
+        };
         if bytes_read >= 0 {
             buf.truncate(bytes_read as usize);
             // node contract: read(buffer, offset, length, position) ALSO fills the
@@ -5177,7 +5696,186 @@ unsafe extern "C" fn fs_readlink(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn fs_readv(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    fs_read(cx, argc, vp)
+    // Node: readv(fd, buffers[, position], cb) — scatter-gather read into the
+    // CALLER's views; cb(null, bytesRead). Previously this face aliased
+    // fs.read, so the buffers array was misread as an offset/length pair and
+    // the caller's buffers were never filled.
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 {
+        *args.get(0).ptr
+    } else {
+        UndefinedValue()
+    };
+    let fd = if fd_val.is_int32() {
+        fd_val.to_int32()
+    } else {
+        -1
+    };
+    let buffers_val = if argc > 1 {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
+    if !buffers_val.is_object() {
+        JS_ReportErrorUTF8(cx, c"readv: buffers must be an array".as_ptr());
+        return false;
+    }
+    let pos_arg = if argc > 2 {
+        *args.get(2).ptr
+    } else {
+        UndefinedValue()
+    };
+    let pos = fs_number_arg(pos_arg);
+    let (use_pread, position) = (pos.is_some(), pos.unwrap_or(-1.0) as i64);
+
+    let callback = match extract_callback_and_encoding(cx, &args, 2) {
+        Some((callback, _)) => callback,
+        None => {
+            return crate::bun_inspect_api::throw_invalid_arg_type(
+                cx,
+                "The \"cb\" argument must be of type function. Received undefined",
+            );
+        }
+    };
+
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let buffers_obj = buffers_val.to_object());
+    let mut vals: Vec<JSVal> = Vec::new();
+    let mut lens: Vec<usize> = Vec::new();
+    let mut buf_idx: u32 = 0;
+    loop {
+        let mut elem = UndefinedValue();
+        JS_GetElement(
+            cx,
+            buffers_obj.handle().into(),
+            buf_idx,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut elem,
+            },
+        );
+        if elem.is_undefined() {
+            break;
+        }
+        if !elem.is_object() {
+            JS_ReportErrorUTF8(cx, c"readv: buffers must be an array of Buffers".as_ptr());
+            return false;
+        }
+        let view = elem.to_object();
+        let len = JS_GetTypedArrayByteLength(view) as usize;
+        let mut is_shared = false;
+        let data = JS_GetUint8ArrayData(view, &mut is_shared, ::std::ptr::null());
+        if data.is_null() {
+            JS_ReportErrorUTF8(cx, c"readv: buffers must be an array of Buffers".as_ptr());
+            return false;
+        }
+        if len > 0 {
+            vals.push(elem);
+            lens.push(len);
+        }
+        buf_idx += 1;
+    }
+
+    let writeback: ::std::option::Option<RawValueRootGuard> = if vals.is_empty() {
+        ::std::option::Option::None
+    } else {
+        match RawValueRootGuard::new(cx, &vals, c"fs_readv_iovecs") {
+            ::std::option::Option::Some(g) => ::std::option::Option::Some(g),
+            ::std::option::Option::None => {
+                JS_ReportErrorUTF8(cx, c"readv: failed to root the caller buffers".as_ptr());
+                return false;
+            }
+        }
+    };
+    let total: usize = lens.iter().sum();
+
+    spawn_fs_async_writeback(
+        cx,
+        "readv",
+        format!("fd:{}", fd),
+        callback,
+        None,
+        writeback,
+        0,
+        move || {
+            let mut buf = vec![0u8; total];
+            let bytes_read: usize;
+            #[cfg(unix)]
+            {
+                if total == 0 {
+                    bytes_read = 0;
+                } else if use_pread {
+                    let mut acc: usize = 0;
+                    for &len in &lens {
+                        let n = unsafe {
+                            libc::pread(
+                                fd,
+                                buf.as_mut_ptr().add(acc) as *mut ::std::ffi::c_void,
+                                len,
+                                position + acc as i64,
+                            )
+                        };
+                        if n < 0 {
+                            return ::std::result::Result::Err(::std::io::Error::last_os_error());
+                        }
+                        acc += n as usize;
+                        if (n as usize) < len {
+                            break;
+                        }
+                    }
+                    bytes_read = acc;
+                } else {
+                    let n = unsafe {
+                        libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, total)
+                    };
+                    if n < 0 {
+                        return ::std::result::Result::Err(::std::io::Error::last_os_error());
+                    }
+                    bytes_read = n as usize;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                unsafe extern "C" {
+                    fn _lseek(fd: i32, off: i64, origin: i32) -> i64;
+                }
+                const SEEK_SET: i32 = 0;
+                const SEEK_CUR: i32 = 1;
+                let mut acc: usize = 0;
+                if total > 0 {
+                    for &len in &lens {
+                        let n = if use_pread {
+                            let saved = unsafe { _lseek(fd, 0, SEEK_CUR) };
+                            unsafe { _lseek(fd, position + acc as i64, SEEK_SET) };
+                            let n =
+                                win_fd::_read(fd, buf.as_mut_ptr().add(acc) as *mut _, len as u32);
+                            unsafe { _lseek(fd, saved, SEEK_SET) };
+                            n
+                        } else {
+                            win_fd::_read(fd, buf.as_mut_ptr().add(acc) as *mut _, len as u32)
+                        };
+                        if n < 0 {
+                            return ::std::result::Result::Err(::std::io::Error::last_os_error());
+                        }
+                        acc += n as usize;
+                        if (n as usize) < len {
+                            break;
+                        }
+                    }
+                }
+                bytes_read = acc;
+            }
+            buf.truncate(bytes_read);
+            ::std::result::Result::Ok(FsAsyncResult::OkReadv {
+                bytes_read: bytes_read as i32,
+                buffer: buf,
+            })
+        },
+    );
+    args.rval().set(UndefinedValue());
+    true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -5263,26 +5961,17 @@ unsafe extern "C" fn fs_rm(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> boo
         return false;
     }
     let recursive = get_bool_option(cx, &args, 1, "recursive");
+    let force = get_bool_option(cx, &args, 1, "force");
 
     if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 1) {
         spawn_fs_async(cx, "rm", path.clone(), callback, None, move || {
-            if recursive {
-                fs::remove_dir_all(&path)
-            } else {
-                fs::remove_file(&path)
-            }
-            .map(|_| FsAsyncResult::OkVoid)
+            rm_with_options(&path, recursive, force).map(|_| FsAsyncResult::OkVoid)
         });
         args.rval().set(UndefinedValue());
         return true;
     }
 
-    let result = if recursive {
-        fs::remove_dir_all(&path)
-    } else {
-        fs::remove_file(&path)
-    };
-    match result {
+    match rm_with_options(&path, recursive, force) {
         ::std::result::Result::Ok(()) => {
             args.rval().set(UndefinedValue());
             true
@@ -5577,46 +6266,140 @@ unsafe extern "C" fn fs_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     } else {
         -1
     };
-    let data_val = if argc > 1 {
+    let (bytes, offset, length, use_pwrite, position) =
+        match resolve_write_window(cx, &args, "write") {
+            ::std::result::Result::Ok(w) => w,
+            ::std::result::Result::Err(()) => return false,
+        };
+
+    // Node: write(fd, buffer[, offset[, length[, position]]], cb) and
+    // write(fd, string[, position[, encoding]], cb). The callback is
+    // REQUIRED (node v24.19.0 oracle: missing/non-function cb →
+    // ERR_INVALID_ARG_TYPE); the former no-callback sync fallback is gone
+    // (writeSync is the synchronous face).
+    let callback = match extract_callback_and_encoding(cx, &args, 2) {
+        Some((callback, _)) => callback,
+        None => {
+            return crate::bun_inspect_api::throw_invalid_arg_type(
+                cx,
+                &format!(
+                    "The \"cb\" argument must be of type function. Received {}",
+                    describe_received_fs_arg(cx, &args)
+                ),
+            );
+        }
+    };
+    spawn_fs_async(
+        cx,
+        "write",
+        format!("fd:{}", fd),
+        callback,
+        None,
+        move || {
+            let written = write_window(fd, &bytes, offset, length, use_pwrite, position);
+            if written >= 0 {
+                Ok(FsAsyncResult::OkWrite(written as i32))
+            } else {
+                Err(::std::io::Error::last_os_error())
+            }
+        },
+    );
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// Node writev buffer-array flattening: each element is a Buffer/TypedArray
+/// or string; the scatter-gather payload is the sequential concatenation.
+/// Returns None when `buffers` is not an array-like object.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn collect_writev_bytes(
+    cx: *mut JSContext,
+    buffers_val: JSVal,
+    op: &str,
+) -> ::std::result::Result<Vec<u8>, ()> {
+    if !buffers_val.is_object() {
+        let c_msg = ZBox::from_bytes(format!("{}: buffers must be an array", op).as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+        return ::std::result::Result::Err(());
+    }
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let buffers_obj = buffers_val.to_object());
+    let mut all: Vec<u8> = Vec::new();
+    let mut buf_idx: u32 = 0;
+    loop {
+        let mut elem = UndefinedValue();
+        JS_GetElement(
+            cx,
+            buffers_obj.handle().into(),
+            buf_idx,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut elem,
+            },
+        );
+        if elem.is_undefined() {
+            break;
+        }
+        if elem.is_string() {
+            let s = elem.to_string();
+            if !s.is_null() {
+                all.extend_from_slice(&crate::jsstr_to_rust_string(cx, s).into_bytes());
+            }
+        } else if elem.is_object() {
+            all.extend_from_slice(&crate::node_crypto::extract_buffer_bytes(cx, elem));
+        }
+        buf_idx += 1;
+    }
+    ::std::result::Result::Ok(all)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_writev(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 {
+        *args.get(0).ptr
+    } else {
+        UndefinedValue()
+    };
+    let fd = if fd_val.is_int32() {
+        fd_val.to_int32()
+    } else {
+        -1
+    };
+    let buffers_val = if argc > 1 {
         *args.get(1).ptr
     } else {
         UndefinedValue()
     };
-    let bytes = if data_val.is_string() {
-        let s = data_val.to_string();
-        if !s.is_null() {
-            crate::jsstr_to_rust_string(cx, s).into_bytes()
-        } else {
-            Vec::new()
-        }
-    } else if data_val.is_object() {
-        crate::node_crypto::extract_buffer_bytes(cx, data_val)
-    } else {
-        Vec::new()
+    let bytes = match collect_writev_bytes(cx, buffers_val, "writev") {
+        ::std::result::Result::Ok(b) => b,
+        ::std::result::Result::Err(()) => return false,
     };
+    let pos_arg = if argc > 2 {
+        *args.get(2).ptr
+    } else {
+        UndefinedValue()
+    };
+    let pos = fs_number_arg(pos_arg);
+    let (use_pwrite, position) = (pos.is_some(), pos.unwrap_or(-1.0) as i64);
 
-    if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 5) {
+    // Node: writev(fd, buffers[, position], callback).
+    if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 2) {
         spawn_fs_async(
             cx,
-            "write",
+            "writev",
             format!("fd:{}", fd),
             callback,
             None,
             move || {
-                #[cfg(unix)]
-                {
-                    let written = unsafe {
-                        libc::write(fd, bytes.as_ptr() as *const ::std::ffi::c_void, bytes.len())
-                    };
-                    if written >= 0 {
-                        Ok(FsAsyncResult::OkWrite(written as i32))
-                    } else {
-                        Err(::std::io::Error::last_os_error())
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    Ok(FsAsyncResult::OkWrite(0))
+                let written =
+                    write_window(fd, &bytes, 0, bytes.len(), use_pwrite, position);
+                if written >= 0 {
+                    Ok(FsAsyncResult::OkWrite(written as i32))
+                } else {
+                    Err(::std::io::Error::last_os_error())
                 }
             },
         );
@@ -5624,32 +6407,18 @@ unsafe extern "C" fn fs_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         return true;
     }
 
-    #[cfg(unix)]
-    {
-        let written =
-            unsafe { libc::write(fd, bytes.as_ptr() as *const ::std::ffi::c_void, bytes.len()) };
-        if written >= 0 {
-            args.rval().set(mozjs::jsval::DoubleValue(written as f64));
-            true
-        } else {
-            throw_fs_error(
-                cx,
-                "write",
-                &format!("fd:{}", fd),
-                &::std::io::Error::last_os_error(),
-            )
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        args.rval().set(UndefinedValue());
+    let written = write_window(fd, &bytes, 0, bytes.len(), use_pwrite, position);
+    if written >= 0 {
+        args.rval().set(mozjs::jsval::DoubleValue(written as f64));
         true
+    } else {
+        throw_fs_error(
+            cx,
+            "writev",
+            &format!("fd:{}", fd),
+            &::std::io::Error::last_os_error(),
+        )
     }
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn fs_writev(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    fs_write(cx, argc, vp)
 }
 
 // --- fs.promises ---
@@ -5788,20 +6557,12 @@ unsafe extern "C" fn fs_promises_write_file(cx: *mut JSContext, argc: u32, vp: *
     } else {
         UndefinedValue()
     };
-    // Buffer/TypedArray input writes its raw bytes (BUG-351 class parity with
-    // the sync face — this promise face silently wrote 0 bytes before).
-    let bytes = if data_val.is_string() {
-        let s = data_val.to_string();
-        if !s.is_null() {
-            crate::jsstr_to_rust_string(cx, s).into_bytes()
-        } else {
-            Vec::new()
-        }
-    } else if data_val.is_object() {
-        crate::node_crypto::extract_buffer_bytes(cx, data_val)
-    } else {
-        Vec::new()
-    };
+    // Node: promises.writeFile(file, data[, options]) — options.flag and
+    // options.encoding honored (string data encodes per encoding, same
+    // single-source helper as the sync/callback faces).
+    let (encoding, flag) = write_file_options(cx, &args, 2);
+    let flag = flag.unwrap_or_else(|| "w".to_string());
+    let bytes = write_file_data_bytes(cx, data_val, encoding.as_deref());
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -5810,7 +6571,7 @@ unsafe extern "C" fn fs_promises_write_file(cx: *mut JSContext, argc: u32, vp: *
         args.rval().set(UndefinedValue());
         return false;
     }
-    match fs_write_bytes(&path, &bytes) {
+    match write_file_with_flag(&path, &bytes, &flag) {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
             reject_fs_error(cx, promise.get(), "writeFile", &path, &e)
@@ -5969,18 +6730,9 @@ unsafe extern "C" fn fs_promises_append_file(
     } else {
         UndefinedValue()
     };
-    let data = if data_val.is_string() {
-        let s = data_val.to_string();
-        if !s.is_null() {
-            crate::jsstr_to_rust_string(cx, s).into_bytes()
-        } else {
-            Vec::new()
-        }
-    } else if data_val.is_object() {
-        crate::node_crypto::extract_buffer_bytes(cx, data_val)
-    } else {
-        Vec::new()
-    };
+    // promises.appendFile(string, options.encoding) — same encode face.
+    let encoding = get_encoding_opt(cx, &args, 2);
+    let data = write_file_data_bytes(cx, data_val, encoding.as_deref());
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -6122,6 +6874,7 @@ unsafe extern "C" fn fs_promises_rm(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         ::std::result::Result::Err(b) => return b,
     };
     let recursive = get_bool_option(cx, &args, 1, "recursive");
+    let force = get_bool_option(cx, &args, 1, "force");
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -6130,12 +6883,7 @@ unsafe extern "C" fn fs_promises_rm(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         args.rval().set(UndefinedValue());
         return false;
     }
-    let result = if recursive {
-        fs::remove_dir_all(&path)
-    } else {
-        fs::remove_file(&path)
-    };
-    match result {
+    match rm_with_options(&path, recursive, force) {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
             reject_fs_error(cx, promise.get(), "rm", &path, &e)
@@ -6581,6 +7329,14 @@ unsafe extern "C" fn fs_promises_read(cx: *mut JSContext, argc: u32, vp: *mut JS
     } else {
         65536
     };
+    // node contract: a numeric position reads at that ABSOLUTE offset without
+    // moving the cursor (pread); null/absent reads at the cursor.
+    let pos = if argc > 4 {
+        fs_number_arg(*args.get(4).ptr)
+    } else {
+        ::std::option::Option::None
+    };
+    let (use_pread, position) = (pos.is_some(), pos.unwrap_or(0.0) as i64);
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -6592,8 +7348,18 @@ unsafe extern "C" fn fs_promises_read(cx: *mut JSContext, argc: u32, vp: *mut JS
     let mut buf = vec![0u8; length];
     #[cfg(unix)]
     {
-        let bytes_read =
-            unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length) };
+        let bytes_read = if use_pread {
+            unsafe {
+                libc::pread(
+                    fd,
+                    buf.as_mut_ptr() as *mut ::std::ffi::c_void,
+                    length,
+                    position,
+                )
+            }
+        } else {
+            unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length) }
+        };
         if bytes_read >= 0 {
             buf.truncate(bytes_read as usize);
             // node contract: read(buffer, offset, length, position) ALSO fills the
@@ -7261,6 +8027,132 @@ unsafe extern "C" fn fs_read_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     }
 }
 
+/// Resolve node's write positional contract for the sync and async faces:
+///   buffer form: write(fd, buffer[, offset[, length[, position]]])
+///   string form: write(fd, string[, position[, encoding]])
+/// Returns (bytes, offset, length, use_pwrite, position). `position` numeric
+/// (including 0) → pwrite at that absolute offset; null/undefined → current
+/// fd cursor. Out-of-range offset/length reports a JS error and returns Err.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn resolve_write_window(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    op: &str,
+) -> ::std::result::Result<(Vec<u8>, usize, usize, bool, i64), ()> {
+    let data_val = if args.argc_ > 1 {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
+    if data_val.is_string() {
+        let s = data_val.to_string();
+        let bytes = if !s.is_null() {
+            crate::jsstr_to_rust_string(cx, s).into_bytes()
+        } else {
+            Vec::new()
+        };
+        let len = bytes.len();
+        let pos_arg = if args.argc_ > 2 {
+            *args.get(2).ptr
+        } else {
+            UndefinedValue()
+        };
+        let pos = fs_number_arg(pos_arg);
+        ::std::result::Result::Ok((bytes, 0, len, pos.is_some(), pos.unwrap_or(-1.0) as i64))
+    } else if data_val.is_object() {
+        let bytes = crate::node_crypto::extract_buffer_bytes(cx, data_val);
+        let byte_len = bytes.len();
+        let offset = if args.argc_ > 2 {
+            fs_number_arg(*args.get(2).ptr).unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        if !offset.is_finite() || offset < 0.0 || offset as usize > byte_len {
+            let c_msg = ZBox::from_bytes(format!("{}: offset is out of bounds", op).as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return ::std::result::Result::Err(());
+        }
+        let offset = offset as usize;
+        let length = if args.argc_ > 3 {
+            match fs_number_arg(*args.get(3).ptr) {
+                Some(n) => n,
+                None => (byte_len - offset) as f64,
+            }
+        } else {
+            (byte_len - offset) as f64
+        };
+        if !length.is_finite() || length < 0.0 || length as usize > byte_len - offset {
+            let c_msg = ZBox::from_bytes(format!("{}: length extends beyond buffer", op).as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return ::std::result::Result::Err(());
+        }
+        let length = length as usize;
+        let pos_arg = if args.argc_ > 4 {
+            *args.get(4).ptr
+        } else {
+            UndefinedValue()
+        };
+        let pos = fs_number_arg(pos_arg);
+        ::std::result::Result::Ok((bytes, offset, length, pos.is_some(), pos.unwrap_or(-1.0) as i64))
+    } else {
+        ::std::result::Result::Ok((Vec::new(), 0, 0, false, -1))
+    }
+}
+
+/// One write syscall for a resolved window. `pwrite` leaves the fd cursor
+/// untouched (node's positional form); the cursor form advances it.
+#[cfg(unix)]
+fn write_window(
+    fd: i32,
+    bytes: &[u8],
+    offset: usize,
+    length: usize,
+    use_pwrite: bool,
+    position: i64,
+) -> i64 {
+    let ptr = unsafe { bytes.as_ptr().add(offset) } as *const ::std::ffi::c_void;
+    // SAFETY: `ptr` points inside `bytes` for `length` bytes; no JS runs
+    // during the syscall, so the buffer cannot move.
+    unsafe {
+        if use_pwrite {
+            libc::pwrite(fd, ptr, length, position) as i64
+        } else {
+            libc::write(fd, ptr, length) as i64
+        }
+    }
+}
+
+/// Windows: CRT fd write. The positional form is seek-free on the caller's
+/// side via `_lseek` save/restore (same shape as readSync's pread shim).
+#[cfg(windows)]
+fn write_window(
+    fd: i32,
+    bytes: &[u8],
+    offset: usize,
+    length: usize,
+    use_pwrite: bool,
+    position: i64,
+) -> i64 {
+    unsafe extern "C" {
+        fn _lseek(fd: i32, off: i64, origin: i32) -> i64;
+    }
+    const SEEK_SET: i32 = 0;
+    const SEEK_CUR: i32 = 1;
+    let ptr = unsafe { bytes.as_ptr().add(offset) };
+    // SAFETY: `ptr` points inside `bytes` for `length` bytes.
+    unsafe {
+        if use_pwrite {
+            let saved = _lseek(fd, 0, SEEK_CUR);
+            _lseek(fd, position, SEEK_SET);
+            let n = win_fd::_write(fd, ptr as *const _, length as u32) as i64;
+            _lseek(fd, saved, SEEK_SET);
+            n
+        } else {
+            win_fd::_write(fd, ptr as *const _, length as u32) as i64
+        }
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn fs_write_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -7274,56 +8166,22 @@ unsafe extern "C" fn fs_write_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     } else {
         -1
     };
-    let data_val = if argc > 1 {
-        *args.get(1).ptr
+    let (bytes, offset, length, use_pwrite, position) =
+        match resolve_write_window(cx, &args, "writeSync") {
+            ::std::result::Result::Ok(w) => w,
+            ::std::result::Result::Err(()) => return false,
+        };
+    let written = write_window(fd, &bytes, offset, length, use_pwrite, position);
+    if written >= 0 {
+        args.rval().set(mozjs::jsval::DoubleValue(written as f64));
+        true
     } else {
-        UndefinedValue()
-    };
-    let bytes = if data_val.is_string() {
-        let s = data_val.to_string();
-        if !s.is_null() {
-            crate::jsstr_to_rust_string(cx, s).into_bytes()
-        } else {
-            Vec::new()
-        }
-    } else if data_val.is_object() {
-        crate::node_crypto::extract_buffer_bytes(cx, data_val)
-    } else {
-        Vec::new()
-    };
-    #[cfg(unix)]
-    {
-        let written =
-            unsafe { libc::write(fd, bytes.as_ptr() as *const ::std::ffi::c_void, bytes.len()) };
-        if written >= 0 {
-            args.rval().set(mozjs::jsval::DoubleValue(written as f64));
-            true
-        } else {
-            throw_fs_error(
-                cx,
-                "writeSync",
-                &format!("fd:{}", fd),
-                &::std::io::Error::last_os_error(),
-            )
-        }
-    }
-    #[cfg(windows)]
-    {
-        // SAFETY: plain CRT fd write (UCRT translates text modes per the
-        // fd's open flags).
-        let written =
-            unsafe { win_fd::_write(fd, bytes.as_ptr() as *const _, bytes.len() as u32) };
-        if written >= 0 {
-            args.rval().set(mozjs::jsval::DoubleValue(written as f64));
-            true
-        } else {
-            throw_fs_error(
-                cx,
-                "writeSync",
-                &format!("fd:{}", fd),
-                &::std::io::Error::last_os_error(),
-            )
-        }
+        throw_fs_error(
+            cx,
+            "writeSync",
+            &format!("fd:{}", fd),
+            &::std::io::Error::last_os_error(),
+        )
     }
 }
 
@@ -7699,38 +8557,153 @@ unsafe extern "C" fn fs_readv_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         JS_ReportErrorUTF8(cx, c"readvSync: buffers must be an array".as_ptr());
         return false;
     }
+    // Node: readvSync(fd, buffers[, position]) — fills each caller Buffer
+    // sequentially from the fd (position numeric → pread at that absolute
+    // offset; null/undefined → current cursor). C1 #3: bao read into an
+    // internal temp copy and left the caller's Buffers zero-filled.
+    let pos_arg = if argc > 2 {
+        *args.get(2).ptr
+    } else {
+        UndefinedValue()
+    };
+    let pos = fs_number_arg(pos_arg);
+    let (use_pread, position) = (pos.is_some(), pos.unwrap_or(-1.0) as i64);
+
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let buffers_obj = buffers_val.to_object());
-    let mut total_read: i32 = 0;
-    let mut buf_idx: u32 = 0;
-    loop {
-        let mut elem = UndefinedValue();
-        JS_GetElement(
-            cx,
-            buffers_obj.handle().into(),
-            buf_idx,
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut elem,
-            },
-        );
-        if elem.is_undefined() {
-            break;
+
+    #[cfg(unix)]
+    {
+        // iovec entries point straight at the caller's typed-array storage:
+        // no JS runs between acquisition and the syscall, so the buffers
+        // cannot be moved by the GC.
+        let mut iov: Vec<libc::iovec> = Vec::new();
+        let mut buf_idx: u32 = 0;
+        loop {
+            let mut elem = UndefinedValue();
+            JS_GetElement(
+                cx,
+                buffers_obj.handle().into(),
+                buf_idx,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut elem,
+                },
+            );
+            if elem.is_undefined() {
+                break;
+            }
+            if !elem.is_object() {
+                JS_ReportErrorUTF8(
+                    cx,
+                    c"readvSync: buffers must be an array of Buffers".as_ptr(),
+                );
+                return false;
+            }
+            let view = elem.to_object();
+            let len = mozjs_sys::jsapi::JS_GetTypedArrayByteLength(view) as usize;
+            let mut is_shared = false;
+            let data =
+                mozjs_sys::jsapi::JS_GetUint8ArrayData(view, &mut is_shared, ::std::ptr::null());
+            if data.is_null() {
+                JS_ReportErrorUTF8(
+                    cx,
+                    c"readvSync: buffers must be an array of Buffers".as_ptr(),
+                );
+                return false;
+            }
+            if len > 0 {
+                iov.push(libc::iovec {
+                    iov_base: data as *mut ::std::ffi::c_void,
+                    iov_len: len,
+                });
+            }
+            buf_idx += 1;
         }
-        if elem.is_object() {
-            let buf_bytes = crate::node_crypto::extract_buffer_bytes(cx, elem);
-            if !buf_bytes.is_empty() {
-                let mut write_buf = buf_bytes;
-                #[cfg(unix)]
-                {
-                    let n = unsafe {
-                        libc::read(
-                            fd,
-                            write_buf.as_mut_ptr() as *mut ::std::ffi::c_void,
-                            write_buf.len(),
-                        )
+
+        let total_read: i64 = if iov.is_empty() {
+            0
+        } else if use_pread {
+            // Sequential pread preserves readv's contract for regular files
+            // (fill in order; a short read means EOF, stop).
+            let mut total: i64 = 0;
+            for v in &iov {
+                let n =
+                    unsafe { libc::pread(fd, v.iov_base, v.iov_len, position + total) } as i64;
+                if n < 0 {
+                    return throw_fs_error(
+                        cx,
+                        "readvSync",
+                        &format!("fd:{}", fd),
+                        &::std::io::Error::last_os_error(),
+                    );
+                }
+                total += n;
+                if (n as usize) < v.iov_len {
+                    break;
+                }
+            }
+            total
+        } else {
+            unsafe { libc::readv(fd, iov.as_ptr(), iov.len() as i32) as i64 }
+        };
+        if total_read < 0 {
+            return throw_fs_error(
+                cx,
+                "readvSync",
+                &format!("fd:{}", fd),
+                &::std::io::Error::last_os_error(),
+            );
+        }
+        args.rval().set(mozjs::jsval::Int32Value(total_read as i32));
+        true
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: per-buffer CRT read; the positional form saves/restores
+        // the cursor (same shape as readSync's pread shim).
+        unsafe extern "C" {
+            fn _lseek(fd: i32, off: i64, origin: i32) -> i64;
+        }
+        const SEEK_SET: i32 = 0;
+        const SEEK_CUR: i32 = 1;
+        let mut total_read: i32 = 0;
+        let mut cursor: i64 = position;
+        let mut buf_idx: u32 = 0;
+        loop {
+            let mut elem = UndefinedValue();
+            JS_GetElement(
+                cx,
+                buffers_obj.handle().into(),
+                buf_idx,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut elem,
+                },
+            );
+            if elem.is_undefined() {
+                break;
+            }
+            if elem.is_object() {
+                let view = elem.to_object();
+                let len = mozjs_sys::jsapi::JS_GetTypedArrayByteLength(view) as usize;
+                let mut is_shared = false;
+                let data = mozjs_sys::jsapi::JS_GetUint8ArrayData(
+                    view,
+                    &mut is_shared,
+                    ::std::ptr::null(),
+                );
+                if len > 0 && !data.is_null() {
+                    let n = if use_pread {
+                        let saved = _lseek(fd, 0, SEEK_CUR);
+                        _lseek(fd, cursor, SEEK_SET);
+                        let n = win_fd::_read(fd, data as *mut _, len as u32);
+                        _lseek(fd, saved, SEEK_SET);
+                        n
+                    } else {
+                        win_fd::_read(fd, data as *mut _, len as u32)
                     };
                     if n < 0 {
                         return throw_fs_error(
@@ -7740,14 +8713,18 @@ unsafe extern "C" fn fs_readv_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
                             &::std::io::Error::last_os_error(),
                         );
                     }
-                    total_read += n as i32;
+                    total_read += n;
+                    cursor += n as i64;
+                    if (n as usize) < len {
+                        break;
+                    }
                 }
             }
+            buf_idx += 1;
         }
-        buf_idx += 1;
+        args.rval().set(mozjs::jsval::Int32Value(total_read));
+        true
     }
-    args.rval().set(mozjs::jsval::Int32Value(total_read));
-    true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -7768,63 +8745,31 @@ unsafe extern "C" fn fs_writev_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     } else {
         UndefinedValue()
     };
-    if !buffers_val.is_object() {
-        JS_ReportErrorUTF8(cx, c"writevSync: buffers must be an array".as_ptr());
-        return false;
-    }
-    let mut wrapped_cx =
-        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let buffers_obj = buffers_val.to_object());
-    let mut total_written: i32 = 0;
-    let mut buf_idx: u32 = 0;
-    loop {
-        let mut elem = UndefinedValue();
-        JS_GetElement(
+    let bytes = match collect_writev_bytes(cx, buffers_val, "writevSync") {
+        ::std::result::Result::Ok(b) => b,
+        ::std::result::Result::Err(()) => return false,
+    };
+    // Node: writevSync(fd, buffers[, position]) — position numeric writes at
+    // that absolute offset; null/undefined uses the fd cursor.
+    let pos_arg = if argc > 2 {
+        *args.get(2).ptr
+    } else {
+        UndefinedValue()
+    };
+    let pos = fs_number_arg(pos_arg);
+    let (use_pwrite, position) = (pos.is_some(), pos.unwrap_or(-1.0) as i64);
+    let written = write_window(fd, &bytes, 0, bytes.len(), use_pwrite, position);
+    if written >= 0 {
+        args.rval().set(mozjs::jsval::DoubleValue(written as f64));
+        true
+    } else {
+        throw_fs_error(
             cx,
-            buffers_obj.handle().into(),
-            buf_idx,
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut elem,
-            },
-        );
-        if elem.is_undefined() {
-            break;
-        }
-        let bytes = if elem.is_string() {
-            let s = elem.to_string();
-            if !s.is_null() {
-                crate::jsstr_to_rust_string(cx, s).into_bytes()
-            } else {
-                Vec::new()
-            }
-        } else if elem.is_object() {
-            crate::node_crypto::extract_buffer_bytes(cx, elem)
-        } else {
-            Vec::new()
-        };
-        if !bytes.is_empty() {
-            #[cfg(unix)]
-            {
-                let n = unsafe {
-                    libc::write(fd, bytes.as_ptr() as *const ::std::ffi::c_void, bytes.len())
-                };
-                if n < 0 {
-                    return throw_fs_error(
-                        cx,
-                        "writevSync",
-                        &format!("fd:{}", fd),
-                        &::std::io::Error::last_os_error(),
-                    );
-                }
-                total_written += n as i32;
-            }
-        }
-        buf_idx += 1;
+            "writevSync",
+            &format!("fd:{}", fd),
+            &::std::io::Error::last_os_error(),
+        )
     }
-    args.rval().set(mozjs::jsval::Int32Value(total_written));
-    true
 }
 
 // --- glob ---
@@ -9351,11 +10296,21 @@ unsafe extern "C" fn fh_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     let mut buf = vec![0u8; length];
     #[cfg(unix)]
     {
+        // node contract: a numeric position reads at that ABSOLUTE offset
+        // WITHOUT moving the cursor (pread); the former lseek(SET)+read pair
+        // dragged the cursor along, so a following cursor-form fh.read /
+        // fh.readFile started from position+len instead of where the caller
+        // left it (node v24.19.0 oracle: fh.read(b,0,2,0) then fh.read(b,0,2)
+        // reads file[0..2], and fh.readFile afterwards continues at 2).
         let bytes_read = if position >= 0 {
             unsafe {
-                libc::lseek(fd, position, libc::SEEK_SET);
+                libc::pread(
+                    fd,
+                    buf.as_mut_ptr() as *mut ::std::ffi::c_void,
+                    length,
+                    position,
+                )
             }
-            unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length) }
         } else {
             unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length) }
         };
@@ -9956,18 +10911,15 @@ unsafe extern "C" fn fh_append_file(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         return false;
     }
     let fd = get_hidden_int(cx, this.to_object(), "_fd");
-    let data = if argc > 0 && (*args.get(0).ptr).is_object() {
-        crate::node_crypto::extract_buffer_bytes(cx, *args.get(0).ptr)
-    } else if argc > 0 && (*args.get(0).ptr).is_string() {
-        let s = (*args.get(0).ptr).to_string();
-        if !s.is_null() {
-            crate::jsstr_to_rust_string(cx, s).into_bytes()
-        } else {
-            Vec::new()
-        }
+    // FileHandle.appendFile(data[, options]) — string data honors
+    // options.encoding (same single-source encoder as writeFile).
+    let data_val = if argc > 0 {
+        *args.get(0).ptr
     } else {
-        Vec::new()
+        UndefinedValue()
     };
+    let encoding = get_encoding_opt(cx, &args, 1);
+    let data = write_file_data_bytes(cx, data_val, encoding.as_deref());
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -10002,14 +10954,18 @@ unsafe extern "C" fn fh_append_file(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn fh_read_file(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
+unsafe extern "C" fn fh_read_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() {
         args.rval().set(UndefinedValue());
         return false;
     }
     let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    // Node: fh.readFile([options]) — options is the encoding shorthand string
+    // or {encoding}. C1 #13: bao always resolved a Buffer and ignored the
+    // argument (node v24.19.0 oracle: fh.readFile('utf8') → string).
+    let encoding = get_encoding_opt(cx, &args, 0);
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -10020,46 +10976,46 @@ unsafe extern "C" fn fh_read_file(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
     }
     #[cfg(unix)]
     {
-        let file_size = unsafe { libc::lseek(fd, 0, libc::SEEK_END) };
-        if file_size < 0 {
-            reject_with_error(
-                cx,
-                promise.get(),
-                &format!("FileHandle.readFile: {}", ::std::io::Error::last_os_error()),
-            );
-        } else {
-            unsafe {
-                libc::lseek(fd, 0, libc::SEEK_SET);
-            }
-            let mut buf = vec![0u8; file_size as usize];
-            let bytes_read = unsafe {
+        // node contract: FileHandle.readFile reads from the CURRENT file
+        // position to EOF (advancing the cursor), not from offset 0. The old
+        // lseek(END)→lseek(0) pair always re-read the whole file, so a second
+        // readFile after a cursor read returned the full content instead of "".
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = vec![0u8; 64 * 1024];
+        let mut read_err: ::std::option::Option<::std::io::Error> = ::std::option::Option::None;
+        loop {
+            let n = unsafe {
                 libc::read(
                     fd,
-                    buf.as_mut_ptr() as *mut ::std::ffi::c_void,
-                    file_size as usize,
+                    chunk.as_mut_ptr() as *mut ::std::ffi::c_void,
+                    chunk.len(),
                 )
             };
-            if bytes_read >= 0 {
-                buf.truncate(bytes_read as usize);
-                let buf_obj = crate::globals::create_buffer_object(cx, &buf);
-                if !buf_obj.is_null() {
-                    rooted!(&in(cx_ref) let buf_val = mozjs::jsval::ObjectValue(buf_obj));
-                    unsafe {
-                        mozjs_sys::jsapi::JS::ResolvePromise(
-                            cx,
-                            promise.handle().into(),
-                            buf_val.handle().into(),
-                        );
-                    }
-                } else {
-                    resolve_undefined(cx, promise.get());
+            if n < 0 {
+                read_err = ::std::option::Option::Some(::std::io::Error::last_os_error());
+                break;
+            }
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n as usize]);
+        }
+        match read_err {
+            ::std::option::Option::Some(e) => reject_with_error(
+                cx,
+                promise.get(),
+                &format!("FileHandle.readFile: {}", e),
+            ),
+            ::std::option::Option::None => {
+                let val = content_jsval(cx, &buf, encoding.as_deref());
+                rooted!(&in(cx_ref) let val_rooted = val);
+                unsafe {
+                    mozjs_sys::jsapi::JS::ResolvePromise(
+                        cx,
+                        promise.handle().into(),
+                        val_rooted.handle().into(),
+                    );
                 }
-            } else {
-                reject_with_error(
-                    cx,
-                    promise.get(),
-                    &format!("FileHandle.readFile: {}", ::std::io::Error::last_os_error()),
-                );
             }
         }
     }
@@ -10080,18 +11036,15 @@ unsafe extern "C" fn fh_write_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         return false;
     }
     let fd = get_hidden_int(cx, this.to_object(), "_fd");
-    let data = if argc > 0 && (*args.get(0).ptr).is_object() {
-        crate::node_crypto::extract_buffer_bytes(cx, *args.get(0).ptr)
-    } else if argc > 0 && (*args.get(0).ptr).is_string() {
-        let s = (*args.get(0).ptr).to_string();
-        if !s.is_null() {
-            crate::jsstr_to_rust_string(cx, s).into_bytes()
-        } else {
-            Vec::new()
-        }
+    // FileHandle.writeFile(data[, options]) — string data honors
+    // options.encoding (same single-source encoder as writeFile).
+    let data_val = if argc > 0 {
+        *args.get(0).ptr
     } else {
-        Vec::new()
+        UndefinedValue()
     };
+    let encoding = get_encoding_opt(cx, &args, 1);
+    let data = write_file_data_bytes(cx, data_val, encoding.as_deref());
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -10997,6 +11950,8 @@ mod fs_async_carrier_tests {
             concurrent_task:
                 bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext::default(),
             has_scheduled: AtomicBool::new(false),
+            writeback: None,
+            writeback_offset: 0,
         });
         let ctx_ptr = Box::into_raw(ctx);
         // Mirror the spawn-side increment (retired by FsAsyncCtx::drop).
