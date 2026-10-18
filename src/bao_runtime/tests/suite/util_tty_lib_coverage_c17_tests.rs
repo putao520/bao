@@ -8,25 +8,26 @@
 // file only adds faces those files do not touch. Oracle: node v24.19.0
 // (local, byte-level pty probes for tty; `node -e` for util).
 //
-// ── 产品缺陷登记(本波只登记不修,逐项 = node oracle 实证)────────────────
-// | # | 面 | bao 现行为 | node v24.19.0 oracle | 触达测试 |
+// ── 产品缺陷根治台账(T1-T5 / U1-U10,逐项 = node v24.19.0 本机实测)──────
+// | # | 面 | 旧行为 | node v24.19.0 oracle | 本波处置 |
 // |---|---|---|---|---|
-// | U1 | util.parseArgs | Rust stub 返回 `{}` | `parseArgs(["-f","--bar","b","pos"])` → `{values:{f:true,bar:"b"},positionals:["pos"]}` | c17_util_stub_divergence_pins |
-// | U2 | util.getSystemErrorName | 恒 undefined | `-1`→"EPERM" / `-13`→"EACCES";`0`/正数 → throw ERR_OUT_OF_RANGE;非数字 → ERR_INVALID_ARG_TYPE | c17_util_stub_divergence_pins |
-// | U3 | util.deprecate | 原样返回 fn,零包装零告警 | 返回包装 fn(`w !== g`),首次调用发 DeprecationWarning | c17_util_stub_divergence_pins |
-// | U4 | util.inherits | 只设 `Child.super_` | 另接原型链(`C.prototype.__proto__ = P.prototype` → `new C() instanceof P` 为 true) | c17_util_stub_divergence_pins |
-// | U5 | util.inspect 类族 | Map/Set/Date/RegExp/TypedArray/WeakMap/Promise/Symbol/BigInt/class/Error 全部落到 plain-object 路径(Error 连 message 自有属性也非枚举 own → `{}`;`{}`/空串/无类名前缀) | `Map(1) { 1 => 'a' }` / `TypeError: boom` / `Symbol(s)` / `9n` / `Point { x: 1 }` / `[Object: null prototype] {}` 等 | c17_util_inspect_class_family |
-// | U6 | util.format `%i`/`%d` | 直接走 display(2.9 → "2.9") | `%i` parseInt 截断(2.9 → "2") | c17_util_misc_oracle_faces |
-// | U7 | util.types.isProxy | `v && typeof v==='object' && !v.constructor` — 有 constructor 的 proxy 返 false | 真 proxy 恒 true | c17_util_stub_divergence_pins |
-// | U8 | assert loose deepEqual 失败文案 | "Expected values to be loosely deeply equal:" | "Expected values to be loosely deep-equal:"(diff 主体形状等价) | c17_util_assert_diff_faces |
-// | U9 | isDeepStrictEqual Rust native | 注册后被 JS 扩展同名覆盖 = 死注册臂,JS 侧运行时永不可达(可达性死臂,非行为缺陷) | — | (登记,无测试可达) |
-// | T1 | tty WriteStream clearLine/clearScreenDown/cursorTo/moveCursor 返回值 | 返回 `this` | 返回 boolean true(字节级 pty 实证) | c17_tty_pty_zero_size_and_return_pins |
-// | T2 | tty moveCursor(dx,dy) | dy 符号反转(dy>0→`[nA` 上移)+ 臂序 dy 先 dx 后 | dy>0→`[nB` 下移,臂序 dx 先(`moveCursor(1,2)` → `\x1b[1C\x1b[2B`) | c17_tty_pty_true_size_arms |
-// | T3 | tty cursorTo(x) 缺 y 臂 | 强制行归位(`\x1b[1;1H`) | 仅列移动(`cursorTo(4)` → `\x1b[5G`) | c17_tty_pty_true_size_arms |
-// | T4 | tty 零尺寸窗臂(ws_col==0) | getWindowSize()=undefined(ctor columns/rows=数值 0/0 与 node 平价,实证非分歧) | ctor 数值 0/0;getWindowSize()=[0,0] | c17_tty_pty_zero_size_and_return_pins |
-// | U10 | assert fail()/equal() 消息文本 | e.message 携带 `AssertionError: ` 前缀(e.g. `AssertionError: boom`;equal 文案 `Expected values to be loosely equal:`) | fail message=裸参数 `boom`;equal=双侧渲染 `==` 联结 | c17_util_assert_diff_faces |
-// | L1 | lib.rs seam 体(~300 行:force_link_native_c_libs + test_link_seams no_mangle 组) | 链接期 face,运行时不可达(同 cli.rs 类测量法伪影,入分母治理账) | — | (登记,归分母治理) |
-// | L2 | lib.rs shutdown_engine | 进程级 JS_ShutDown,suite 内调用毒化后续测试(plain cargo test --test-threads=1 同进程) | — | (登记:harness 边界面) |
+// | U1 | util.parseArgs | Rust stub 返回 `{}` | `parseArgs({args,options})` → `{values,positionals}`,strict 默认未知选项/位置参数抛 ERR_PARSE_ARGS_* | FIXED(JS 移植 node parse_args 全语义) |
+// | U2 | util.getSystemErrorName | 恒 undefined | `-1`→"EPERM" / `-13`→"EACCES";`0`/正数 → RangeError ERR_OUT_OF_RANGE;非数字 → TypeError ERR_INVALID_ARG_TYPE | FIXED(bun_sys::UV_E::name 映射) |
+// | U3 | util.deprecate | 原样返回 fn,零包装零告警 | 包装 fn(w !== g,prototype/length 保留),首次调用发 DeprecationWarning | FIXED |
+// | U4 | util.inherits | 只设 `Child.super_` | 另接原型链 → `new C() instanceof P` true | FIXED |
+// | U5 | util.inspect 类族 | 全部落 plain-object/空串 | Map/Set/Date/RegExp/TypedArray/WeakMap/Promise/Symbol/BigInt/class/Error/null-proto 的 node 形态 | FIXED(委托 Bun.inspect + 本地类名前缀) |
+// | U6 | util.format `%i`/`%d`/`%f` | 全走 display | `%i`=parseInt 截断/`%d`=Number/`%f`=parseFloat;`%c` 吞参 | FIXED(余参联结仍为 C8b 已登记分歧,本波未改) |
+// | U7 | util.types.isProxy | constructor 探针,真 proxy false | 真 proxy true;普通对象 false | FIXED(结构化克隆探针;函数 proxy 为引擎面登记限制) |
+// | U8 | assert loose deepEqual 文案 | "loosely deeply equal" | "Expected values to be loosely deep-equal:" | FIXED |
+// | U9 | isDeepStrictEqual Rust native | 注册后被 JS 覆盖 = 死注册臂 | — | FIXED(删除死注册,JS 面为唯一实现) |
+// | U10 | assert fail()/equal() 文案 | 全部带 `AssertionError: ` 前缀;equal 走 diff headline | fail 用户消息裸 `boom`;equal 双侧渲染 `==` 联结 | FIXED(用户消息裸传;生成消息前缀按旧约定保留) |
+// | T1 | tty writer 方法返回值 | 返回 `this` | boolean true | FIXED |
+// | T2 | tty moveCursor(dx,dy) | dy 符号反转 + 臂序颠倒 | dy>0→`[nB` 下移,dx 先(`moveCursor(1,2)` → `\x1b[1C\x1b[2B`) | FIXED |
+// | T3 | tty cursorTo(x) 缺 y 臂 | 强制行归位 | 仅列移动(`cursorTo(4)` → `\x1b[5G`) | FIXED |
+// | T4 | tty 零尺寸窗 getWindowSize | undefined | [0,0] | FIXED |
+// | T5 | tty 非 int32 参数 | `JSVal::to_int32` assert → 进程 abort | ToNumber 容错(`clearLine('x')`→2K;符号→TypeError) | FIXED(根治 crash 类) |
+// | L1 | lib.rs seam 体 | 链接期 face,运行时不可达 | — | (登记,归分母治理) |
+// | L2 | lib.rs shutdown_engine | 进程级 JS_ShutDown,suite 内毒化后续测试 | — | (登记:harness 边界面) |
 
 use bao_engine::context::JsContext;
 use mozjs::rooted;
@@ -82,63 +83,54 @@ fn c17_util_inspect_class_family() {
         r#"
         var util = require('util');
 
-        // node oracle: Map(1) { 1 => 'a' } — bao has no Map branch; the
-        // instance has no own enumerable props → plain-object `{}` face
-        // (divergence U5, registered).
-        check("inspect_map_plain_object_face", function() {
-            return util.inspect(new Map([[1, 'a']])) === '{}';
+        // node oracle (v24.19.0, local): Map(1) { 1 => 'a' }.
+        check("inspect_map_class_face", function() {
+            var s = util.inspect(new Map([[1, 'a']]));
+            if (s === "Map(1) { 1 => 'a' }") return true;
+            throw new Error('GOT:' + s);
         });
-        check("inspect_set_plain_object_face", function() {
-            return util.inspect(new Set([1, 2])) === '{}';
+        check("inspect_set_class_face", function() {
+            return util.inspect(new Set([1, 2])) === 'Set(2) { 1, 2 }';
         });
-        // node oracle: 1970-01-01T00:00:00.000Z — bao: Date instances carry
-        // no own enumerable props → '{}'.
-        check("inspect_date_plain_object_face", function() {
-            return util.inspect(new Date(0)) === '{}';
+        check("inspect_date_class_face", function() {
+            return util.inspect(new Date(0)) === '1970-01-01T00:00:00.000Z';
         });
-        check("inspect_regexp_plain_object_face", function() {
-            return util.inspect(/ab/g) === '{}';
+        check("inspect_regexp_class_face", function() {
+            return util.inspect(/ab/g) === '/ab/g';
         });
-        // node oracle: TypeError: boom — bao: the message own-prop is not
-        // enumerable-own under GetPropertyKeys, so the instance renders {}
-        // (U5 family, registered).
-        check("inspect_error_plain_object_face", function() {
-            return util.inspect(new TypeError('boom')) === '{}';
+        // node oracle: error head starts with `TypeError: boom` (node appends
+        // the stack; SpiderMonkey frames differ, so the head is the stable
+        // contract).
+        check("inspect_error_class_face", function() {
+            return util.inspect(new TypeError('boom')).indexOf('TypeError: boom') === 0;
         });
-        // node oracle: Uint8Array(3) [ 1, 2, 3 ] — bao: typed arrays are
-        // not Buffer views via the _isBuffer marker, so the byte-view
-        // branch is skipped and the integer-index loop renders the
-        // elements as an object body (ints first, ascending).
-        check("inspect_uint8array_index_face", function() {
-            var s = util.inspect(new Uint8Array([1, 2, 3]));
-            return s === '{ 0: 1, 1: 2, 2: 3 }';
+        check("inspect_uint8array_class_face", function() {
+            return util.inspect(new Uint8Array([1, 2, 3])) === 'Uint8Array(3) [ 1, 2, 3 ]';
         });
-        // node oracle: WeakMap { <items unknown> } — bao: no own props.
-        check("inspect_weakmap_plain_object_face", function() {
-            return util.inspect(new WeakMap()) === '{}';
+        check("inspect_weakmap_class_face", function() {
+            return util.inspect(new WeakMap()) === 'WeakMap { <items unknown> }';
         });
-        // node oracle: Promise { <pending> } — bao: no own enumerable props.
-        check("inspect_promise_plain_object_face", function() {
-            return util.inspect(new Promise(function() {})) === '{}';
+        check("inspect_weakset_class_face", function() {
+            return util.inspect(new WeakSet()) === 'WeakSet { <items unknown> }';
         });
-        // node oracle: Symbol(s) — bao: symbol JSVal is neither object nor
-        // the covered primitives → the fall-through empty-string arm.
-        check("inspect_symbol_empty_arm", function() {
-            return util.inspect(Symbol('s')) === '';
+        check("inspect_promise_class_face", function() {
+            return util.inspect(new Promise(function() {})) === 'Promise { <pending> }';
         });
-        // node oracle: 9n — BigInt falls through to the same empty arm.
-        check("inspect_bigint_empty_arm", function() {
-            return util.inspect(BigInt(9)) === '';
+        check("inspect_symbol_face", function() {
+            return util.inspect(Symbol('s')) === 'Symbol(s)'
+                && util.inspect(Symbol()) === 'Symbol()';
         });
-        // node oracle: Point { x: 1 } (class-name prefix) — bao: no class
-        // branch, own-prop render only.
-        check("inspect_class_instance_no_prefix", function() {
+        check("inspect_bigint_face", function() {
+            return util.inspect(BigInt(9)) === '9n';
+        });
+        check("inspect_class_instance_prefix", function() {
             var s = util.inspect(new (function Point() { this.x = 1; })());
-            return s === '{ x: 1 }';
+            return s === 'Point { x: 1 }';
         });
-        // node oracle: [Object: null prototype] {} — bao: plain {} face.
-        check("inspect_null_proto_plain_face", function() {
-            return util.inspect(Object.create(null)) === '{}';
+        check("inspect_null_proto_prefix", function() {
+            var o = Object.assign(Object.create(null), {a: 1});
+            return util.inspect(Object.create(null)) === '[Object: null prototype] {}'
+                && util.inspect(o) === '[Object: null prototype] { a: 1 }';
         });
         // The tail arms themselves still honor depth caps and key ordering
         // (mixed int + string keys on a plain object — the int-jsid arm).
@@ -152,9 +144,13 @@ fn c17_util_inspect_class_family() {
                 && s.indexOf("name: 'n'") !== -1;
         });
         check("inspect_nested_class_family_depth_cap", function() {
+            // node oracle: a Map at the depth cap still renders its empty
+            // body; a nested plain object caps to [Object].
             var outer = { m: new Map() };
             var s = util.inspect(outer, { depth: 0 });
-            return s === '{ m: [Object] }';
+            var t = util.inspect({a: {b: 1}}, {depth: 0});
+            if (s === '{ m: Map(0) {} }' && t === '{ a: [Object] }') return true;
+            throw new Error('GOT:' + s + ' / ' + t);
         });
         "#
     );
@@ -175,9 +171,8 @@ fn c17_util_assert_diff_faces() {
         var assert = require('assert');
 
         // node oracle wording: "Expected values to be loosely deep-equal:"
-        // + diff body; bao: "loosely deeply equal" (U8, registered). The
-        // diff body shape (object lines, +/- markers on the differing key)
-        // is the contract under test.
+        // + diff body. The diff body shape (object lines, +/- markers on the
+        // differing key) is the contract under test.
         check("deep_equal_loose_diff_body", function() {
             var msg = '';
             try { assert.deepEqual({ a: 1, b: 2 }, { a: 1, b: 3 }); }
@@ -185,35 +180,45 @@ fn c17_util_assert_diff_faces() {
                 if (e.name !== 'AssertionError') return false;
                 msg = e.message;
             }
-            return msg.indexOf('loosely deeply equal') !== -1
+            return msg.indexOf('loosely deep-equal') !== -1
+                && msg.indexOf('loosely deeply equal') === -1
                 && msg.indexOf('a: 1') !== -1
                 && msg.indexOf('b: 2') !== -1 && msg.indexOf('b: 3') !== -1
                 && msg.indexOf('+') !== -1 && msg.indexOf('-') !== -1;
         });
-        // equal() on objects: multi-line diff instead of the collapsed
-        // "[object Object] == [object Object]" pre-fix form.
-        // U10 (registered): bao's equal() failure message is prefixed
-        // "AssertionError: " and worded "Expected values to be loosely
-        // equal:" with a diff body; node renders both sides joined by ==.
-        check("equal_objects_diff_not_object_object", function() {
+        // equal() on objects: node renders both sides joined by `==`
+        // (multi-line inspect), never the collapsed `[object Object]` form.
+        check("equal_objects_rendered_with_operator", function() {
             var msg = '';
             try { assert.equal({ a: 1 }, { a: 1 }); }
             catch (e) { msg = e.message; }
-            if (msg.indexOf('loosely equal') !== -1 && msg.length > 40
+            if (msg.indexOf(' == ') !== -1
+                && msg.indexOf('{\n  a: 1\n}') !== -1
                 && msg.indexOf('[object Object]') === -1) return true;
-            throw new Error('GOT:' + msg.substring(0, 120));
+            throw new Error('GOT:' + msg.substring(0, 160));
         });
-        // U10 (registered): node's message is the bare argument; bao's
-        // carries the "AssertionError: " prefix inside message.
-        check("fail_throws_assertion_error", function() {
+        check("equal_primitives_operator_join", function() {
+            var msg = '';
+            try { assert.equal(1, 2); }
+            catch (e) { msg = e.message; }
+            return msg.indexOf('1 == 2') !== -1;
+        });
+        // node: a user-supplied fail() message is delivered verbatim
+        // (e.message === 'boom'), no "AssertionError: " prefix.
+        check("fail_message_is_bare_argument", function() {
             try { assert.fail('boom'); }
             catch (e) {
-                if (e && e.name === 'AssertionError'
-                    && e.message.indexOf('boom') !== -1
-                    && e.message.indexOf('AssertionError') === 0) return true;
+                if (e && e.name === 'AssertionError' && e.message === 'boom') return true;
                 throw new Error('GOT:name=' + (e && e.name) + ',msg=' + (e && e.message) + ',kind=' + typeof e);
             }
             throw new Error('GOT:no-throw');
+        });
+        // node: fail() with no message → "Failed" (generated-message prefix
+        // retained by the legacy contract: AssertionError: Failed).
+        check("fail_default_message", function() {
+            try { assert.fail(); }
+            catch (e) { return e.name === 'AssertionError' && e.message.indexOf('Failed') !== -1; }
+            return false;
         });
         check("if_error_non_error_throws", function() {
             try { assert.ifError(new Error('wrapped')); return false; }
@@ -242,58 +247,122 @@ fn c17_util_assert_diff_faces() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn c17_util_stub_divergence_pins() {
+fn c17_util_oracle_parity() {
     let mut ctx = make_ctx();
     let results = run_checks(
         &mut ctx,
         r#"
         var util = require('util');
 
-        // U1: node → {values:{f:true,bar:'b'},positionals:['pos']}; bao stub → {}.
-        check("parseargs_stub_empty_object_KNOWN_DIVERGE_U1", function() {
-            var r = util.parseArgs(['-f', '--bar', 'b', 'pos']);
-            return r !== null && typeof r === 'object'
-                && r.values === undefined && r.positionals === undefined;
+        // U1 — node parseArgs semantics (options, short/long forms, defaults,
+        // strict errors, `--` terminator, multiple).
+        check("parseargs_values_positionals", function() {
+            var r = util.parseArgs({
+                args: ['-f', '--bar', 'b', 'pos'],
+                options: { foo: {type: 'boolean', short: 'f'}, bar: {type: 'string'} },
+                allowPositionals: true
+            });
+            return r.values.foo === true && r.values.bar === 'b'
+                && r.positionals.length === 1 && r.positionals[0] === 'pos';
         });
-        // U2: node → getSystemErrorName(-1)==='EPERM' etc.; bao → undefined.
-        check("getsystemerrorname_stub_undefined_KNOWN_DIVERGE_U2", function() {
-            return util.getSystemErrorName(-1) === undefined
-                && util.getSystemErrorName(1) === undefined
-                && util.getSystemErrorName() === undefined;
+        check("parseargs_long_equals_and_defaults", function() {
+            var r = util.parseArgs({
+                args: ['--x=1'],
+                options: {
+                    x: {type: 'string'},
+                    y: {type: 'string', default: 'dv'},
+                    z: {type: 'string', multiple: true}
+                }
+            });
+            return r.values.x === '1' && r.values.y === 'dv'
+                && r.values.z === undefined;
         });
-        // U3: node wraps (w !== g) + DeprecationWarning once; bao passes the
-        // original reference through with no warning side effect.
-        check("deprecate_verbatim_passthrough_KNOWN_DIVERGE_U3", function() {
-            var g = function() { return 41; };
+        check("parseargs_strict_unknown_and_positional", function() {
+            function codeOf(fn) {
+                try { fn(); return null; } catch (e) { return e.code; }
+            }
+            return codeOf(function() { util.parseArgs({args: ['--nope']}); })
+                       === 'ERR_PARSE_ARGS_UNKNOWN_OPTION'
+                && codeOf(function() { util.parseArgs({args: ['pos']}); })
+                       === 'ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL'
+                && codeOf(function() {
+                       util.parseArgs({args: ['--x'], options: {x: {type: 'string'}}});
+                   }) === 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE';
+        });
+        check("parseargs_terminator_and_negative", function() {
+            var r = util.parseArgs({args: ['--', '-f', '--bar'], allowPositionals: true});
+            var n = util.parseArgs({
+                args: ['--no-flag'],
+                options: {flag: {type: 'boolean'}},
+                allowNegative: true
+            });
+            return r.positionals.join(',') === '-f,--bar' && n.values.flag === false;
+        });
+        // U2 — libuv errno names + node validation.
+        check("getsystemerrorname_mapping", function() {
+            return util.getSystemErrorName(-1) === 'EPERM'
+                && util.getSystemErrorName(-13) === 'EACCES'
+                && util.getSystemErrorName(-2) === 'ENOENT'
+                && util.getSystemErrorName(-4096) === 'Unknown system error -4096';
+        });
+        check("getsystemerrorname_validation", function() {
+            function thrown(fn) {
+                try { fn(); return null; } catch (e) { return e; }
+            }
+            var r0 = thrown(function() { return util.getSystemErrorName(0); });
+            var r1 = thrown(function() { return util.getSystemErrorName(1); });
+            var s = thrown(function() { return util.getSystemErrorName('x'); });
+            var u = thrown(function() { return util.getSystemErrorName(); });
+            return r0 && r0.name === 'RangeError' && r0.code === 'ERR_OUT_OF_RANGE'
+                && r1 && r1.code === 'ERR_OUT_OF_RANGE'
+                && s && s.name === 'TypeError' && s.code === 'ERR_INVALID_ARG_TYPE'
+                && u && u.code === 'ERR_INVALID_ARG_TYPE';
+        });
+        // U3 — deprecate wraps (w !== g), preserves prototype/length and
+        // emits exactly one DeprecationWarning on first invocation.
+        check("deprecate_wraps_and_warns_once", function() {
+            var g = function twice(a, b) { return a + b; };
             var w = util.deprecate(g, 'gone soon');
-            return w === g && w() === 41;
+            var count = 0;
+            var original = process.emitWarning;
+            process.emitWarning = function(msg, type, code) { count++; };
+            var r1, r2;
+            try { r1 = w(1, 2); r2 = w(3, 4); } finally { process.emitWarning = original; }
+            return w !== g && w.name === 'deprecated'
+                && r1 === 3 && r2 === 7
+                && w.length === g.length
+                && Object.getPrototypeOf(w) === g
+                && count === 1;
         });
-        check("deprecate_noargs_returns_undefined", function() {
-            return util.deprecate() === undefined;
+        check("deprecate_noargs_throws_node_typeerror", function() {
+            try { util.deprecate(); return false; }
+            catch (e) { return e.name === 'TypeError'; }
         });
-        // U4: node also links the prototype chain (instanceof P true); bao
-        // only sets super_.
-        check("inherits_super_only_KNOWN_DIVERGE_U4", function() {
+        // U4 — super_ *and* prototype chain.
+        check("inherits_links_prototype_chain", function() {
             function P() {}
             function C() {}
             util.inherits(C, P);
             var protoLinked = C.prototype.__proto__ === P.prototype;
-            return C.super_ === P && protoLinked === false
-                && !((new C()) instanceof P);
+            return C.super_ === P && protoLinked === true
+                && ((new C()) instanceof P);
         });
-        // inherits argc/argument guards (native arms).
+        // inherits argc/argument guards (owned no-op face, non-node).
         check("inherits_guards", function() {
             function C() {}
             return util.inherits(C) === undefined
                 && util.inherits(5, {}) === undefined
                 && util.inherits({}, 5) === undefined;
         });
-        // U7: node types.isProxy(real proxy) === true; bao's constructor
-        // probe answers false for any proxy whose target has a constructor.
-        check("types_isproxy_constructor_probe_KNOWN_DIVERGE_U7", function() {
+        // U7 — real proxies answer true, plain objects false. (Function
+        // proxies remain an engine-surface limitation: SpiderMonkey exposes
+        // no public IsProxy JSAPI and proxies are otherwise transparent.)
+        check("types_isproxy_object_proxy", function() {
             var p = new Proxy({}, {});
-            return util.types.isProxy(p) === false
-                && util.types.isProxy({}) === false;
+            return util.types.isProxy(p) === true
+                && util.types.isProxy({}) === false
+                && util.types.isProxy({a: 1}) === false
+                && util.types.isProxy(null) === false;
         });
         check("types_is_module_namespace_object", function() {
             // Math is not a module namespace; a real namespace needs ESM, so
@@ -301,13 +370,14 @@ fn c17_util_stub_divergence_pins() {
             return util.types.isModuleNamespaceObject(Math) === false
                 && util.types.isModuleNamespaceObject({}) === false;
         });
-        // The JS-level isDeepStrictEqual extension shadows the registered
-        // Rust native (U9 dead-registration arm); its object semantics are
-        // the JS face C8b pinned — here the primitive/double arm.
-        check("is_deep_strict_equal_double_arm", function() {
+        // U9 — the dead Rust registration is gone; the JS implementation is
+        // the single face (primitive + object arms).
+        check("is_deep_strict_equal_js_face", function() {
             return util.isDeepStrictEqual(2.5, 2.5) === true
                 && util.isDeepStrictEqual(2.5, 2) === false
-                && util.isDeepStrictEqual(true, 1) === false;
+                && util.isDeepStrictEqual(true, 1) === false
+                && util.isDeepStrictEqual({a: [1, 2]}, {a: [1, 2]}) === true
+                && util.isDeepStrictEqual({a: 1}, {a: 2}) === false;
         });
         "#
     );
@@ -337,13 +407,25 @@ fn c17_util_misc_oracle_faces() {
             var d = new util.TextDecoder();
             return d.decode(e.encode('héllo')) === 'héllo';
         });
-        // U6: node truncates (%i → parseInt); bao displays the double as-is.
-        check("format_i_double_not_truncated_KNOWN_DIVERGE_U6", function() {
-            return util.format('%i', 2.9) === '2.9';
+        // U6: node truncates (%i → parseInt); %d/%f are Number/parseFloat.
+        check("format_i_truncates", function() {
+            return util.format('%i', 2.9) === '2'
+                && util.format('%i', '2.9x') === '2'
+                && util.format('%i', 'x') === 'NaN';
         });
-        // %d with a double renders the double (same display path).
         check("format_d_double_display", function() {
-            return util.format('%d', 2.5) === '2.5';
+            return util.format('%d', 2.5) === '2.5'
+                && util.format('%d', '3.9x') === 'NaN'
+                && util.format('%d', BigInt(9)) === '9n';
+        });
+        check("format_f_parse_float", function() {
+            return util.format('%f', '2.9x') === '2.9'
+                && util.format('%f', BigInt(9)) === '9';
+        });
+        // %c consumes its argument; leftover-argument joining stays on the
+        // already-registered C8b divergence (bao drops them, node appends).
+        check("format_c_consumes_argument", function() {
+            return util.format('%c', 'color') === '';
         });
         // %j over an array (JSON semantics, not inspect).
         check("format_j_array_json_form", function() {
@@ -491,8 +573,11 @@ fn c17_tty_pty_true_size_arms() {
         ws.clearLine(-1);
         ws.clearLine(1);
         ws.clearLine(0);
+        ws.clearLine(5);
         ws.cursorTo(3, 4);
+        ws.cursorTo(4);
         ws.moveCursor(1, 2);
+        ws.moveCursor(-2, -3);
         ws.moveCursor(0, 0);
         ws.clearScreenDown();
         true;
@@ -506,14 +591,26 @@ fn c17_tty_pty_true_size_arms() {
     assert!(bytes.contains("\x1b[1K"), "clearLine(-1) escape missing: {:?}", bytes);
     assert!(bytes.contains("\x1b[0K"), "clearLine(1) escape missing: {:?}", bytes);
     assert!(bytes.contains("\x1b[2K"), "clearLine(0) escape missing: {:?}", bytes);
-    // cursorTo(3,4): row+1=5, col+1=4 (matches node's \x1b[5;4H byte-for-byte).
+    // clearLine(any other positive) → 0K (node `dir > 0 ? kClearToLineEnd`).
+    // cursorTo(3,4): row+1=5, col+1=4 (node's \x1b[5;4H byte-for-byte).
     assert!(bytes.contains("\x1b[5;4H"), "cursorTo(3,4) escape missing: {:?}", bytes);
-    // moveCursor(1,2): bao emits dy-then-dx with dy>0 → UP ([2A) — node emits
-    // \x1b[1C\x1b[2B (dx-first, dy>0 → DOWN). Divergence T2, registered; the
-    // pin below is bao's actual byte contract.
+    // cursorTo(4) with no y: column-only form, row preserved (T3).
+    assert!(bytes.contains("\x1b[5G"), "cursorTo(4) column-only escape missing: {:?}", bytes);
+    // moveCursor(1,2): dx first, dy>0 → DOWN (T2 node byte contract).
     assert!(
-        bytes.contains("\x1b[2A\x1b[1C"),
-        "moveCursor(1,2) bao-order bytes missing (node order is [1C[2B): {:?}",
+        bytes.contains("\x1b[1C\x1b[2B"),
+        "moveCursor(1,2) node-order bytes missing: {:?}",
+        bytes
+    );
+    assert!(
+        !bytes.contains("\x1b[2A\x1b[1C"),
+        "moveCursor still emits the inverted/old order: {:?}",
+        bytes
+    );
+    // moveCursor(-2,-3): left then up.
+    assert!(
+        bytes.contains("\x1b[2D\x1b[3A"),
+        "moveCursor(-2,-3) node-order bytes missing: {:?}",
         bytes
     );
     // moveCursor(0,0) writes nothing (empty-esc guard).
@@ -522,6 +619,8 @@ fn c17_tty_pty_true_size_arms() {
         "empty moveCursor wrote bytes: {:?}",
         bytes
     );
+    // clearScreenDown: bao's inherited CSI J form (node emits 0J; byte
+    // divergence is outside the T1-T4 registry).
     assert!(bytes.contains("\x1b[J"), "clearScreenDown escape missing: {:?}", bytes);
 }
 
@@ -537,30 +636,47 @@ fn c17_tty_pty_zero_size_and_return_pins() {
             r#"
         var tty = require('tty');
 
-        // T4 ctor half: OBSERVED PARITY — bao on a fresh 0x0 pty reports
-        // numeric columns=0 rows=0, exactly node's oracle (the has_size arm
-        // is true whenever tcgetwinsize succeeds, zero included).
+        // T4: a fresh 0x0 pty reports numeric columns=0 rows=0, exactly
+        // node's oracle, and getWindowSize() is [0, 0] (not undefined).
         check("ws_zero_size_ctor_parity_T4", function() {{
             var ws = new tty.WriteStream({fd});
             if (ws.isTTY === true && ws.columns === 0 && ws.rows === 0) return true;
             throw new Error('GOT:isTTY=' + ws.isTTY + ',cols=' + JSON.stringify(ws.columns) + ',rows=' + JSON.stringify(ws.rows));
         }});
-        check("gws_zero_size_undefined_KNOWN_DIVERGE_T4", function() {{
+        check("gws_zero_size_pair_T4", function() {{
             var ws = new tty.WriteStream({fd});
-            return ws.getWindowSize() === undefined;
+            var g = ws.getWindowSize();
+            return g && g.length === 2 && g[0] === 0 && g[1] === 0;
         }});
-        // T1 (registered): writer methods return `this`; node returns
-        // boolean true (byte-level oracle probes).
-        check("writer_returns_this_KNOWN_DIVERGE_T1", function() {{
+        // T1: writer methods return boolean true (byte-level oracle probes).
+        check("writer_returns_true_T1", function() {{
             var ws = new tty.WriteStream({fd});
-            return ws.clearLine(0) === ws && ws.clearScreenDown() === ws
-                && ws.cursorTo(1, 1) === ws && ws.moveCursor(1, 1) === ws;
+            return ws.clearLine(0) === true && ws.clearScreenDown() === true
+                && ws.cursorTo(1, 1) === true && ws.moveCursor(1, 1) === true;
         }});
-        // clearLine absent-dir arm: missing arg → dir 0 → entire line
-        // escape. (Non-numeric dir args are NOT exercised here: the native
-        // reads them via JSVal::to_int32, which debug-asserts is_int32 —
-        // a string arg aborts the process in dev builds. Defect T5,
-        // registered; node tolerates 'x' → NaN → entire-line.)
+        // T5: non-int32 arguments must not abort the process (the old
+        // JSVal::to_int32 assert crashed the whole engine). node coerces
+        // with ToNumber: 'x' → NaN → entire line, '1' → 0K.
+        check("clearline_non_number_tolerated_T5", function() {{
+            var ws = new tty.WriteStream({fd});
+            var a = ws.clearLine('x');
+            var b = ws.clearLine('1');
+            var c = ws.clearLine(undefined);
+            return a === true && b === true && c === true;
+        }});
+        // node cursorTo error faces (argument validation, not abort).
+        check("cursorto_argument_validation", function() {{
+            var ws = new tty.WriteStream({fd});
+            function thrown(fn) {{ try {{ return fn(); }} catch (e) {{ return e; }} }}
+            var nan = thrown(function() {{ ws.cursorTo(NaN); }});
+            var pos = thrown(function() {{ ws.cursorTo('x', 5); }});
+            var silent = ws.cursorTo('x');
+            return nan && nan.name === 'TypeError' && nan.code === 'ERR_INVALID_ARG_VALUE'
+                && pos && pos.code === 'ERR_INVALID_CURSOR_POS'
+                && silent === true;
+        }});
+        // clearLine absent-dir arm: missing arg → NaN comparisons → entire
+        // line escape.
         check("clearline_default_dir_entire", function() {{
             var ws = new tty.WriteStream({fd});
             ws.clearLine();
@@ -573,11 +689,15 @@ fn c17_tty_pty_zero_size_and_return_pins() {
 
     std::thread::sleep(std::time::Duration::from_millis(20));
     let bytes = drain_master(pty.master);
-    // Absent dir → entire-line escape (the T5-aborted string-dir arm is
-    // registered, not exercised).
+    // Absent/'x' dir → NaN → entire-line escape; numeric string '1' → 0K.
     assert!(
-        bytes.matches("\x1b[2K").count() >= 1,
-        "clearLine absent-dir arm missing: {:?}",
+        bytes.matches("\x1b[2K").count() >= 2,
+        "clearLine non-number/default arms missing: {:?}",
+        bytes
+    );
+    assert!(
+        bytes.matches("\x1b[0K").count() >= 1,
+        "clearLine('1') positive-dir arm missing: {:?}",
         bytes
     );
     // cursorTo(1,1) → \x1b[2;2H (row+1;col+1 — the arm node does NOT take;

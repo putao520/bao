@@ -60,11 +60,8 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
             (c"format", util_format, 0)
             (c"promisify", util_promisify, 1)
             (c"callbackify", util_callbackify, 1)
-            (c"deprecate", util_deprecate, 2)
             (c"getSystemErrorName", util_get_system_error_name, 1)
-            (c"parseArgs", util_parse_args, 1)
             (c"inherits", util_inherits, 2)
-            (c"isDeepStrictEqual", util_is_deep_strict_equal, 2)
         );
 
         // util.types — native type checkers (12 Rust-backed)
@@ -90,7 +87,41 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
                 // Extended types via JS eval — factory function pattern
                 let types_src = r#"(function(t){
 t.isPromise=function(v){return v instanceof Promise};
-t.isProxy=function(v){try{return v&&typeof v==='object'&&!v.constructor}catch(e){return false}};
+t.isProxy=function(v){
+  // SpiderMonkey exposes no public JSAPI `IsProxy` (js::IsProxy is an
+  // inline in js/public/Proxy.h, not C-linkage), so the exact internal-slot
+  // probe node uses is unavailable from the embedder. Proxy semantics are
+  // transparent to JS by design; the one remaining discriminator is the
+  // structured-clone serializer, which rejects proxies with DataCloneError
+  // for the proxy object itself (not for its contents). Restrict the probe
+  // to values that are otherwise trivially cloneable (plain
+  // Object.prototype/null-prototype object, all own data properties
+  // primitive) so a genuinely non-cloneable value (function, WeakMap,
+  // symbol property, accessor) cannot masquerade as a proxy. Function
+  // proxies stay undetected: registered engine limitation.
+  if (v === null || typeof v !== 'object') return false;
+  var proto = Object.getPrototypeOf(v);
+  if (proto !== Object.prototype && proto !== null) return false;
+  var keys = Object.getOwnPropertyNames(v);
+  for (var i = 0; i < keys.length; i++) {
+    var d = Object.getOwnPropertyDescriptor(v, keys[i]);
+    if (!d || !('value' in d)) return false;
+    var x = d.value;
+    // undefined is structured-cloneable; objects/functions/symbols may not
+    // be, so they disqualify the plain-object probe.
+    if (x !== null && typeof x !== 'undefined' &&
+        (typeof x === 'object' || typeof x === 'function' || typeof x === 'symbol')) {
+      return false;
+    }
+  }
+  try { structuredClone(v); return false; }
+  catch (e) {
+    // The bridge reports the node/WHATWG name as a plain Error whose message
+    // is prefixed `DataCloneError:` (globals sc_report_data_clone_error).
+    return !!e && (e.name === 'DataCloneError' ||
+                   String(e.message || '').indexOf('DataCloneError') === 0);
+  }
+};
 t.isMap=function(v){return v instanceof Map};
 t.isSet=function(v){return v instanceof Set};
 t.isWeakMap=function(v){return v instanceof WeakMap};
@@ -209,6 +240,331 @@ t.isCryptoKey=function(){return false};
     return true;
   }
   u.isDeepStrictEqual = isDeepStrictEqual;
+
+  // ── util.parseArgs — node v24 semantics (ported from
+  // internal/util/parse_args/{parse_args,utils}) ────────────────────────
+  function paErr(code, msg) {
+    var e = new TypeError(msg);
+    e.code = code;
+    return e;
+  }
+  var hasOwn = Object.prototype.hasOwnProperty;
+  function own(o, k) { return hasOwn.call(o, k) ? o[k] : undefined; }
+  function ownHas(o, k) { return hasOwn.call(o, k); }
+  function optGet(options, longOption, prop) {
+    if (!ownHas(options, longOption)) return undefined;
+    return own(options[longOption], prop);
+  }
+  function findLongForShort(shortOption, options) {
+    var names = Object.keys(options);
+    for (var i = 0; i < names.length; i++) {
+      if (own(options[names[i]], 'short') === shortOption) return names[i];
+    }
+    return shortOption;
+  }
+  function isLoneShortOption(a) {
+    return a.length === 2 && a.charAt(0) === '-' && a.charAt(1) !== '-';
+  }
+  function isLoneLongOption(a) {
+    return a.length > 2 && a.slice(0, 2) === '--' && a.indexOf('=', 2) === -1;
+  }
+  function isLongOptionAndValue(a) {
+    return a.length > 2 && a.slice(0, 2) === '--' && a.indexOf('=', 2) !== -1;
+  }
+  function isShortOptionGroup(a, options) {
+    if (a.length <= 2 || a.charAt(0) !== '-' || a.charAt(1) === '-') return false;
+    return optGet(options, findLongForShort(a.charAt(1), options), 'type') !== 'string';
+  }
+  function isShortOptionAndValue(a, options) {
+    if (a.length <= 2 || a.charAt(0) !== '-' || a.charAt(1) === '-') return false;
+    return optGet(options, findLongForShort(a.charAt(1), options), 'type') === 'string';
+  }
+  function isOptionValue(v) { return v != null; }
+  function isOptionLikeValue(v) {
+    return v != null && v.length > 1 && v.charAt(0) === '-';
+  }
+  function checkUsage(config, token) {
+    var tokenName = token.name;
+    if (!ownHas(config.options, tokenName)) {
+      if (config.allowNegative && tokenName.slice(0, 3) === 'no-') {
+        tokenName = tokenName.slice(3);
+        if (!ownHas(config.options, tokenName) ||
+            optGet(config.options, tokenName, 'type') !== 'boolean') {
+          throw paErr('ERR_PARSE_ARGS_UNKNOWN_OPTION', "Unknown option '" + token.rawName + "'");
+        }
+      } else {
+        throw paErr('ERR_PARSE_ARGS_UNKNOWN_OPTION', "Unknown option '" + token.rawName + "'");
+      }
+    }
+    var short = optGet(config.options, tokenName, 'short');
+    var shortAndLong = (short ? '-' + short + ', ' : '') + '--' + tokenName;
+    var type = optGet(config.options, tokenName, 'type');
+    if (type === 'string' && typeof token.value !== 'string') {
+      throw paErr('ERR_PARSE_ARGS_INVALID_OPTION_VALUE',
+                  "Option '" + shortAndLong + " <value>' argument missing");
+    }
+    if (type === 'boolean' && token.value != null) {
+      throw paErr('ERR_PARSE_ARGS_INVALID_OPTION_VALUE',
+                  "Option '" + shortAndLong + "' does not take an argument");
+    }
+  }
+  function checkOptionLikeValue(token) {
+    if (!token.inlineValue && isOptionLikeValue(token.value)) {
+      var example = token.rawName.slice(0, 2) === '--'
+        ? "'" + token.rawName + "=-XYZ'"
+        : "'--" + token.name + "=-XYZ' or '" + token.rawName + "-XYZ'";
+      throw paErr('ERR_PARSE_ARGS_INVALID_OPTION_VALUE',
+        "Option '" + token.rawName + "' argument is ambiguous.\n" +
+        "Did you forget to specify the option argument for '" + token.rawName + "'?\n" +
+        "To specify an option argument starting with a dash use " + example + '.');
+    }
+  }
+  function storeOption(token, options, values, allowNegative) {
+    var longOption = token.name;
+    var optionValue = token.value;
+    if (longOption === '__proto__') return;
+    if (allowNegative && longOption.slice(0, 3) === 'no-' && optionValue === undefined) {
+      longOption = longOption.slice(3);
+      token.name = longOption;
+      optionValue = false;
+    }
+    var newValue = optionValue == null ? true : optionValue;
+    if (optGet(options, longOption, 'multiple')) {
+      if (values[longOption]) values[longOption].push(newValue);
+      else values[longOption] = [newValue];
+    } else {
+      values[longOption] = newValue;
+    }
+  }
+  function argsToTokens(args, options) {
+    var tokens = [];
+    var index = -1;
+    var groupCount = 0;
+    var rest = args.slice();
+    while (rest.length > 0) {
+      var arg = rest.shift();
+      var nextArg = rest[0];
+      if (groupCount > 0) groupCount--;
+      else index++;
+      if (arg === '--') {
+        tokens.push({ kind: 'option-terminator', index: index });
+        for (var r = 0; r < rest.length; r++) {
+          tokens.push({ kind: 'positional', index: ++index, value: rest[r] });
+        }
+        break;
+      }
+      if (isLoneShortOption(arg)) {
+        var shortOption = arg.charAt(1);
+        var longOption = findLongForShort(shortOption, options);
+        var value;
+        var inlineValue;
+        if (optGet(options, longOption, 'type') === 'string' && isOptionValue(nextArg)) {
+          value = rest.shift();
+          inlineValue = false;
+        }
+        tokens.push({ kind: 'option', name: longOption, rawName: arg,
+                      index: index, value: value, inlineValue: inlineValue });
+        if (value != null) index++;
+        continue;
+      }
+      if (isShortOptionGroup(arg, options)) {
+        var expanded = [];
+        for (var gi = 1; gi < arg.length; gi++) {
+          var so = arg.charAt(gi);
+          var lo = findLongForShort(so, options);
+          if (optGet(options, lo, 'type') !== 'string' || gi === arg.length - 1) {
+            expanded.push('-' + so);
+          } else {
+            expanded.push('-' + arg.slice(gi));
+            break;
+          }
+        }
+        rest = expanded.concat(rest);
+        groupCount = expanded.length;
+        continue;
+      }
+      if (isShortOptionAndValue(arg, options)) {
+        var so2 = arg.charAt(1);
+        tokens.push({ kind: 'option', name: findLongForShort(so2, options),
+                      rawName: '-' + so2, index: index, value: arg.slice(2),
+                      inlineValue: true });
+        continue;
+      }
+      if (isLoneLongOption(arg)) {
+        var long2 = arg.slice(2);
+        var v2;
+        var inl2;
+        if (optGet(options, long2, 'type') === 'string' && isOptionValue(nextArg)) {
+          v2 = rest.shift();
+          inl2 = false;
+        }
+        tokens.push({ kind: 'option', name: long2, rawName: arg,
+                      index: index, value: v2, inlineValue: inl2 });
+        if (v2 != null) index++;
+        continue;
+      }
+      if (isLongOptionAndValue(arg)) {
+        var eq = arg.indexOf('=');
+        var long3 = arg.slice(2, eq);
+        tokens.push({ kind: 'option', name: long3, rawName: '--' + long3,
+                      index: index, value: arg.slice(eq + 1), inlineValue: true });
+        continue;
+      }
+      tokens.push({ kind: 'positional', index: index, value: arg });
+    }
+    return tokens;
+  }
+  u.parseArgs = function parseArgs(config) {
+    if (config === undefined || config === null) config = {};
+    var args = own(config, 'args');
+    if (args === undefined) {
+      if (Array.isArray(config)) {
+        // Legacy bao call shape parseArgs([]): no args supplied, and the
+        // embedder argv is not a CLI contract — parse an empty list.
+        args = [];
+      } else if (typeof process !== 'undefined' && Array.isArray(process.argv)) {
+        args = process.argv.slice(2);
+      } else {
+        args = [];
+      }
+    }
+    var strict = own(config, 'strict');
+    if (strict === undefined) strict = true;
+    var allowPositionals = own(config, 'allowPositionals');
+    if (allowPositionals === undefined) allowPositionals = !strict;
+    var returnTokens = own(config, 'tokens') === true;
+    var allowNegative = own(config, 'allowNegative') === true;
+    var options = own(config, 'options');
+    if (options === undefined) options = Object.create(null);
+
+    if (!Array.isArray(args)) {
+      throw paErr('ERR_INVALID_ARG_TYPE',
+        'The "args" argument must be an instance of Array. Received ' + typeof args);
+    }
+    if (typeof strict !== 'boolean') {
+      throw paErr('ERR_INVALID_ARG_TYPE', 'The "strict" argument must be of type boolean. Received ' + typeof strict);
+    }
+    if (typeof allowPositionals !== 'boolean') {
+      throw paErr('ERR_INVALID_ARG_TYPE', 'The "allowPositionals" argument must be of type boolean. Received ' + typeof allowPositionals);
+    }
+    if (typeof options !== 'object' || options === null) {
+      throw paErr('ERR_INVALID_ARG_TYPE', 'The "options" argument must be of type object. Received ' + typeof options);
+    }
+    var optNames = Object.keys(options);
+    for (var oi = 0; oi < optNames.length; oi++) {
+      var name = optNames[oi];
+      var optionConfig = options[name];
+      if (typeof optionConfig !== 'object' || optionConfig === null) {
+        throw paErr('ERR_INVALID_ARG_TYPE',
+          'The "options.' + name + '" argument must be of type object. Received ' + typeof optionConfig);
+      }
+      var optionType = own(optionConfig, 'type');
+      if (optionType !== 'string' && optionType !== 'boolean') {
+        throw paErr('ERR_INVALID_ARG_VALUE',
+          'The argument \'options.' + name + '.type\' is invalid. Received ' + String(optionType));
+      }
+      if (ownHas(optionConfig, 'short')) {
+        var short = optionConfig.short;
+        if (typeof short !== 'string') {
+          throw paErr('ERR_INVALID_ARG_TYPE',
+            'The "options.' + name + '.short" argument must be of type string. Received ' + typeof short);
+        }
+        if (short.length !== 1) {
+          throw paErr('ERR_INVALID_ARG_VALUE',
+            'The argument \'options.' + name + '.short\' is invalid. Received ' + String(short));
+        }
+      }
+      if (ownHas(optionConfig, 'multiple') && typeof optionConfig.multiple !== 'boolean') {
+        throw paErr('ERR_INVALID_ARG_TYPE',
+          'The "options.' + name + '.multiple" argument must be of type boolean. Received ' + typeof optionConfig.multiple);
+      }
+      var defaultValue = own(optionConfig, 'default');
+      if (defaultValue !== undefined) {
+        if (optionType === 'string') {
+          if (optionConfig.multiple ? !Array.isArray(defaultValue)
+                                    : typeof defaultValue !== 'string') {
+            throw paErr('ERR_INVALID_ARG_TYPE',
+              'The "options.' + name + '.default" argument is invalid');
+          }
+        } else {
+          if (optionConfig.multiple
+              ? !(Array.isArray(defaultValue) && defaultValue.every(function(x) { return typeof x === 'boolean'; }))
+              : typeof defaultValue !== 'boolean') {
+            throw paErr('ERR_INVALID_ARG_TYPE',
+              'The "options.' + name + '.default" argument is invalid');
+          }
+        }
+      }
+    }
+
+    var tokens = argsToTokens(args, options);
+    var parseConfig = { args: args, strict: strict, options: options,
+                        allowPositionals: allowPositionals,
+                        allowNegative: allowNegative };
+    var result = { values: Object.create(null), positionals: [] };
+    if (returnTokens) result.tokens = tokens;
+    for (var ti = 0; ti < tokens.length; ti++) {
+      var token = tokens[ti];
+      if (token.kind === 'option') {
+        if (strict) {
+          checkUsage(parseConfig, token);
+          checkOptionLikeValue(token);
+        }
+        storeOption(token, options, result.values, allowNegative);
+      } else if (token.kind === 'positional') {
+        if (!allowPositionals) {
+          throw paErr('ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL',
+            "Unexpected argument '" + token.value +
+            "'. This command does not take positional arguments");
+        }
+        result.positionals.push(token.value);
+      }
+    }
+    for (var di = 0; di < optNames.length; di++) {
+      var longName = optNames[di];
+      var cfg = options[longName];
+      if (own(cfg, 'default') !== undefined && result.values[longName] === undefined) {
+        if (longName !== '__proto__') result.values[longName] = own(cfg, 'default');
+      }
+    }
+    return result;
+  };
+
+  // ── util.deprecate — node v24 semantics: wraps fn (prototype + length
+  // preserved), emits one DeprecationWarning on first call. The warning
+  // goes through process.emitWarning when the embedder provides it (tests
+  // and embedders can observe/substitute it); otherwise it is written to
+  // stderr so the deprecation is never silent.
+  u.deprecate = function deprecate(fn, msg, code) {
+    if (code !== undefined && typeof code !== 'string') {
+      var ce = new TypeError('The "code" argument must be of type string. Received type ' +
+                             typeof code + ' (' + String(code) + ')');
+      ce.code = 'ERR_INVALID_ARG_TYPE';
+      throw ce;
+    }
+    var warned = false;
+    function deprecated() {
+      if (!warned) {
+        warned = true;
+        if (typeof process === 'undefined' || !process.noDeprecation) {
+          if (typeof process !== 'undefined' && typeof process.emitWarning === 'function') {
+            process.emitWarning(msg, 'DeprecationWarning', code);
+          } else if (typeof console !== 'undefined' && typeof console.error === 'function') {
+            console.error('DeprecationWarning: ' + msg);
+          }
+        }
+      }
+      return new.target
+        ? Reflect.construct(fn, Array.prototype.slice.call(arguments), new.target)
+        : Reflect.apply(fn, this, arguments);
+    }
+    // node: ObjectSetPrototypeOf(deprecated, fn) — throws the same native
+    // TypeError for a non-object fn (no silent guard).
+    Object.setPrototypeOf(deprecated, fn);
+    if (fn.prototype) deprecated.prototype = fn.prototype;
+    Object.defineProperty(deprecated, 'length', Object.getOwnPropertyDescriptor(fn, 'length'));
+    return deprecated;
+  };
 })"#;
         eval_js_factory_on_object(cx, util_extra_src, c"<util-extra>", util_obj.handle());
     }
@@ -621,88 +977,90 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     }
   }
 
-  // equal/strictEqual failure message: short primitive operands stay inline
-  // (`1 == 2`); objects and long/multi-line operands get the diff body.
-  function _equalityMessage(actual, expected, op, headline) {
-    var aObj = actual !== null && typeof actual === 'object';
-    var bObj = expected !== null && typeof expected === 'object';
-    if (!aObj && !bObj) {
-      var fa = _format(actual);
-      var fb = _format(expected);
-      if (fa.length <= 40 && fb.length <= 40 &&
-          fa.indexOf('\n') === -1 && fb.indexOf('\n') === -1) {
-        return fa + ' ' + op + ' ' + fb;
-      }
+  // Node's operand rendering for the equality family: a structural value is
+  // pretty-printed one entry per line (assert's `compact: false` inspect
+  // shape, `{\n  a: 1\n}`); primitives use the inspect scalar form (strings
+  // quoted). Both sides are joined by the operator (`==` / `===`), matching
+  // node's `${inspect(actual)} ${op} ${inspect(expected)}` message.
+  function _operandRepr(value) {
+    if (value !== null && typeof value === 'object') {
+      try {
+        return _dumpLines(value, 0, [], '').join('\n');
+      } catch (e) { /* fall through to scalar form */ }
     }
-    return _diffMessage(actual, expected, 'Expected values to be ' + headline);
+    return _format(value);
   }
 
-  function _err(message, actual, expected, operator) {
+  function _equalityMessage(actual, expected, op) {
+    return _operandRepr(actual) + ' ' + op + ' ' + _operandRepr(expected);
+  }
+
+  function _err(message, actual, expected, operator, generated) {
     var err = new AssertionError({
       message: message,
       actual: actual,
       expected: expected,
       operator: operator
     });
-    // Prefix the message with the class name so legacy tests that match on
-    // `e.message.indexOf('Assertion') >= 0` (the historical format emitted by
-    // the native stubs via JS_ReportErrorUTF8) still recognise the error.
-    // Newer tests check `e.name === 'AssertionError'` which is unaffected.
-    err.message = "AssertionError: " + (message || "Assertion failed");
+    // User-supplied messages are delivered verbatim (node: fail('boom') →
+    // message === 'boom'). Generated messages keep the historical
+    // "AssertionError: " prefix for the legacy consumers that match on it;
+    // node's generated wording has no prefix (registered residual).
+    err.message = generated ? "AssertionError: " + (message || "Assertion failed") : message;
     return err;
   }
 
   function ok(value, message) {
     if (!value) {
-      throw _err(message || "The expression evaluated to a falsy value", value, "truthy", "==");
+      throw _err(message || "The expression evaluated to a falsy value", value, "truthy", "==", !message);
     }
   }
 
   function equal(actual, expected, message) {
     if (actual != expected) {
-      throw _err(message || _equalityMessage(actual, expected, "==", "loosely equal"), actual, expected, "==");
+      throw _err(message || _equalityMessage(actual, expected, "=="), actual, expected, "==", !message);
     }
   }
 
   function notEqual(actual, expected, message) {
     if (actual == expected) {
-      throw _err(message || (_format(actual) + " != " + _format(expected)), actual, expected, "!=");
+      throw _err(message || (_format(actual) + " != " + _format(expected)), actual, expected, "!=", !message);
     }
   }
 
   function deepEqual(actual, expected, message) {
     if (!_deepEqual(actual, expected, false)) {
-      throw _err(message || _diffMessage(actual, expected, "Expected values to be loosely deeply equal"), actual, expected, "deepEqual");
+      throw _err(message || _diffMessage(actual, expected, "Expected values to be loosely deep-equal"), actual, expected, "deepEqual", !message);
     }
   }
 
   function notDeepEqual(actual, expected, message) {
     if (_deepEqual(actual, expected, false)) {
-      throw _err(message || "Expected values not to be loosely deeply equal", actual, expected, "notDeepEqual");
+      throw _err(message || "Expected values not to be loosely deep-equal", actual, expected, "notDeepEqual", !message);
     }
   }
 
   function strictEqual(actual, expected, message) {
     if (actual !== expected) {
-      throw _err(message || _equalityMessage(actual, expected, "===", "strictly equal"), actual, expected, "===");
+      throw _err(message || _equalityMessage(actual, expected, "==="), actual, expected, "===", !message);
     }
   }
 
   function notStrictEqual(actual, expected, message) {
     if (actual === expected) {
-      throw _err(message || (_format(actual) + " !== " + _format(expected)), actual, expected, "!==");
+      throw _err(message || (_format(actual) + " !== " + _format(expected)), actual, expected, "!==", !message);
     }
   }
 
   function deepStrictEqual(actual, expected, message) {
     if (!_deepEqual(actual, expected, true)) {
-      throw _err(message || _diffMessage(actual, expected, "Expected values to be strictly deeply equal"), actual, expected, "deepStrictEqual");
+      throw _err(message || _diffMessage(actual, expected, "Expected values to be strictly deep-equal"), actual, expected, "deepStrictEqual", !message);
     }
   }
 
   function notDeepStrictEqual(actual, expected, message) {
     if (_deepEqual(actual, expected, true)) {
-      throw _err(message || "Expected values not to be strictly deeply equal", actual, expected, "notDeepStrictEqual");
+      throw _err(message || "Expected values not to be strictly deep-equal", actual, expected, "notDeepStrictEqual", !message);
     }
   }
 
@@ -716,15 +1074,15 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     } catch(e) {
       if (expected) {
         if (typeof expected === 'function' && !(e instanceof expected)) {
-          throw _err(message || "Wrong error type thrown", e, expected, "throws");
+          throw _err(message || "Wrong error type thrown", e, expected, "throws", !message);
         }
         if (expected instanceof RegExp && typeof e.message === 'string' && !expected.test(e.message)) {
-          throw _err(message || "Error message did not match expected pattern", e.message, expected, "throws");
+          throw _err(message || "Error message did not match expected pattern", e.message, expected, "throws", !message);
         }
       }
       return;
     }
-    throw _err(message || "Missing expected exception", undefined, undefined, "throws");
+    throw _err(message || "Missing expected exception", undefined, undefined, "throws", !message);
   }
 
   function doesNotThrow(fn, expected, message) {
@@ -735,12 +1093,12 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     try {
       fn();
     } catch(e) {
-      throw _err(message || "Got unwanted exception", e, undefined, "doesNotThrow");
+      throw _err(message || "Got unwanted exception", e, undefined, "doesNotThrow", !message);
     }
   }
 
   function fail(message) {
-    throw _err(message || "Failed", undefined, undefined, "fail");
+    throw _err(message || "Failed", undefined, undefined, "fail", !message);
   }
 
   function ifError(err) {
@@ -872,14 +1230,14 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
   function match(value, regex, message) {
     if (typeof regex === 'string') regex = new RegExp(regex);
     if (!regex.test(value)) {
-      throw _err(message || "Value did not match pattern", value, regex, "match");
+      throw _err(message || "Value did not match pattern", value, regex, "match", !message);
     }
   }
 
   function doesNotMatch(value, regex, message) {
     if (typeof regex === 'string') regex = new RegExp(regex);
     if (regex.test(value)) {
-      throw _err(message || "Value unexpectedly matched pattern", value, regex, "doesNotMatch");
+      throw _err(message || "Value unexpectedly matched pattern", value, regex, "doesNotMatch", !message);
     }
   }
 
@@ -1024,6 +1382,289 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     }
 }
 
+/// Delegate one inspected value to the runtime's node-shaped `Bun.inspect`
+/// formatter (REQ-ENG-016). The legacy `jsval_inspect` plain-object/array/
+/// Buffer/function arms stay in place (C8b pins their exact shapes); the
+/// class family the legacy formatter never learned — Map/Set/Date/RegExp/
+/// Error/Promise/TypedArray — is formatted by Bun.inspect, which already
+/// implements the node byte contracts (native Map/Set iteration, ISO dates,
+/// typed-array element lists, error head+frame).
+///
+/// Depth: this frame's remaining budget is `depth` (root call = user depth
+/// + 1); Bun.inspect's `depth` option counts nested levels below its root,
+/// so the equivalent option is `depth - 1` (Bun adds the root back).
+unsafe fn bun_inspect_delegate(cx: *mut JSContext, val: JSVal, depth: u32) -> Option<String> {
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        return None;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut bun_val = UndefinedValue();
+    if !JS_GetProperty(
+        cx,
+        global_root.handle().into(),
+        c"Bun".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut bun_val,
+        },
+    ) {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    if !bun_val.is_object() {
+        return None;
+    }
+    rooted!(&in(cx_ref) let bun_obj = bun_val.to_object());
+    let mut inspect_v = UndefinedValue();
+    if !JS_GetProperty(
+        cx,
+        bun_obj.handle().into(),
+        c"inspect".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut inspect_v,
+        },
+    ) {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    if !inspect_v.is_object() || !JS_ObjectIsFunction(inspect_v.to_object()) {
+        return None;
+    }
+    rooted!(&in(cx_ref) let opts_obj = w2::JS_NewPlainObject(cx_ref));
+    if opts_obj.get().is_null() {
+        return None;
+    }
+    rooted!(&in(cx_ref) let depth_v = mozjs::jsval::DoubleValue(depth.saturating_sub(1) as f64));
+    JS_DefineProperty(
+        cx,
+        opts_obj.handle().into(),
+        c"depth".as_ptr(),
+        depth_v.handle().into(),
+        0,
+    );
+    rooted!(&in(cx_ref) let val_root = val);
+    rooted!(&in(cx_ref) let inspect_root = inspect_v);
+    let call_vals = [val_root.get(), ObjectValue(opts_obj.get())];
+    let call_args = HandleValueArray {
+        length_: 2,
+        elements_: call_vals.as_ptr(),
+    };
+    let mut rval = UndefinedValue();
+    let ok = JS_CallFunctionValue(
+        cx,
+        global_root.handle().into(),
+        inspect_root.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    if !ok {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    if !rval.is_string() {
+        return None;
+    }
+    Some(crate::js_to_rust_string(cx, rval))
+}
+
+/// `.constructor.name` of an object (empty when absent/non-string). Used for
+/// the node class-name prefix and depth-cap tag (`Point { ... }` / `[Point]`).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn object_ctor_name(cx: *mut JSContext, obj: mozjs::rust::Handle<*mut JSObject>) -> String {
+    let mut ctor = UndefinedValue();
+    if !JS_GetProperty(
+        cx,
+        obj.into(),
+        c"constructor".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ctor,
+        },
+    ) {
+        JS_ClearPendingException(cx);
+        return String::new();
+    }
+    if !ctor.is_object() {
+        return String::new();
+    }
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let ctor_obj = ctor.to_object());
+    let mut name = UndefinedValue();
+    if !JS_GetProperty(
+        cx,
+        ctor_obj.handle().into(),
+        c"name".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut name,
+        },
+    ) {
+        JS_ClearPendingException(cx);
+        return String::new();
+    }
+    if name.is_string() {
+        crate::js_to_rust_string(cx, name)
+    } else {
+        String::new()
+    }
+}
+
+/// True when the object's [[Prototype]] is null (node renders
+/// `[Object: null prototype] { ... }`).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn object_has_null_proto(cx: *mut JSContext, obj: mozjs::rust::Handle<*mut JSObject>) -> bool {
+    let mut proto: *mut JSObject = ::std::ptr::null_mut();
+    if !JS_GetPrototype(
+        cx,
+        obj.into(),
+        MutableHandle::<*mut JSObject> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut proto,
+        },
+    ) {
+        JS_ClearPendingException(cx);
+        return false;
+    }
+    proto.is_null()
+}
+
+/// Map / Set rendering with node's util.inspect shape:
+///   * `Map(1) { 1 => 'a' }` / `Set(2) { 1, 2 }`
+///   * empty → `Map(0) {}` (single space group, unlike Bun.inspect)
+/// Entries come from the native table iterators (JS::MapEntries /
+/// JS::SetValues), so `Map.prototype` / user iterators are never consulted;
+/// entry values go through `jsval_inspect` so strings keep util.inspect's
+/// single-quote form.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn inspect_map_or_set(
+    cx: *mut JSContext,
+    obj: mozjs::rust::Handle<*mut JSObject>,
+    is_map: bool,
+    depth: u32,
+) -> String {
+    let head = if is_map { "Map" } else { "Set" };
+    let n = if is_map {
+        mozjs_sys::jsapi::JS::MapSize(cx, obj.into())
+    } else {
+        mozjs_sys::jsapi::JS::SetSize(cx, obj.into())
+    } as usize;
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let mut iter_val = UndefinedValue();
+    let iter_handle = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut iter_val,
+    };
+    let made_iter = if is_map {
+        mozjs_sys::jsapi::JS::MapEntries(cx, obj.into(), iter_handle)
+    } else {
+        mozjs_sys::jsapi::JS::SetValues(cx, obj.into(), iter_handle)
+    };
+    if !made_iter || !iter_val.is_object() {
+        JS_ClearPendingException(cx);
+        return format!("{}({}) {{ <items unknown> }}", head, n);
+    }
+    rooted!(&in(cx_ref) let iter_root = iter_val.to_object());
+    let inner_depth = depth.saturating_sub(1);
+    let mut parts: Vec<String> = Vec::new();
+    for _ in 0..n.min(100) {
+        let mut res = UndefinedValue();
+        let called = JS_CallFunctionName(
+            cx,
+            iter_root.handle().into(),
+            c"next".as_ptr(),
+            &HandleValueArray::empty(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut res,
+            },
+        );
+        if !called || !res.is_object() {
+            if !called {
+                JS_ClearPendingException(cx);
+            }
+            break;
+        }
+        rooted!(&in(cx_ref) let res_root = res.to_object());
+        let mut done = UndefinedValue();
+        let mut value = UndefinedValue();
+        let got_done = JS_GetProperty(
+            cx,
+            res_root.handle().into(),
+            c"done".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut done,
+            },
+        );
+        let got_value = JS_GetProperty(
+            cx,
+            res_root.handle().into(),
+            c"value".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut value,
+            },
+        );
+        if !got_done || !got_value {
+            JS_ClearPendingException(cx);
+            break;
+        }
+        if done.to_boolean() {
+            break;
+        }
+        if !is_map {
+            parts.push(jsval_inspect(cx, value, inner_depth));
+            continue;
+        }
+        if !value.is_object() {
+            parts.push("<items unknown>".to_string());
+            continue;
+        }
+        rooted!(&in(cx_ref) let pair = value.to_object());
+        let mut k = UndefinedValue();
+        let mut v = UndefinedValue();
+        let got_k = JS_GetElement(
+            cx,
+            pair.handle().into(),
+            0,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut k,
+            },
+        );
+        let got_v = JS_GetElement(
+            cx,
+            pair.handle().into(),
+            1,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut v,
+            },
+        );
+        if !got_k || !got_v {
+            JS_ClearPendingException(cx);
+            continue;
+        }
+        parts.push(format!(
+            "{} => {}",
+            jsval_inspect(cx, k, inner_depth),
+            jsval_inspect(cx, v, inner_depth)
+        ));
+    }
+    if parts.is_empty() {
+        return format!("{}({}) {{}}", head, n);
+    }
+    format!("{}({}) {{ {} }}", head, n, parts.join(", "))
+}
+
 /// Recursively format a JSVal the way Node.js `util.inspect` would, with a
 /// depth cap to avoid infinite recursion on cyclic structures.
 ///
@@ -1047,6 +1688,29 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
         }
         if val.is_string() {
             return format!("'{}'", crate::js_to_rust_string(cx, val));
+        }
+        if val.is_symbol() {
+            // `ToString(symbol)` throws (abstract op); the node form is
+            // `Symbol(description)`, read through the public symbol API.
+            let sym = val.to_symbol();
+            let desc = w2::GetSymbolDescription(mozjs::rust::Handle::from_marked_location(&sym));
+            if desc.is_null() {
+                return "Symbol()".to_string();
+            }
+            return format!("Symbol({})", crate::js_to_rust_string(cx, StringValue(&*desc)));
+        }
+        if val.is_bigint() {
+            // node: `9n` — canonical engine ToString plus the suffix.
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let sv = val);
+            let jsstr = mozjs::rust::ToString(cx_ref, sv.handle());
+            if jsstr.is_null() {
+                JS_ClearPendingException(cx);
+                return "0n".to_string();
+            }
+            let text = crate::js_to_rust_string(cx, StringValue(&*jsstr));
+            return format!("{}n", text);
         }
         if val.is_object() {
             let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -1209,10 +1873,76 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
                 return format!("[Function: {}]", name);
             }
 
+            // Class family the legacy formatter never learned: delegate to
+            // the runtime's node-shaped Bun.inspect formatter (Map/Set native
+            // iteration, ISO dates, RegExp source/flags, error head+frame,
+            // Promise state). Buffer/Array/Function above stay on the legacy
+            // path because C8b pins their exact shapes.
+            let mut cls = ESClass::Other;
+            let _ = w2::GetBuiltinClass(&mut wrapped_cx, obj.handle(), &mut cls);
+
+            // Map/Set are rendered here rather than delegated: node's
+            // util.inspect quotes strings with single quotes and collapses an
+            // empty body to `{}`, while Bun.inspect's formatter uses double
+            // quotes and keeps the body padding (`Map(0) {  }`).
+            if cls == ESClass::Map || cls == ESClass::Set {
+                return inspect_map_or_set(cx, obj.handle(), cls == ESClass::Map, depth);
+            }
+
+            if matches!(cls, ESClass::Date | ESClass::RegExp | ESClass::Error | ESClass::Promise) {
+                if let Some(s) = bun_inspect_delegate(cx, val, depth) {
+                    return s;
+                }
+            }
+
+            // TypedArrays / DataView (Buffer was handled above).
+            {
+                let mut view_len: usize = 0;
+                let mut view_shared = false;
+                let mut view_data: *mut u8 = ::std::ptr::null_mut();
+                let view = JS_GetObjectAsArrayBufferView(
+                    obj.get(),
+                    &mut view_len,
+                    &mut view_shared,
+                    &mut view_data,
+                );
+                if !view.is_null() {
+                    if depth == 0 {
+                        let name = object_ctor_name(cx, obj.handle());
+                        let tname = if name.is_empty() { "TypedArray".to_string() } else { name };
+                        return format!("[{}]", tname);
+                    }
+                    if let Some(s) = bun_inspect_delegate(cx, val, depth) {
+                        return s;
+                    }
+                }
+            }
+
+            let null_proto = object_has_null_proto(cx, obj.handle());
+            let ctor_name = object_ctor_name(cx, obj.handle());
+
+            // WeakMap / WeakSet: node renders the unknown-items tag.
+            if ctor_name == "WeakMap" || ctor_name == "WeakSet" {
+                return format!("{} {{ <items unknown> }}", ctor_name);
+            }
+
             // Plain objects → { key: value, ... }
             if depth == 0 {
+                if null_proto {
+                    return "[Object: null prototype] {}".to_string();
+                }
+                if !ctor_name.is_empty() && ctor_name != "Object" {
+                    return format!("[{}]", ctor_name);
+                }
                 return "[Object]".to_string();
             }
+            let prefix = if null_proto {
+                "[Object: null prototype] ".to_string()
+            } else if !ctor_name.is_empty() && ctor_name != "Object" {
+                format!("{} ", ctor_name)
+            } else {
+                String::new()
+            };
 
             // Enumerate own enumerable entries via the established IdVector +
             // GetPropertyKeys pattern used elsewhere in bao_runtime. Integer-
@@ -1270,9 +2000,9 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
                 }
             }
             if parts.is_empty() {
-                return "{}".to_string();
+                return format!("{}{{}}", prefix);
             }
-            return format!("{{ {} }}", parts.join(", "));
+            return format!("{}{{ {} }}", prefix, parts.join(", "));
         }
         String::new()
     }
@@ -1409,6 +2139,26 @@ unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String {
         }
         if val.is_string() {
             return crate::js_to_rust_string(cx, val);
+        }
+        if val.is_symbol() {
+            let sym = val.to_symbol();
+            let desc = w2::GetSymbolDescription(mozjs::rust::Handle::from_marked_location(&sym));
+            if desc.is_null() {
+                return "Symbol()".to_string();
+            }
+            return format!("Symbol({})", crate::js_to_rust_string(cx, StringValue(&*desc)));
+        }
+        if val.is_bigint() {
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let sv = val);
+            let jsstr = mozjs::rust::ToString(cx_ref, sv.handle());
+            if jsstr.is_null() {
+                JS_ClearPendingException(cx);
+                return "0n".to_string();
+            }
+            let text = crate::js_to_rust_string(cx, StringValue(&*jsstr));
+            return format!("{}n", text);
         }
         if val.is_object() {
             // For format display, delegate to inspect so arrays/objects render
@@ -1637,6 +2387,83 @@ unsafe extern "C" fn util_is_error(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     true
 }
 
+/// JS `ToString(Number)` for a computed f64 (util.format %d/%i/%f output).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn f64_js_text(cx: *mut JSContext, n: f64) -> String {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let nv = mozjs::jsval::DoubleValue(n));
+    let jsstr = mozjs::rust::ToString(cx_ref, nv.handle());
+    if jsstr.is_null() {
+        JS_ClearPendingException(cx);
+        return "NaN".to_string();
+    }
+    crate::js_to_rust_string(cx, StringValue(&*jsstr))
+}
+
+/// Call the realm's global `parseInt` / `parseFloat` with one argument —
+/// node's %i/%f coercion (ToString then parse, with the JS whitespace/radix
+/// rules). None when the global is absent or the call throws (caller renders
+/// NaN, matching the non-throwing face of node's numeric formatter).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn call_global_number_parser(
+    cx: *mut JSContext,
+    name: &[u8],
+    val: JSVal,
+) -> ::std::option::Option<f64> {
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        return None;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let c_name = ZBox::from_bytes(name);
+    let mut fn_v = UndefinedValue();
+    if !JS_GetProperty(
+        cx,
+        global_root.handle().into(),
+        c_name.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut fn_v,
+        },
+    ) {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    if !fn_v.is_object() {
+        return None;
+    }
+    rooted!(&in(cx_ref) let fn_root = fn_v);
+    rooted!(&in(cx_ref) let val_root = val);
+    let call_vals = [val_root.get()];
+    let call_args = HandleValueArray {
+        length_: 1,
+        elements_: call_vals.as_ptr(),
+    };
+    let mut rval = UndefinedValue();
+    let ok = JS_CallFunctionValue(
+        cx,
+        global_root.handle().into(),
+        fn_root.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    if !ok {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    if rval.is_number() {
+        Some(rval.to_number())
+    } else {
+        None
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -1672,11 +2499,78 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                                 arg_idx += 1;
                             }
                         }
-                        Some(&'s') | Some(&'d') | Some(&'i') | Some(&'f')
-                        | Some(&'o') | Some(&'O') => {
+                        Some(&'s') | Some(&'o') | Some(&'O') => {
                             chars.next();
                             if arg_idx < argc {
                                 result.push_str(&jsval_to_display(cx, *args.get(arg_idx).ptr));
+                                arg_idx += 1;
+                            }
+                        }
+                        // %d — node: BigInt formats as `9n`, Symbol as NaN,
+                        // everything else Number(value) (JS ToNumber).
+                        Some(&'d') => {
+                            chars.next();
+                            if arg_idx < argc {
+                                let v = *args.get(arg_idx).ptr;
+                                if v.is_bigint() {
+                                    result.push_str(&jsval_inspect(cx, v, 2));
+                                } else if v.is_symbol() {
+                                    result.push_str("NaN");
+                                } else {
+                                    let mut wrapped = mozjs::context::JSContext::from_ptr(
+                                        NonNull::new_unchecked(cx),
+                                    );
+                                    let hv = mozjs::rust::HandleValue::from_marked_location(
+                                        args.get(arg_idx).ptr,
+                                    );
+                                    match mozjs::rust::ToNumber(&mut wrapped, hv) {
+                                        Ok(n) => result.push_str(&f64_js_text(cx, n)),
+                                        Err(()) => return false,
+                                    }
+                                }
+                                arg_idx += 1;
+                            }
+                        }
+                        // %i — node: parseInt(value) (truncation), BigInt
+                        // verbatim (`9n`), Symbol → NaN. This is the U6
+                        // truncation contract (`%i`, 2.9 → "2").
+                        Some(&'i') => {
+                            chars.next();
+                            if arg_idx < argc {
+                                let v = *args.get(arg_idx).ptr;
+                                if v.is_bigint() {
+                                    result.push_str(&jsval_inspect(cx, v, 2));
+                                } else if v.is_symbol() {
+                                    result.push_str("NaN");
+                                } else {
+                                    match call_global_number_parser(cx, b"parseInt", v) {
+                                        Some(n) => result.push_str(&f64_js_text(cx, n)),
+                                        None => result.push_str("NaN"),
+                                    }
+                                }
+                                arg_idx += 1;
+                            }
+                        }
+                        // %f — node: parseFloat(value), Symbol → NaN.
+                        Some(&'f') => {
+                            chars.next();
+                            if arg_idx < argc {
+                                let v = *args.get(arg_idx).ptr;
+                                if v.is_symbol() {
+                                    result.push_str("NaN");
+                                } else {
+                                    match call_global_number_parser(cx, b"parseFloat", v) {
+                                        Some(n) => result.push_str(&f64_js_text(cx, n)),
+                                        None => result.push_str("NaN"),
+                                    }
+                                }
+                                arg_idx += 1;
+                            }
+                        }
+                        // %c consumes the argument and renders nothing.
+                        Some(&'c') => {
+                            chars.next();
+                            if arg_idx < argc {
                                 arg_idx += 1;
                             }
                         }
@@ -1916,35 +2810,120 @@ unsafe extern "C" fn util_callbackify(cx: *mut JSContext, _argc: u32, vp: *mut J
     true
 }
 
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn util_deprecate(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    if _argc > 0 {
-        args.rval().set(*args.get(0).ptr);
-    } else {
-        args.rval().set(UndefinedValue());
+/// JavaScript number rendering for error messages (`Received 1.5`, `NaN`).
+fn format_js_number(n: f64) -> String {
+    if n.is_nan() {
+        return "NaN".to_string();
     }
-    true
+    if n.is_infinite() {
+        return if n.is_sign_positive() { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
+        return format!("{}", n as i64);
+    }
+    format!("{}", n)
 }
 
+/// `util.getSystemErrorName(err)` — node v24 contract:
+///   * non-number                          → TypeError ERR_INVALID_ARG_TYPE
+///   * non-integer or >= 0                 → RangeError ERR_OUT_OF_RANGE
+///                                             ("must be a negative integer")
+///   * mapped libuv code                   → e.g. -1 → "EPERM", -13 → "EACCES"
+///   * unmapped negative integer           → `Unknown system error <n>`
+/// The mapping is bun_errno's per-OS libuv table (`bun_sys::UV_E::name`,
+/// the same table node's uv_errname consults); unmapped values are the
+/// literal node string, never undefined.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn util_get_system_error_name(
-    _cx: *mut JSContext,
-    _argc: u32,
+    cx: *mut JSContext,
+    argc: u32,
     vp: *mut JSVal,
 ) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    args.rval().set(UndefinedValue());
+    let args = CallArgs::from_vp(vp, argc);
+    let val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    if !val.is_number() {
+        let received = if val.is_undefined() {
+            "undefined".to_string()
+        } else if val.is_null() {
+            "null".to_string()
+        } else if val.is_object() {
+            "an instance of Object".to_string()
+        } else {
+            format!(
+                "type {}",
+                crate::bun_inspect_api::received_type_fragment(cx, val)
+                    .trim_start_matches("type ")
+            )
+        };
+        let msg = format!(
+            "The \"err\" argument must be of type number. Received {}",
+            received
+        );
+        return crate::bun_inspect_api::throw_invalid_arg_type(cx, &msg);
+    }
+
+    let num = val.to_number();
+    if num.is_nan() || num.fract() != 0.0 || num >= 0.0 {
+        let msg = format!(
+            "The value of \"err\" is out of range. It must be a negative integer. Received {}",
+            format_js_number(num)
+        );
+        return throw_range_with_code(cx, "ERR_OUT_OF_RANGE", &msg);
+    }
+    let name = if num < i32::MIN as f64 {
+        format!("Unknown system error {}", format_js_number(num))
+    } else {
+        let err = num as i32;
+        match bun_sys::UV_E::name(err) {
+            Some(name) => name.to_string(),
+            None => format!("Unknown system error {}", err),
+        }
+    };
+    let js_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(name.as_bytes()).as_ptr());
+    args.rval().set(if js_str.is_null() {
+        UndefinedValue()
+    } else {
+        StringValue(&*js_str)
+    });
     true
 }
 
+/// RangeError with a node `code`, set as the pending exception.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn util_parse_args(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
-    args.rval().set(ObjectValue(obj.get()));
-    true
+unsafe fn throw_range_with_code(cx: *mut JSContext, code: &str, msg: &str) -> bool {
+    let c_msg = ::std::ffi::CString::new(msg)
+        .unwrap_or_else(|_| ::std::ffi::CString::new("error").unwrap());
+    {
+        let mut cx_s = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        mozjs::error::throw_range_error(&mut cx_s, c_msg.as_ref());
+    }
+    if JS_IsExceptionPending(cx) {
+        rooted!(in(cx) let mut exn = UndefinedValue());
+        JS_GetPendingException(cx, exn.handle_mut().into());
+        let exn_val = exn.get();
+        if !exn_val.is_undefined() && exn_val.is_object() {
+            let cx_ref_err = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            rooted!(&in(cx_ref_err) let exn_root = exn_val.to_object());
+            let code_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(code.as_bytes()).as_ptr());
+            if !code_str.is_null() {
+                let code_val = StringValue(&*code_str);
+                rooted!(&in(cx_ref_err) let code_r = code_val);
+                JS_DefineProperty(
+                    cx,
+                    exn_root.handle().into(),
+                    c"code".as_ptr(),
+                    code_r.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+                JS_SetPendingException(
+                    cx,
+                    exn.handle().into(),
+                    ExceptionStackBehavior::DoNotCapture,
+                );
+            }
+        }
+    }
+    false
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2309,34 +3288,45 @@ unsafe extern "C" fn util_inherits(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         super_root.handle().into(),
     );
 
-    args.rval().set(UndefinedValue());
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn util_is_deep_strict_equal(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc < 2 {
-        args.rval().set(BooleanValue(false));
-        return true;
+    // node also links the prototype chain:
+    //   ObjectSetPrototypeOf(Child.prototype, Parent.prototype)
+    // so `new Child() instanceof Parent` is true (U4). Skipped when either
+    // `.prototype` is absent/non-object (the legacy no-op guard face stays).
+    let parent_obj = parent_val.to_object();
+    rooted!(&in(wrapped_cx) let parent_root = parent_obj);
+    let mut child_proto = UndefinedValue();
+    let mut parent_proto = UndefinedValue();
+    let got_child = JS_GetProperty(
+        cx,
+        child_obj.handle().into(),
+        c"prototype".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut child_proto,
+        },
+    );
+    let got_parent = JS_GetProperty(
+        cx,
+        parent_root.handle().into(),
+        c"prototype".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut parent_proto,
+        },
+    );
+    if got_child && got_parent && child_proto.is_object() && parent_proto.is_object() {
+        rooted!(&in(wrapped_cx) let child_proto_obj = child_proto.to_object());
+        rooted!(&in(wrapped_cx) let parent_proto_obj = parent_proto.to_object());
+        JS_SetPrototype(
+            cx,
+            child_proto_obj.handle().into(),
+            parent_proto_obj.handle().into(),
+        );
+    } else if !got_child || !got_parent {
+        JS_ClearPendingException(cx);
     }
-    let a = *args.get(0).ptr;
-    let b = *args.get(1).ptr;
-    let equal = a.is_undefined() && b.is_undefined()
-        || a.is_null() && b.is_null()
-        || a.is_boolean() && b.is_boolean() && a.to_boolean() == b.to_boolean()
-        || a.is_int32() && b.is_int32() && a.to_int32() == b.to_int32()
-        || a.is_double() && b.is_double() && a.to_double() == b.to_double()
-        || a.is_string() && b.is_string() && {
-            let sa = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), ::std::ptr::NonNull::new_unchecked(a.to_string()));
-            let sb = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), ::std::ptr::NonNull::new_unchecked(b.to_string()));
-            sa == sb
-        };
-    args.rval().set(BooleanValue(equal));
+
+    args.rval().set(UndefinedValue());
     true
 }
 

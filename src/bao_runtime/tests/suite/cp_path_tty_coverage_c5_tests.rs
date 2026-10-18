@@ -1014,9 +1014,10 @@ fn c5_tty_write_stream_file_escape_bytes_body() {
 
     let bytes = std::fs::read(&path).expect("read escape capture file");
     // clearLine() → 2K; (-1) → 1K; (1) → 0K; clearScreenDown → J;
-    // cursorTo(3,1) → 2;4H; cursorTo(-1,-2) → 1;1H; moveCursor: 2C, 1B, 1A,
-    // 3D; (0,0) and no-arg emit nothing (empty-escape arm).
-    let want: &[u8] = b"AB\x1b[2K\x1b[1K\x1b[0K\x1b[J\x1b[2;4H\x1b[1;1H\x1b[2C\x1b[1B\x1b[1A\x1b[3D";
+    // cursorTo(3,1) → 2;4H; cursorTo(-1,-2) → 1;1H; moveCursor (node v24
+    // byte contract, dx-then-dy, dy>0 → DOWN): 2C, 1A, 1B, 3D;
+    // (0,0) and no-arg emit nothing (empty-escape arm).
+    let want: &[u8] = b"AB\x1b[2K\x1b[1K\x1b[0K\x1b[J\x1b[2;4H\x1b[1;1H\x1b[2C\x1b[1A\x1b[1B\x1b[3D";
     assert_eq!(
         bytes, want,
         "byte-exact ANSI escapes (got {:?})",

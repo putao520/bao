@@ -564,9 +564,15 @@ fn util_misc_surface_arms() {
             return util.inherits(5, {}) === undefined
                 && util.inherits({}) === undefined;
         });
-        // getSystemErrorName stub face.
-        check("getSystemErrorName_returns_undefined", function() {
-            return util.getSystemErrorName(1) === undefined;
+        // getSystemErrorName: node v24 validates the code — a positive (or
+        // zero) value is a RangeError ERR_OUT_OF_RANGE ("must be a negative
+        // integer"), not undefined (the old stub face this pin used to
+        // assert; flipped in the C17 fix wave).
+        check("getSystemErrorName_rejects_non_negative", function() {
+            try { util.getSystemErrorName(1); return false; }
+            catch (e) {
+                return e.name === 'RangeError' && e.code === 'ERR_OUT_OF_RANGE';
+            }
         });
         // parseArgs returns an object (values shape is the stub contract).
         check("parseArgs_returns_object", function() {

@@ -4,7 +4,7 @@ use bun_core::ZBox;
 
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
-use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, UndefinedValue};
+use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -68,6 +68,76 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     cache_builtin(cx, "tty", tty_obj.get());
+}
+
+/// JS `ToNumber` on an argument slot. Node's writer methods compare their
+/// numeric arguments with `<`/`>` (and add `+ 1`), so the coercion is JS
+/// ToNumber: numbers pass through, `undefined` → NaN, `null` → 0, numeric
+/// strings → their value, symbols/objects-with-throwing-valueOf propagate
+/// their exception. Returns Err(()) with the pending exception set — the
+/// caller then returns false (node parity, and the T5 abort class: the old
+/// `JSVal::to_int32` asserts `is_int32` and aborts the process on any
+/// non-int32 argument).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn js_to_number_arg(cx: *mut JSContext, vp: *const JSVal) -> ::std::result::Result<f64, ()> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let hv = mozjs::rust::HandleValue::from_marked_location(vp);
+    mozjs::rust::ToNumber(&mut wrapped_cx, hv)
+}
+
+/// Number-to-string with JS `ToString(Number)` shape for the escapes
+/// (`${x + 1}` in node): integral values render without a decimal point,
+/// NaN/±Infinity use the JS spellings.
+fn js_number_text(n: f64) -> String {
+    if n.is_nan() {
+        return "NaN".to_string();
+    }
+    if n.is_infinite() {
+        return if n.is_sign_positive() { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
+        return format!("{}", n as i64);
+    }
+    format!("{}", n)
+}
+
+/// TypeError carrying a node `code`, set as the pending exception (same
+/// pending-exception shape as node_crypto's argon2_throw_with_code).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn throw_type_with_code(cx: *mut JSContext, code: &str, msg: &str) -> bool {
+    let c_msg = ::std::ffi::CString::new(msg)
+        .unwrap_or_else(|_| ::std::ffi::CString::new("error").unwrap());
+    {
+        let mut cx_s = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
+    }
+    if JS_IsExceptionPending(cx) {
+        rooted!(in(cx) let mut exn = UndefinedValue());
+        JS_GetPendingException(cx, exn.handle_mut().into());
+        let exn_val = exn.get();
+        if !exn_val.is_undefined() && exn_val.is_object() {
+            let cx_ref_err = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            rooted!(&in(cx_ref_err) let exn_root = exn_val.to_object());
+            let code_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(code.as_bytes()).as_ptr());
+            if !code_str.is_null() {
+                let code_val = StringValue(&*code_str);
+                rooted!(&in(cx_ref_err) let code_r = code_val);
+                JS_DefineProperty(
+                    cx,
+                    exn_root.handle().into(),
+                    c"code".as_ptr(),
+                    code_r.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+                JS_SetPendingException(
+                    cx,
+                    exn.handle().into(),
+                    ExceptionStackBehavior::DoNotCapture,
+                );
+            }
+        }
+    }
+    false
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -299,14 +369,6 @@ unsafe extern "C" fn tty_write_stream_ctor(cx: *mut JSContext, argc: u32, vp: *m
             rows.handle().into(),
             JSPROP_ENUMERATE as u32,
         );
-        w2::JS_DefineFunction(
-            cx_ref,
-            obj.handle(),
-            c"getWindowSize".as_ptr(),
-            Some(tty_get_window_size),
-            0,
-            JSPROP_ENUMERATE as u32,
-        );
     } else {
         let undef = UndefinedValue();
         rooted!(&in(cx_ref) let cols = undef);
@@ -323,6 +385,19 @@ unsafe extern "C" fn tty_write_stream_ctor(cx: *mut JSContext, argc: u32, vp: *m
             obj.handle().into(),
             c"rows".as_ptr(),
             rows.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    // Node defines getWindowSize() on every TTY WriteStream (the size query
+    // itself may still fail; a 0x0 pty answers [0, 0], node oracle parity).
+    if is_tty {
+        w2::JS_DefineFunction(
+            cx_ref,
+            obj.handle(),
+            c"getWindowSize".as_ptr(),
+            Some(tty_get_window_size),
+            0,
             JSPROP_ENUMERATE as u32,
         );
     }
@@ -499,22 +574,23 @@ unsafe extern "C" fn tty_get_window_size(cx: *mut JSContext, _argc: u32, vp: *mu
     // unix: real TIOCGWINSZ via rustix — the former arm declared a zeroed
     // winsize and read it back without ever issuing the ioctl, so this face
     // returned undefined on every unix tty (root-fixed here alongside the
-    // rustix swap).
+    // rustix swap). A successful query is authoritative even when it reports
+    // a zero dimension: node on a 0x0 pty returns [0, 0] (T4 oracle), so the
+    // presence of the ioctl result — not a positive column count — gates the
+    // array arm.
     #[cfg(unix)]
-    let (ws_col, ws_row) = if fd >= 0 {
+    let size = if fd >= 0 {
         // SAFETY: borrow_raw wraps the JS-supplied fd for the duration of the
         // single tcgetwinsize call.
-        match rustix::termios::tcgetwinsize(unsafe { ::std::os::fd::BorrowedFd::borrow_raw(fd) }) {
-            Ok(ws) => (ws.ws_col as i32, ws.ws_row as i32),
-            Err(_) => (0, 0),
-        }
+        rustix::termios::tcgetwinsize(unsafe { ::std::os::fd::BorrowedFd::borrow_raw(fd) })
+            .ok()
+            .map(|ws| (ws.ws_col as i32, ws.ws_row as i32))
     } else {
-        (0, 0)
+        None
     };
     #[cfg(windows)]
-    let (ws_col, ws_row) = console_window_size(fd).unwrap_or((0, 0));
-    let has_size = fd >= 0 && ws_col > 0;
-    if has_size {
+    let size = console_window_size(fd);
+    if let Some((ws_col, ws_row)) = size {
         rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, 2));
         if !arr.get().is_null() {
             rooted!(&in(cx_ref) let cv = Int32Value(ws_col));
@@ -691,15 +767,24 @@ unsafe extern "C" fn tty_clear_line(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let this_obj = this.to_object());
 
+    // node: `dir < 0 ? 1K : dir > 0 ? 0K : 2K` — the comparisons run JS
+    // ToNumber, so `'x'` → NaN → entire-line and `'1'` → 0K. Non-int32
+    // arguments must never reach the old `to_int32` assert (T5: it aborts
+    // the process).
     let dir = if argc > 0 {
-        (*args.get(0).ptr).to_int32()
+        match js_to_number_arg(cx, args.get(0).ptr) {
+            Ok(n) => n,
+            Err(()) => return false,
+        }
     } else {
-        0
+        0.0
     };
-    let esc = match dir {
-        -1 => "\x1b[1K",
-        1 => "\x1b[0K",
-        _ => "\x1b[2K",
+    let esc = if dir < 0.0 {
+        "\x1b[1K"
+    } else if dir > 0.0 {
+        "\x1b[0K"
+    } else {
+        "\x1b[2K"
     };
 
     let mut fd_val = UndefinedValue();
@@ -719,7 +804,8 @@ unsafe extern "C" fn tty_clear_line(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     };
 
     libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len() as _);
-    args.rval().set(ObjectValue(this_obj.get()));
+    // node returns the stream.write() result — boolean true (T1 oracle).
+    args.rval().set(BooleanValue(true));
     true
 }
 
@@ -753,11 +839,22 @@ unsafe extern "C" fn tty_clear_screen_down(cx: *mut JSContext, _argc: u32, vp: *
     };
 
     libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len() as _);
-    args.rval().set(ObjectValue(this_obj.get()));
+    args.rval().set(BooleanValue(true));
     true
 }
 
 /// cursorTo(x, y) — write ANSI escape to move cursor
+///
+/// node semantics (internal/readline/callbacks.js):
+///   * `cursorTo(x)`                    → `\x1b[<x+1>G` (column only, row
+///                                          preserved — T3; the old arm
+///                                          always emitted `row;colH` with
+///                                          row 0)
+///   * `cursorTo(x, y)`                 → `\x1b[<y+1>;<x+1>H`
+///   * no numeric argument              → no bytes, return true
+///   * numeric y without numeric x      → ERR_INVALID_CURSOR_POS
+///   * NaN x/y                          → ERR_INVALID_ARG_VALUE
+/// Non-int32 arguments never reach `to_int32` (T5 abort class).
 unsafe extern "C" fn tty_cursor_to(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
@@ -769,17 +866,44 @@ unsafe extern "C" fn tty_cursor_to(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let this_obj = this.to_object());
 
-    let col = if argc > 0 {
-        (*args.get(0).ptr).to_int32().max(0) as u32
+    let x_is_num = argc > 0 && (*args.get(0).ptr).is_number();
+    let y_is_num = argc > 1 && (*args.get(1).ptr).is_number();
+    let x_raw = if x_is_num { (*args.get(0).ptr).to_number() } else { 0.0 };
+    let y_raw = if y_is_num { (*args.get(1).ptr).to_number() } else { 0.0 };
+    if x_is_num && x_raw.is_nan() {
+        return throw_type_with_code(
+            cx,
+            "ERR_INVALID_ARG_VALUE",
+            "The argument 'x' is invalid. Received NaN",
+        );
+    }
+    if y_is_num && y_raw.is_nan() {
+        return throw_type_with_code(
+            cx,
+            "ERR_INVALID_ARG_VALUE",
+            "The argument 'y' is invalid. Received NaN",
+        );
+    }
+    // Negative coordinates clamp to 0 (inherited bao behavior, registered
+    // divergence: node emits the negative index verbatim).
+    let x = x_raw.max(0.0);
+    let y = y_raw.max(0.0);
+    if !x_is_num && !y_is_num {
+        args.rval().set(BooleanValue(true));
+        return true;
+    }
+    if !x_is_num {
+        return throw_type_with_code(
+            cx,
+            "ERR_INVALID_CURSOR_POS",
+            "Cannot set cursor row without setting its column",
+        );
+    }
+    let esc = if y_is_num {
+        format!("\x1b[{};{}H", js_number_text(y + 1.0), js_number_text(x + 1.0))
     } else {
-        0
+        format!("\x1b[{}G", js_number_text(x + 1.0))
     };
-    let row = if argc > 1 {
-        (*args.get(1).ptr).to_int32().max(0) as u32
-    } else {
-        0
-    };
-    let esc = format!("\x1b[{};{}H", row + 1, col + 1);
 
     let mut fd_val = UndefinedValue();
     JS_GetProperty(
@@ -798,7 +922,7 @@ unsafe extern "C" fn tty_cursor_to(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     };
 
     libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len() as _);
-    args.rval().set(ObjectValue(this_obj.get()));
+    args.rval().set(BooleanValue(true));
     true
 }
 
@@ -814,29 +938,37 @@ unsafe extern "C" fn tty_move_cursor(cx: *mut JSContext, argc: u32, vp: *mut JSV
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let this_obj = this.to_object());
 
+    // node comparisons (`dx < 0` / `dx > 0`) coerce with ToNumber; the arm
+    // order is dx first, then dy, and a positive dy moves DOWN (B) — the old
+    // arm emitted dy-then-dx with the sign inverted (T2) and aborted on
+    // non-int32 arguments (T5).
     let dx = if argc > 0 {
-        (*args.get(0).ptr).to_int32()
+        match js_to_number_arg(cx, args.get(0).ptr) {
+            Ok(n) => n,
+            Err(()) => return false,
+        }
     } else {
-        0
+        0.0
     };
     let dy = if argc > 1 {
-        (*args.get(1).ptr).to_int32()
+        match js_to_number_arg(cx, args.get(1).ptr) {
+            Ok(n) => n,
+            Err(()) => return false,
+        }
     } else {
-        0
+        0.0
     };
 
     let mut esc = String::new();
-    if dy > 0 {
-        esc.push_str(&format!("\x1b[{}A", dy));
+    if dx < 0.0 {
+        esc.push_str(&format!("\x1b[{}D", js_number_text(-dx)));
+    } else if dx > 0.0 {
+        esc.push_str(&format!("\x1b[{}C", js_number_text(dx)));
     }
-    if dy < 0 {
-        esc.push_str(&format!("\x1b[{}B", -dy));
-    }
-    if dx > 0 {
-        esc.push_str(&format!("\x1b[{}C", dx));
-    }
-    if dx < 0 {
-        esc.push_str(&format!("\x1b[{}D", -dx));
+    if dy < 0.0 {
+        esc.push_str(&format!("\x1b[{}A", js_number_text(-dy)));
+    } else if dy > 0.0 {
+        esc.push_str(&format!("\x1b[{}B", js_number_text(dy)));
     }
 
     if !esc.is_empty() {
@@ -857,7 +989,7 @@ unsafe extern "C" fn tty_move_cursor(cx: *mut JSContext, argc: u32, vp: *mut JSV
         };
         libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len() as _);
     }
-    args.rval().set(ObjectValue(this_obj.get()));
+    args.rval().set(BooleanValue(true));
     true
 }
 

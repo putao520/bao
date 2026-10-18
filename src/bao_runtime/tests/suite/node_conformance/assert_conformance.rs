@@ -258,9 +258,11 @@ fn test_assert_diff_rendering_conformance() {
         }}
 
         // --- object diff: deepEqual({{a:1,b:2}}, {{a:1,b:3}}) ---
+        // node v24 headline wording (U8); the diff body shape stays the
+        // registered C8b contract.
         check("obj_diff_markers", function() {{
             var m = msgOf(function() {{ assert.deepEqual({{a: 1, b: 2}}, {{a: 1, b: 3}}); }});
-            return m.indexOf('Expected values to be loosely deeply equal:') >= 0
+            return m.indexOf('Expected values to be loosely deep-equal:') >= 0
                 && m.indexOf('+ actual - expected') >= 0
                 && m.indexOf('\n  {{') >= 0
                 && m.indexOf('\n    a: 1\n') >= 0
@@ -272,7 +274,7 @@ fn test_assert_diff_rendering_conformance() {
         // --- array diff: deepStrictEqual([1,2,3,4], [1,5,3,9]) ---
         check("array_diff_markers", function() {{
             var m = msgOf(function() {{ assert.deepStrictEqual([1, 2, 3, 4], [1, 5, 3, 9]); }});
-            return m.indexOf('Expected values to be strictly deeply equal:') >= 0
+            return m.indexOf('Expected values to be strictly deep-equal:') >= 0
                 && m.indexOf('\n    1\n') >= 0
                 && m.indexOf('\n+   2\n') >= 0
                 && m.indexOf('\n-   5\n') >= 0
@@ -296,7 +298,7 @@ fn test_assert_diff_rendering_conformance() {
         // --- scalar inequality: deep* renders +/- line diff even for scalars ---
         check("scalar_diff_markers", function() {{
             var m = msgOf(function() {{ assert.deepStrictEqual(1, 2); }});
-            return m.indexOf('Expected values to be strictly deeply equal:') >= 0
+            return m.indexOf('Expected values to be strictly deep-equal:') >= 0
                 && m.indexOf('\n+ 1\n') >= 0
                 && m.indexOf('\n- 2') >= 0;
         }});
@@ -308,31 +310,35 @@ fn test_assert_diff_rendering_conformance() {
                 && m.indexOf('+ actual - expected') === -1;
         }});
 
-        // --- equal() on objects: no more "[object Object]", full diff body ---
+        // --- equal() on objects: node renders both sides via inspect joined
+        // by the operator (no headline, no diff, no "[object Object]") ---
         check("equal_objects_diff_not_opaque", function() {{
             var m = msgOf(function() {{ assert.equal({{a: 1}}, {{a: 2}}); }});
-            return m.indexOf('Expected values to be loosely equal:') >= 0
+            return m.indexOf('{{\n  a: 1\n}}') >= 0
+                && m.indexOf(' == ') >= 0
+                && m.indexOf('{{\n  a: 2\n}}') >= 0
                 && m.indexOf('[object Object]') === -1
-                && m.indexOf('\n+   a: 1\n') >= 0
-                && m.indexOf('\n-   a: 2\n') >= 0;
+                && m.indexOf('+ actual - expected') === -1;
         }});
 
-        // --- strictEqual() on objects goes through the diff too ---
+        // --- strictEqual() on objects: same inspect-join with === ---
         check("strictEqual_objects_diff", function() {{
             var m = msgOf(function() {{ assert.strictEqual({{x: 1}}, {{x: 2}}); }});
-            return m.indexOf('Expected values to be strictly equal:') >= 0
-                && m.indexOf('\n+   x: 1\n') >= 0
-                && m.indexOf('\n-   x: 2\n') >= 0;
+            return m.indexOf('{{\n  x: 1\n}}') >= 0
+                && m.indexOf(' === ') >= 0
+                && m.indexOf('{{\n  x: 2\n}}') >= 0;
         }});
 
-        // --- long/multi-line string operands in equal() leave the inline path ---
+        // --- long string operands in equal(): node renders scalars inline
+        // regardless of length ---
         check("equal_long_string_diff", function() {{
             var long1 = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1';
             var long2 = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2';
             var m = msgOf(function() {{ assert.strictEqual(long1, long2); }});
-            return m.indexOf("+ actual - expected") >= 0
-                && m.indexOf("+ '" + long1) >= 0
-                && m.indexOf("- '" + long2) >= 0;
+            return m.indexOf("'" + long1 + "'") >= 0
+                && m.indexOf("'" + long2 + "'") >= 0
+                && m.indexOf(' === ') >= 0
+                && m.indexOf('+ actual - expected') === -1;
         }});
 
         // --- nested containers diff at their own depth ---
