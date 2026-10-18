@@ -145,6 +145,13 @@ fn test_node_http_https_all() {
     );
 
     let mut all_passed = true;
+    // Fake-green guard: the eval helper maps a thrown script or a non-string
+    // return to "", so an empty battery must fail loudly instead of letting
+    // the split loop below pass vacuously.
+    assert!(
+        !results.is_empty(),
+        "battery probe produced no results (uncaught throw or non-string return)"
+    );
     for item in results.split('|') {
         if !item.contains(" PASS") {
             eprintln!("  FAIL: {}", item);
@@ -628,6 +635,10 @@ fn test_node_http_thrown_dispatch_liveness() {
         &mut ctx,
         r#"
         var http = require('http');
+        globalThis.__uncaught = '';
+        process.on('uncaughtException', function (e) {
+            globalThis.__uncaught = String(e && e.message || e);
+        });
         var srv = http.createServer(function(req, res) {
             if (req.url.indexOf('/boom') === 0) {
                 throw new Error('the listener threw');
@@ -655,6 +666,13 @@ fn test_node_http_thrown_dispatch_liveness() {
         String::from_utf8_lossy(&body).contains("request handler threw"),
         "500 body must name the throw, got: {:?}",
         String::from_utf8_lossy(&body)
+    );
+    // R-A7 oracle: the captured throw reaches process 'uncaughtException'
+    // (Node semantics) — never a silent clear on the uws route path.
+    let uncaught = eval_string(&mut ctx, "globalThis.__uncaught");
+    assert_eq!(
+        uncaught, "the listener threw",
+        "request-handler throw must route to uncaughtException"
     );
 
     // 2. Server liveness: the next connection answers normally.

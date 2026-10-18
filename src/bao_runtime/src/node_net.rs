@@ -317,6 +317,32 @@ unsafe extern "C" fn net_on_open(
     s
 }
 
+/// Format a raw IP address from uWS (4 bytes = IPv4, 16 bytes = IPv6, network
+/// order) as the textual form Node surfaces on `socket.remoteAddress`:
+/// dotted-quad for IPv4 ("127.0.0.1") and compressed colon-hex for IPv6
+/// ("::1").
+///
+/// Same shape as `bun_listen::format_socket_ip` (R-L8): the accept bridge
+/// used to hand the raw sockaddr bytes to `JS_NewStringCopyZ`, which stops
+/// at the first NUL byte — loopback 127.0.0.1 degenerated into the single
+/// char 0x7F. Unknown lengths keep every byte visible (hex groups) instead
+/// of truncating.
+fn format_socket_ip(bytes: &[u8]) -> String {
+    match bytes.len() {
+        4 => ::std::net::Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string(),
+        16 => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(bytes);
+            ::std::net::Ipv6Addr::from(octets).to_string()
+        }
+        _ => bytes
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(":"),
+    }
+}
+
 /// Bridge a usockets accept (vtable on_open, is_client == 0) into JS: build a
 /// net.Socket via the NET_JS IIFE's global factory (`__net_make_socket`, so
 /// the prototype chain and the __net_read poll machinery stay owned by the
@@ -393,10 +419,14 @@ unsafe fn dispatch_accept(s: *mut us_socket_t) {
     rooted!(&in(realm_cx) let sock_obj = sock_val.to_object());
     let sock_h = sock_obj.handle().into();
 
-    // Remote address/port — the accepted socket knows its peer.
+    // Remote address/port — the accepted socket knows its peer. The uWS
+    // `remote_address` returns the raw network-order sockaddr bytes (4 or 16
+    // bytes), NOT a C string: format them first (R-L8; bun_listen's accept
+    // bridge shares this shape).
     let mut ip_buf = [0u8; 64];
     if let Ok(ip) = (*s).remote_address(&mut ip_buf) {
-        let c_ip = ZBox::from_bytes(ip);
+        let remote_addr = format_socket_ip(ip);
+        let c_ip = ZBox::from_bytes(remote_addr.as_bytes());
         let ip_js = JS_NewStringCopyZ(realm_cx.raw_cx(), c_ip.as_ptr());
         if !ip_js.is_null() {
             rooted!(&in(realm_cx) let ip_v = StringValue(&*ip_js));

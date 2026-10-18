@@ -69,6 +69,9 @@ fn net_echo_e2e_real_tcp_roundtrip() {
 
         var server = net.createServer(function(sock) {
             log.push('connection');
+            // R-L8: the accepted socket's peer address must be Node's textual
+            // form (dotted-quad), not the raw sockaddr byte string.
+            log.push('remoteAddress=' + sock.remoteAddress);
             log.push('remotePort=' + (sock.remotePort > 0));
             // Echo the received bytes straight back — byte-for-byte, via the
             // ArrayBuffer the data event delivers.
@@ -130,6 +133,8 @@ fn net_echo_e2e_real_tcp_roundtrip() {
         "port=true",
         "client_connected",
         "connection",
+        // R-L8 oracle: loopback peer address is dotted-quad, not 0x7F.
+        "remoteAddress=127.0.0.1",
         "remotePort=true",
         "echo=true",
         "server_closed",

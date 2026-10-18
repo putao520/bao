@@ -1160,7 +1160,10 @@ unsafe fn server_req_emit(
         },
     );
     if !ok {
-        JS_ClearPendingException(cx);
+        // Leave the pending exception for the caller to capture-clear-route
+        // (all three call sites do). Clearing it here made that routing a
+        // no-op — the R-A7 silent-swallow shape (a throw from a JS-overridden
+        // `emit` surface never reached uncaughtException).
         return false;
     }
     rval.is_boolean() && rval.to_boolean()
@@ -1845,8 +1848,14 @@ unsafe extern "C" fn uws_route_handler(
         // stream state is torn down here: the 500 is already on the wire and
         // a late body callback must not dispatch into a failed handler (the
         // registry re-check makes the late uWS callback a no-op).
+        //
+        // R-A7: capture-clear-route the throw to process 'uncaughtException'
+        // (Node semantics for a request-handler throw) instead of bare
+        // clearing it — never leak the pending exception past this native
+        // entry point, never swallow it. Same contract as bun_listen's
+        // listen route handler and Bun.serve's serve_route_pending_exception.
         server_req_body_teardown(res as usize);
-        JS_ClearPendingException(raw_cx);
+        route_pending_exception(raw_cx, cx_ref);
         log::error!("[node:http] request handler threw — responding 500");
         (*res_mut).write_status(b"500 Internal Server Error");
         (*res_mut).write_header(b"Content-Type", b"text/plain");
@@ -2665,14 +2674,19 @@ unsafe extern "C" fn server_listen(
             _phantom_0: ::std::marker::PhantomData,
             ptr: &mut rval,
         };
-        JS_CallFunctionValue(
+        let cb_ok = JS_CallFunctionValue(
             cx,
             global.handle().into(),
             fval_root.handle().into(),
             &HandleValueArray::empty(),
             rval_h,
         );
-        JS_ClearPendingException(cx);
+        if !cb_ok {
+            // R-A7: a throw from the listen callback is an uncaught exception
+            // (Node semantics) — capture-clear-route it instead of swallowing
+            // it and returning `true` with the exception still pending.
+            route_pending_exception(cx, cx_ref);
+        }
     }
 
     args.rval().set(ObjectValue(server_obj.get()));
