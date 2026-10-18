@@ -143,3 +143,17 @@ size/compile 双审计(`.plans/audits-20261017/{size,compile}-audit-report.md`)�
 
 **验证(criterion 5)**:`cargo check -p bao-mozjs-sys --jobs 4` RC=0(5m56s;任务文本 `mozjs-sys` 为 fork 改名前旧称,实际包名 `bao-mozjs-sys`)+ `cargo check -p bao_bin --profile release --jobs 4` RC=0(12m27s,profile 重配后 release 树全量 check 重编)+ 脚本 `bash -n` 过+三路径解析探针过。
 
+
+## C11-C17 波台账(2026-10-18,7 波收口;缺口语汇 C11-C10 基线续账)
+
+| 波 | 域 | 交付 | commit |
+|---|---|---|---|
+| C11 | node_fs+node_crypto(2710 gap) | 18 test/1467 行+**9 处 oracle 产品修**(O_EXCL/EBADF/Dir asyncIterator/fs.open cb idx/fs.constants/fstatSync/crypto async cb 门×5/generateKey bits→bytes/caller buffer 回填+getRandomValues 守卫)+C1 复核(#14 证伪/6 维持/6 新登记/8 断言翻新) | fc0c8c3a5 |
+| C13 | dns/http2/path(3614) | 3 文件 1663 行/19 test/204 断言(h2 upgrade 全模块 C4 零触碰面首覆盖;win32 11 方法 oracle 矩阵);5 登记 | 07b181222 |
+| C15 | http 层+0% 面(2156) | 7 文件 1840 行/53 test/220 断言(proxy 真路径 C7 空白+CONNECT 隧道端到端+interrupt_bridge 真信号三态);5 登记 | 8df70a94f |
+| C14 | browser/cdp(2983) | 4 文件 2310 行/41 test/358 断言(protocol 30+ 命令臂/blanket 转发恒等/cdp_handler 引擎面/page wrapper);6 登记 | 02c9c9ec7 |
+| C17 | util/fetch_async/tty/lib(1589) | 2 文件 1032 行/11 test/78 断言(真内核 pty 字节级 tty 面/inspect 类族/fetch 真线回环);15 登记(T5=clearLine debug-assert abort 真缺陷列修复候选) | 7f4869c3a |
+| C12 | bun_api/globals/bun_listen(4943) | 在飞(门测) | — |
+| C16 | ffi/shell/password/vm/http(2181) | 在飞(门测) | — |
+
+**登记顶总账(characterization 钉死未修,修复候选池)**:C11 6 新登记+C13 5+C14 6+C15 5+C17 15 = **37 项**;另 C11 波 9 处产品修已根治入 commit。结构性残账:fs ~800-900(readv/writev Send 约束/Dirent d_type)/crypto ~200-300(bigint/RSA)/h3 需活 QUIC 会话/webdriver_host 377 行 feature 门控测量缺口(需专用载体)/lib.rs seam 体 ~300 行(链接期 face,入分母治理)。
