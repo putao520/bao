@@ -144,13 +144,15 @@ fn spawn_sigterm_kill_converges_under_hostile_spawner_state_body() {
         "W33: SIGTERM convergence must be < 2s (no SIGKILL escalation path), \
          took {elapsed:?}"
     );
-    // The exit event reports the numeric form on this face: code=-1 (Node
-    // reports null), signal=15 (SIGTERM). What matters for the reset
-    // contract: the child DIED BY SIGTERM, not that it survived to the
-    // SIGKILL escalation.
+    // The exit event reports the numeric form on this face: code=-signal
+    // (self-describing waitstatus encoding, -15 for SIGTERM; Node reports
+    // null), signal=15 (SIGTERM). What matters for the reset contract: the
+    // child DIED BY SIGTERM, not that it survived to the SIGKILL escalation.
+    // (Pin history: -1 sentinel form predated the -signal encoding; the
+    // 10-17 farm double-red was this stale pin, misattributed as farm-env.)
     assert_eq!(
-        exit, "-1/15",
-        "the exit event must report death by SIGTERM (code -1 / signal 15), got {exit:?}"
+        exit, "-15/15",
+        "the exit event must report death by SIGTERM (code -15 / signal 15), got {exit:?}"
     );
     eprintln!("[w33] SIGTERM convergence: {elapsed:?} (exit={exit:?})");
 }

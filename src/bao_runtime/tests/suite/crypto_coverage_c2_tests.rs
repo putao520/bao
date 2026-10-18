@@ -292,10 +292,11 @@ crypto_case!(c2_random_bytes_faces, r#"
     var allzero = true; for (var i = 0; i < 8; i++) if (arr[i] !== 0) allzero = false;
     ck("grv_filled", !allzero);
     var plain = new Array(4); plain[0]=0; plain[1]=0; plain[2]=0; plain[3]=0;
-    crypto.getRandomValues(plain);
-    ck("grv_plain_array", Array.isArray(plain) && plain.length === 4);
+    // C11 oracle-alignment: node v24 getRandomValues(plainArray) throws TypeError
+    // (typed-array-only contract); the old silent-fill was a defect the C11 wave cured.
+    ck("grv_plain_array_throws", (thr(function(){ crypto.getRandomValues(plain); }) || "").indexOf("typed array") >= 0);
     ck("grv_no_args_throws", (thr(function(){ crypto.getRandomValues(); }) || "").indexOf("typed array") >= 0);
-    ck("grv_bad_array_throws", (thr(function(){ crypto.getRandomValues({}); }) || "").indexOf("invalid array") >= 0);
+    ck("grv_bad_array_throws", (thr(function(){ crypto.getRandomValues({}); }) || "").indexOf("typed array") >= 0);
     // randomInt
     var ri = crypto.randomInt(10);
     ck("ri_one_arg_range", ri >= 0 && ri < 10 && (ri | 0) === ri);
@@ -1017,9 +1018,11 @@ crypto_case!(c2_secret_key_faces, r#"
     ck("no_args_throws", (thr(function(){ crypto.createSecretKey(); }) || "").indexOf("requires key material") >= 0);
     ck("number_throws", (thr(function(){ crypto.createSecretKey(5); }) || "").indexOf("Buffer or string") >= 0);
     // generateKeySync — secret KeyObject of the requested length.
+    // C11 oracle-alignment: node v24 length is in BITS (24 bits = 3 bytes);
+    // the old byte-as-length behavior was a defect the C11 wave cured.
     var gk = crypto.generateKeySync('hmac', { length: 24 });
-    ck("generateKeySync_len", gk.type === 'secret' && gk.export().length === 24);
-    ck("generateKeySync_double_len", crypto.generateKeySync('hmac', { length: 16.0 }).export().length === 16);
+    ck("generateKeySync_len", gk.type === 'secret' && gk.export().length === 3);
+    ck("generateKeySync_double_len", crypto.generateKeySync('hmac', { length: 16.0 }).export().length === 2);
     // KeyObject internal constructor face.
     var ko = crypto.KeyObject(Buffer.from('abcd'), 'secret');
     ck("keyobject_ctor", ko.type === 'secret' && ko.export().toString() === 'abcd');
