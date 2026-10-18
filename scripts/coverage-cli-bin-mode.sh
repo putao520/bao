@@ -48,10 +48,20 @@
 # build can never merge against the current one.
 #
 # ENV KNOBS (all optional):
-#   BAO_CLI_COV_TARGET_DIR   private build dir      (default /var/cargo-builds/bao-cli-cov-target;
-#                                                   deliberately NOT /tmp — this machine sweeps
-#                                                   /tmp of large trees mid-build and a 47-minute
-#                                                   cold build was shredded to 593M that way)
+#   BAO_CLI_COV_TARGET_DIR   private build dir      (default <cargo target-dir>/llvm-cov-target —
+#                                                   measurement-tree convergence per
+#                                                   REQ-ENG-BUILDGOV-001 ROI-2①, 2026-10-18: the
+#                                                   SAME llvm-cov-target root the main
+#                                                   cargo-llvm-cov pipeline uses, sibling of
+#                                                   debug//test-ci/ under cargo's resolved
+#                                                   target dir. The former default
+#                                                   /var/cargo-builds/bao-cli-cov-target is
+#                                                   retired as a default only — still on disk
+#                                                   (117G, cold); deletion is an owner decision.
+#                                                   Deliberately NEVER /tmp — this machine
+#                                                   sweeps /tmp of large trees mid-build and a
+#                                                   47-minute cold build was shredded to 593M
+#                                                   that way)
 #   BAO_CLI_COV_OUT_DIR      lcov/profdata output   (default <target>/coverage-out)
 #   BAO_CLI_COV_JOBS         cargo -j               (default 4 — Rust CI discipline)
 #   BAO_CLI_COV_SKIP_BUILD=1 reuse an existing instrumented bin as-is
@@ -77,7 +87,28 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 JOBS="${BAO_CLI_COV_JOBS:-4}"
-TARGET_DIR="${BAO_CLI_COV_TARGET_DIR:-/var/cargo-builds/bao-cli-cov-target}"
+# @trace REQ-ENG-BUILDGOV-001 (ROI-2①, 2026-10-18): converge onto the single
+# instrumented tree. Resolve cargo's OWN target dir the way cargo does
+# (CARGO_TARGET_DIR env first, else build.target-dir from .cargo/config.toml —
+# mirrored here via `cargo metadata` so any shell/farm lands on the same
+# root), then land in its llvm-cov-target tree, the same root the main
+# cargo-llvm-cov pipeline uses. NOTE: this is governance (one instrumented
+# root to rule and clean), NOT cache sharing — the bin tree still cannot
+# reuse llvm-cov's compiled artifacts (feature unification: bin tree ≠ test
+# tree), so a first run in a converged-but-cold dir is still a full cold
+# instrumented build.
+base_target_dir() {
+    if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+        printf '%s\n' "$CARGO_TARGET_DIR"
+        return
+    fi
+    local resolved
+    resolved="$(cargo metadata --no-deps --format-version 1 --offline 2>/dev/null \
+        | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')" || true
+    printf '%s\n' "${resolved:-$REPO_ROOT/target}"
+}
+DEFAULT_TARGET_DIR="$(base_target_dir)/llvm-cov-target"
+TARGET_DIR="${BAO_CLI_COV_TARGET_DIR:-$DEFAULT_TARGET_DIR}"
 PROFILE="test-ci"
 OUT_DIR="${BAO_CLI_COV_OUT_DIR:-$TARGET_DIR/coverage-out}"
 PROFRAW_DIR="$OUT_DIR/profraw"

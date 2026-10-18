@@ -130,3 +130,16 @@
 5. FFI-F32-RETURN-XMM0-CONVERSION(bun_ffi.rs):F32 返回臂 `ret.xmm0 as f32` 是裸位槽值 cast 非 low-dword bit-cast
 6. zlib deflateRaw/inflateRaw 无异步注册(与 C8b 同款)
 
+## 构建治理落地登记(REQ-ENG-BUILDGOV-001,2026-10-18)
+
+size/compile 双审计(`.plans/audits-20261017/{size,compile}-audit-report.md`)批准矩阵的落地态登记。工程治理面,零业务能力变化;审计矩阵即选型依据真源。
+
+| 项 | 审计锚 | 落地态 |
+|---|---|---|
+| **P0 发行物 strip** | size-audit §3 P0 | `[profile.release] strip="symbols"`——审计矩阵 135MiB 级路径(strip="debuginfo" 162MiB 备选未取:−27MiB 换 symtab 全失,本地符号需求已由 release-dbg 承接)。取证面核实无损:crash_handler release 形态本就不做进程内行号查找(dladdr `source_location: None`→`???:?:?` 系 strip 前即有形态),生产符号化走 trace-string+服务端重映射;`.dynsym` 在 strip --strip-all 后存活,导出符号解析不受影响。审计实测 strip 后变体 codegen 字节级等价(差 23,664B 布局噪声=0.017%) |
+| **P1 调试分离** | size-audit §3 P1 | `[profile.release] debug=0`(旧 line-tables-only 在 rustc 实产函数级 DIE+行表,占 614MiB 的 debug 族 347MiB;debug=0 −52%→283MiB 级)+ 新增 `[profile.release-dbg]`(inherits=release + `debug="line-tables-only"` + `strip=false` 双显式覆盖,防继承下漏;镜像 test-ci/test-ci-dbg 先例;codegen 与 release 字节级同形,本地 gdb/perf 载具)。C 侧不受 profile 分裂影响(build.rs 编译器 flag 全 profile 共享) |
+| **P2 mozjs C 面线表化** | size-audit §3 P2 | **BLOCKED——审计前提实测证伪,未落地**。审计断言「gcc 13 支持该 flag」:本机实测 gcc 13.3.0(Ubuntu 24.04 构建链,即 mozjs 906 CU 的实际 producer)对 `-gline-tables-only` 与 `-gline-directives-only` 均报 `error: unrecognized debug output level`——两 flag 是 clang 语义,gcc 无 line-tables-only 等价物(`-g1`=行表+函数/变量 DIE 已是最低非零档,audit 自己在 §2 修正过「两家互认」对 gcc 不成立,却在 P2 通道②再次误判)。`vendor/mozjs/mozjs-sys/build.rs` 的 `MOZ_DEBUG_FLAGS="-gdwarf-4 -g1"` 保持原样未动——写入未识别 flag 会令全部 mozjs 构建响亮失败;注释级改动也会翻转 build-script fingerprint→mozjs C 全量重编,零功能收益不做。候选待属主裁决:a) 接受 -g1 现状(P2 收益归零;strip 后发行物不受影响,仅 dev/release-dbg 本地形态与 .a 中间产物持有 C 调试信息);b) gcc `-gsplit-dwarf` 机制(重型调试出归档/终产物,build 树留骨架+.dwo 需 dwp 闭环——机制变更需批准);c) mozjs C 编译器换 clang(该 flag 原生可用,工具链级变更)。**连带登记**:`.cargo/config.toml:19` 注释引 `MOZ_DEBUG_FLAGS="-gdwarf-4 -g1"` 的行在 P2 落地时需同步,本波 scope 外(本波未动 build.rs,该注释仍与现状一致,无 stale) |
+| **ROI-2① 测量树收敛** | compile-audit §4 ROI-2 | `scripts/coverage-cli-bin-mode.sh` 默认 CARGO_TARGET_DIR 迁移:`/var/cargo-builds/bao-cli-cov-target` → `<cargo 解析 target-dir>/llvm-cov-target`——与主管道 cargo-llvm-cov 同根(llvm-cov-target 为幸存测量树,活跃禁删),sibling of `debug/`/`test-ci/` 的同级约定;解析顺序=CARGO_TARGET_DIR env > `cargo metadata` 镜像 build.target-dir(config.toml 锚)> `$REPO_ROOT/target` 兜底(三路径探针全验)。**收敛是治理单根非缓存复用**:bin 树与 llvm-cov test 树 feature-unification 不同,工件不互救,冷树首跑仍全量。`BAO_CLI_COV_TARGET_DIR` 覆盖语义不变。**bao-cli-cov-target(117G)本波不删盘**,冷置留待属主清理裁决 |
+
+**验证(criterion 5)**:`cargo check -p bao-mozjs-sys --jobs 4` RC=0(5m56s;任务文本 `mozjs-sys` 为 fork 改名前旧称,实际包名 `bao-mozjs-sys`)+ `cargo check -p bao_bin --profile release --jobs 4` RC=0(12m27s,profile 重配后 release 树全量 check 重编)+ 脚本 `bash -n` 过+三路径解析探针过。
+

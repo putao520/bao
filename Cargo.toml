@@ -254,11 +254,39 @@ bun_spawn_sys = { path = "src/spawn_sys", version = "0.2.0" }
 bun_tcc_sys = { path = "src/tcc_sys", version = "0.1.0" }
 bun_uws_sys = { path = "src/uws_sys", version = "0.2.2" }
 
+# @trace REQ-ENG-BUILDGOV-001 (P0+P1; size audit .plans/audits-20261017/
+# size-audit-report.md, 2026-10-17): release is the DISTRIBUTION form.
+# debug=0 — the old "line-tables-only" is not pure line tables in rustc: it
+# grows function-level DIEs + .debug_str + .debug_ranges per CGU, which was
+# 347MB of the 614MB binary (77% debug sections). debug/strip never change
+# codegen (audit byte-compared: strip-after variants differ by 23,664B of
+# layout noise, 0.017%), so this costs no runtime performance.
+# strip="symbols" — the audit matrix's 135MiB-class path (strip="debuginfo"
+# would keep a ~29MB .symtab at 162MB). Forensics verified independent of the
+# stripped sections: the crash handler's release form never does in-process
+# line lookup (Linux dladdr; `source_location: None` -> `???:?:?` was already
+# the pre-strip behavior) and production symbolication is trace-string +
+# server-side remapping; .dynsym survives strip --strip-all, so exported
+# symbols still resolve. Local symbol needs ride release-dbg below.
 [profile.release]
 lto = "fat"
 codegen-units = 1
+debug = 0
+strip = "symbols"
+
+# Debug sibling of release (P1, mirrors the test-ci/test-ci-dbg precedent):
+# byte-identical machine code to release, but line tables + symtab kept and
+# nothing stripped — the gdb/perf vehicle for release-shaped builds. The two
+# overrides ARE the split: `inherits = "release"` would otherwise pull
+# debug=0 + strip="symbols" down the chain, so both are re-set explicitly
+# (line tables ≈ the pre-BUILDGOV release form; the C side still contributes
+# gcc -g1 line-tables+minimal DIEs via mozjs build.rs — shared across all
+# profiles, unaffected by this split).
+# Usage: cargo build -p bao_bin --profile release-dbg
+[profile.release-dbg]
+inherits = "release"
 debug = "line-tables-only"
-strip = "none"
+strip = false
 
 # Debug builds: line-tables-only instead of full DWARF to save disk.
 # Single binary drops from ~1.7GB to ~200MB. Stack traces still work.
