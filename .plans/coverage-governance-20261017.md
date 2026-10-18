@@ -157,3 +157,22 @@ size/compile 双审计(`.plans/audits-20261017/{size,compile}-audit-report.md`)�
 | C16 | ffi/shell/password/vm/http(2181) | 在飞(门测) | — |
 
 **登记顶总账(characterization 钉死未修,修复候选池)**:C11 6 新登记+C13 5+C14 6+C15 5+C17 15 = **37 项**;另 C11 波 9 处产品修已根治入 commit。结构性残账:fs ~800-900(readv/writev Send 约束/Dirent d_type)/crypto ~200-300(bigint/RSA)/h3 需活 QUIC 会话/webdriver_host 377 行 feature 门控测量缺口(需专用载体)/lib.rs seam 体 ~300 行(链接期 face,入分母治理)。
+
+## llvm-cov 终测尝试台账(2026-10-18,8 启全败;逐启归因留痕)
+
+**结论:81.59% 保持为最后实测验证数字;C11-C17 增量未获测量(禁止引用估算值冒充实测)。**
+
+| # | 宿主 | 形态 | 败点 | 归因 |
+|---|---|---|---|---|
+| 1 | 本地 | -j4 | 5849/12245 cli_snapshot 红 | BAO_TEST_BAO_BIN 指向 10-17 中毒陈旧 bin → 已根治(BCE-STALEBIN c80efc344) |
+| 2 | 本地 | -j4 | 9611/12245 c2_random_bytes 红 | C11 typed-array 守卫治愈的旧期望 → 已修(e44048b08) |
+| 3 | 本地 | -j4+retries2 | 9733 shell_signal_exit 红 | C16 登记 #[ignore] 面被 --run-ignored=all 拉入 → 排除(有案) |
+| 4 | 本地 | -j4+retries2 | 9545 wave_a_surface 红 | 负载时序类(2/3 负载红,隔离绿) → 排除 |
+| 5 | 本地 | -j4+retries2 | 10362 ffi_f32 红 | 负载时序类 → 未及排除 |
+| 6 | 本地 | -j2+retries3 | 宿主 OOM 杀 | 多会话 swap 基线(78G swap 在用),truly-solo 不成立 → 转 farm |
+| 7 | farm | -j4+retries3 | 1770/12005 puppeteer 红 | "node not found" — governance 已判测量排除而 -E 漏带 |
+| 8 | farm | -j4+retries3+puppeteer排除 | 枚举期:28 cli_faces 系统性 0.047s 瞬败 + 10 farm-env 面(dns×5/h3×2/c5_cp/spawn_sigterm/ffi_f32,均为 10-17 farm 电池已登记同族) | cli_faces 瞬败疑 stalebin canary 在 farm 容器的行为差异(未取到 panic 原文:probe 容器被共享 farm-cargo 卷锁楔死 7min+，宿主另有 mw-ci/desktop/pipeline/ai-agent 四项目容器并发) → **开放缺陷登记:cli_faces farm 面 stalebin canary 待下次 solo 窗取证** |
+
+**排除集(8 面,全部有案可查)**:e2e_real_chrome×2(外部 Chrome env)→ puppeteer 族(farm 无 node)→ cp_async_push_exit_latency_100x / spawn_sigterm_kill_converges / wave_a_surface / ffi_f32(负载时序类,隔离均绿)→ shell_signal_exit_code_arm / shell_output_method_this_arms / http_server_aborted_mid_body(C16 登记 #[ignore] 不可达面)。
+
+**环境判例更新**:farm 宿主已非 bao 独占(四项目容器并发共享 farm-cargo/farm-rustup 卷)——llvm-cov 终测须 solo 窗或申请独占槽;本地终测须 truly-solo(swap 基线 <10G)。下次测量建议:Windows 侧或 farmsolo 窗口,先跑一次 no-fail-fast 枚举拿全红名单再启电池(逐启打地鼠的代价本轮实证=8 启)。
