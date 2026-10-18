@@ -5,6 +5,10 @@
 // Branch map (source-anchored, complementing bun_listen_coverage_c3_tests.rs):
 //   - build_http_server : server.ref()/unref() no-op faces (1025-1035),
 //                         port double-parse arm (278-279)
+//   - listen_route_handler throw arm (430-525): a throwing fetch handler
+//                         answers 500, keeps serving, and routes the pending
+//                         exception to process.on("uncaughtException") (R-A7
+//                         class, both sides)
 //   - write_response_object (3455-3520): plain-object fetch response arms —
 //                         int status → `<code> OK` status line (reason phrase
 //                         is ALWAYS "OK" — registered shape), string body arm,
@@ -49,10 +53,11 @@
 //   R-L7. Hostname-DNS-failure connect face: environment-dependent (needs a
 //         working resolver for fast NXDOMAIN); the refused/TLS faces cover
 //         the same reject arms deterministically.
-//   R-L8. Accepted-socket remoteAddress degenerates to a single-char JS
-//         string holding the FIRST address byte (0x7F for loopback) — not
-//         the dotted-quad "127.0.0.1" Bun/node surface. build_tcp_socket_obj
-//         formats from the raw sockaddr bytes.
+//   R-L8. [FIXED — oracle assertion] Accepted-socket remoteAddress is the
+//         dotted-quad / colon-hex text Node/Bun surface ("127.0.0.1" for
+//         loopback). build_tcp_socket_obj previously handed the raw sockaddr
+//         bytes to JS_NewStringCopyZ, which stopped at the first NUL and
+//         degenerated loopback to a single char (0x7F).
 
 use bao_engine::context::JsContext;
 use std::io::{Read, Write};
@@ -271,6 +276,53 @@ fn c12_http_fetch_plain_object_response_arms() {
     pump(&mut ctx, 5);
 }
 
+/// R-A7 class (listen side): a throwing fetch handler answers 500, the
+/// server keeps serving, AND the pending exception reaches
+/// process.on("uncaughtException") — the same routing contract as the
+/// serve side (BCE same-class sweep, not a silent clear).
+#[test]
+fn c12_http_fetch_throw_routes_uncaught_and_keeps_serving() {
+    let mut ctx = make_ctx();
+
+    let setup = eval_str(
+        &mut ctx,
+        r#"
+        globalThis.__lcUncaught = "";
+        process.on("uncaughtException", function (e) {
+            globalThis.__lcUncaught = String((e && e.message) || e);
+        });
+        var server = Bun.listen({
+            port: 0,
+            hostname: "127.0.0.1",
+            fetch: function (req) {
+                if (req.url === "/boom") throw new Error("c12-listen-boom");
+                return { status: 200, body: "ok-after" };
+            },
+        });
+        String(server.port)
+        "#,
+    );
+    let port: u16 = setup.parse().expect("bound port");
+
+    let resp = raw_http(&mut ctx, port, "GET /boom HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    assert!(
+        status_line_of(&resp).starts_with("HTTP/1.1 500"),
+        "throwing listen route → 500 — got: {resp}"
+    );
+    let routed = wait_until(&mut ctx, r#"globalThis.__lcUncaught !== "" ? "y" : "n""#, 60);
+    assert!(routed, "listen fetch-handler throw must reach uncaughtException");
+    assert_eq!(
+        eval_str(&mut ctx, "globalThis.__lcUncaught"),
+        "c12-listen-boom",
+        "uncaughtException handler observes the original listen route error"
+    );
+
+    let after = raw_http(&mut ctx, port, "GET /ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    assert!(after.contains("ok-after"), "server survives a route throw — got: {after}");
+    eval_str(&mut ctx, "server.stop(); true");
+    pump(&mut ctx, 5);
+}
+
 // ──────────────────── Bun.connect faces ────────────────────
 
 /// Refused loopback connect: the promise REJECTS with a real Error, the
@@ -426,19 +478,14 @@ fn c12_connect_localhost_async_full_lifecycle() {
     assert!(end_idx < close_idx, "end must fire before close — log: {log}");
     assert!(log.contains("srv-close:"), "server close fires with a code — log: {log}");
 
-    // The accept-side identity bridge (tcp_on_open 2617-2625). REGISTRY
-    // R-L8: remoteAddress degenerates to a SINGLE char holding the first
-    // address byte (0x7F for loopback) — not the "127.0.0.1" dotted-quad
-    // Bun/node surface. Pin the observed shape via charCodeAt (the string
-    // is not printable).
+    // The accept-side identity bridge (tcp_on_open 2617-2625). R-L8 oracle:
+    // remoteAddress is the node v24 dotted-quad text for the loopback peer
+    // (previously a single 0x7F char because raw sockaddr bytes were treated
+    // as a NUL-terminated C string).
     assert_eq!(
-        eval_str(
-            &mut ctx,
-            r#"globalThis.__srvSock.remoteAddress.length + ":" +
-              globalThis.__srvSock.remoteAddress.charCodeAt(0)"#
-        ),
-        "1:127",
-        "remoteAddress = single char of the first address byte (REGISTRY R-L8 — Bun surfaces the dotted quad)"
+        eval_str(&mut ctx, "globalThis.__srvSock.remoteAddress"),
+        "127.0.0.1",
+        "remoteAddress must be the dotted-quad loopback (node oracle; R-L8)"
     );
     assert_eq!(
         eval_str(

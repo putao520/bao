@@ -59,25 +59,26 @@
 //         thread-spawn failure injection.
 //   R-A6. stdin_read EOF face (2829-2840): nextest stdin shape is
 //         environment-dependent (Ok(0) vs Err) — flake risk, low value.
-//   R-A7. Bun.serve route-throw: the 500 + keep-serving face is pinned, but
-//         the pending exception does NOT reach a registered
-//         process.on("uncaughtException") handler (bun_api's
-//         serve_route_pending_exception dispatch needs product-side
-//         investigation; listen-side fetch-throw DOES route per C3).
+//   R-A7. [FIXED — oracle assertion] Bun.serve route-throw now captures,
+//         clears and routes the pending exception through
+//         process.on("uncaughtException") (same contract as the listen-side
+//         invoke_js_callback); the 500 + keep-serving faces are unchanged.
 //   R-A8. proc.wait() publishes -<signal> for signal deaths (-9 for
 //         SIGKILL); the subproc_wait doc comment claims -1 — doc/behavior
 //         divergence.
-//   R-A9. BARE-TICK CRASH CLASS (gdb-verified): driving the uWS loop from a
-//         bare test thread with no realm entered SIGSEGVs inside
-//         ws_on_upgrade → ws_create_js_object → JS_NewPlainObject
-//         (GlobalObject::getPlainObjectShapeWithDefaultProto on the null
-//         global; bun_api.rs:3640/4025). The tests wrap every loop tick in
-//         AutoRealm (the production shape — dispatch runs on the script
-//         thread under its entered realm); the bare-tick entry remains a
-//         product-side hazard.
-//   R-A9b. A Uint8Array WebSocket send reaches the serve message handler
-//         STRINGIFIED as its comma-joined decimals ("66,49,50") — byte
-//         fidelity lost on the serve-ws message path.
+//   R-A9. [FIXED — oracle assertion] BARE-TICK CRASH CLASS (gdb-verified):
+//         ws_on_upgrade now enters the persistent thread realm before its
+//         first JS allocation (JS_NewPlainObject resolves the plain-object
+//         shape off CurrentGlobalOrNull; the bare-tick entry previously
+//         SIGSEGV'd in GlobalObject::getPlainObjectShapeWithDefaultProto).
+//         The no-realm teardown path fails closed with a 500 rejection
+//         instead of crashing. c12_serve_websocket_in_process_roundtrip
+//         drives the loop with NO realm entered (regression pin).
+//   R-A9b. [FIXED — oracle assertion] Uint8Array WebSocket sends are now
+//         binary frames end-to-end: the client BufferSource arm uses
+//         send_binary and the serve message handler receives a byte-exact
+//         Uint8Array (the previous ES ToString + C-string round trip
+//         produced the comma-joined decimals "66,49,50").
 //   R-A9c. The CLIENT WebSocket has no ping method ("ws.ping is not a
 //         function"); only the server-side ws object exposes ping.
 //   R-A9d. Back-to-back client WebSocket sends starve the client onmessage
@@ -162,13 +163,37 @@ fn raw_http(ctx: &mut JsContext, port: u16, request: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Realm-wrapping poll for the WebSocket faces: the uWS tick dispatches the
-/// serve upgrade handler, whose JS object allocations resolve the
-/// plain-object shape off CurrentGlobalOrNull — the tick must run with the
-/// persistent realm ENTERED (the production shape: dispatch happens on the
-/// script thread under its entered realm). A bare test-thread tick SIGSEGVs
-/// in GlobalObject::getPlainObjectShapeWithDefaultProto (crash class
-/// verified by gdb, registered as R-A9).
+/// Bare-tick poll — NO realm entered around the loop tick. This is the exact
+/// shape that previously SIGSEGV'd in ws_on_upgrade →
+/// GlobalObject::getPlainObjectShapeWithDefaultProto (R-A9). Every dispatch
+/// path (ws_on_upgrade / ws_on_open / ws_on_message / client pump) must
+/// enter the persistent realm itself, so a regression here crashes the test
+/// process — the crash-class oracle pin.
+fn poll_until_bare(ctx: &mut JsContext, cond: &str, iters: u32) -> bool {
+    for _ in 0..iters {
+        if eval_string(ctx, cond) == "y" {
+            return true;
+        }
+        let raw_cx = ctx.raw_cx();
+        {
+            let mut cxm = ctx.cx();
+            bun_runtime::timers::drain_and_check(&mut cxm);
+        }
+        bun_runtime::timers::with_event_loop(|loop_| {
+            loop_.tick_without_idle(std::ptr::null_mut());
+        });
+        unsafe {
+            mozjs_sys::jsapi::js::RunJobs(raw_cx);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    eval_string(ctx, cond) == "y"
+}
+
+/// Realm-wrapping poll for WebSocket faces that also exercise the client
+/// send/receive path under an entered realm (the production script-thread
+/// shape). Kept for the send/ping/close sequence; the upgrade-path realm
+/// gate itself is pinned by [`poll_until_bare`].
 fn poll_until_realm(ctx: &mut JsContext, cond: &str, iters: u32) -> bool {
     for _ in 0..iters {
         if eval_string(ctx, cond) == "y" {
@@ -570,17 +595,18 @@ fn c12_serve_route_throw_500_and_uncaught_routing() {
     );
     let after = raw_http(&mut ctx, port, "GET /ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
     assert!(after.contains("fine"), "server survives a route throw — got:\n{after}");
-    // REGISTRY R-A7 (candidate defect, characterized as observed): the
-    // throwing route answers 500 and the server survives, but a registered
-    // process.on("uncaughtException") handler is NOT observed to run for the
-    // route throw (serve_route_pending_exception's dispatch face needs
-    // product-side investigation — serve vs listen path asymmetry; the
-    // listen-side fetch-throw face does reach the handler per C3).
-    let _ = poll_until(&mut ctx, r#"globalThis.__uncaught !== "" ? "y" : "n""#, 60);
+    // R-A7 oracle: the throwing route answers 500, the server survives, AND
+    // the captured pending exception reaches process.on("uncaughtException")
+    // (Node semantics; symmetric with the listen-side invoke_js_callback).
+    let routed = poll_until(&mut ctx, r#"globalThis.__uncaught !== "" ? "y" : "n""#, 60);
+    assert!(
+        routed,
+        "route-throw pending exception must reach the uncaughtException handler"
+    );
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__uncaught"),
-        "",
-        "pinned as observed: route-throw pending exception does not reach the          uncaughtException handler (REGISTRY R-A7)"
+        "c12-route-boom",
+        "uncaughtException handler observes the original route error message"
     );
     eval_string(&mut ctx, "srv.stop()");
     drive_event_loop(&mut ctx, 10);
@@ -972,7 +998,14 @@ fn c12_websocket_client_send_ping_close_faces() {
             websocket: {
                 open: function (ws) {},
                 message: function (ws, msg) {
-                    __srvMsgs.push(typeof msg + ":" + msg);
+                    // Byte-exact descriptor: text frames stay strings, binary
+                    // frames must arrive as a Uint8Array carrying the payload
+                    // bytes (R-A9b oracle).
+                    var desc = (typeof msg === "string")
+                        ? "string:" + msg
+                        : (msg && msg.constructor && msg.constructor.name) + ":" +
+                          Array.from(msg).join(",");
+                    __srvMsgs.push(desc);
                     ws.send(msg);   // echo verbatim (text or binary)
                 },
                 close: function (ws) {},
@@ -1041,14 +1074,18 @@ fn c12_websocket_client_send_ping_close_faces() {
         log.contains("pinged=THREW:"),
         "client ping(<payload>) throws on this path (REGISTRY R-A9c) — log: {log}"
     );
-    // Binary echo arrives as a byte-backed view carrying the 3 payload bytes.
-    // REGISTRY R-A9b (observed): a Uint8Array send reaches the serve message
-    // handler STRINGIFIED as its comma-joined decimals ("66,49,50") — byte
-    // fidelity is not preserved on the serve-ws message path.
+    // R-A9b oracle: the binary frame reaches the serve handler as a
+    // Uint8Array carrying the 3 payload bytes ([66,49,50] = "B12"), and the
+    // server echo returns to the CLIENT as a byte-backed view — no ToString
+    // stringification anywhere on the path.
     let srv_msgs = eval_string(&mut ctx, "globalThis.__srvMsgs.join('|')");
     assert!(
-        srv_msgs.contains("string:c12-text") && srv_msgs.contains("string:66,49,50"),
-        "serve message handler saw the payloads (binary stringified per R-A9b) — log: {srv_msgs}"
+        srv_msgs.contains("string:c12-text") && srv_msgs.contains("Uint8Array:66,49,50"),
+        "serve message handler must receive the binary payload as a byte-exact Uint8Array — log: {srv_msgs}"
+    );
+    assert!(
+        log.contains("msg:Uint8Array:3"),
+        "binary echo must arrive at the client as a 3-byte Uint8Array — log: {log}"
     );
 
     eval_string(&mut ctx, "globalThis.__ws.close(1000, 'c12-bye');");
@@ -1070,7 +1107,9 @@ fn c12_websocket_client_send_ping_close_faces() {
 /// Server-side serve websocket faces (ws_on_open/ws_on_message 4204-4350):
 /// an in-process Bun.serve({websocket}) upgrade + client round trip —
 /// open fires once per socket, message reaches the handler, handler
-/// ws.send() lands on the client.
+/// ws.send() lands on the client. The loop is ticked with NO realm entered
+/// (R-A9 regression pin: the upgrade handler must enter the persistent
+/// realm itself; a bare-tick regression SIGSEGVs this test process).
 #[test]
 fn c12_serve_websocket_in_process_roundtrip() {
     let mut ctx = make_ctx();
@@ -1101,7 +1140,7 @@ fn c12_serve_websocket_in_process_roundtrip() {
         "#,
     );
 
-    let roundtripped = poll_until_realm(&mut ctx, r#"globalThis.__cliMsg === "echo:hi-c12" ? "y" : "n""#, 400);
+    let roundtripped = poll_until_bare(&mut ctx, r#"globalThis.__cliMsg === "echo:hi-c12" ? "y" : "n""#, 400);
     let srv_log = eval_string(&mut ctx, "globalThis.__srvLog.join('|')");
     assert!(
         roundtripped,

@@ -375,6 +375,24 @@ impl WsConn {
         }
     }
 
+    /// Send a BINARY frame (RFC 6455 opcode 0x2) byte-exact. The WebSocket
+    /// `send()` BufferSource arm routes here — stringifying a Uint8Array would
+    /// emit its comma-joined decimals as a TEXT frame (R-A9b byte-fidelity
+    /// loss).
+    fn send_binary(&mut self, bytes: &[u8]) -> ::std::result::Result<(), String> {
+        match &mut self.transport {
+            WsTransport::Plain(c) => {
+                c.send_binary(bytes).map_err(|e| format!("send failed: {}", e))
+            }
+            WsTransport::Tls { stream, .. } => {
+                let frame = encode_masked_frame(0x2, bytes);
+                stream
+                    .write_all(&frame)
+                    .map_err(|e| format!("send failed: {}", e))
+            }
+        }
+    }
+
     /// Decode exactly one protocol frame from the transport, unmasking the
     /// payload. `Ok(None)` = no complete frame available right now (WouldBlock
     /// — the drain pump treats this as idle). Fatal I/O errors (EOF etc.)
@@ -832,19 +850,27 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     }
     let msg_val = *args.get(0).ptr;
 
-    // Node parity (node v24.19.0 oracle): send() stringifies non-string data
-    // per ES ToString — send(123) emits the text frame "123", send(null) →
-    // "null", send({toString}) → that result. Convert through the engine
-    // (WebIDL DOMString argument conversion) so a throwing conversion
-    // (Symbol) propagates as a real JS exception; the old unconditional
-    // `msg_val.to_string()` bit-cast was UB for any non-string value. The
-    // conversion runs before the readyState gate and OUTSIDE the registry
-    // borrow — a user toString() may re-enter JS (even send()/close()).
-    let message = if msg_val.is_string() {
-        jsstr_to_string(
+    // WebSocket.send(message) takes the WebIDL union (BufferSource or Blob or
+    // USVString). A byte source (ArrayBuffer / ArrayBufferView / DataView,
+    // Buffer included) MUST go out as a BINARY frame byte-exact — node v24
+    // oracle: send(new Uint8Array([66,49,50])) delivers bytes b"B12" to the
+    // peer. Everything else is the USVString arm converted through the engine
+    // (send(123) → text "123", send(null) → "null", send({toString}) → that
+    // result); a throwing conversion (Symbol) propagates as a real JS
+    // exception. Both conversions run before the readyState gate and OUTSIDE
+    // the registry borrow — a user toString() may re-enter JS (even
+    // send()/close()).
+    enum OutboundPayload {
+        Text(String),
+        Binary(Vec<u8>),
+    }
+    let payload = if msg_val.is_string() {
+        OutboundPayload::Text(jsstr_to_string(
             &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
             NonNull::new_unchecked(msg_val.to_string()),
-        )
+        ))
+    } else if let Some(bytes) = crate::bun_api::extract_bytes_from_jsval(cx, msg_val) {
+        OutboundPayload::Binary(bytes)
     } else {
         let mut wrapped_cx =
             mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -855,7 +881,7 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
             // pending exception unchanged.
             return false;
         }
-        jsstr_to_string(&wrapped_cx, NonNull::new_unchecked(jsstr))
+        OutboundPayload::Text(jsstr_to_string(&wrapped_cx, NonNull::new_unchecked(jsstr)))
     };
 
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -878,7 +904,11 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
             // Browser parity: send() while CONNECTING/CLOSED throws
             // InvalidStateError (never silently drops the message).
             Some(e) if e.client.is_some() => {
-                e.client.as_mut().unwrap().send_text(&message)
+                let client = e.client.as_mut().unwrap();
+                match &payload {
+                    OutboundPayload::Text(text) => client.send_text(text),
+                    OutboundPayload::Binary(bytes) => client.send_binary(bytes),
+                }
             }
             Some(e) if e.connect_slot.is_some() => {
                 Err("InvalidStateError: WebSocket is still connecting".to_string())

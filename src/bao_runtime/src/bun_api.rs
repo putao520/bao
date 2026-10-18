@@ -1798,8 +1798,21 @@ unsafe fn fire_spawn_watch_finish(raw_cx: *mut JSContext, pid: i32, code: i32, s
         );
         if !ok {
             // A throwing finish must not kill the pump (other watchers still
-            // deserve delivery) — surface via the uncaught router.
+            // deserve delivery) — surface via the uncaught router (R-A7
+            // class: capture + clear + route, never a silent clear).
+            let mut exn = UndefinedValue();
+            JS_GetPendingException(
+                raw_cx,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut exn,
+                },
+            );
             JS_ClearPendingException(raw_cx);
+            rooted!(&in(cx_ref) let reason_root = exn);
+            if !exn.is_undefined() {
+                crate::uncaught::route_uncaught_exception(raw_cx, exn);
+            }
         }
         crate::gc_store::gc_store_remove_ns(raw_cx, "spawn-watch", &key);
     }
@@ -4018,6 +4031,30 @@ unsafe extern "C" fn ws_on_upgrade(
         .map(|h| h.to_vec())
         .unwrap_or_default();
 
+    // Realm gate (R-A9, gdb-verified crash class): every JS allocation below
+    // resolves the plain-object shape off `CurrentGlobalOrNull`
+    // (`JS_NewPlainObject` → `GlobalObject::getPlainObjectShapeWithDefaultProto`),
+    // which is null when the uWS loop is ticked from a thread with no realm
+    // entered — the bare-tick entry SIGSEGVs. Production ticks on the script
+    // thread under the persistent realm; enter it explicitly here (mirror of
+    // `ws_on_open` / `ws_on_message` / `tcp_on_data`) so the bare-tick entry
+    // is safe. No realm on the thread (runtime teardown) → fail-closed reject.
+    let Some(global) = bao_engine::context::thread_realm_global() else {
+        (*res_mut).write_status(b"500 Internal Server Error");
+        (*res_mut).end(b"", true);
+        return;
+    };
+    if global.is_null() {
+        (*res_mut).write_status(b"500 Internal Server Error");
+        (*res_mut).end(b"", true);
+        return;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
     // Create the JS WebSocket wrapper object. We use a sentinel RawWebSocket
     // (null) here — the actual pointer will be set in ws_on_open (the socket
     // doesn't exist until after upgrade). For now, store a placeholder that
@@ -4047,8 +4084,7 @@ unsafe extern "C" fn ws_on_upgrade(
     let ws_ud_ptr = Box::into_raw(ws_ud);
 
     // Store the ws_obj_key on the JS object so it can clean up GcStore on close.
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
+    // (Uses the realm-entered `cx_ref` from the gate above.)
     rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
     let c_key = ZBox::from_bytes(ws_obj_key.as_bytes());
     {
@@ -4296,16 +4332,13 @@ unsafe extern "C" fn ws_on_message(
             msg_arg = StringValue(&*js_str);
         }
     } else {
-        // Binary: create a JS string from raw bytes (Bun's ws.message
-        // receives string for text and Buffer for binary; we use string
-        // for both as a simplification — matches the current Bun API
-        // surface where binary messages are also passed as strings).
+        // Binary: byte-exact Uint8Array (Bun/node ws.message contract:
+        // string for text frames, Buffer/Uint8Array for binary frames). The
+        // previous `JS_NewStringCopyZ` treated the frame as a NUL-terminated
+        // C string — non-UTF-8 payloads were corrupted and embedded NULs
+        // truncated the message (R-A9b class).
         let bytes = ::std::slice::from_raw_parts(data, length);
-        let c_data = ZBox::from_vec(bytes.to_vec());
-        let js_str = JS_NewStringCopyZ(cx, c_data.as_ptr());
-        if !js_str.is_null() {
-            msg_arg = StringValue(&*js_str);
-        }
+        msg_arg = bytes_to_js_uint8array(cx, bytes);
     }
 
     // Call message(ws, messageData).
@@ -5211,9 +5244,12 @@ unsafe fn serve_dispatch_headers(st: *mut ServeRequestState) {
             },
         );
         if !ok {
-            // JS callback threw — clear pending exception; the 500 lands at
-            // body-complete.
-            JS_ClearPendingException(raw_cx);
+            // JS callback threw — capture + clear + route the pending
+            // exception to `process.on('uncaughtException')` (Node semantics
+            // and the listen-side `invoke_js_callback` contract) instead of
+            // silently clearing it, and answer 500 at body-complete
+            // (R-A7 serve/listen asymmetry).
+            serve_route_pending_exception(raw_cx);
             return ServePhase1Outcome::DeferredFail {
                 status: "500 Internal Server Error",
                 body: "fetch handler threw",

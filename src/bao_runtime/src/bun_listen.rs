@@ -515,7 +515,22 @@ fn build_http_server(
             rval_h,
         );
         if !ok {
+            // Capture + clear + route the fetch-handler throw through
+            // process.on('uncaughtException') (same contract as the
+            // serve side and invoke_js_callback) — never a silent clear.
+            let mut exn = UndefinedValue();
+            JS_GetPendingException(
+                cx,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut exn,
+                },
+            );
             JS_ClearPendingException(cx);
+            rooted!(&in(cx_ref) let reason_root = exn);
+            if !exn.is_undefined() {
+                crate::uncaught::route_uncaught_exception(cx, exn);
+            }
             (*res_mut).write_status(b"500 Internal Server Error");
             (*res_mut).write_header(b"Content-Type", b"text/plain");
             (*res_mut).end(b"fetch handler threw", true);
@@ -2470,6 +2485,30 @@ unsafe extern "C" fn tcp_sock_destroy(cx: *mut JSContext, _argc: u32, vp: *mut J
     true
 }
 
+/// Format a raw IP address from uWS (4 bytes = IPv4, 16 bytes = IPv6, network
+/// order) as the textual form Node/Bun surface: dotted-quad for IPv4
+/// ("127.0.0.1") and compressed colon-hex for IPv6 ("::1").
+///
+/// The accept bridge used to hand the raw sockaddr bytes to
+/// `JS_NewStringCopyZ`, which stops at the first NUL byte — loopback
+/// 127.0.0.1 degenerated into the single char 0x7F (R-L8). Unknown lengths
+/// keep every byte visible (hex groups) instead of truncating.
+fn format_socket_ip(bytes: &[u8]) -> String {
+    match bytes.len() {
+        4 => ::std::net::Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string(),
+        16 => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(bytes);
+            ::std::net::Ipv6Addr::from(octets).to_string()
+        }
+        _ => bytes
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(":"),
+    }
+}
+
 /// Build a JS socket object (write/end/destroy + remote/local address info)
 /// for a connected `us_socket_t`. Caller must be in the target realm.
 ///
@@ -2508,7 +2547,8 @@ unsafe fn build_tcp_socket_obj(
         None => (*s).remote_address(&mut ip_buf).ok().map(|s| s.to_vec()),
     };
     if let Some(ip) = remote {
-        let c_ip = ZBox::from_bytes(&ip);
+        let remote_addr = format_socket_ip(&ip);
+        let c_ip = ZBox::from_bytes(remote_addr.as_bytes());
         let ip_js = JS_NewStringCopyZ(cx, c_ip.as_ptr());
         if !ip_js.is_null() {
             rooted!(&in(cx_ref) let ip_v = StringValue(&*ip_js));
