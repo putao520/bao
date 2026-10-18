@@ -105,6 +105,19 @@ impl<'a> ShellInterpreter<'a> {
 
         let lex_result = lexer.get_result();
 
+        // Lexer-detected errors (unclosed subshell / command substitution,
+        // stray ')', invalid JS refs) are recorded in the result rather than
+        // returned from `lex()` — surface them as a fail-closed shell error.
+        // Without this gate an unterminated construct also reached the parser
+        // without its Eof sentinel (SHELL-PARSER-PANIC).
+        if !lex_result.errors.is_empty() {
+            return ShellOutput {
+                stdout: Vec::new(),
+                stderr: lex_result.combine_errors(&bump).to_vec(),
+                exit_code: 1,
+            };
+        }
+
         // Parse: Parser consumes lex output → AST
         let mut jsobjs: [bun_shell_parser::JSValueRaw; 0] = [];
         let parser = match Parser::new(&bump, lex_result, &mut jsobjs) {

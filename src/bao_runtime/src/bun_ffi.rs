@@ -1005,6 +1005,27 @@ fn slot_as_u64(slot: &FfiArgSlot) -> u64 {
     }
 }
 
+/// ECMAScript ToUint32: truncate toward zero, then wrap modulo 2^32.
+/// Rust's float→int `as` casts SATURATE (‑7.0 as u8 == 0), which silently
+/// zeroed negative/wrapping narrow FFI arguments (FFI-NARROW-ARG-CALL-SUSPECT:
+/// `abs(-7)` with declared `u8` returned 0 instead of 249). C-cast semantics
+/// are the FFI argument contract, and JS has no saturating conversion.
+fn js_to_uint32(d: f64) -> u32 {
+    const TWO32: f64 = 4_294_967_296.0;
+    if !d.is_finite() {
+        // ToUint32(NaN/±Infinity) = 0.
+        return 0;
+    }
+    let m = d.trunc() % TWO32;
+    let m = if m < 0.0 { m + TWO32 } else { m };
+    m as u32
+}
+
+/// ECMAScript ToInt32 — ToUint32 reinterpreted as two's complement.
+fn js_to_int32(d: f64) -> i32 {
+    js_to_uint32(d) as i32
+}
+
 /// Convert one call argument into an owned slot per its TypeSpec. The CString
 /// bytes live in `keepalive` (alive until after the call); the slot holds the
 /// char pointer.
@@ -1028,42 +1049,42 @@ unsafe fn spec_arg(
             if !(v.is_int32() || v.is_double()) {
                 return Err(bad("a number"));
             }
-            let b = v.to_number() as u8;
+            let b = js_to_uint32(v.to_number()) as u8;
             Ok(FfiArgSlot::U8(b))
         }
         TypeSpec::I8 => {
             if !(v.is_int32() || v.is_double()) {
                 return Err(bad("a number"));
             }
-            let b = v.to_number() as i8;
+            let b = js_to_int32(v.to_number()) as i8;
             Ok(FfiArgSlot::I8(b))
         }
         TypeSpec::U16 => {
             if !(v.is_int32() || v.is_double()) {
                 return Err(bad("a number"));
             }
-            let b = v.to_number() as u16;
+            let b = js_to_uint32(v.to_number()) as u16;
             Ok(FfiArgSlot::U16(b))
         }
         TypeSpec::I16 => {
             if !(v.is_int32() || v.is_double()) {
                 return Err(bad("a number"));
             }
-            let b = v.to_number() as i16;
+            let b = js_to_int32(v.to_number()) as i16;
             Ok(FfiArgSlot::I16(b))
         }
         TypeSpec::U32 => {
             if !(v.is_int32() || v.is_double()) {
                 return Err(bad("a number"));
             }
-            let b = v.to_number() as u32;
+            let b = js_to_uint32(v.to_number());
             Ok(FfiArgSlot::U32(b))
         }
         TypeSpec::I32 => {
             if !(v.is_int32() || v.is_double()) {
                 return Err(bad("a number"));
             }
-            let b = v.to_number() as i32;
+            let b = js_to_int32(v.to_number());
             Ok(FfiArgSlot::I32(b))
         }
         TypeSpec::U64 | TypeSpec::Usize => {
@@ -1268,7 +1289,14 @@ unsafe extern "C" fn ffi_fn_call(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                         return false;
                     }
                     let v = match slot {
-                        FfiArgSlot::F32(v) => *v as f64,
+                        // `movsd` moves 64 bits into xmmN but the callee of a
+                        // `float` parameter reads the LOW 32 bits as an f32
+                        // bit pattern. Widening f32→f64 here put the f64
+                        // encoding in the register and every narrow float arg
+                        // arrived as garbage (fabsf(-2.5) == 0, see
+                        // FFI-NARROW-ARG-CALL-SUSPECT): carry the f32 bits in
+                        // the low half instead.
+                        FfiArgSlot::F32(v) => f64::from_bits(u64::from(v.to_bits())),
                         FfiArgSlot::F64(v) => *v,
                         _ => unreachable!(),
                     };
@@ -1355,7 +1383,11 @@ unsafe extern "C" fn ffi_fn_call(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             args.rval().set(bigint_from_decimal(cx, &(ret.rax as i64).to_string()));
         }
         TypeSpec::F32 => {
-            args.rval().set(DoubleValue(ret.xmm0 as f32 as f64));
+            // A `float` return occupies the LOW 32 bits of xmm0 as an f32 bit
+            // pattern; the trampoline hands the register over verbatim in
+            // `xmm0`, so reinterpreting it as f64 is garbage. Decode the low
+            // half (the former `as f32 as f64` took the *upper* half).
+            args.rval().set(DoubleValue(f32::from_bits(ret.xmm0.to_bits() as u32) as f64));
         }
         TypeSpec::F64 => {
             args.rval().set(DoubleValue(ret.xmm0));
@@ -1802,6 +1834,84 @@ unsafe fn get_lib(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut FfiLi
     if ptr.is_null() { None } else { Some(ptr) }
 }
 
+/// Resolve the per-realm prototype that `JS_InitClass` installed for
+/// `<global>.<class_name>`. Two shapes exist:
+///   * a real constructor (non-null JSNative) → the global property is a
+///     function and the prototype is its `.prototype`;
+///   * a constructor-less class (`JS_InitClass(.., nullptr, ..)`, the
+///     FfiCallback case) → SM sets `ctor = proto`, so the global property IS
+///     the prototype object and reading `.prototype` yields undefined.
+/// Returns null when the class is absent (realm that never ran `install`).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn installed_class_proto(
+    cx: *mut JSContext,
+    class_name: &::std::ffi::CStr,
+) -> *mut JSObject {
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        return ::std::ptr::null_mut();
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut ctor_v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        global_root.handle().into(),
+        class_name.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ctor_v,
+        },
+    );
+    if !ctor_v.is_object() {
+        return ::std::ptr::null_mut();
+    }
+    let ctor_obj = ctor_v.to_object();
+    if !IsCallable(ctor_obj) {
+        // Constructor-less class: the installed global property is the
+        // prototype itself (DefineConstructorAndPrototype leaves both
+        // variables pointing at the same object).
+        return ctor_obj;
+    }
+    rooted!(&in(cx_ref) let ctor_root = ctor_obj);
+    let mut proto_v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        ctor_root.handle().into(),
+        c"prototype".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut proto_v,
+        },
+    );
+    if proto_v.is_object() {
+        proto_v.to_object()
+    } else {
+        ::std::ptr::null_mut()
+    }
+}
+
+/// Allocate an instance of `class` chained onto the class prototype that
+/// `JS_InitClass` installed (close/symbol/ptr reachable through the proto
+/// chain). Falls back to the default-prototype allocation when the class has
+/// not been installed in this realm.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn new_instance_of(
+    cx: *mut JSContext,
+    class: &'static JSClass,
+    class_name: &'static ::std::ffi::CStr,
+) -> *mut JSObject {
+    let proto = installed_class_proto(cx, class_name);
+    if proto.is_null() {
+        return JS_NewObject(cx, class);
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let proto_root = proto);
+    w2::JS_NewObjectWithGivenProto(cx_ref, class, proto_root.handle().into())
+}
+
 /// Module-level dlopen function: `dlopen(path)` → FfiLibrary JS object, or
 /// the Bun contract `dlopen(path, symbols)` → `{ name: callable, ... }` where
 /// each symbol descriptor `{ args: [type...], returns: type }` preps a libffi
@@ -1837,7 +1947,10 @@ unsafe extern "C" fn ffi_dlopen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     // One-arg form: the FfiLibrary introspection surface (close/symbol).
     if argc < 2 || !(*args.get(1).ptr).is_object() {
         let lib_ptr = Box::into_raw(Box::new(lib)) as *const ::std::os::raw::c_void;
-        let obj = JS_NewObject(cx, &FFI_LIBRARY_CLASS);
+        // Chain onto FfiLibrary.prototype (close/symbol live there once the
+        // class is installed); the own definitions below stay as the
+        // realm-without-install fallback.
+        let obj = new_instance_of(cx, &FFI_LIBRARY_CLASS, c"FfiLibrary");
         if obj.is_null() {
             let _ = Box::from_raw(lib_ptr as *mut FfiLibrary);
             args.rval().set(NullValue());
@@ -1875,7 +1988,12 @@ unsafe extern "C" fn ffi_dlopen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let lib_obj = symbols_obj);
-    rooted!(&in(cx_ref) let exports_obj = w2::JS_NewPlainObject(cx_ref));
+    // The Bun contract's Library object carries close() (and the FfiLibrary
+    // introspection face) through the prototype chain — a plain object left
+    // close/symbol unreachable on the primary descriptor path
+    // (FFI-TWOARG-LIB-PROTO-MISSING).
+    rooted!(&in(cx_ref) let exports_obj =
+        new_instance_of(cx, &FFI_LIBRARY_CLASS, c"FfiLibrary"));
     if exports_obj.get().is_null() {
         args.rval().set(NullValue());
         return true;
@@ -2064,6 +2182,16 @@ unsafe extern "C" fn ffi_dlopen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         self_v.handle().into(),
         (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
     );
+
+    // Hand the dlopen handle to the JS library object: the SLOT_LIB pointer
+    // is what close()/symbol() consume, and keeping it alive with the object
+    // (instead of dropping — and dlclose'ing — at return, as before) is what
+    // keeps the bound callables valid until close(). The handle is released
+    // by close()'s dlclose; the Box itself is process-lifetime, matching the
+    // one-arg face.
+    let lib_ptr = Box::into_raw(Box::new(lib)) as *const ::std::os::raw::c_void;
+    let lib_val = PrivateValue(lib_ptr);
+    JS_SetReservedSlot(exports_obj.get(), SLOT_LIB, &lib_val);
 
     args.rval().set(ObjectValue(exports_obj.get()));
     true
@@ -2264,7 +2392,10 @@ unsafe extern "C" fn ffi_callback(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     let cb_box = Box::new(cb);
     let cb_ptr = Box::into_raw(cb_box) as *const c_void;
 
-    let obj = JS_NewObject(cx, &FFI_CALLBACK_CLASS);
+    // Chain onto FfiCallback.prototype so close()/ptr() (FFI_CALLBACK_METHODS,
+    // installed by JS_InitClass) are reachable from the instance — a bare
+    // JS_NewObject left that proto orphaned (FFI-CALLBACK-METHODS-UNREACHABLE).
+    let obj = new_instance_of(cx, &FFI_CALLBACK_CLASS, c"FfiCallback");
     if obj.is_null() {
         // Reclaim the Box to avoid a leak on allocation failure.
         let _ = Box::from_raw(cb_ptr as *mut FfiCallback);

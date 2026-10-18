@@ -985,6 +985,15 @@ impl<'bump> Parser<'bump> {
         lex_result: LexResult<'bump>,
         jsobjs: &'bump mut [JSValue],
     ) -> ParseResult<Parser<'bump>> {
+        // An unterminated construct (unclosed subshell / command substitution)
+        // makes the lexer record an error and return WITHOUT pushing the Eof
+        // sentinel. Parsing an Eof-less slice walked `peek()` off its end —
+        // `sh.run('(echo')` aborted the process (SHELL-PARSER-PANIC). Reject
+        // the stream here, fail-closed; callers surface the lexer's own error
+        // text via `LexResult::combine_errors`.
+        if !matches!(lex_result.tokens.last(), Some(Token::Eof)) {
+            return Err(ParseError::Unexpected.into());
+        }
         Ok(Parser {
             strpool: lex_result.strpool,
             tokens: lex_result.tokens,
@@ -1019,10 +1028,14 @@ impl<'bump> Parser<'bump> {
     }
 
     pub fn continue_from_subparser(&mut self, subparser: &mut Parser<'bump>) {
-        self.current = if subparser.current as usize >= self.tokens.len() {
-            subparser.current
-        } else {
+        // The subparser normally stops ON the closing token, which the parent
+        // must skip (+1). It can also stop on the last token of an Eof-less
+        // stream (unterminated construct) — +1 would land past the slice, so
+        // only skip when a token actually follows (SHELL-PARSER-PANIC).
+        self.current = if (subparser.current as usize) + 1 < self.tokens.len() {
             subparser.current + 1
+        } else {
+            subparser.current
         };
         self.errors = core::mem::replace(
             &mut subparser.errors,
@@ -1253,6 +1266,16 @@ impl<'bump> Parser<'bump> {
                 return Err(e);
             }
         };
+        // Defense in depth: a subparser that stopped on Eof instead of the
+        // closing paren means the subshell was never terminated. The lexer
+        // already records "Unclosed subshell" (and bun_shell rejects the
+        // stream), but a caller that ignores lexer errors must still get a
+        // parse error rather than an AST built from a truncated region.
+        if subparser.peek().tag() != SubshellKind::Normal.closing_tok() {
+            self.continue_from_subparser(&mut subparser);
+            self.add_error(format_args!("Unclosed subshell"))?;
+            return Err(ParseError::Expected.into());
+        }
         self.continue_from_subparser(&mut subparser);
         let parsed_redirect = self.parse_redirect()?;
 
@@ -2098,7 +2121,13 @@ impl<'bump> Parser<'bump> {
     }
 
     fn peek(&self) -> Token {
-        self.tokens[self.current as usize]
+        // Bounds-safe by contract: a parser that ran past the slice must
+        // degrade to Eof, never panic (SHELL-PARSER-PANIC — the process abort
+        // came from this index expression on an Eof-less token stream).
+        match self.tokens.get(self.current as usize) {
+            Some(tok) => *tok,
+            None => self.tokens.last().copied().unwrap_or(Token::Eof),
+        }
     }
 
     fn peek_n(&self, n: u32) -> Token {
@@ -2109,7 +2138,13 @@ impl<'bump> Parser<'bump> {
     }
 
     fn prev(&self) -> Token {
-        self.tokens[self.current as usize - 1]
+        // current == 0 only on an empty/Eof-first stream; there is no previous
+        // token to report, so fall back to the current one instead of
+        // underflowing the index (same panic class as `peek`).
+        if self.current == 0 {
+            return self.peek();
+        }
+        self.tokens[(self.current as usize) - 1]
     }
 
     pub fn combine_errors(&self) -> &'bump [u8] {
@@ -2934,6 +2969,32 @@ impl<'bump, const ENCODING: u8> Lexer<'bump, ENCODING> {
                             if !peeked.escaped && peeked.char == u32::from(b'(') {
                                 self.break_word(false)?;
                                 self.eat_subshell(SubShellKind::Dollar)?;
+                                fell_through = true;
+                                break 'escaped;
+                            }
+
+                            // `$$` (shell PID): eat_var treats '$' as a
+                            // non-name character, so without this arm the two
+                            // dollars lex as literal Text and the command
+                            // reconstruction re-quotes them (`'$$'`) — the
+                            // /bin/sh expansion never runs
+                            // (SHELL-VAR-RENDER-MANGLES-DOUBLEDOLLAR).
+                            // Emit a Var atom whose name is the literal '$':
+                            // the renderer prefixes '$' (→ "$$") and Var atoms
+                            // pass through raw, so sh expands it (also inside
+                            // double quotes; single-quoted '$' never reaches
+                            // this arm).
+                            if !peeked.escaped && peeked.char == u32::from(b'$') {
+                                self.break_word(false)?;
+                                let _ = self.eat(); // second '$'
+                                let start = self.j;
+                                self.append_char_to_str_pool(u32::from(b'$'))?;
+                                let var_tok = TextRange {
+                                    start,
+                                    end: self.j,
+                                };
+                                self.tokens.push(Token::Var(var_tok));
+                                self.word_start = self.j;
                                 fell_through = true;
                                 break 'escaped;
                             }

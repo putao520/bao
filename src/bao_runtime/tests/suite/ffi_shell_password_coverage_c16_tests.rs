@@ -32,20 +32,22 @@
 // libc-face tests are #[cfg(unix)] (dlopen "libc.so.6"/"libm.so.6",
 // /bin/sh spawn) — same convention as udp_ffi_shell_coverage_c8a_tests.rs.
 //
-// ── Registered product-defect / parity observations (characterization-pinned,
-//    NOT fixed here — C16 contract: register only) ──
+// ── Registered product-defect / parity observations ──
+//    (C16 registered these characterization-only; e-fix-shell-ffi flipped the
+//    four FIXED rows below to oracle assertions — the rest stay pinned as
+//    observed parity/deviation facts.)
 //
 // | id | face | shipped behavior | oracle / expected | ref |
 // |----|------|------------------|-------------------|-----|
 // | PWD-ERR-MSG-PARITY | Bun.password error messages | "Bun.password.hash(Sync) requires a password string" / "Unknown algorithm: X" / "InvalidEncoding: hash must be ASCII" | bun 1.4.2: "Not enough arguments to 'hash'..." / "Expected algorithm to be a unknown algorithm..." / 'Password verification failed with error "InvalidEncoding"' | bun_password.rs:538,574,607,652; bun oracle 2026-10-18 |
 // | PWD-VERIFY-ERR-CLASS | malformed argon2 hash surfaces the raw rust-argon2 decoder error text | "argon2 verify failed: <crate error>" | bun: 'Password verification failed with error "InvalidEncoding"' | bun_password.rs:441-444 |
-// | FFI-TWOARG-LIB-PROTO-MISSING | two-arg dlopen(path, symbols) returns an object WITHOUT the FfiLibrary prototype: lib.close / lib.symbol are undefined (only the one-arg face gets them via JS_NewObjectForConstructor). The primary descriptor-loading path cannot close or probe its library | one-arg face has close/symbol (C8a-pinned); two-arg face should too | bun_ffi.rs:1843 `JS_NewObject(cx, &FFI_LIBRARY_CLASS)` does not resolve the JS_InitClass proto |
-// | FFI-CALLBACK-METHODS-UNREACHABLE | ffi.callback() result lacks close()/ptr() — the FFI_CALLBACK_METHODS proto (ffi_callback_close / ffi_callback_ptr hosts) is orphaned by JS_InitClass(null ctor) + JS_NewObject instances; only the per-instance `ptrValue` property is reachable | bun CCallback exposes .ptr()/close() | bun_ffi.rs:1659-1670 + 2270-2290 |
-// | FFI-NARROW-ARG-CALL-SUSPECT | abs(-7) with declared args ['u8'] returned 0 (clean u8 truncation would give 249, sign-correct -7 → 7); non-i32 arg-type CALL faces are unpinned — this wave covers them via dlopen-time parse only | i32-declared abs(-7)=7 works (C8a-pinned) | bun_ffi.rs trampoline arg marshal; needs product-side look |
-// | SHELL-PARSER-PANIC | sh.run('(echo') — unbalanced subshell paren hits a Rust panic (src/shell_parser/parse.rs:2101) aborting the process instead of the parse-error face | expected: graceful parse-error ShellOutput | shell_parser/parse.rs:2101; run-1 SIGSEGV evidence |
-// | SHELL-VAR-RENDER-MANGLES-DOUBLEDOLLAR | the Var rendering arm prepends a single '$' to the lexed var name, so `$$` reconstructs as `$$$` (literal-$ + PID) → `kill -9 "$$"` surfaces a dash usage error (exit 2) instead of self-signalling; self-kill via $$ is therefore unreachable from text | reconstructed `$$` must stay `$$` | bun_shell.rs simple_atom_to_string Var arm |
+// | FFI-TWOARG-LIB-PROTO-MISSING | FIXED (e-fix-shell-ffi): two-arg dlopen returned a plain object without the FfiLibrary prototype (close/symbol unreachable) and dlclose'd the handle at return | two-arg Library chains onto FfiLibrary.prototype, owns the handle, close is one-shot | bun_ffi.rs ffi_dlopen two-arg path + installed_class_proto |
+// | FFI-CALLBACK-METHODS-UNREACHABLE | FIXED (e-fix-shell-ffi): ffi.callback() instances were allocated with JS_NewObject, orphaning the FFI_CALLBACK_METHODS prototype | instances chain onto FfiCallback.prototype; ptr()==ptrValue, close() one-shot | bun_ffi.rs ffi_callback |
+// | FFI-NARROW-ARG-CALL-SUSPECT | FIXED (e-fix-shell-ffi): Rust saturating float→int casts zeroed negative narrow ints (u8 abs(-7)=0), f32 args were widened to f64 bits and f32 returns decoded from the wrong half | C-cast ToInt32/ToUint32 semantics: u8 abs(-7)=249; f32 bits carried in the low 32 bits: fabsf(-2.5)=2.5 | bun_ffi.rs js_to_uint32/js_to_int32 + F32 slot/return |
+// | SHELL-PARSER-PANIC | FIXED (e-fix-shell-ffi): sh.run('(echo') — Eof-less lex stream from an unclosed subshell ran peek() past the token slice → Rust panic → process abort | lexer errors surfaced (exit 1, "Unclosed subshell"); Parser::new rejects non-Eof streams; peek/prev bounded | shell_parser/parse.rs + bun_shell.rs |
+// | SHELL-VAR-RENDER-MANGLES-DOUBLEDOLLAR | FIXED (e-fix-shell-ffi): root was the lexer, not the Var renderer — eat_var rejects '$' as a name char, so `$$` lexed as two literal-`$` Text atoms and reconstruction re-quoted them (`'$$'`), leaving PID expansion unreachable | `$$` lexes as a Var atom, reconstructs as `$$`, and /bin/sh expands it (self-kill carrier now live) | shell_parser/parse.rs `$` arm |
 // | SHELL-LEXER-LENIENT-UNCLOSED-QUOTE | an unterminated double quote is silently auto-closed: `echo "unclosed` runs and prints "unclosed" (exit 0, empty stderr) | dash/bash: unexpected-EOF syntax error (exit 2); bun upstream: parse error | run-2 evidence; also: whitespace-only command is a silent exit-0 no-op (the exec_via_sh empty-command arm is unreachable from text input) |
-// | FFI-NARROW-ARG-CALL-SUSPECT (extended) | non-{i32,f64}-width arg VALUES return 0 from real calls: abs(-7) with declared u8 → 0, fabsf(-2.5) with declared f32 → 0 (clean truncation would give 249 / 2.5); i32 and f64 arg calls marshal correctly | u8 call → 249; f32 call → 2.5 | bun_ffi.rs trampoline arg marshal; needs product-side look |
+// | FFI-NARROW-ARG-CALL-SUSPECT (extended — same fixed defect as the row above) | abs(-7) with declared u8 and fabsf(-2.5) with declared f32 both returned 0 from real calls | u8 call → 249; f32 call → 2.5 (pinned live in ffi_typespec_parse_type_name_matrix) | bun_ffi.rs js_to_uint32/js_to_int32 + F32 slot/return |
 // | SHELL-IF-NO-ELSE-COND-STATUS | `if false; then echo a; fi` → exitCode 1 (the condition command's status propagates) | bash/POSIX: 0 (node child_process & bun parity) | bun_shell.rs interpret_if `return cond_result` arm |
 // | SHELL-PIPE-SUBSHELL-STDIN-DROP | `echo hi | (cat)` → stdout empty (mid-pipeline subshell does not receive the piped stdin) | bash: "hi" | bun_shell.rs interpret_pipeline_item_with_stdin Subshell arm |
 // | SHELL-BACKGROUND-AMP | `echo x &` → exit 1 with empty stdout/stderr (background operator not supported); dropped from the suite rather than pinning an unexplained error face | bun docs: background jobs unsupported — plausibly parity, unverified | run-1 evidence |
@@ -433,11 +435,15 @@ fn shell_pipeline_stage_arms() {
 /// Lenient-input faces (run-2 observed reality, pinned): a whitespace-only
 /// command completes as a no-op (exit 0, silent) and an unterminated quote
 /// is silently auto-closed by the lexer (echo runs, exit 0, empty stderr).
-/// Registered deviations: SHELL-LEXER-LENIENT-UNCLOSED-QUOTE (dash/bash:
+/// Registered deviation: SHELL-LEXER-LENIENT-UNCLOSED-QUOTE (dash/bash:
 /// unexpected-EOF syntax error); the exec_via_sh empty-command arm is NOT
 /// reachable from whitespace text (the lexer produces zero statements, the
-/// interpreter returns before exec). The parse-error input is NOT exercised:
-/// '(echo' panics the product parser (SHELL-PARSER-PANIC registration).
+/// interpreter returns before exec).
+///
+/// SHELL-PARSER-PANIC (fixed): an unbalanced subshell paren (`(echo`) is a
+/// parser error, not a process abort — the lexer's "Unclosed subshell" is
+/// surfaced as a fail-closed shell error (exit 1, stderr carries the text),
+/// matching bun upstream's `Unclosed subshell` error face.
 #[cfg(unix)]
 #[test]
 fn shell_lenient_input_faces() {
@@ -452,13 +458,17 @@ fn shell_lenient_input_faces() {
             r.push('empty:' + e1.exitCode + ':' + e1.stdout.length + ':' + e1.stderr.length);
             var e2 = sh.run('echo "unclosed');
             r.push('lex:' + e2.exitCode + ':' + e2.stdout.trim() + ':' + e2.stderr.length);
+            var e3 = sh.run('(echo');
+            r.push('paren:' + e3.exitCode + ':' + e3.stdout.length + ':' + e3.stderr.trim());
+            var e4 = sh.run('echo $(unterminated');
+            r.push('cmdsubst:' + e4.exitCode + ':' + e4.stdout.length + ':' + e4.stderr.trim());
             return r.join('|');
         })()
         "#,
     );
     assert_eq!(
         out,
-        "empty:0:0:0|lex:0:unclosed:0",
+        "empty:0:0:0|lex:0:unclosed:0|paren:1:0:Unclosed subshell|cmdsubst:1:0:Unclosed command substitution",
         "lenient input faces: {out}"
     );
 }
@@ -466,29 +476,20 @@ fn shell_lenient_input_faces() {
 /// A command terminated by a signal should surface as a negative exitCode
 /// (Term::Signal arm).
 ///
-/// #[ignore] (C16, three-strike): unreachable from a JS-level test today —
-/// `$$` self-kill is mangled by the Var rendering arm
-/// (SHELL-VAR-RENDER-MANGLES-DOUBLEDOLLAR → dash usage error exit 2, runs
-/// 1-2) and the external-killer carrier (pkill -9 -f on a comment marker in
-/// the sh -c cmdline) never terminated the child (run 3: sleep completed,
-/// exit 0). Re-enable after either product face is fixed.
+/// Carrier: `kill -9 $$` makes the `sh -c` child signal itself. This became
+/// reachable once `$$` stopped being lexed as two literal-`$` Text atoms and
+/// re-quoted (SHELL-VAR-RENDER-MANGLES-DOUBLEDOLLAR, fixed): `$$` now lexes
+/// as a Var atom, reconstructs as `$$`, and /bin/sh performs the PID
+/// expansion. Deterministic — no external killer race.
 #[test]
 #[cfg(unix)]
-#[ignore = "SHELL-SIGNAL-FACE-UNREACHABLE: $$ self-kill mangled by Var render (exit 2); pkill-marker carrier did not terminate the child (exit 0 at 9s)"]
 fn shell_signal_exit_code_arm() {
     let mut ctx = setup_ctx();
-    let killer = std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        let _ = std::process::Command::new("pkill")
-            .args(["-9", "-f", "BAOC16SIGMARK"])
-            .output();
-    });
     let out = ev(
         &mut ctx,
-        "(function () { var r = new Bun.Shell().run('sleep 9 #BAOC16SIGMARK'); \
+        "(function () { var r = new Bun.Shell().run('kill -9 $$'); \
          return 'exit=' + r.exitCode + ' success=' + r.success; })()",
     );
-    let _ = killer.join();
     assert_eq!(out, "exit=-9 success=false", "signal exit: {out}");
 }
 
@@ -646,9 +647,10 @@ fn shell_dollar_promise_and_shell_error_shape() {
 
 /// TypeSpec::parse full type-name matrix through descriptor validation: all
 /// 16 type names parse at dlopen time (eager dlsym of a real symbol first —
-/// C8a discipline). Only the C8a-proven call shape (i32-declared abs) is
-/// CALLED; non-i32 arg-type CALL faces are registered
-/// (FFI-NARROW-ARG-CALL-SUSPECT), and the float args route through libm.
+/// C8a discipline). The narrow-width CALL faces are exercised for real:
+/// integer args follow C-cast (ToInt32/ToUint32) truncation and f32 values
+/// cross the SSE register as actual floats (FFI-NARROW-ARG-CALL-SUSPECT,
+/// fixed).
 #[cfg(unix)]
 #[test]
 fn ffi_typespec_parse_type_name_matrix() {
@@ -675,9 +677,14 @@ fn ffi_typespec_parse_type_name_matrix() {
             // float width whose call marshals — see FFI-NARROW-ARG-CALL-SUSPECT).
             var lm = ffi.dlopen('libm.so.6', { fabs: { args: ['f64'], returns: 'f64' } });
             if (lm.fabs(-7.5) !== 7.5) return 'FAIL:f64=' + lm.fabs(-7.5);
-            // f32-arg call face registered broken (returns 0); descriptor only.
+            // Narrow-width CALL faces (FFI-NARROW-ARG-CALL-SUSPECT, fixed):
+            // u8 follows C-cast truncation (abs(-7) → 249) and f32 crosses
+            // the SSE register as a real float (fabsf(-2.5) → 2.5).
+            var u8lib = ffi.dlopen('libc.so.6', { abs: { args: ['u8'], returns: 'i32' } });
+            if (u8lib.abs(-7) !== 249) return 'FAIL:u8=' + u8lib.abs(-7);
             var lmf = ffi.dlopen('libm.so.6', { fabsf: { args: ['f32'], returns: 'f32' } });
             if (typeof lmf.fabsf !== 'function') return 'NODESC:f32';
+            if (lmf.fabsf(-2.5) !== 2.5) return 'FAIL:f32=' + lmf.fabsf(-2.5);
             return 'ok:16';
         })()
         "#,
@@ -989,8 +996,9 @@ fn ffi_callback_return_type_matrix() {
 }
 
 /// Callback construction validation faces + the per-instance `ptrValue`
-/// property. close()/ptr() are NOT reachable from the instance (registered
-/// FFI-CALLBACK-METHODS-UNREACHABLE).
+/// property. close()/ptr() are reachable through FfiCallback.prototype and
+/// the object chains onto it (FFI-CALLBACK-METHODS-UNREACHABLE, fixed):
+/// ptr() equals ptrValue; close() frees the closure and is one-shot.
 #[cfg(unix)]
 #[test]
 fn ffi_callback_construction_faces() {
@@ -1008,24 +1016,34 @@ fn ffi_callback_construction_faces() {
             try { ffi.callback(['zzz'], 'i32', function () {}); r.push('badtype=no-throw'); } catch (e) { r.push('badtype=' + ((e && e.message) || e)); }
             try { ffi.callback(17, 'i32', function () {}); r.push('count=no-throw'); } catch (e) { r.push('count=' + ((e && e.message) || e)); }
             try { ffi.callback(-1, 'i32', function () {}); r.push('negcount=no-throw'); } catch (e) { r.push('negcount=' + ((e && e.message) || e)); }
-            // Registered face: instance methods absent (FFI-CALLBACK-METHODS-UNREACHABLE).
+            // FFI-CALLBACK-METHODS-UNREACHABLE (fixed): instance methods live
+            // on FfiCallback.prototype and the instance chains onto it.
             r.push('closeFace:' + (typeof cb.close === 'function' ? 'present' : 'absent'));
             r.push('ptrFace:' + (typeof cb.ptr === 'function' ? 'present' : 'absent'));
+            // Constructor-less class: SM installs the prototype object itself
+            // under the class name (there is no `.prototype` property).
+            r.push('proto:' + (Object.getPrototypeOf(cb) === globalThis.FfiCallback));
+            r.push('ptrEq:' + (cb.ptr() === cb.ptrValue));
+            cb.close();
+            r.push('closed:ok');
+            try { cb.close(); r.push('reclose=no-throw'); } catch (e) { r.push('reclose=' + ((e && e.message) || e)); }
             return 'ptrvalue-ok|' + r.join('|');
         })()
         "#,
     );
     assert_eq!(
         out,
-        "ptrvalue-ok|nofn=bun:ffi callback: function argument required|badtype=bun:ffi callback: args[0]: unknown FFI type: zzz|count=bun:ffi callback: arg count must be 0..=16|negcount=bun:ffi callback: arg count must be 0..=16|closeFace:absent|ptrFace:absent",
+        "ptrvalue-ok|nofn=bun:ffi callback: function argument required|badtype=bun:ffi callback: args[0]: unknown FFI type: zzz|count=bun:ffi callback: arg count must be 0..=16|negcount=bun:ffi callback: arg count must be 0..=16|closeFace:present|ptrFace:present|proto:true|ptrEq:true|closed:ok|reclose=FfiCallback.close: invalid FfiCallback object",
         "callback construction: {out}"
     );
 }
 
-/// One-arg library face (the ONLY face whose objects carry close/symbol —
-/// registered FFI-TWOARG-LIB-PROTO-MISSING): invalid `this`, symbol name
-/// required, symbol probe + missing symbol error; two-arg face's
-/// symbol-keyed descriptor entries are skipped (exports = ['symbols']).
+/// Library faces: invalid `this`, symbol name required, symbol probe +
+/// missing symbol error on the one-arg object; two-arg face's symbol-keyed
+/// descriptor entries are skipped (exports = ['symbols']). Both faces chain
+/// onto FfiLibrary.prototype, so close/symbol are reachable on the two-arg
+/// object too (FFI-TWOARG-LIB-PROTO-MISSING, fixed) and the dlopen handle
+/// stays alive with the object until close().
 #[cfg(unix)]
 #[test]
 fn ffi_library_one_arg_faces_and_symbol_errors() {
@@ -1047,15 +1065,23 @@ fn ffi_library_one_arg_faces_and_symbol_errors() {
             var lib2 = ffi.dlopen('libc.so.6', keyed);
             var names = Object.keys(lib2).sort().join(',');
             r.push('keyedSkip:' + names);
-            // Registered face: two-arg lib object lacks close/symbol.
+            // FFI-TWOARG-LIB-PROTO-MISSING (fixed): the two-arg Library
+            // chains onto FfiLibrary.prototype — close/symbol reachable, the
+            // handle is owned by the object, and close is one-shot.
             r.push('twoArgClose:' + (typeof lib2.close === 'function' ? 'present' : 'absent'));
+            r.push('twoArgSymbol:' + (typeof lib2.symbol === 'function' ? 'present' : 'absent'));
+            r.push('twoArgProto:' + (Object.getPrototypeOf(lib2) === globalThis.FfiLibrary.prototype));
+            r.push('twoArgProbe:' + lib2.symbol('getpid'));
+            lib2.close();
+            r.push('twoArgClosed:ok');
+            try { lib2.close(); r.push('twoArgReclose=no-throw'); } catch (e) { r.push('twoArgReclose=' + ((e && e.message) || e)); }
             return r.join('|');
         })()
         "#,
     );
     assert_eq!(
         out,
-        "closeThis=FfiLibrary.close: invalid FfiLibrary object|symThis=FfiLibrary.symbol: invalid FfiLibrary object|symName=symbol: name argument required|symProbe:true|missing=dlopen: zzz_c16_missing:|keyedSkip:symbols|twoArgClose:absent",
+        "closeThis=FfiLibrary.close: invalid FfiLibrary object|symThis=FfiLibrary.symbol: invalid FfiLibrary object|symName=symbol: name argument required|symProbe:true|missing=dlopen: zzz_c16_missing:|keyedSkip:symbols|twoArgClose:present|twoArgSymbol:present|twoArgProto:true|twoArgProbe:true|twoArgClosed:ok|twoArgReclose=Library already closed",
         "library faces: {out}"
     );
 }
