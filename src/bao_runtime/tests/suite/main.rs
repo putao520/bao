@@ -53,6 +53,7 @@ mod cluster_pump_loop_tests;
 mod cluster_worker_kill_tests;
 mod conformance_common;
 mod console_output_tests;
+mod cp_followup_tests;
 mod cp_path_tty_coverage_c5_tests;
 mod crypto_coverage_c2_tests;
 mod crypto_deep_tests;

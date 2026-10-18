@@ -538,7 +538,8 @@ fn c5_cp_sync_faces_deep_body() {
         check("execsync_nonzero_throw_shape", function() {
             try { cp.execSync("/bin/sh -c 'exit 7'"); return "NO-THROW"; }
             catch (err) {
-                return String(err.message).indexOf("Command failed: /bin/sh -c 'exit 7'") === 0
+                return err instanceof Error
+                    && String(err.message).indexOf("Command failed: /bin/sh -c 'exit 7'") === 0
                     && err.status === 7 && typeof err.pid === "number" && err.pid > 0
                     && err.signal === null && Array.isArray(err.output) && err.output.length === 3
                     && err.output[0] === null;
@@ -567,9 +568,14 @@ fn c5_cp_sync_faces_deep_body() {
         var fs8 = cp.execFileSync("/bin/sh", ["-c", "printf fsync-ok"], { encoding: "utf8" });
         check("execfilesync_utf8", function() { return fs8 === "fsync-ok"; });
         check("execfilesync_nonzero_throw", function() {
+            // node v24.19.0 oracle (2026-10-18): message = "Command failed: "
+            // + argv space-joined ("Command failed: /bin/sh -c exit 3"),
+            // stderr appended after \n only when non-empty; a REAL Error.
             try { cp.execFileSync("/bin/sh", ["-c", "exit 3"]); return "NO-THROW"; }
             catch (err) {
-                return String(err.message).indexOf("execFileSync failed with status 3") === 0 && err.status === 3;
+                return err instanceof Error
+                    && String(err.message) === "Command failed: /bin/sh -c exit 3"
+                    && err.status === 3;
             }
         });
         check("execfilesync_string_args_form", function() {
@@ -606,12 +612,20 @@ fn c5_cp_sync_faces_deep_body() {
         check("exec_cb_success", function() {
             return cbOk.done && cbOk.err === null && cbOk.out === "exec-cb-ok" && cbOk.errout === "";
         });
-        var cbFail = { done: false, msg: "" };
+        var cbFail = { done: false, err: "unset" };
         cp.exec("/bin/sh -c 'exit 7'", function(err) {
-            cbFail = { done: true, msg: err ? String(err.message) : "null-err" };
+            cbFail = { done: true, err: err };
         });
         check("exec_cb_failure_msg", function() {
-            return cbFail.done && cbFail.msg === "Command failed with exit code 7";
+            // node v24.19.0 oracle (2026-10-18): message = "Command failed: "
+            // + cmd + "\n" + stderr — the trailing newline stands even with
+            // empty stderr; the error is a REAL Error carrying code (number),
+            // killed: false, signal: null, cmd.
+            var e = cbFail.err;
+            return cbFail.done && e instanceof Error
+                && String(e.message) === "Command failed: /bin/sh -c 'exit 7'\n"
+                && e.code === 7 && e.killed === false && e.signal === null
+                && e.cmd === "/bin/sh -c 'exit 7'";
         });
         var noCb = cp.exec("printf exec-nocb");
         check("exec_nocallback_child_shape", function() {
@@ -711,6 +725,11 @@ fn c5_cp_native_error_arms_body() {
         check("poll_pid0_null", function() { return cp.__cp_poll_exit(0) === null; });
         check("poll_ghost_null", function() { return cp.__cp_poll_exit(424242) === null; });
 
+        // ── __cp_peek_exit: the non-consuming probe's pid-0/ghost/non-num arms ──
+        check("peek_pid0_null", function() { return cp.__cp_peek_exit(0) === null; });
+        check("peek_ghost_null", function() { return cp.__cp_peek_exit(424242) === null; });
+        check("peek_nonnum_null", function() { return cp.__cp_peek_exit("x") === null; });
+
         // ── __cp_stdin_write / __cp_stdin_close: registry-miss false arms ──
         check("stdin_write_pid0_false", function() { return cp.__cp_stdin_write(0, "x") === false; });
         check("stdin_write_ghost_false", function() { return cp.__cp_stdin_write(424242, "x") === false; });
@@ -743,7 +762,7 @@ fn c5_cp_native_error_arms_body() {
 
         results.join("|")
     "#,
-    22,
+    25,
     );
 }
 
