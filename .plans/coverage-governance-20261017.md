@@ -176,3 +176,24 @@ size/compile 双审计(`.plans/audits-20261017/{size,compile}-audit-report.md`)�
 **排除集(8 面,全部有案可查)**:e2e_real_chrome×2(外部 Chrome env)→ puppeteer 族(farm 无 node)→ cp_async_push_exit_latency_100x / spawn_sigterm_kill_converges / wave_a_surface / ffi_f32(负载时序类,隔离均绿)→ shell_signal_exit_code_arm / shell_output_method_this_arms / http_server_aborted_mid_body(C16 登记 #[ignore] 不可达面)。
 
 **环境判例更新**:farm 宿主已非 bao 独占(四项目容器并发共享 farm-cargo/farm-rustup 卷)——llvm-cov 终测须 solo 窗或申请独占槽;本地终测须 truly-solo(swap 基线 <10G)。下次测量建议:Windows 侧或 farmsolo 窗口,先跑一次 no-fail-fast 枚举拿全红名单再启电池(逐启打地鼠的代价本轮实证=8 启)。
+
+## 根治波 A-K 总账(2026-10-18,11 波;登记池 37 项清偿战役)
+
+| 波 | 域 | 缺陷→修形 | commit |
+|---|---|---|---|
+| A | shell/ffi | SHELL-PARSER-PANIC 五层纵深+$$ lexer 根因重判+ffi 两参/回调原型+窄形参数三根因(饱和转换/f32 widening/返回位型) | cc88a30f3 |
+| B | Bun.serve/WS | R-A9 realm gate+R-A7 uncaught 路由(同类横扫 bun_listen/spawn watcher)+R-A9b 字节保真两层+R-L8 remoteAddress | fd338a29a |
+| C | tty/util | T5 crash(to_int32 assert→ToNumber)+T1-T4 pty 字节级+U1-U10 全 oracle(parseArgs 完整移植/getSystemErrorName libuv 表/inspect 类族);3 跨文件钉翻转 | 7a77e59b8 |
+| D | dns/path | 错误类逐字+resolveAny 真 ANY(c-ares record API)+setServers 双校验+matchesGlob minimatch 重写(21k 随机对照 0 mismatch);假绿发现(assert_battery 空串) | 83f1f9358 |
+| E | cdp/cert | UA page realm/GC via Bun.gc/OuterHtml node_id/CSS canonical 修/from_der i2d | e6a21145c |
+| F | test-infra | canary7 消费点收编(#[path] 单物理源,负向双验) | 293059411 |
+| G | node:fs | 六族(写窗口/iovec 直指/rm force/writeFile cb/fh.readFile encoding/cp cb)+writeFileSync flag+write cb 起点+writev 真实现 | (待提交) |
+| H | net/http | remoteAddress 同类横扫+http throw 路由三处(clear 链根修) | 0af29b7d7 |
+| I | test-infra | 假绿守卫 81 处/75 文件横扫(guard 触发=0)+逐红裁定 | (待提交) |
+| J | WS | R-A9c ping/pong 全面+R-A9d 真根因(FrameDecoder 分帧不可重启→inbuf 整帧消费) | cf81c8adb |
+| K | node:fs | 二次残余 4 项(readv async 载体/fh.readFile cursor/writeFile encoding/cb 必需)+fs.read position 同族 | (待提交) |
+| 回归清偿 | serve_branches | B 波测试面遗漏(handler 注册) | ca56b2b1d |
+
+**登记池清偿**:37 项登记+波内新发现同族 ~15 项全部处置(修/登记理由);4 crash 类全根治(shell panic/裸线程 SIGSEGV/clearLine abort/ws 分帧杀连接)。
+**登记保留(已批理由)**:U7 函数 proxy(SM 无公开 IsProxy JSAPI)/U6 余参联结/clearScreenDown C5 契约/fs readv async 之外的位移细分/node↔Bun serve throw 语义分歧(node 进程死亡 vs Bun 内部 catch——产品目标级,须先动 PRD/SPEC)。
+

@@ -120,6 +120,13 @@ fn test_gc_store_via_require() {
     );
 
     let mut all_passed = true;
+    // Fake-green guard: the eval helper maps a thrown script or a non-string
+    // return to "", so an empty battery must fail loudly instead of letting
+    // the split loop below pass vacuously.
+    assert!(
+        !result.is_empty(),
+        "battery probe produced no results (uncaught throw or non-string return)"
+    );
     for item in result.split('|') {
         if !item.contains(" PASS") {
             eprintln!("  FAIL: {}", item);

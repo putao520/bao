@@ -148,6 +148,13 @@ fn test_node_events_all() {
     );
 
     let mut all_passed = true;
+    // Fake-green guard: the eval helper maps a thrown script or a non-string
+    // return to "", so an empty battery must fail loudly instead of letting
+    // the split loop below pass vacuously.
+    assert!(
+        !results.is_empty(),
+        "battery probe produced no results (uncaught throw or non-string return)"
+    );
     for item in results.split('|') {
         if !item.contains(":PASS") {
             eprintln!("  FAIL: {}", item);
@@ -251,6 +258,13 @@ fn test_node_events_nested_same_object_emits() {
     );
 
     let mut all_passed = true;
+    // Fake-green guard: the eval helper maps a thrown script or a non-string
+    // return to "", so an empty battery must fail loudly instead of letting
+    // the split loop below pass vacuously.
+    assert!(
+        !results.is_empty(),
+        "battery probe produced no results (uncaught throw or non-string return)"
+    );
     for item in results.split('|') {
         if !item.contains(":PASS") {
             eprintln!("  FAIL: {}", item);

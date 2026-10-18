@@ -141,6 +141,13 @@ fn test_vm_deep() {
 
     let mut pass = 0;
     let mut fail = 0;
+    // Fake-green guard: the eval helper maps a thrown script or a non-string
+    // return to "", so an empty battery must fail loudly instead of letting
+    // the split loop below pass vacuously.
+    assert!(
+        !results.is_empty(),
+        "battery probe produced no results (uncaught throw or non-string return)"
+    );
     for item in results.split('|') {
         if item.contains(" PASS") {
             pass += 1;
@@ -227,6 +234,13 @@ fn test_vm_script_run_in_context_two_contexts_isolated() {
 
     let mut pass = 0;
     let mut fail = 0;
+    // Fake-green guard: the eval helper maps a thrown script or a non-string
+    // return to "", so an empty battery must fail loudly instead of letting
+    // the split loop below pass vacuously.
+    assert!(
+        !results.is_empty(),
+        "battery probe produced no results (uncaught throw or non-string return)"
+    );
     for item in results.split('|') {
         if item.contains(" PASS") {
             pass += 1;
@@ -306,6 +320,13 @@ fn test_vm_script_run_in_context_caller_realm_isolation() {
 
     let mut pass = 0;
     let mut fail = 0;
+    // Fake-green guard: the eval helper maps a thrown script or a non-string
+    // return to "", so an empty battery must fail loudly instead of letting
+    // the split loop below pass vacuously.
+    assert!(
+        !results.is_empty(),
+        "battery probe produced no results (uncaught throw or non-string return)"
+    );
     for item in results.split('|') {
         if item.contains(" PASS") {
             pass += 1;

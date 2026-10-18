@@ -1139,15 +1139,13 @@ fn ffi_callback_surface_and_errors() {
             function t(f) { try { f(); return 'NO-THROW'; } catch (e) { return String(e.message || e); } }
             var cb = ffi.callback(function () {});
             if (typeof cb.ptrValue !== 'number' || cb.ptrValue <= 0) return 'BAD-PTRVALUE';
-            // DEFECT (registered, C8a report: FFI-CALLBACK-PROTO-MISSING):
-            // ffi.callback() builds instances via JS_NewObject with the bare
-            // FFI_CALLBACK_CLASS — the close()/ptr() methods JS_InitClass'd
-            // onto FfiCallback.prototype are never attached, so the shipped
-            // callback object exposes ONLY ptrValue. Characterizing the
-            // shipped state; the fix (create through the registered
-            // prototype) flips these three checks.
-            if (typeof cb.ptr !== 'undefined') return 'PTR-APPEARED';
-            if (typeof cb.close !== 'undefined') return 'CLOSE-APPEARED';
+            // FIXED (root-fix A wave, cc88a30f3: FFI-CALLBACK-PROTO-MISSING):
+            // ffi.callback() now creates through the registered
+            // FfiCallback.prototype — close()/ptr() are reachable per the
+            // node/bun oracle; the old bare-object state is gone. The two
+            // former "defect markers" flip to positive presence checks.
+            if (typeof cb.ptr !== 'function') return 'PTR-MISSING';
+            if (typeof cb.close !== 'function') return 'CLOSE-MISSING';
             var noFn = t(function () { ffi.callback(); });
             if (!/function argument required/.test(noFn)) return 'NO-FN:' + noFn;
             var tooMany = t(function () { ffi.callback(17, function () {}); });

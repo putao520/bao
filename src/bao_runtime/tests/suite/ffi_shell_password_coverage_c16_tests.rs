@@ -227,6 +227,13 @@ fn password_verify_error_matrix() {
         })()
         "#,
     );
+    // Fake-green guard: the eval helper maps a thrown script or a non-string
+    // return to "", so an empty battery must fail loudly instead of letting
+    // the split loop below pass vacuously.
+    assert!(
+        !out.is_empty(),
+        "battery probe produced no results (uncaught throw or non-string return)"
+    );
     for part in out.split('|') {
         let (label, val) = match part.split_once('=') {
             Some(kv) => kv,
