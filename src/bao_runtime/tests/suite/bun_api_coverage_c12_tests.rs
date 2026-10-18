@@ -79,11 +79,23 @@
 //         send_binary and the serve message handler receives a byte-exact
 //         Uint8Array (the previous ES ToString + C-string round trip
 //         produced the comma-joined decimals "66,49,50").
-//   R-A9c. The CLIENT WebSocket has no ping method ("ws.ping is not a
-//         function"); only the server-side ws object exposes ping.
-//   R-A9d. Back-to-back client WebSocket sends starve the client onmessage
-//         dispatch — messages must be sequential (one in-flight echo at a
-//         time) for delivery; registered as an observed ordering hazard.
+//   R-A9c. [FIXED — ws-library parity] The client WebSocket now exposes the
+//         npm `ws` control-frame surface: ping([data[, mask[, cb]]]) /
+//         pong(...), inbound `ping`/`pong` events (onping/onpong properties
+//         AND Node-style ws.on('ping'|'pong')), and mask=false support.
+//         Node v24's built-in WebSocket has no ping method — the oracle is
+//         the ws library, as recorded here.
+//   R-A9d. [FIXED — root cause] Back-to-back sends were observed to starve
+//         onmessage. Deterministic root cause: the non-blocking drain pump
+//         called bun_uws FrameDecoder::decode_frame directly; a frame split
+//         across TCP reads aborted the decode mid-frame, and the retry
+//         re-read payload bytes as a frame header (observed
+//         "recv: reserved websocket opcode 0x3") — the connection died with
+//         no onmessage. The pump now buffers raw bytes and parses only a
+//         complete frame (fresh decoder per attempt). Pins:
+//         c12_websocket_client_split_frame_still_dispatches (pre-fix RED with
+//         the reserved-opcode error) and
+//         c12_websocket_client_back_to_back_sends_deliver (ordering).
 
 use bao_engine::context::JsContext;
 use mozjs::rooted;
@@ -217,6 +229,60 @@ fn poll_until_realm(ctx: &mut JsContext, cond: &str, iters: u32) -> bool {
         std::thread::sleep(Duration::from_millis(5));
     }
     eval_string(ctx, cond) == "y"
+}
+
+/// Complete the server side of the RFC 6455 upgrade on a raw loopback
+/// socket (same wire truth as `web_api_ws_edge_tests`; duplicated here
+/// because that file is outside this task's file scope).
+fn accept_ws_upgrade(stream: &mut TcpStream) -> bool {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => return false,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            Err(_) => return false,
+        }
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let key = text
+        .split("\r\n")
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("sec-websocket-key")
+                .then(|| value.trim().to_string())
+        })
+        .expect("client handshake must carry Sec-WebSocket-Key");
+    let response = format!(
+        "HTTP/1.1 101 Switching Protocols\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Accept: {}\r\n\r\n",
+        bun_uws::ws_handshake::compute_accept(&key)
+    );
+    stream.write_all(response.as_bytes()).is_ok()
+}
+
+/// Read one client frame (masked, per RFC 6455) from a raw peer socket.
+fn read_client_frame(
+    dec: &mut bun_uws::ws_codec::FrameDecoder,
+    stream: &mut TcpStream,
+) -> Option<(bun_uws::ws_codec::Opcode, bool, Vec<u8>)> {
+    let header = dec.decode_frame(stream).ok()??;
+    let payload = if header.mask {
+        let key = dec.take_mask();
+        let mut p = dec.take_payload(&header);
+        bun_uws::ws_codec::apply_mask(&mut p, &key);
+        p
+    } else {
+        dec.take_payload(&header)
+    };
+    Some((header.opcode, header.mask, payload))
 }
 
 /// First real status line of a raw response, skipping interim
@@ -1014,9 +1080,9 @@ fn c12_websocket_client_send_ping_close_faces() {
         globalThis.__srv = srv;
         var ws = new WebSocket("ws://127.0.0.1:" + srv.port + "/echo");
         globalThis.__ws = ws;
-        // Sequential ping-pong: one in-flight message at a time (the serve
-        // echo sends one reply per received message; back-to-back client
-        // sends were observed to starve the client onmessage dispatch).
+        // Sequential ping-pong across the send/ping/close sequence (the
+        // back-to-back delivery face is pinned separately by
+        // c12_websocket_client_back_to_back_sends_deliver).
         globalThis.__stage = 0;
         ws.onopen = function () {
             __wslog.push("open");
@@ -1032,9 +1098,10 @@ fn c12_websocket_client_send_ping_close_faces() {
             else if (__stage === 2) { __wslog.push("second:" + ws.send("plain-second")); }
             else if (__stage === 3) { __wslog.push("third:" + ws.send("plain-third")); }
             else if (__stage === 4) {
-                // REGISTRY R-A9c (observed): client-side ws.ping(<payload>)
-                // THROWS on this path — catch it so the sequence continues.
-                try { __wslog.push("pinged:" + ws.ping("pp")); }
+                // R-A9c oracle: client ping() is the ws-library control-frame
+                // method — undefined return, no throw; the serve websocket
+                // engine answers with Pong (RFC 6455 §5.5.2).
+                try { __wslog.push("pinged:" + String(ws.ping("pp"))); }
                 catch (e) { __wslog.push("pinged=THREW:" + (e && e.message || e)); }
                 __wslog.push("after-ping:" + ws.send("after-ping"));
             }
@@ -1071,8 +1138,9 @@ fn c12_websocket_client_send_ping_close_faces() {
     assert!(log.contains("msg:plain-second") && log.contains("msg:after-ping"),
         "later echoes arrive (connection healthy across the sequence) — log: {log}");
     assert!(
-        log.contains("pinged=THREW:"),
-        "client ping(<payload>) throws on this path (REGISTRY R-A9c) — log: {log}"
+        log.contains("pinged:undefined"),
+        "client ping(<payload>) is the ws-library control-frame method (R-A9c fixed): \
+         undefined return, frame accepted — log: {log}"
     );
     // R-A9b oracle: the binary frame reaches the serve handler as a
     // Uint8Array carrying the 3 payload bytes ([66,49,50] = "B12"), and the
@@ -1154,3 +1222,328 @@ fn c12_serve_websocket_in_process_roundtrip() {
     eval_string(&mut ctx, "globalThis.__cli.close(); globalThis.__srv.stop();");
     drive_event_loop(&mut ctx, 20);
 }
+
+// ──────────── WebSocket client R-A9c/R-A9d wave (ping/pong + pump) ────────────
+
+/// R-A9d pin: back-to-back `send()` calls from `onopen` must all be echoed
+/// and dispatched to `onmessage` — no pump starvation, order preserved.
+#[test]
+fn c12_websocket_client_back_to_back_sends_deliver() {
+    let mut ctx = make_ctx();
+
+    eval_string(
+        &mut ctx,
+        r#"
+        globalThis.__b2bMsgs = [];
+        globalThis.__b2bSrv = [];
+        var srv = Bun.serve({
+            port: 0,
+            hostname: "127.0.0.1",
+            websocket: {
+                open: function (ws) {},
+                message: function (ws, msg) { __b2bSrv.push(msg); ws.send(msg); },
+                close: function (ws) {},
+            },
+        });
+        globalThis.__b2bServer = srv;
+        var ws = new WebSocket("ws://127.0.0.1:" + srv.port + "/b2b");
+        globalThis.__b2bWs = ws;
+        ws.onopen = function () {
+            // Three sends with no wait for the reply in between.
+            ws.send("b2b-a");
+            ws.send("b2b-b");
+            ws.send("b2b-c");
+        };
+        ws.onmessage = function (e) { __b2bMsgs.push(e.data); };
+        ws.onerror = function (e) { __b2bMsgs.push("ERR:" + String(e && e.data || e)); };
+        void 0;
+        "#,
+    );
+
+    let done = poll_until_realm(
+        &mut ctx,
+        r#"globalThis.__b2bMsgs.length >= 3 ? "y" : "n""#,
+        400,
+    );
+    let msgs = eval_string(&mut ctx, "globalThis.__b2bMsgs.join('|')");
+    let srv_msgs = eval_string(&mut ctx, "globalThis.__b2bSrv.join('|')");
+    assert!(
+        done,
+        "back-to-back sends must all be echoed and dispatched — client: {msgs} | server: {srv_msgs}"
+    );
+    assert_eq!(
+        msgs, "b2b-a|b2b-b|b2b-c",
+        "back-to-back echoes must arrive in send order (R-A9d)"
+    );
+    eval_string(&mut ctx, "globalThis.__b2bWs.close(); globalThis.__b2bServer.stop();");
+    drive_event_loop(&mut ctx, 20);
+}
+
+/// R-A9d root-cause pin: TCP does not preserve write boundaries. A server
+/// frame split across two `write()` calls (header first, payload later) must
+/// still decode and dispatch — the non-blocking drain pump sees a partial
+/// frame and must resume the same frame on the next pass. The former
+/// `FrameDecoder::decode_frame` path advanced its cursor before the frame was
+/// complete, so the retry re-read payload bytes as a frame header (reserved
+/// opcode) and killed the connection with no `onmessage`.
+#[test]
+fn c12_websocket_client_split_frame_still_dispatches() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .ok();
+        if !accept_ws_upgrade(&mut stream) {
+            return;
+        }
+        // Give the client time to finish its open sequence, then split one
+        // server text frame across two TCP writes with a delay wider than the
+        // pump's poll cadence.
+        std::thread::sleep(Duration::from_millis(40));
+        let payload = b"split-ok";
+        let mut frame = vec![0x81u8, payload.len() as u8];
+        frame.extend_from_slice(payload);
+        stream.write_all(&frame[..2]).expect("write header");
+        stream.flush().ok();
+        std::thread::sleep(Duration::from_millis(80));
+        stream.write_all(&frame[2..]).expect("write payload");
+        stream.flush().ok();
+        // Keep the connection readable for the client's close frame.
+        std::thread::sleep(Duration::from_millis(300));
+    });
+
+    let mut ctx = make_ctx();
+    eval_string(
+        &mut ctx,
+        &format!(
+            r#"
+            globalThis.__splitLog = [];
+            var ws = new WebSocket("ws://127.0.0.1:{port}/split");
+            globalThis.__splitWs = ws;
+            ws.onopen = function () {{ __splitLog.push("open"); }};
+            ws.onmessage = function (e) {{ __splitLog.push("msg:" + e.data); }};
+            ws.onerror = function (e) {{ __splitLog.push("err:" + String(e && e.data || e)); }};
+            ws.onclose = function () {{ __splitLog.push("close"); }};
+            void 0;
+            "#,
+            port = port
+        ),
+    );
+
+    let done = poll_until_realm(
+        &mut ctx,
+        r#"globalThis.__splitLog.join("|").indexOf("msg:split-ok") >= 0 ? "y" : "n""#,
+        400,
+    );
+    let log = eval_string(&mut ctx, "globalThis.__splitLog.join('|')");
+    assert!(
+        done,
+        "a frame split across TCP reads must still dispatch — log: {log}"
+    );
+    assert!(
+        !log.contains("err:"),
+        "no transport error for a valid split frame — log: {log}"
+    );
+    eval_string(&mut ctx, "globalThis.__splitWs.close();");
+    drive_event_loop(&mut ctx, 20);
+}
+
+/// R-A9c: node `ws` client control-frame surface — `ping([data[, mask[, cb]]])`
+/// and `pong(...)`, plus the inbound `ping`/`pong` events (browser-style
+/// `onping`/`onpong` properties AND the Node-style `ws.on('pong')` emitter,
+/// backed by the shared node_events EventEmitter). The oracle is the npm `ws`
+/// library contract (Node v24's built-in WebSocket has no ping method), as
+/// recorded in the C12 registry.
+#[test]
+fn c12_websocket_client_ping_pong_control_frames() {
+    use std::sync::{Arc, Mutex};
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().unwrap().port();
+    let wire: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let wire_peer = Arc::clone(&wire);
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .ok();
+        if !accept_ws_upgrade(&mut stream) {
+            return;
+        }
+        let mut dec = bun_uws::ws_codec::FrameDecoder::new();
+        let mut enc = bun_uws::ws_codec::FrameEncoder::new();
+        loop {
+            let Some((opcode, mask, payload)) = read_client_frame(&mut dec, &mut stream) else {
+                return;
+            };
+            let text = String::from_utf8_lossy(&payload).into_owned();
+            wire_peer
+                .lock()
+                .unwrap()
+                .push(format!("{:?}:mask={}:{}", opcode, mask, text));
+            match opcode {
+                bun_uws::ws_codec::Opcode::Text => {
+                    // First text: push one server Ping and one server Pong so
+                    // the client surfaces both inbound control events, plus a
+                    // text frame for the emitter's 'message' face.
+                    let ping = enc.encode_frame(bun_uws::ws_codec::Opcode::Ping, b"srv-ping", None);
+                    stream.write_all(ping).expect("write srv ping");
+                    let pong = enc.encode_frame(bun_uws::ws_codec::Opcode::Pong, b"srv-pong", None);
+                    stream.write_all(pong).expect("write srv pong");
+                    let text = enc.encode_text("srv-text");
+                    stream.write_all(text).expect("write srv text");
+                }
+                bun_uws::ws_codec::Opcode::Ping => {
+                    // RFC 6455 §5.5.2: answer the client's ping with a pong
+                    // carrying the same application data.
+                    let pong = enc.encode_frame(bun_uws::ws_codec::Opcode::Pong, &payload, None);
+                    stream.write_all(pong).expect("write pong ack");
+                }
+                bun_uws::ws_codec::Opcode::Close => {
+                    let frame = enc.encode_close(1000, "");
+                    let _ = stream.write_all(frame);
+                    return;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let mut ctx = make_ctx();
+    eval_string(
+        &mut ctx,
+        &format!(
+            r#"
+            globalThis.__ctlLog = [];
+            function asc(a) {{
+                var s = "";
+                for (var i = 0; i < a.length; i++) s += String.fromCharCode(a[i]);
+                return s;
+            }}
+            var ws = new WebSocket("ws://127.0.0.1:{port}/ctl");
+            globalThis.__ctlWs = ws;
+            ws.onopen = function () {{
+                __ctlLog.push("open");
+                // ping(data, mask, cb) — returns undefined; the callback runs
+                // once the frame has been written to the socket.
+                __ctlLog.push("ping-ret:" + String(ws.ping("c12-ping", true, function () {{
+                    __ctlLog.push("ping-cb");
+                }})));
+                // omitting the mask argument defaults to masked client frames
+                __ctlLog.push("pong-ret:" + String(ws.pong("c12-pong-api")));
+                // mask=false is allowed by the ws library even for a client
+                ws.ping("c12-unmasked", false);
+                ws.send("start");
+            }};
+            ws.onping = function (e) {{ __ctlLog.push("onping:" + asc(e.data)); }};
+            ws.onpong = function (e) {{ __ctlLog.push("onpong:" + asc(e.data)); }};
+            ws.onclose = function () {{ __ctlLog.push("onclose"); }};
+            ws.on("open", function () {{ __ctlLog.push("emit-open"); }});
+            ws.on("message", function (d, isBinary) {{
+                __ctlLog.push("emit-message:" + String(d) + ":" + isBinary);
+            }});
+            ws.on("ping", function (d) {{ __ctlLog.push("emit-ping:" + asc(d)); }});
+            ws.on("pong", function (d) {{ __ctlLog.push("emit-pong:" + asc(d)); }});
+            ws.once("pong", function (d) {{ __ctlLog.push("once-pong:" + asc(d)); }});
+            ws.on("close", function () {{ __ctlLog.push("emit-close"); }});
+            ws.onerror = function (e) {{ __ctlLog.push("err:" + String(e && e.data || e)); }};
+            void 0;
+            "#,
+            port = port
+        ),
+    );
+
+    let done = poll_until_realm(
+        &mut ctx,
+        r#"(function () {{
+            var j = __ctlLog.join("|");
+            return (j.indexOf("emit-open") >= 0 &&
+                    j.indexOf("onpong:srv-pong") >= 0 &&
+                    j.indexOf("onpong:c12-ping") >= 0 &&
+                    j.indexOf("onping:srv-ping") >= 0 &&
+                    j.indexOf("emit-pong:srv-pong") >= 0 &&
+                    j.indexOf("emit-message:srv-text:false") >= 0) ? "y" : "n";
+        }})()"#,
+        400,
+    );
+    // Give the peer thread a beat to consume the client's auto-pong and the
+    // explicit pong frame before asserting the wire log.
+    for _ in 0..20 {
+        common::drive_event_loop_drain(&mut ctx, 1);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let log = eval_string(&mut ctx, "globalThis.__ctlLog.join('|')");
+    let wire_log = wire.lock().unwrap().join("|");
+    assert!(
+        done,
+        "inbound ping/pong events must fire both surfaces — log: {log} | wire: {wire_log}"
+    );
+    assert!(log.contains("open"), "client opened — log: {log}");
+    assert!(
+        log.contains("ping-ret:undefined") && log.contains("pong-ret:undefined"),
+        "ping()/pong() return undefined (ws contract) — log: {log}"
+    );
+    assert!(
+        log.contains("ping-cb"),
+        "ping(data, mask, cb) must invoke the write callback — log: {log}"
+    );
+    assert!(
+        log.contains("onping:srv-ping") && log.contains("emit-ping:srv-ping"),
+        "inbound Ping fires onping + on('ping') with the payload — log: {log}"
+    );
+    assert!(
+        log.contains("onpong:srv-pong") && log.contains("onpong:c12-ping"),
+        "inbound Pong fires onpong for unsolicited and ping-ack payloads — log: {log}"
+    );
+    assert!(
+        log.contains("emit-pong:srv-pong"),
+        "on('pong') listener receives the payload — log: {log}"
+    );
+    assert!(
+        log.contains("emit-open") && log.contains("emit-message:srv-text:false"),
+        "on('open') fires and on('message') carries (data, isBinary) — log: {log}"
+    );
+    assert_eq!(
+        eval_string(
+            &mut ctx,
+            "__ctlLog.filter(function (x) { return x.indexOf('once-pong:') === 0; }).length"
+        ),
+        "1",
+        "once('pong') fires exactly once across multiple inbound pongs — log: {log}"
+    );
+    assert!(
+        !log.contains("err:"),
+        "control-frame exchange must not surface an error — log: {log}"
+    );
+    // Wire truth: masked Ping/Pong by default, the ws-library mask=false arm,
+    // and the RFC 6455 auto-pong for the server's Ping.
+    assert!(
+        wire_log.contains("Ping:mask=true:c12-ping")
+            && wire_log.contains("Pong:mask=true:c12-pong-api")
+            && wire_log.contains("Ping:mask=false:c12-unmasked")
+            && wire_log.contains("Pong:mask=true:srv-ping"),
+        "client control frames must reach the wire with the requested masking — wire: {wire_log}"
+    );
+
+    eval_string(&mut ctx, "globalThis.__ctlWs.close(1000);");
+    let closed = poll_until_realm(
+        &mut ctx,
+        r#"(function () {{ var j = __ctlLog.join("|");
+            return (j.indexOf("onclose") >= 0 && j.indexOf("emit-close") >= 0) ? "y" : "n"; }})()"#,
+        200,
+    );
+    let close_log = eval_string(&mut ctx, "globalThis.__ctlLog.join('|')");
+    assert!(
+        closed && close_log.contains("onclose") && close_log.contains("emit-close"),
+        "close handshake fires both the onclose property and on('close') — log: {close_log}"
+    );
+    drive_event_loop(&mut ctx, 20);
+}
+

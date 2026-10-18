@@ -61,6 +61,12 @@ use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove};
 enum WsMessage {
     Text(String),
     Binary(Vec<u8>),
+    /// Inbound Ping control frame (RFC 6455 §5.5.2). The automatic masked
+    /// Pong reply is already written by `read_message`; the payload is
+    /// surfaced to the JS `ping` event (`onping` / `ws.on('ping')`).
+    Ping(Vec<u8>),
+    /// Inbound Pong control frame — surfaced to `onpong` / `ws.on('pong')`.
+    Pong(Vec<u8>),
     Close,
 }
 
@@ -193,7 +199,24 @@ struct PartialMessage {
 /// wss:// silently skipped it.)
 struct WsConn {
     transport: WsTransport,
-    decoder: bun_uws::ws_codec::FrameDecoder,
+    /// Raw wire bytes read but not yet consumed by the frame parser.
+    ///
+    /// TCP (and TLS records) do not preserve frame boundaries, and the drain
+    /// pump polls a NON-BLOCKING socket: a frame routinely arrives split
+    /// across reads. `bun_uws::ws_codec::FrameDecoder::decode_frame` advances
+    /// its internal cursor as it parses, so aborting it mid-frame (WouldBlock
+    /// for the rest of the payload) and retrying makes the retry re-read
+    /// payload bytes as a frame header — the pinned failure decodes payload
+    /// bytes as reserved opcode 0x3, killing the connection with
+    /// `recv: reserved websocket opcode 0x3` and no onmessage (R-A9d's
+    /// "starved" dispatch on back-to-back frames). Frames are therefore only
+    /// parsed once the WHOLE frame is buffered here, with a fresh decoder per
+    /// attempt (a discarded partial parse leaves no half-advanced state).
+    inbuf: Vec<u8>,
+    /// Peer EOF observed (read returned 0 / TLS peer-closed). Buffered
+    /// complete frames are still parsed; only afterwards does the entry
+    /// surface as a clean close.
+    eof: bool,
     /// Fragmented message in progress; `None` while idle.
     partial: ::std::option::Option<PartialMessage>,
 }
@@ -231,7 +254,8 @@ impl WsConn {
                 .map_err(|e| format!("ws connect: {}", e))?;
             Ok(WsConn {
                 transport: WsTransport::Plain(client),
-                decoder: bun_uws::ws_codec::FrameDecoder::new(),
+                inbuf: Vec::new(),
+                eof: false,
                 partial: ::std::option::Option::None,
             })
         }
@@ -350,29 +374,14 @@ impl WsConn {
                 stream,
                 closed: false,
             },
-            decoder: bun_uws::ws_codec::FrameDecoder::new(),
+            inbuf: Vec::new(),
+            eof: false,
             partial: ::std::option::Option::None,
         })
     }
 
     fn send_text(&mut self, text: &str) -> ::std::result::Result<(), String> {
-        match &mut self.transport {
-            WsTransport::Plain(c) => {
-                c.send_text(text).map_err(|e| format!("send failed: {}", e))
-            }
-            WsTransport::Tls { stream, .. } => {
-                // BCE-20260814-WS-TLS: the payload must land IN the frame —
-                // an earlier revision transmitted header+key only (the peer
-                // then misparsed the next frame's bytes as this frame's
-                // payload). encode_masked_frame masks in place on the frame
-                // buffer (apply_mask is elementwise XOR, byte-identical to
-                // masking a copy) — no per-message payload copy.
-                let frame = encode_masked_frame(0x1, text.as_bytes());
-                stream
-                    .write_all(&frame)
-                    .map_err(|e| format!("send failed: {}", e))
-            }
-        }
+        self.send_control(0x1, text.as_bytes(), true)
     }
 
     /// Send a BINARY frame (RFC 6455 opcode 0x2) byte-exact. The WebSocket
@@ -380,57 +389,133 @@ impl WsConn {
     /// emit its comma-joined decimals as a TEXT frame (R-A9b byte-fidelity
     /// loss).
     fn send_binary(&mut self, bytes: &[u8]) -> ::std::result::Result<(), String> {
+        self.send_control(0x2, bytes, true)
+    }
+
+    /// Send one client frame with the given opcode and masking mode.
+    ///
+    /// `mask` is true for every RFC 6455 client frame (data + control); the
+    /// `false` arm exists for the npm `ws` library's documented
+    /// `ping(data, mask=false)` / `pong(data, mask=false)` extension.
+    /// Frames are written with a single `write_all` so a frame is never
+    /// interleaved with another one on the wire (back-to-back `send()` /
+    /// `ping()` calls stay frame-aligned).
+    fn send_control(
+        &mut self,
+        opcode: u8,
+        payload: &[u8],
+        mask: bool,
+    ) -> ::std::result::Result<(), String> {
+        let frame = encode_client_frame(opcode, payload, mask);
         match &mut self.transport {
-            WsTransport::Plain(c) => {
-                c.send_binary(bytes).map_err(|e| format!("send failed: {}", e))
-            }
-            WsTransport::Tls { stream, .. } => {
-                let frame = encode_masked_frame(0x2, bytes);
-                stream
-                    .write_all(&frame)
-                    .map_err(|e| format!("send failed: {}", e))
-            }
+            WsTransport::Plain(c) => c
+                .stream_mut()
+                .write_all(&frame)
+                .map_err(|e| format!("send failed: {}", e)),
+            WsTransport::Tls { stream, .. } => stream
+                .write_all(&frame)
+                .map_err(|e| format!("send failed: {}", e)),
         }
     }
 
     /// Decode exactly one protocol frame from the transport, unmasking the
-    /// payload. `Ok(None)` = no complete frame available right now (WouldBlock
-    /// — the drain pump treats this as idle). Fatal I/O errors (EOF etc.)
-    /// propagate to `read_message`'s mapping. Reserved opcodes surface as an
-    /// InvalidData protocol error from the codec (RFC 6455 §5.2).
+    /// payload. `Ok(None)` = no complete frame available right now (the drain
+    /// pump treats this as idle). Fatal I/O errors propagate to
+    /// `read_message`'s mapping; reserved opcodes surface as an InvalidData
+    /// protocol error from the codec (RFC 6455 §5.2).
+    ///
+    /// Non-blocking reads may stop anywhere inside a frame. Bytes are pulled
+    /// into `inbuf` first and parsed from that snapshot with a FRESH decoder:
+    /// an incomplete frame simply leaves the bytes buffered (the discarded
+    /// decoder's half-advanced cursor cannot corrupt the retry), so the next
+    /// pump pass resumes at the exact frame boundary.
     fn read_frame(
         &mut self,
     ) -> ::std::io::Result<
         ::std::option::Option<(bun_uws::ws_codec::FrameHeader, Vec<u8>)>,
     > {
-        let decoded = match &mut self.transport {
-            WsTransport::Plain(c) => self.decoder.decode_frame(c.stream_mut()),
-            WsTransport::Tls { stream, .. } => self.decoder.decode_frame(stream),
-        };
+        if !self.eof {
+            let mut chunk = [0u8; 16_384];
+            // Bound the bytes pulled per pump call (4 × 16 KiB): a peer that
+            // streams faster than the JS handlers run must not grow the
+            // buffer unboundedly inside one pass — the remainder is read on
+            // the next pump iteration.
+            let mut budget = 4u32;
+            while budget > 0 {
+                budget -= 1;
+                let read = match &mut self.transport {
+                    WsTransport::Plain(c) => c.stream_mut().read(&mut chunk),
+                    WsTransport::Tls { stream, .. } => stream.read(&mut chunk),
+                };
+                match read {
+                    Ok(0) => {
+                        self.eof = true;
+                        break;
+                    }
+                    Ok(n) => self.inbuf.extend_from_slice(&chunk[..n]),
+                    Err(ref e)
+                        if e.kind() == ::std::io::ErrorKind::WouldBlock
+                            || e.kind() == ::std::io::ErrorKind::TimedOut =>
+                    {
+                        break;
+                    }
+                    Err(ref e) if e.kind() == ::std::io::ErrorKind::Interrupted => continue,
+                    Err(ref e) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => {
+                        // TLS peer close surfaces as an I/O EOF.
+                        self.eof = true;
+                        break;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        if self.inbuf.is_empty() {
+            return if self.eof {
+                Err(::std::io::Error::new(
+                    ::std::io::ErrorKind::UnexpectedEof,
+                    "peer closed",
+                ))
+            } else {
+                Ok(::std::option::Option::None)
+            };
+        }
+        let mut decoder = bun_uws::ws_codec::FrameDecoder::new();
+        let mut cursor = ::std::io::Cursor::new(&self.inbuf[..]);
+        let decoded = decoder.decode_frame(&mut cursor);
         let header = match decoded {
             ::std::result::Result::Ok(::std::option::Option::Some(h)) => h,
             ::std::result::Result::Ok(::std::option::Option::None) => {
                 return Ok(::std::option::Option::None);
             }
-            // Non-blocking drain-pump poll with no buffered frame: idle, not
-            // an error. The decoder keeps any half-frame bytes buffered across
-            // passes, so the next poll resumes cleanly.
             ::std::result::Result::Err(ref e)
-                if e.kind() == ::std::io::ErrorKind::WouldBlock
+                if e.kind() == ::std::io::ErrorKind::UnexpectedEof
+                    || e.kind() == ::std::io::ErrorKind::WouldBlock
                     || e.kind() == ::std::io::ErrorKind::TimedOut =>
             {
-                return Ok(::std::option::Option::None);
+                // Cursor exhausted mid-frame: need more bytes. A truncated
+                // frame at peer EOF is a transport close, not a resumable
+                // frame (read_message maps it to a clean Close).
+                return if self.eof {
+                    Err(::std::io::Error::new(
+                        ::std::io::ErrorKind::UnexpectedEof,
+                        "truncated frame at eof",
+                    ))
+                } else {
+                    Ok(::std::option::Option::None)
+                };
             }
             ::std::result::Result::Err(e) => return Err(e),
         };
         let payload = if header.mask {
-            let key = self.decoder.take_mask();
-            let mut p = self.decoder.take_payload(&header);
+            let key = decoder.take_mask();
+            let mut p = decoder.take_payload(&header);
             apply_mask(&mut p, &key);
             p
         } else {
-            self.decoder.take_payload(&header)
+            decoder.take_payload(&header)
         };
+        let consumed = cursor.position() as usize;
+        self.inbuf.drain(0..consumed);
         Ok(::std::option::Option::Some((header, payload)))
     }
 
@@ -448,7 +533,7 @@ impl WsConn {
             return Ok(WsMessage::Close);
         }
         loop {
-            let (header, mut payload) = match self.read_frame() {
+            let (header, payload) = match self.read_frame() {
                 ::std::result::Result::Ok(::std::option::Option::Some(hp)) => hp,
                 ::std::result::Result::Ok(::std::option::Option::None) => {
                     return Err("wouldblock".to_string());
@@ -473,27 +558,15 @@ impl WsConn {
                     return Ok(WsMessage::Close);
                 }
                 bun_uws::ws_codec::Opcode::Ping => {
-                    // RFC 6455 §5.5.2: echo a masked pong and keep reading.
-                    // Control frames may interleave a fragmented message —
-                    // the loop continues (the partial state is untouched).
-                    let key = bun_uws::ws_codec::gen_mask_key();
-                    let mut frame = vec![0x8A]; // FIN + pong
-                    push_masked_len(&mut frame, payload.len());
-                    frame.extend_from_slice(&key);
-                    apply_mask(&mut payload, &key);
-                    frame.extend_from_slice(&payload);
-                    match &mut self.transport {
-                        WsTransport::Plain(c) => c
-                            .stream_mut()
-                            .write_all(&frame)
-                            .map_err(|e| format!("pong: {}", e))?,
-                        WsTransport::Tls { stream, .. } => {
-                            stream.write_all(&frame).map_err(|e| format!("pong: {}", e))?
-                        }
-                    }
-                    continue;
+                    // RFC 6455 §5.5.2: echo a masked pong immediately, then
+                    // surface the ping to JS (ws library emits a 'ping'
+                    // event; control frames may interleave a fragmented
+                    // message, so `partial` is untouched).
+                    self.send_control(0x0A, &payload, true)
+                        .map_err(|e| format!("pong: {}", e))?;
+                    return Ok(WsMessage::Ping(payload));
                 }
-                bun_uws::ws_codec::Opcode::Pong => continue,
+                bun_uws::ws_codec::Opcode::Pong => return Ok(WsMessage::Pong(payload)),
                 bun_uws::ws_codec::Opcode::Text | bun_uws::ws_codec::Opcode::Binary => {
                     if self.partial.is_some() {
                         return Err(
@@ -539,26 +612,21 @@ impl WsConn {
     /// only the frame is sent; the socket stays readable so the drain pump
     /// can observe the peer's Close reply and fire onclose.
     fn close(&mut self) -> ::std::result::Result<(), String> {
-        let frame = encode_masked_frame(0x8, &1000u16.to_be_bytes());
-        match &mut self.transport {
-            WsTransport::Plain(c) => {
-                if c.is_closed() {
-                    return Ok(());
-                }
-                c.stream_mut()
-                    .write_all(&frame)
-                    .map_err(|e| format!("close failed: {}", e))
+        if let WsTransport::Plain(c) = &self.transport {
+            if c.is_closed() {
+                return Ok(());
             }
-            WsTransport::Tls { stream, .. } => {
-                // Send the close frame only. Do NOT flip the internal `closed`
-                // flag here — `read_message` uses it to short-circuit, which
-                // would discard inbound frames still in flight (post-close
-                // messages are delivered until the close handshake completes,
-                // browser semantics). The flag flips when the peer's Close
-                // frame is actually read.
-                let _ = stream.write_all(&frame);
+        }
+        match self.send_control(0x8, &1000u16.to_be_bytes(), true) {
+            // The TLS arm deliberately ignores a write failure: the peer may
+            // already be gone, and teardown must still complete.
+            ::std::result::Result::Ok(()) => Ok(()),
+            ::std::result::Result::Err(_)
+                if matches!(&self.transport, WsTransport::Tls { .. }) =>
+            {
                 Ok(())
             }
+            ::std::result::Result::Err(e) => Err(format!("close failed: {}", e)),
         }
     }
 
@@ -606,25 +674,35 @@ fn data_message(opcode: bun_uws::ws_codec::Opcode, payload: Vec<u8>) -> WsMessag
     }
 }
 
-/// Masked client→server frame (FIN + opcode + masked payload), RFC 6455 §5.1.
-/// Masking is applied in place on the frame buffer (apply_mask is elementwise
-/// XOR, byte-identical to masking a copy) — no per-message payload copy.
-fn encode_masked_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
-    let key = bun_uws::ws_codec::gen_mask_key();
+/// Client→server frame (FIN + opcode + payload), RFC 6455 §5.1.
+///
+/// `mask=true` is the RFC-mandated client shape (masking is applied in place
+/// on the frame buffer — `apply_mask` is elementwise XOR, byte-identical to
+/// masking a copy, so there is no per-message payload copy). `mask=false`
+/// mirrors the npm `ws` library's `ping/pong(data, mask)` extension; frames
+/// stay well-formed, only the mask bit and key are omitted.
+fn encode_client_frame(opcode: u8, payload: &[u8], mask: bool) -> Vec<u8> {
     let mut frame = Vec::with_capacity(payload.len() + 14);
     frame.push(0x80 | opcode); // FIN + opcode
-    push_masked_len(&mut frame, payload.len());
-    frame.extend_from_slice(&key);
-    let body_start = frame.len();
-    frame.extend_from_slice(payload);
-    apply_mask(&mut frame[body_start..], &key);
+    if mask {
+        let key = bun_uws::ws_codec::gen_mask_key();
+        push_frame_len(&mut frame, payload.len(), true);
+        frame.extend_from_slice(&key);
+        let body_start = frame.len();
+        frame.extend_from_slice(payload);
+        apply_mask(&mut frame[body_start..], &key);
+    } else {
+        push_frame_len(&mut frame, payload.len(), false);
+        frame.extend_from_slice(payload);
+    }
     frame
 }
 
-/// Append the masked-length + (caller-supplied) mask bytes layout for a
-/// client→server frame, matching `bun_uws::ws_codec::FrameEncoder::encode_frame`.
-fn push_masked_len(frame: &mut Vec<u8>, len: usize) {
-    let mask_bit = 0x80u8;
+/// Append the length field for a client→server frame, matching
+/// `bun_uws::ws_codec::FrameEncoder::encode_frame` (`masked` sets the 0x80
+/// mask bit; the key itself is appended by the caller).
+fn push_frame_len(frame: &mut Vec<u8>, len: usize, masked: bool) {
+    let mask_bit = if masked { 0x80u8 } else { 0 };
     if len < 126 {
         frame.push((len as u8) | mask_bit);
     } else if len <= u16::MAX as usize {
@@ -842,6 +920,157 @@ unsafe fn ws_trigger_event(
     }
 }
 
+/// Fire the Node-style event-emitter listeners registered with `ws.on(...)`
+/// / `ws.once(...)` (backed by the shared `node_events` emitter attached to
+/// the WebSocket object). Runs alongside — not instead of — the browser-style
+/// `onXXX` property dispatch: both surfaces observe the same event.
+///
+/// `arg` (when present) is rooted HERE before the event-name allocation and
+/// re-read from the root at argument-build time, so a moving GC inside this
+/// helper can never leave a stale value in the call frame. `bool_arg` carries
+/// the ws `'message'` `isBinary` flag (non-GC, appended after `arg`).
+///
+/// # Safety
+/// `raw_cx` must be a live JSContext on the current thread; `realm_global`
+/// must be the (always-rooted) global of a live realm on that context.
+unsafe fn ws_emit(
+    raw_cx: *mut JSContext,
+    realm_global: *mut JSObject,
+    ws_obj_key: &str,
+    event_name: &str,
+    arg: ::std::option::Option<JSVal>,
+    bool_arg: ::std::option::Option<bool>,
+) {
+    if realm_global.is_null() {
+        return;
+    }
+    let has_arg = arg.is_some();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = realm_global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
+    // Root the payload BEFORE any allocation (the event-name string below).
+    rooted!(&in(cx_ref) let arg_root = arg.unwrap_or_else(UndefinedValue));
+
+    let ws_obj = match gc_store_get(raw_cx, ws_obj_key) {
+        Some(o) => o,
+        None => return,
+    };
+    rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
+    let mut emit_val = UndefinedValue();
+    JS_GetProperty(
+        raw_cx,
+        ws_obj_root.handle().into(),
+        c"_wsEmit".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut emit_val,
+        },
+    );
+    if !emit_val.is_object() {
+        return;
+    }
+    // Root the function VALUE (JS_CallFunctionValue takes a HandleValue) before
+    // the allocation below; the object itself stays alive through this value.
+    rooted!(&in(cx_ref) let emit_root = emit_val);
+
+    let name_str = js_string_from_utf8(raw_cx, event_name);
+    if name_str.is_null() {
+        return;
+    }
+    rooted!(&in(cx_ref) let name_val = StringValue(&*name_str));
+    let mut all: Vec<JSVal> = Vec::with_capacity(3);
+    all.push(StringValue(&*name_str));
+    if has_arg {
+        // Re-read: the GC inside js_string_from_utf8 may have moved it.
+        all.push(*arg_root.handle());
+    }
+    if let ::std::option::Option::Some(b) = bool_arg {
+        all.push(BooleanValue(b));
+    }
+    let call_args = HandleValueArray {
+        length_: all.len(),
+        elements_: all.as_ptr(),
+    };
+    let mut rval = UndefinedValue();
+    let ok = JS_CallFunctionValue(
+        raw_cx,
+        ws_obj_root.handle().into(),
+        emit_root.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    if !ok {
+        // `ee_emit('error', ...)` with no registered 'error' listener raises
+        // the Node "unhandled error" exception. This client already surfaces
+        // transport failures through the browser-style `onerror` property, so
+        // the OPTIONAL emitter surface must not escalate it — clear the
+        // pending exception (listener throws are already routed inside
+        // ee_emit itself).
+        JS_ClearPendingException(raw_cx);
+    }
+}
+
+/// Drop every `on(...)` listener registered on this WebSocket. Called at the
+/// terminal dispatch so `once/on` callbacks do not stay rooted in the GcStore
+/// after the socket is gone (the ws object root itself is then removed).
+///
+/// # Safety
+/// `raw_cx` must be a live JSContext on the current thread.
+unsafe fn ws_cleanup_listeners(
+    raw_cx: *mut JSContext,
+    realm_global: *mut JSObject,
+    ws_obj_key: &str,
+) {
+    if realm_global.is_null() {
+        return;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = realm_global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
+    let ws_obj = match gc_store_get(raw_cx, ws_obj_key) {
+        Some(o) => o,
+        None => return,
+    };
+    rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
+    let mut remover = UndefinedValue();
+    JS_GetProperty(
+        raw_cx,
+        ws_obj_root.handle().into(),
+        c"_wsRemoveAll".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut remover,
+        },
+    );
+    if !remover.is_object() {
+        return;
+    }
+    rooted!(&in(cx_ref) let remover_root = remover);
+    let mut rval = UndefinedValue();
+    let ok = JS_CallFunctionValue(
+        raw_cx,
+        ws_obj_root.handle().into(),
+        remover_root.handle().into(),
+        &HandleValueArray::empty(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    if !ok {
+        JS_ClearPendingException(raw_cx);
+    }
+}
+
 unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
@@ -974,6 +1203,226 @@ unsafe extern "C" fn ws_close_fn(cx: *mut JSContext, _argc: u32, vp: *mut JSVal)
     true
 }
 
+/// `ws.ping([data[, mask[, cb]]])` — npm `ws` client contract:
+/// - `data` is optional; string / number / BufferSource (Buffer, ArrayBuffer,
+///   any TypedArray or DataView) / byte array; absent or null → empty payload;
+/// - `mask` defaults to true (the only RFC-legal client shape); `false` is the
+///   ws extension that sends an unmasked control frame;
+/// - a function in the data/mask position is the write callback, invoked after
+///   the frame has been written; the method returns undefined.
+unsafe extern "C" fn ws_ping(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    ws_send_control_frame(cx, argc, vp, 0x9, "ping")
+}
+
+/// `ws.pong([data[, mask[, cb]]])` — same contract as [`ws_ping`] with the
+/// Pong opcode (0xA).
+unsafe extern "C" fn ws_pong(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    ws_send_control_frame(cx, argc, vp, 0xA, "pong")
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn ws_send_control_frame(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+    opcode: u8,
+    method: &str,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj = args.thisv().to_object());
+
+    let mut idx_val = Int32Value(-1);
+    JS_GetProperty(
+        cx,
+        this_obj.handle().into(),
+        c"_wsIdx".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut idx_val,
+        },
+    );
+    let idx = idx_val.to_int32() as usize;
+
+    // ws-library ordering: the readyState check precedes argument conversion
+    // (ping on a CONNECTING socket never touches a user toString).
+    enum ControlState {
+        Open,
+        Connecting,
+        Closed,
+    }
+    let state = WS_CONNECTIONS.with(|c| {
+        let conns = c.borrow();
+        match conns.get(idx) {
+            ::std::option::Option::Some(e) if e.client.is_some() => ControlState::Open,
+            ::std::option::Option::Some(e) if e.connect_slot.is_some() => ControlState::Connecting,
+            _ => ControlState::Closed,
+        }
+    });
+    match state {
+        ControlState::Connecting => {
+            let msg = format!(
+                "WebSocket {} failed: InvalidStateError: WebSocket is still connecting",
+                method
+            );
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+        ControlState::Closed => {
+            let msg = format!(
+                "WebSocket {} failed: InvalidStateError: WebSocket is already closed",
+                method
+            );
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+        ControlState::Open => {}
+    }
+
+    // Argument overloads: a function in the data or mask slot is the callback.
+    let mut data_val = UndefinedValue();
+    let mut mask = true;
+    let mut cb_val: ::std::option::Option<JSVal> = ::std::option::Option::None;
+    let mut slot = 0u32;
+    for i in 0..argc {
+        let v = *args.get(i).ptr;
+        if v.is_object() && JS_ObjectIsFunction(v.to_object()) {
+            cb_val = ::std::option::Option::Some(v);
+            break;
+        }
+        match slot {
+            0 => {
+                data_val = v;
+                slot = 1;
+            }
+            1 => {
+                mask = v.to_boolean();
+                slot = 2;
+            }
+            _ => {}
+        }
+    }
+
+    let payload: Vec<u8> = if data_val.is_undefined() || data_val.is_null() {
+        Vec::new()
+    } else if data_val.is_string() {
+        jsstr_to_string(&wrapped_cx, NonNull::new_unchecked(data_val.to_string())).into_bytes()
+    } else if data_val.is_number() {
+        // ws: `if (typeof data === 'number') data = data.toString();`
+        let mut ncx =
+            mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(ncx) let dv = data_val);
+        let jsstr = mozjs::rust::ToString(&mut ncx, dv.handle());
+        if jsstr.is_null() {
+            // A number cannot throw in ToString, but stay exception-safe.
+            return false;
+        }
+        jsstr_to_string(&ncx, NonNull::new_unchecked(jsstr)).into_bytes()
+    } else if let Some(bytes) = crate::bun_api::extract_bytes_from_jsval(cx, data_val) {
+        bytes
+    } else if data_val.is_object() {
+        // ws accepts a byte Array (`Buffer.from(array)` arm).
+        let mut cx_ref =
+            mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let data_obj = data_val.to_object());
+        let mut is_array = false;
+        if mozjs::rust::wrappers2::IsArrayObject1(
+            &mut cx_ref,
+            data_obj.handle().into(),
+            &mut is_array,
+        ) && is_array
+        {
+            let mut len: u32 = 0;
+            if !mozjs::rust::wrappers2::GetArrayLength(&mut cx_ref, data_obj.handle().into(), &mut len) {
+                return false;
+            }
+            let mut bytes = Vec::with_capacity(len as usize);
+            for i in 0..len {
+                let mut elem = UndefinedValue();
+                JS_GetElement(
+                    cx,
+                    data_obj.handle().into(),
+                    i,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut elem,
+                    },
+                );
+                bytes.push(elem.to_int32() as u8);
+            }
+            bytes
+        } else {
+            let msg = format!(
+                "WebSocket {}() data must be a string, number, Buffer, ArrayBuffer, ArrayBufferView, or byte array",
+                method
+            );
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+    } else {
+        let msg = format!(
+            "WebSocket {}() data must be a string, number, Buffer, ArrayBuffer, ArrayBufferView, or byte array",
+            method
+        );
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+        return false;
+    };
+
+    let send_result = WS_CONNECTIONS.with(|c| {
+        let mut conns = c.borrow_mut();
+        match conns.get_mut(idx) {
+            ::std::option::Option::Some(e) if e.client.is_some() => e
+                .client
+                .as_mut()
+                .unwrap()
+                .send_control(opcode, &payload, mask),
+            _ => Err("InvalidStateError: WebSocket is already closed".to_string()),
+        }
+    });
+    if let Err(e) = send_result {
+        let msg = format!("WebSocket {} failed: {}", method, e);
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+        return false;
+    }
+
+    // ws invokes the callback once the frame has been written to the socket;
+    // our write is synchronous, so the callback runs at this point. A throw
+    // from the callback propagates to the caller as a normal JS exception.
+    if let ::std::option::Option::Some(cb) = cb_val {
+        rooted!(&in(wrapped_cx) let cb_root = cb);
+        let mut rval = UndefinedValue();
+        let ok = JS_CallFunctionValue(
+            cx,
+            this_obj.handle().into(),
+            cb_root.handle().into(),
+            &HandleValueArray::empty(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            },
+        );
+        if !ok {
+            return false;
+        }
+    }
+
+    args.rval().set(UndefinedValue());
+    true
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn websocket_constructor(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -1027,7 +1476,9 @@ unsafe extern "C" fn websocket_constructor(cx: *mut JSContext, argc: u32, vp: *m
         JSPROP_ENUMERATE as u32,
     );
 
-    for name in &["onopen", "onmessage", "onerror", "onclose"] {
+    for name in &[
+        "onopen", "onmessage", "onerror", "onclose", "onping", "onpong",
+    ] {
         let c_name = ZBox::from_bytes(name.as_bytes());
         rooted!(&in(wrapped_cx) let ud = UndefinedValue());
         JS_DefineProperty(
@@ -1054,6 +1505,74 @@ unsafe extern "C" fn websocket_constructor(cx: *mut JSContext, argc: u32, vp: *m
         Some(ws_close_fn),
         0,
         JSPROP_ENUMERATE as u32,
+    );
+    // ping([data[, mask[, cb]]]) / pong([data[, mask[, cb]]]) — npm `ws`
+    // client control-frame contract (Node v24's built-in WebSocket has no
+    // ping method; the oracle is the ws library, recorded in the C12 test).
+    mozjs_sys::jsapi::JS_DefineFunction(
+        cx,
+        ws_obj.handle().into(),
+        c"ping".as_ptr(),
+        Some(ws_ping),
+        3,
+        JSPROP_ENUMERATE as u32,
+    );
+    mozjs_sys::jsapi::JS_DefineFunction(
+        cx,
+        ws_obj.handle().into(),
+        c"pong".as_ptr(),
+        Some(ws_pong),
+        3,
+        JSPROP_ENUMERATE as u32,
+    );
+    // Node-style event registration (`ws.on('pong', ...)`, once/off/
+    // removeAllListeners) backed by the shared node_events EventEmitter —
+    // the state lives on this object and listener callbacks are GcStore-
+    // rooted. `emit` is exposed for parity; internal dispatch uses the
+    // hidden `_wsEmit` binding so a user override cannot break the pump.
+    for (name, nargs) in [
+        ("on", 2u32),
+        ("once", 2),
+        ("off", 2),
+        ("removeListener", 2),
+        ("removeAllListeners", 1),
+        ("emit", 1),
+    ] {
+        // on/once/off/removeListener share the emitter slot semantics; the
+        // alias names map to the same native implementation.
+        let op: JSNative = match name {
+            "on" => Some(crate::node_events::ee_on),
+            "once" => Some(crate::node_events::ee_once),
+            "off" | "removeListener" => Some(crate::node_events::ee_off),
+            "removeAllListeners" => Some(crate::node_events::ee_remove_all),
+            _ => Some(crate::node_events::ee_emit),
+        };
+        let c_name = ZBox::from_bytes(name.as_bytes());
+        mozjs_sys::jsapi::JS_DefineFunction(
+            cx,
+            ws_obj.handle().into(),
+            c_name.as_ptr(),
+            op,
+            nargs,
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    // Hidden binding used by the internal dispatch pump.
+    mozjs_sys::jsapi::JS_DefineFunction(
+        cx,
+        ws_obj.handle().into(),
+        c"_wsEmit".as_ptr(),
+        Some(crate::node_events::ee_emit),
+        0,
+        0,
+    );
+    mozjs_sys::jsapi::JS_DefineFunction(
+        cx,
+        ws_obj.handle().into(),
+        c"_wsRemoveAll".as_ptr(),
+        Some(crate::node_events::ee_remove_all),
+        0,
+        0,
     );
 
     // Permission parity with fetch(): the page's net scope governs
@@ -1157,6 +1676,10 @@ enum PumpAction {
     TextMessage(usize, String),
     /// Binary frame received on an open connection.
     BinaryMessage(usize, Vec<u8>),
+    /// Ping control frame received (the masked Pong reply was already sent).
+    PingMessage(usize, Vec<u8>),
+    /// Pong control frame received.
+    PongMessage(usize, Vec<u8>),
     /// Close frame received / transport error — connection is dead.
     /// `msg` is Some for a transport error (fires onerror first), None for a
     /// clean close handshake.
@@ -1199,6 +1722,12 @@ fn ws_pump_next_action(conns: &mut [WsEntry]) -> ::std::option::Option<PumpActio
             Ok(WsMessage::Binary(b)) => {
                 return ::std::option::Option::Some(PumpAction::BinaryMessage(idx, b))
             }
+            Ok(WsMessage::Ping(p)) => {
+                return ::std::option::Option::Some(PumpAction::PingMessage(idx, p))
+            }
+            Ok(WsMessage::Pong(p)) => {
+                return ::std::option::Option::Some(PumpAction::PongMessage(idx, p))
+            }
             Ok(WsMessage::Close) => {
                 // Echo the close handshake unless we already sent our close
                 // frame (close_initiated).
@@ -1238,6 +1767,12 @@ pub fn ws_pump_all(raw_cx: *mut JSContext) {
             },
             ::std::option::Option::Some(PumpAction::BinaryMessage(idx, bytes)) => unsafe {
                 ws_message_dispatch(raw_cx, idx, None, ::std::option::Option::Some(bytes));
+            },
+            ::std::option::Option::Some(PumpAction::PingMessage(idx, bytes)) => unsafe {
+                ws_control_dispatch(raw_cx, idx, true, bytes);
+            },
+            ::std::option::Option::Some(PumpAction::PongMessage(idx, bytes)) => unsafe {
+                ws_control_dispatch(raw_cx, idx, false, bytes);
             },
             ::std::option::Option::Some(PumpAction::Closed(idx, err)) => unsafe {
                 ws_closed_dispatch(raw_cx, idx, err);
@@ -1339,12 +1874,15 @@ unsafe fn ws_connect_dispatch(
                 Landed::Open => {
                     ws_set_ready_state(raw_cx, info.realm_global, &info.js_obj_key, 1);
                     ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onopen", None);
+                    ws_emit(raw_cx, info.realm_global, &info.js_obj_key, "open", None, None);
                 }
                 Landed::CloseNow => {
                     // `client` was not installed; dropping it closes the
                     // socket (TcpStream Drop).
                     ws_set_ready_state(raw_cx, info.realm_global, &info.js_obj_key, 3);
                     ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onclose", None);
+                    ws_emit(raw_cx, info.realm_global, &info.js_obj_key, "close", None, None);
+                    ws_cleanup_listeners(raw_cx, info.realm_global, &info.js_obj_key);
                     gc_store_remove(raw_cx, &info.js_obj_key);
                 }
             }
@@ -1353,25 +1891,55 @@ unsafe fn ws_connect_dispatch(
             // Connect failed: CLOSED + onerror(with the reason) + onclose.
             ws_set_ready_state(raw_cx, info.realm_global, &info.js_obj_key, 3);
             // Enter the realm before creating the error string — allocation
-            // needs a valid zone (the pump runs with no realm entered).
-            let data = if !info.realm_global.is_null() {
+            // needs a valid zone (the pump runs with no realm entered) — and
+            // keep it entered so the string stays rooted across BOTH the
+            // browser-style onerror and the emitter dispatch.
+            if !info.realm_global.is_null() {
                 let mut wrapped_cx =
                     mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
                 let cx_ref = &mut wrapped_cx;
                 rooted!(&in(cx_ref) let global_root = info.realm_global);
                 let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
-                let _cx_in_realm: &mut mozjs::context::JSContext = &mut realm;
+                let cx_ref: &mut mozjs::context::JSContext = &mut realm;
                 let js_str = js_string_from_utf8(raw_cx, &msg);
                 if !js_str.is_null() {
-                    ::std::option::Option::Some(StringValue(&*js_str))
+                    rooted!(&in(cx_ref) let err_root = StringValue(&*js_str));
+                    let data = StringValue(&*js_str);
+                    ws_trigger_event(
+                        raw_cx,
+                        info.realm_global,
+                        &info.js_obj_key,
+                        "onerror",
+                        ::std::option::Option::Some(data),
+                    );
+                    // Re-read the rooted error value: the property dispatch
+                    // above may have moved it.
+                    let data = *err_root.handle();
+                    ws_emit(
+                        raw_cx,
+                        info.realm_global,
+                        &info.js_obj_key,
+                        "error",
+                        ::std::option::Option::Some(data),
+                        None,
+                    );
                 } else {
-                    ::std::option::Option::None
+                    ws_trigger_event(
+                        raw_cx,
+                        info.realm_global,
+                        &info.js_obj_key,
+                        "onerror",
+                        None,
+                    );
+                    ws_emit(raw_cx, info.realm_global, &info.js_obj_key, "error", None, None);
                 }
             } else {
-                ::std::option::Option::None
-            };
-            ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onerror", data);
+                ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onerror", None);
+                ws_emit(raw_cx, info.realm_global, &info.js_obj_key, "error", None, None);
+            }
             ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onclose", None);
+            ws_emit(raw_cx, info.realm_global, &info.js_obj_key, "close", None, None);
+            ws_cleanup_listeners(raw_cx, info.realm_global, &info.js_obj_key);
             gc_store_remove(raw_cx, &info.js_obj_key);
         }
     }
@@ -1407,6 +1975,7 @@ unsafe fn ws_message_dispatch(
     rooted!(&in(cx_ref) let global_root = info.realm_global);
     let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
     let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+    let is_binary = text.is_none();
     let data = if let ::std::option::Option::Some(t) = text {
         let js_str = js_string_from_utf8(raw_cx, &t);
         if js_str.is_null() {
@@ -1436,12 +2005,25 @@ unsafe fn ws_message_dispatch(
     } else {
         return;
     };
+    // Root the payload across BOTH dispatches (property handler + emitter).
+    rooted!(&in(cx_ref) let data_root = data);
+    let data = *data_root.handle();
     ws_trigger_event(
         raw_cx,
         info.realm_global,
         &info.js_obj_key,
         "onmessage",
         ::std::option::Option::Some(data),
+    );
+    // ws library `'message'` listener signature: (data, isBinary).
+    let data = *data_root.handle();
+    ws_emit(
+        raw_cx,
+        info.realm_global,
+        &info.js_obj_key,
+        "message",
+        ::std::option::Option::Some(data),
+        ::std::option::Option::Some(is_binary),
     );
 }
 
@@ -1463,27 +2045,118 @@ unsafe fn ws_closed_dispatch(
     ws_set_ready_state(raw_cx, info.realm_global, &info.js_obj_key, 3);
     if let ::std::option::Option::Some(msg) = err {
         // Enter the realm before creating the error string (valid zone for
-        // allocation — the pump runs with no realm entered).
-        let data = if !info.realm_global.is_null() {
+        // allocation — the pump runs with no realm entered) and keep it
+        // entered so the string stays rooted across BOTH dispatches.
+        if !info.realm_global.is_null() {
             let mut wrapped_cx =
                 mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
             let cx_ref = &mut wrapped_cx;
             rooted!(&in(cx_ref) let global_root = info.realm_global);
             let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
-            let _cx_in_realm: &mut mozjs::context::JSContext = &mut realm;
+            let cx_ref: &mut mozjs::context::JSContext = &mut realm;
             let js_str = js_string_from_utf8(raw_cx, &msg);
             if !js_str.is_null() {
-                ::std::option::Option::Some(StringValue(&*js_str))
+                rooted!(&in(cx_ref) let err_root = StringValue(&*js_str));
+                let data = StringValue(&*js_str);
+                ws_trigger_event(
+                    raw_cx,
+                    info.realm_global,
+                    &info.js_obj_key,
+                    "onerror",
+                    ::std::option::Option::Some(data),
+                );
+                let data = *err_root.handle();
+                ws_emit(
+                    raw_cx,
+                    info.realm_global,
+                    &info.js_obj_key,
+                    "error",
+                    ::std::option::Option::Some(data),
+                    None,
+                );
             } else {
-                ::std::option::Option::None
+                ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onerror", None);
+                ws_emit(raw_cx, info.realm_global, &info.js_obj_key, "error", None, None);
             }
         } else {
-            ::std::option::Option::None
-        };
-        ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onerror", data);
+            ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onerror", None);
+            ws_emit(raw_cx, info.realm_global, &info.js_obj_key, "error", None, None);
+        }
     }
     ws_trigger_event(raw_cx, info.realm_global, &info.js_obj_key, "onclose", None);
+    ws_emit(raw_cx, info.realm_global, &info.js_obj_key, "close", None, None);
+    ws_cleanup_listeners(raw_cx, info.realm_global, &info.js_obj_key);
     gc_store_remove(raw_cx, &info.js_obj_key);
+}
+
+/// Inbound Ping/Pong control frame: fire the browser-style `onping`/`onpong`
+/// property (event object `{data}`) and the Node-style emitter event
+/// (`ws.on('ping')` / `ws.on('pong')`, handler receives the byte view
+/// directly — the ws library contract). The RFC 6455 Pong reply for an
+/// inbound Ping was already written by `WsConn::read_message`.
+///
+/// # Safety
+/// `raw_cx` must be a live JSContext on the current thread.
+unsafe fn ws_control_dispatch(
+    raw_cx: *mut JSContext,
+    idx: usize,
+    is_ping: bool,
+    bytes: Vec<u8>,
+) {
+    let info = match ws_entry_info(idx) {
+        Some(i) => i,
+        None => return,
+    };
+    if !info.is_open || info.realm_global.is_null() {
+        return;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = info.realm_global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
+    let arr = mozjs_sys::jsapi::JS_NewUint8Array(raw_cx, bytes.len());
+    if arr.is_null() {
+        return;
+    }
+    rooted!(&in(cx_ref) let arr_root = arr);
+    if !bytes.is_empty() {
+        let mut is_shared = false;
+        // SAFETY: data pointer of the just-created, rooted Uint8Array;
+        // copied before any GC point.
+        let data_ptr = mozjs_sys::jsapi::JS_GetUint8ArrayData(
+            arr_root.get(),
+            &mut is_shared,
+            ::std::ptr::null(),
+        );
+        if !data_ptr.is_null() {
+            ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+        }
+    }
+    rooted!(&in(cx_ref) let data_root = ObjectValue(arr_root.get()));
+    let data = *data_root.handle();
+    let (property, emitter) = if is_ping {
+        ("onping", "ping")
+    } else {
+        ("onpong", "pong")
+    };
+    ws_trigger_event(
+        raw_cx,
+        info.realm_global,
+        &info.js_obj_key,
+        property,
+        ::std::option::Option::Some(data),
+    );
+    let data = *data_root.handle();
+    ws_emit(
+        raw_cx,
+        info.realm_global,
+        &info.js_obj_key,
+        emitter,
+        ::std::option::Option::Some(data),
+        None,
+    );
 }
 
 // ── Performance ──
@@ -4297,13 +4970,13 @@ mod tests {
     }
 
     // @trace REQ-ENG-006 [code:bun_uws] — frame length encoding now shares
-    // bun_uws::ws_codec's layout via push_masked_len (the client→server masked
+    // bun_uws::ws_codec's layout via push_frame_len (the client→server masked
     // length bytes). The masking key itself is per-frame random in the live
     // path, so these unit tests verify only the length-byte shape.
     #[test]
     fn push_masked_len_empty() {
         let mut frame = Vec::new();
-        push_masked_len(&mut frame, 0);
+        push_frame_len(&mut frame, 0, true);
         assert_eq!(frame.len(), 1);
         assert_eq!(frame[0] & 0x7F, 0); // length = 0
     }
@@ -4311,7 +4984,7 @@ mod tests {
     #[test]
     fn push_masked_len_short() {
         let mut frame = Vec::new();
-        push_masked_len(&mut frame, 5);
+        push_frame_len(&mut frame, 5, true);
         assert_eq!(frame.len(), 1);
         assert_eq!(frame[0] & 0x7F, 5); // length = 5
     }
@@ -4320,7 +4993,7 @@ mod tests {
     fn push_masked_len_medium() {
         let mut frame = Vec::new();
         let payload = vec![0u8; 200];
-        push_masked_len(&mut frame, payload.len());
+        push_frame_len(&mut frame, payload.len(), true);
         // 1 byte + 2 bytes extended length
         assert_eq!(frame.len(), 3);
         assert_eq!(frame[0] & 0x7F, 126); // 126 signals 16-bit length
@@ -4332,7 +5005,7 @@ mod tests {
     fn push_masked_len_large() {
         let mut frame = Vec::new();
         let payload = vec![0u8; 70000];
-        push_masked_len(&mut frame, payload.len());
+        push_frame_len(&mut frame, payload.len(), true);
         // 1 byte + 8 bytes extended length
         assert_eq!(frame.len(), 9);
         assert_eq!(frame[0] & 0x7F, 127); // 127 signals 64-bit length
