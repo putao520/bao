@@ -685,6 +685,17 @@ fn test_bun_serve_branches_ported_body() {
     let setup = eval_str(
         &mut ctx,
         r#"
+        // R-A7 contract (root-B wired the serve throw arm to process
+        // 'uncaughtException'): a throwing fetch handler must be OBSERVABLE.
+        // Without a handler the router escalates to request_exit(1) — Node
+        // semantics (real node dies) — which stops the embedded event loop
+        // and starves every LATER request in this multi-branch probe.
+        // Register the handler so the remaining branches stay exercisable;
+        // the routed message is asserted at the /boom site below.
+        globalThis.__srvUncaught = '';
+        process.on('uncaughtException', function (e) {
+            globalThis.__srvUncaught = String(e && e.message || e);
+        });
         globalThis.__srvW = Bun.serve({
             port: 19420,
             fetch: function(req) {
@@ -785,12 +796,19 @@ fn test_bun_serve_branches_ported_body() {
     // instance (req.headers.get('x-a')); bao exposes a plain object whose
     // .get is not a function.
 
-    // handler throw → 500 with body (upstream error branch)
+    // handler throw → 500 with body (upstream error branch) AND the throw is
+    // observable via the registered uncaughtException handler (R-A7; root-B
+    // wiring — same contract the c12 serve suite pins).
     let resp = http_get(&mut ctx, port, "/boom");
     assert!(
         resp.contains("500"),
         "throwing handler must produce a 500:\n{}",
         resp
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "globalThis.__srvUncaught"),
+        "handler-boom",
+        "serve throw arm must route the pending exception to uncaughtException"
     );
 
     // non-Response return must not hang the connection (bao answers 404;
