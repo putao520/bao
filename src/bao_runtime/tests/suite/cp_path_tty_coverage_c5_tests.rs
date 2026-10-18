@@ -573,10 +573,13 @@ fn c5_cp_sync_faces_deep_body() {
             }
         });
         check("execfilesync_string_args_form", function() {
-            // execFileSync(file, "arg") — a string middle argument rides
-            // argv[1]; sh treats it as a missing script → exit 127.
+            // node v24.19.0 oracle (2026-10-18): a string middle argument is a
+            // TypeError (ERR_INVALID_ARG_TYPE — "The \"args\" argument must be
+            // of type object. Received type string"), never a spawn. The old
+            // pin (sh rides it as a script → status 127) was written without
+            // the oracle run; the shape it described also exits 2 under dash.
             try { cp.execFileSync("/bin/sh", "not-an-array"); return "NO-THROW"; }
-            catch (err) { return err.status === 127 && String(err.message).indexOf("execFileSync failed with status 127") === 0; }
+            catch (err) { return String(err.message).indexOf("must be of type object") >= 0; }
         });
         check("execfile_noargs_throws", function() {
             try { cp.execFile(); return "NO-THROW"; }

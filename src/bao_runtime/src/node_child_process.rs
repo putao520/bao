@@ -577,18 +577,115 @@ fn pipe_poll_thread(mut s: CpDrainState) {
     }
 }
 
-/// Background polling thread: reads from stdout/stderr pipes and pushes the
-/// bytes onto the child's channel. Non-blocking waitpid: when the child has
-/// exited, stash its status (`reaped`); `try_push_exit` lifts it into an
-/// `Exit` event once the pipes are drained.
+/// One read-side flush of a reaped child's pipe: pushes every
+/// currently-readable byte onto the channel, marks EOF when the pipe truly
+/// hangs up, and stops at "drained" (no data pending, no hangup) without
+/// claiming EOF. The readiness probe (poll, 0 timeout) before each read keeps
+/// this safe on blocking fds — a bare read would wedge until an orphan holder
+/// writes or exits.
 #[cfg(unix)]
-fn cp_detect_exit_unix(s: &mut CpDrainState) {
+fn cp_flush_pipe(s: &mut CpDrainState, which: &str, fd: c_int, buf: &mut [u8]) {
+    if fd < 0 {
+        return;
+    }
+    loop {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN as i16,
+            revents: 0,
+        };
+        // SAFETY: pfd is a stack pollfd describing an fd we own.
+        let ready = unsafe { libc::poll(&mut pfd, 1, 0) };
+        if ready <= 0 || pfd.revents & (libc::POLLIN as i16 | libc::POLLHUP as i16) == 0 {
+            // Drained — the pipe is still open underneath (forked-descendant
+            // holder); leave the EOF flag untouched.
+            return;
+        }
+        // SAFETY: fd is a pipe read end we own; buf/len describe the caller's
+        // slice (same shape as cp_service_fd).
+        match unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, buf.len()) } {
+            n if n > 0 => {
+                let data = buf[..n as usize].to_vec();
+                let _ = s.tx.send(if which == "stdout" {
+                    CpEvent::Stdout(data)
+                } else {
+                    CpEvent::Stderr(data)
+                });
+            }
+            0 => {
+                cp_mark_eof(s, which);
+                return;
+            }
+            _ => {
+                if bun_core::ffi::errno() == libc::EINTR {
+                    continue;
+                }
+                // Real read error — nothing more comes through this pipe;
+                // treat as EOF so the exit can still publish.
+                cp_mark_eof(s, which);
+                return;
+            }
+        }
+    }
+}
+
+/// Push the reaped status once, unconditionally (drain-before-publish is
+/// already satisfied: the caller flushed every arrived byte onto the channel
+/// before this runs, and channel FIFO places them ahead of the Exit).
+#[cfg(unix)]
+fn cp_push_exit_now(s: &mut CpDrainState) {
+    if !s.exit_pushed {
+        if let Some((code, signal)) = s.reaped {
+            s.exit_pushed = true;
+            // Receiver gone (registry entry swept) — nothing to publish to.
+            let _ = s.tx.send(CpEvent::Exit(code, signal));
+        }
+    }
+}
+
+/// Exit observation for one drain-thread iteration.
+///
+/// Returns `true` when this thread's work is complete (exit published, or the
+/// thread stood down after another in-process consumer won the reap) — the
+/// poll loop breaks and the fds are closed on the way out.
+///
+/// Non-blocking waitpid: when the child has exited, flush both pipes into the
+/// channel (all arrived bytes precede the Exit — the drain-before-publish
+/// invariant, producer side) and publish the status IMMEDIATELY instead of
+/// gating on EOF. The old `pipes_drained` gate silenced the exit event for a
+/// forked descendant's whole lifetime: `sh -c "sleep 30"` forks `sleep`, and
+/// a kill that lands after the fork leaves the orphan holding the stdio
+/// write ends — EOF never arrives, `Exit` never publishes (spawn +
+/// immediate-kill lost its exit event; c5 D2, probe-pinned 2026-10-18: the
+/// waitpid won (-9/9) but no push ever happened). Node's contract is the
+/// same split: 'exit' fires when the process dies, 'close' when the stdio
+/// streams end. Post-exit writes from an orphan die with EPIPE once this
+/// loop closes the fds — the lifecycle node's stream teardown gives a killed
+/// child.
+#[cfg(unix)]
+fn cp_detect_exit_unix(s: &mut CpDrainState, buf: &mut [u8]) -> bool {
     if !s.child_exited {
         let mut wstatus: c_int = 0;
+        // SAFETY: wstatus is a stack c_int; s.pid is our direct child.
         let ret = unsafe { libc::waitpid(s.pid, &mut wstatus, libc::WNOHANG) };
+        if ret < 0 {
+            let errno = bun_core::ffi::errno();
+            if errno == libc::ECHILD {
+                // Reaped by another in-process consumer (the runtime-drop
+                // sweep's cp_try_reap): it publishes into the registry state
+                // itself, so this thread must NOT double-publish an Exit —
+                // flush whatever data already arrived (the sweep's direct
+                // publication bypasses channel ordering) and stand down.
+                s.child_exited = true;
+                cp_flush_pipe(s, "stdout", s.stdout_fd, buf);
+                cp_flush_pipe(s, "stderr", s.stderr_fd, buf);
+                return true;
+            }
+            // EINTR or unexpected — probe again next iteration.
+            return false;
+        }
         if ret == s.pid {
-            // Child has exited — stash the status; try_push_exit
-            // lifts it into an Exit event once the pipes are drained.
+            // Child has exited — flush the pipes (ordering) and publish.
             // Encoding per the module contract (signal deaths → code = -signal).
             let signal = if libc::WIFSIGNALED(wstatus) {
                 libc::WTERMSIG(wstatus)
@@ -604,9 +701,17 @@ fn cp_detect_exit_unix(s: &mut CpDrainState) {
             };
             s.child_exited = true;
             s.reaped = Some((exit_code, signal));
+            cp_flush_pipe(s, "stdout", s.stdout_fd, buf);
+            cp_flush_pipe(s, "stderr", s.stderr_fd, buf);
+            // True-EOF cases publish through try_push_exit; the drained-only
+            // case (orphan holder) publishes here — either way, once.
+            s.try_push_exit();
+            cp_push_exit_now(s);
+            return s.exit_pushed;
         }
     }
     s.try_push_exit();
+    s.exit_pushed
 }
 
 /// Mark the named pipe's EOF (`which` is "stdout" / "stderr").
@@ -676,7 +781,13 @@ fn pipe_poll_thread(mut s: CpDrainState) {
         // zombified, and exit/data events never reached JS (task #21 root
         // cause; strace "passed" only because syscall overhead let waitpid
         // win the race in the last fd-processing iteration).
-        cp_detect_exit_unix(&mut s);
+        if cp_detect_exit_unix(&mut s, &mut buf) {
+            // Exit published (or stood down after a sweep-side reap) — the
+            // thread's contract is complete; the close below reclaims the
+            // fds, which is what turns an orphan holder's later writes into
+            // EPIPE.
+            break;
+        }
 
         // If child has exited and the pipes are drained, we're done.
         if child_exited && pipes_drained {
@@ -4156,10 +4267,16 @@ unsafe extern "C" fn cp_exec(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         rooted!(&in(cx_ref) let cv0 = call_vals[0]);
         rooted!(&in(cx_ref) let cv1 = call_vals[1]);
         rooted!(&in(cx_ref) let cv2 = call_vals[2]);
-        let elems = [&cv0.get(), &cv1.get(), &cv2.get()];
+        // Array of VALUES (not of `&rooted.get()` references): the old
+        // `[&cv0.get(), ...]` built an array of three POINTERS and the
+        // `as_ptr() as *const Value` cast reinterpreted them as three Values —
+        // the callback received stack addresses as NaN-boxed garbage instead
+        // of (error, stdout, stderr) (exec_cb_* reds; correct form is
+        // node_worker_threads.rs's `[data_val.get()]`).
+        let elems = [cv0.get(), cv1.get(), cv2.get()];
         let call_args = HandleValueArray {
             length_: 3,
-            elements_: elems.as_ptr() as *const Value,
+            elements_: elems.as_ptr(),
         };
 
         let cb_val = ObjectValue(callback_r.get());
@@ -4247,6 +4364,20 @@ unsafe fn parse_sync_output_carrier(
     }
 }
 
+/// node parity (v24.19.0 oracle 2026-10-18): every child_process spawn face
+/// (`spawnSync`/`execFile`/`execFileSync`) rejects a string middle argument
+/// with `ERR_INVALID_ARG_TYPE` — "The \"args\" argument must be of type
+/// object. Received type string" — instead of riding it as a single argv
+/// element (execFile* family) or silently dropping it (spawnSync).
+/// Fail-closed: reports the JS error and returns; no spawn happens.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn report_string_args_type_error(cx: *mut JSContext) {
+    JS_ReportErrorUTF8(
+        cx,
+        c"The \"args\" argument must be of type object. Received type string".as_ptr(),
+    );
+}
+
 /// Whether `v` is the args-ARRAY form of the middle spawnSync/execFileSync
 /// argument (numeric `length` present) rather than the options object.
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -4273,12 +4404,37 @@ unsafe fn is_args_array_value(cx: *mut JSContext, v: JSVal) -> bool {
 
 /// Build the JS value for one output face (stdout/stderr) in the requested
 /// carrier: a raw-bytes Buffer, or the decoded String form.
+///
+/// String arms go through UTF-16 code units + `JS_NewUCStringCopyN` (explicit
+/// length): `JS_NewStringCopyZ` reads its input as Latin-1 (one byte = one
+/// char code), so feeding it a Rust `String`'s UTF-8 bytes double-converts
+/// every non-ASCII char ("é" → "Ã©" → 4 chars 195/131/194/169 — the
+/// `bun_api::js_string_from_utf8` mojibake class) and truncates at embedded
+/// NULs. Unit-per-byte arms (latin1/ascii/utf16le) build the units directly,
+/// which also preserves NUL chars node's decoders keep.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn sync_output_jsval(
     cx: *mut JSContext,
     bytes: &[u8],
     carrier: SyncOutputCarrier,
 ) -> JSVal {
+    // UTF-16 units → JSString. NUL-safe; empty → the canonical empty string
+    // (JS_NewUCStringCopyN with len 0 is fine too, but the empty-literal form
+    // matches the crate-wide idiom).
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn js_string_from_units(cx: *mut JSContext, units: &[u16]) -> JSVal {
+        let js_str = if units.is_empty() {
+            JS_NewStringCopyN(cx, c"".as_ptr(), 0)
+        } else {
+            JS_NewUCStringCopyN(cx, units.as_ptr(), units.len())
+        };
+        if js_str.is_null() {
+            UndefinedValue()
+        } else {
+            StringValue(&*js_str)
+        }
+    }
+
     match carrier {
         SyncOutputCarrier::Buffer => {
             let buf_obj = crate::globals::create_buffer_object(cx, bytes);
@@ -4288,49 +4444,28 @@ unsafe fn sync_output_jsval(
                 ObjectValue(buf_obj)
             }
         }
+        // node utf8 = UTF-8 decode with U+FFFD replacement (TextDecoder
+        // semantics — v24.19.0 oracle: UTF-8 "héllo" bytes → "héllo").
         SyncOutputCarrier::Utf8 => {
-            let s = String::from_utf8_lossy(bytes).into_owned();
-            let c_s = ZBox::from_bytes(s.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
-            if js_str.is_null() {
-                UndefinedValue()
-            } else {
-                StringValue(&*js_str)
-            }
+            let units: Vec<u16> = String::from_utf8_lossy(bytes).encode_utf16().collect();
+            js_string_from_units(cx, &units)
         }
+        // node latin1/binary = each byte is one char code (v24.19.0 oracle:
+        // raw C3 A9 → charCodeAt(0)==0xC3, charCodeAt(1)==0xA9).
         SyncOutputCarrier::Latin1 => {
-            let s: String = bytes.iter().map(|&b| b as char).collect();
-            let c_s = ZBox::from_bytes(s.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
-            if js_str.is_null() {
-                UndefinedValue()
-            } else {
-                StringValue(&*js_str)
-            }
+            let units: Vec<u16> = bytes.iter().map(|&b| b as u16).collect();
+            js_string_from_units(cx, &units)
         }
         SyncOutputCarrier::Ascii => {
-            let s: String = bytes.iter().map(|&b| (b & 0x7F) as char).collect();
-            let c_s = ZBox::from_bytes(s.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
-            if js_str.is_null() {
-                UndefinedValue()
-            } else {
-                StringValue(&*js_str)
-            }
+            let units: Vec<u16> = bytes.iter().map(|&b| (b & 0x7F) as u16).collect();
+            js_string_from_units(cx, &units)
         }
         SyncOutputCarrier::Utf16Le => {
             let units: Vec<u16> = bytes
                 .chunks_exact(2)
                 .map(|p| u16::from_le_bytes([p[0], p[1]]))
                 .collect();
-            let s = String::from_utf16_lossy(&units);
-            let c_s = ZBox::from_bytes(s.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
-            if js_str.is_null() {
-                UndefinedValue()
-            } else {
-                StringValue(&*js_str)
-            }
+            js_string_from_units(cx, &units)
         }
     }
 }
@@ -4631,6 +4766,9 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
                     }
                 }
             }
+        } else if args_val.is_string() {
+            report_string_args_type_error(cx);
+            return false;
         }
     }
 
@@ -4814,12 +4952,8 @@ unsafe extern "C" fn cp_exec_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
                 }
             }
         } else if args_val.is_string() {
-            sync_opts.argv.push(
-                crate::js_to_rust_string(cx, args_val)
-                    .as_bytes()
-                    .to_vec()
-                    .into_boxed_slice(),
-            );
+            report_string_args_type_error(cx);
+            return false;
         }
     }
 
@@ -5043,6 +5177,9 @@ unsafe extern "C" fn cp_spawn_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
                     }
                 }
             }
+        } else if args_val.is_string() {
+            report_string_args_type_error(cx);
+            return false;
         }
     }
 
