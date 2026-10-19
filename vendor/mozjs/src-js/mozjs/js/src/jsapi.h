@@ -541,6 +541,16 @@ extern JS_PUBLIC_API JSFunction* JS_NewFunction(JSContext* cx, JSNative call,
 extern JS_PUBLIC_API JSObject* JS_NewEmulatesUndefinedFunction(
     JSContext* cx, JSNative native, unsigned nargs, const char* name);
 
+// Bao extension (REQ-ENG-007, U7): exact proxy internal-slot probe mirroring
+// node:util types.isProxy. js::IsProxy is a public inline in js/public/Proxy.h
+// with no C-linkage of its own, so this thin wrapper gives the embedder a
+// linkable entry point. Mirrors node v24 oracle: function proxies (typeof
+// "function") and object proxies both answer true. CAUTION (link-name trap,
+// same as JS_NewEmulatesUndefinedFunction above): this declaration must stay
+// at GLOBAL scope — moving it inside namespace JS makes bindgen emit a
+// JS::-prefixed mangled link_name that no longer matches the C++ definition.
+extern JS_PUBLIC_API bool JS_IsProxy(JSObject* obj);
+
 namespace JS {
 
 extern JS_PUBLIC_API JSFunction* GetSelfHostedFunction(

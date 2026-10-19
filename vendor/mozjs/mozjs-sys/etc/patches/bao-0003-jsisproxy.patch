@@ -1,0 +1,58 @@
+BAO PATCH bao-0003 — JS_IsProxy (fork patch, REQ-ENG-007 U7)
+Source: authored in the patched vendor tree (vendor/mozjs/src-js/mozjs/js/src/{jsapi.cpp,jsapi.h}).
+Upstream base: jsapi.h side applies on pristine mozjs-153.3.0 (global-scope extern, immediately
+  after the JS_NewEmulatesUndefinedFunction declaration — same anchor region as bao-0002).
+Semantics: exact proxy internal-slot probe for node:util types.isProxy oracle parity. js::IsProxy
+  is a public inline in js/public/Proxy.h (shape->isProxy()) with no C-linkage of its own; this
+  thin JS_PUBLIC_API wrapper gives the embedder a linkable entry point. Function proxies
+  (typeof "function") and object proxies both answer true; non-proxy objects (incl. functions)
+  answer false. Replaces the retired structured-clone heuristic which could not detect function
+  proxies (bao U7 leak-face probe: node v24 100% detection vs bao false-negative).
+CAUTION (link-name trap, same as bao-0002): the jsapi.h declaration must stay at GLOBAL scope —
+  moving it inside namespace JS makes bindgen emit a JS::-prefixed mangled link_name that no
+  longer matches the C++ definition -> link failure. Do not "tidy" it into the namespace.
+The Rust binding side lives in mozjs/src/jsapi2_wrappers.in.rs (bao git tracked; wrap! next to
+  JS_NewEmulatesUndefinedFunction) and is NOT part of this patch. No bindgen blacklist entry is
+  involved: bindgen generates the extern declaration from jsapi.h automatically, and the wrap!
+  macro in wrappers2 emits the Handle-typed inline wrapper around it.
+Replay: paths are SM-tree-relative (-p1); applied after bao-0002 (bao- prefix sorts last).
+  Validate: git apply --check --directory=<SM tree> <this file>.
+
+diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
+--- a/js/src/jsapi.cpp
++++ b/js/src/jsapi.cpp
+@@ -2418,6 +2418,16 @@
+   return obj;
+ }
+
++JS_PUBLIC_API bool JS_IsProxy(JSObject* obj) {
++  // Bao extension (REQ-ENG-007, U7): thin linkable wrapper over the public
++  // inline js::IsProxy (js/public/Proxy.h). Exact internal-slot probe
++  // mirroring node:util types.isProxy — function proxies (typeof "function")
++  // and object proxies both answer true, no structured-clone heuristic.
++  return obj && js::IsProxy(obj);
++}
++
+ JS_PUBLIC_API JSFunction* JS::GetSelfHostedFunction(JSContext* cx,
+                                                     const char* selfHostedName,
+                                                     HandleId id,
+diff --git a/js/src/jsapi.h b/js/src/jsapi.h
+--- a/js/src/jsapi.h
++++ b/js/src/jsapi.h
+@@ -541,6 +541,16 @@
+ extern JS_PUBLIC_API JSObject* JS_NewEmulatesUndefinedFunction(
+     JSContext* cx, JSNative native, unsigned nargs, const char* name);
+
++// Bao extension (REQ-ENG-007, U7): exact proxy internal-slot probe mirroring
++// node:util types.isProxy. js::IsProxy is a public inline in js/public/Proxy.h
++// with no C-linkage of its own, so this thin wrapper gives the embedder a
++// linkable entry point. Mirrors node v24 oracle: function proxies (typeof
++// "function") and object proxies both answer true. CAUTION (link-name trap,
++// same as JS_NewEmulatesUndefinedFunction above): this declaration must stay
++// at GLOBAL scope — moving it inside namespace JS makes bindgen emit a
++// JS::-prefixed mangled link_name that no longer matches the C++ definition.
++extern JS_PUBLIC_API bool JS_IsProxy(JSObject* obj);
++
+ namespace JS {
+
+ extern JS_PUBLIC_API JSFunction* GetSelfHostedFunction(

@@ -591,6 +591,10 @@ wrap!(jsapi: pub fn JS_SetAllNonReservedSlotsToUndefined(obj: HandleObject));
 wrap!(jsapi: pub fn JS_NewFunction(cx: &mut JSContext, call: JSNative, nargs: ::std::os::raw::c_uint, flags: ::std::os::raw::c_uint, name: *const ::std::os::raw::c_char) -> *mut JSFunction);
 // Bao extension: callable object whose typeof is "undefined".
 wrap!(jsapi: pub fn JS_NewEmulatesUndefinedFunction(cx: &mut JSContext, native: JSNative, nargs: ::std::os::raw::c_uint, name: *const ::std::os::raw::c_char) -> *mut JSObject);
+// Bao extension (REQ-ENG-007, U7): exact proxy internal-slot probe (thin
+// linkable wrapper over public inline js::IsProxy). Mirrors node:util
+// types.isProxy — function and object proxies both answer true.
+wrap!(jsapi: pub fn JS_IsProxy(obj: *mut JSObject) -> bool);
 wrap!(jsapi: pub fn JS_GetFunctionId(cx: &JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool);
 wrap!(jsapi: pub fn JS_GetFunctionDisplayId(cx: &JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool);
 wrap!(jsapi: pub fn JS_GetFunctionLength(cx: &mut JSContext, fun: HandleFunction, length: *mut u16) -> bool);

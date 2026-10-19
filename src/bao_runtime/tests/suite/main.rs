@@ -95,6 +95,7 @@ mod fs_crypto_coverage_c11_tests;
 mod fs_deep_tests;
 mod fs_upstream_semantics_tests;
 mod fs_watch_events_tests;
+mod fs_watch_uncaught_tests;
 mod gc_stealth_unit_tests;
 mod gc_store_deep_tests;
 mod globals_coverage_c12_tests;

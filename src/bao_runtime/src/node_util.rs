@@ -78,6 +78,7 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
                     (c"isNull", util_is_null, 1)
                     (c"isObject", util_is_object, 1)
                     (c"isFunction", util_is_function, 1)
+                    (c"isProxy", util_is_proxy, 1)
                     (c"isArray", util_is_array, 1)
                     (c"isDate", util_is_date, 1)
                     (c"isRegExp", util_is_regexp, 1)
@@ -87,41 +88,6 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
                 // Extended types via JS eval — factory function pattern
                 let types_src = r#"(function(t){
 t.isPromise=function(v){return v instanceof Promise};
-t.isProxy=function(v){
-  // SpiderMonkey exposes no public JSAPI `IsProxy` (js::IsProxy is an
-  // inline in js/public/Proxy.h, not C-linkage), so the exact internal-slot
-  // probe node uses is unavailable from the embedder. Proxy semantics are
-  // transparent to JS by design; the one remaining discriminator is the
-  // structured-clone serializer, which rejects proxies with DataCloneError
-  // for the proxy object itself (not for its contents). Restrict the probe
-  // to values that are otherwise trivially cloneable (plain
-  // Object.prototype/null-prototype object, all own data properties
-  // primitive) so a genuinely non-cloneable value (function, WeakMap,
-  // symbol property, accessor) cannot masquerade as a proxy. Function
-  // proxies stay undetected: registered engine limitation.
-  if (v === null || typeof v !== 'object') return false;
-  var proto = Object.getPrototypeOf(v);
-  if (proto !== Object.prototype && proto !== null) return false;
-  var keys = Object.getOwnPropertyNames(v);
-  for (var i = 0; i < keys.length; i++) {
-    var d = Object.getOwnPropertyDescriptor(v, keys[i]);
-    if (!d || !('value' in d)) return false;
-    var x = d.value;
-    // undefined is structured-cloneable; objects/functions/symbols may not
-    // be, so they disqualify the plain-object probe.
-    if (x !== null && typeof x !== 'undefined' &&
-        (typeof x === 'object' || typeof x === 'function' || typeof x === 'symbol')) {
-      return false;
-    }
-  }
-  try { structuredClone(v); return false; }
-  catch (e) {
-    // The bridge reports the node/WHATWG name as a plain Error whose message
-    // is prefixed `DataCloneError:` (globals sc_report_data_clone_error).
-    return !!e && (e.name === 'DataCloneError' ||
-                   String(e.message || '').indexOf('DataCloneError') === 0);
-  }
-};
 t.isMap=function(v){return v instanceof Map};
 t.isSet=function(v){return v instanceof Set};
 t.isWeakMap=function(v){return v instanceof WeakMap};
@@ -2282,6 +2248,33 @@ unsafe extern "C" fn util_is_function(cx: *mut JSContext, argc: u32, vp: *mut JS
     }
     let val = *args.get(0).ptr;
     args.rval().set(BooleanValue(is_function(cx, &val)));
+    true
+}
+
+// U7 (REQ-ENG-007): exact proxy internal-slot probe via the mozjs fork's
+// JS_IsProxy (thin linkable wrapper over the public inline js::IsProxy).
+// Mirrors the node v24 oracle: function proxies (typeof "function") and
+// object proxies both answer true; every non-proxy value (including plain
+// objects, functions, null, primitives) answers false. Replaces the retired
+// structured-clone heuristic, which could not detect function proxies.
+unsafe fn is_proxy(_cx: *mut JSContext, val: &JSVal) -> bool {
+    unsafe {
+        if !val.is_object() {
+            return false;
+        }
+        w2::JS_IsProxy(val.to_object())
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn util_is_proxy(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    let val = *args.get(0).ptr;
+    args.rval().set(BooleanValue(is_proxy(cx, &val)));
     true
 }
 

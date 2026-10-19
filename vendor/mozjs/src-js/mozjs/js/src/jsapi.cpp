@@ -2418,6 +2418,14 @@ JS_PUBLIC_API JSObject* JS_NewEmulatesUndefinedFunction(JSContext* cx,
   return obj;
 }
 
+JS_PUBLIC_API bool JS_IsProxy(JSObject* obj) {
+  // Bao extension (REQ-ENG-007, U7): thin linkable wrapper over the public
+  // inline js::IsProxy (js/public/Proxy.h). Exact internal-slot probe
+  // mirroring node:util types.isProxy — function proxies (typeof "function")
+  // and object proxies both answer true, no structured-clone heuristic.
+  return obj && js::IsProxy(obj);
+}
+
 JS_PUBLIC_API JSFunction* JS::GetSelfHostedFunction(JSContext* cx,
                                                     const char* selfHostedName,
                                                     HandleId id,

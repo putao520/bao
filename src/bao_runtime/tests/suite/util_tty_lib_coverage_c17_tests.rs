@@ -17,7 +17,7 @@
 // | U4 | util.inherits | 只设 `Child.super_` | 另接原型链 → `new C() instanceof P` true | FIXED |
 // | U5 | util.inspect 类族 | 全部落 plain-object/空串 | Map/Set/Date/RegExp/TypedArray/WeakMap/Promise/Symbol/BigInt/class/Error/null-proto 的 node 形态 | FIXED(委托 Bun.inspect + 本地类名前缀) |
 // | U6 | util.format `%i`/`%d`/`%f` | 全走 display | `%i`=parseInt 截断/`%d`=Number/`%f`=parseFloat;`%c` 吞参 | FIXED(余参联结仍为 C8b 已登记分歧,本波未改) |
-// | U7 | util.types.isProxy | constructor 探针,真 proxy false | 真 proxy true;普通对象 false | FIXED(结构化克隆探针;函数 proxy 为引擎面登记限制) |
+// | U7 | util.types.isProxy | constructor 探针,真 proxy false | 真 proxy true;普通对象 false;函数 proxy true(node v24 oracle parity) | FIXED(JS_IsProxy 原生探针——mozjs fork js::IsProxy 薄包装,替代结构化克隆启发式) |
 // | U8 | assert loose deepEqual 文案 | "loosely deeply equal" | "Expected values to be loosely deep-equal:" | FIXED |
 // | U9 | isDeepStrictEqual Rust native | 注册后被 JS 覆盖 = 死注册臂 | — | FIXED(删除死注册,JS 面为唯一实现) |
 // | U10 | assert fail()/equal() 文案 | 全部带 `AssertionError: ` 前缀;equal 走 diff headline | fail 用户消息裸 `boom`;equal 双侧渲染 `==` 联结 | FIXED(用户消息裸传;生成消息前缀按旧约定保留) |
@@ -354,15 +354,32 @@ fn c17_util_oracle_parity() {
                 && util.inherits(5, {}) === undefined
                 && util.inherits({}, 5) === undefined;
         });
-        // U7 — real proxies answer true, plain objects false. (Function
-        // proxies remain an engine-surface limitation: SpiderMonkey exposes
-        // no public IsProxy JSAPI and proxies are otherwise transparent.)
+        // U7 — real proxies answer true, plain objects false. Function
+        // proxies are detected too via the mozjs fork's JS_IsProxy (thin
+        // wrapper over the public inline js::IsProxy), matching the node v24
+        // oracle 100% (probe /tmp/u7-probe: node utilTypesIsProxy=true for
+        // userland `new Proxy(function target, {})`, bao previously false).
         check("types_isproxy_object_proxy", function() {
             var p = new Proxy({}, {});
             return util.types.isProxy(p) === true
                 && util.types.isProxy({}) === false
                 && util.types.isProxy({a: 1}) === false
-                && util.types.isProxy(null) === false;
+                && util.types.isProxy(null) === false
+                && util.types.isProxy(undefined) === false
+                && util.types.isProxy(42) === false
+                && util.types.isProxy('x') === false;
+        });
+        // U7 function-proxy face — oracle parity (node v24 answers true).
+        check("types_isproxy_function_proxy", function() {
+            var fp = new Proxy(function() {}, {});
+            var fp2 = new Proxy(function ctrlTarget() {}, {
+                get: function(t, k) { return t[k]; }
+            });
+            return util.types.isProxy(fp) === true
+                && util.types.isProxy(fp2) === true
+                // Non-proxy functions and callable objects stay false.
+                && util.types.isProxy(function() {}) === false
+                && util.types.isProxy(Math.max) === false;
         });
         check("types_is_module_namespace_object", function() {
             // Math is not a module namespace; a real namespace needs ESM, so
