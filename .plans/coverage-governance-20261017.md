@@ -212,3 +212,17 @@ size/compile 双审计(`.plans/audits-20261017/{size,compile}-audit-report.md`)�
 - 绿形态:同树 fresh `test-ci` bin(farm 卷重建 20m39s)+ `BAO_TEST_BAO_BIN=/t/test-ci/bao` pin → **41/41 PASS(1.08s)**
 - 判定:canary 在 farm 行为正确(按设计拒绝 stale bin);根因=farm 共享卷 bin 陈旧+测量面漏 pin,非代码缺陷。**根治=farm 电池规程:跑前重建/刷新 test-ci bin 并强制 pin**(与 BAO_TEST_BAO_BIN 必带坑同族,memory llvm-cov-pipeline-pitfalls 已记)
 - 连带发现:farm host sudo 密码失效(容器 root 拥有的 bottles 残留经 `docker compose run` 清除);farm 容器无 cargo-nextest(已有登记)
+
+
+## 2026-10-19 覆盖率 farm 重测(#102,battery-5,C1-C17 补测后)
+
+**测量面**:farm 16.18.0.1(fresh test-ci bin 重建 20m39s + fresh tree)+ `CARGO_BUILD_PROFILE=test-ci BAO_TEST_BAO_BIN=/t/test-ci/bao BAO_TEST_NETWORK=1 BAO_TEST_DNS=1 BAO_TEST_REAL_SERVO=1 DISPLAY=:99 cargo llvm-cov nextest -j 8 --run-ignored=all --ignore-run-fail -E 'not test(e2e_real_chrome) and not test(puppeteer)'`。测试 12251 跑(其中 3 红 + 1 SIGSEGV,均为已登记 farm 环境面)。lcov 全文 `/tmp/goalA-coverage-final.lcov`(17.66MB,901 SF)。
+
+| 口径 | LF | LH | line |
+|---|---|---|---|
+| **bao 自有层** | **113579** | **92613** | **81.54%** |
+| 全仓 | 387211 | 148343 | 38.31% |
+
+**对照 10-17 基线 81.59%(LF 150696/LH 122947)**:比例实质持平(LF/LH 双降 = 工具链/分母排除净化面收缩:C10 `#[coverage(off)]` + rustc 插桩行级差异),C1-C17 全部补测的贡献与同期分母净化精确对冲。全仓口径 43.71%→38.31% = vendor 树缩小(结构性),非覆盖回归。**81.54% 为该测量面下 C1-C17 波后的真实水位**。
+
+**测量基建新坑(根治)**:①farm 容器 llvm-tools 旧(v9)不认 rustc nightly-2026-07-20 产出(v10)——`RUSTUP_TOOLCHAIN=<tc> rustup component add llvm-tools-preview` 容器内安装一次即可配套(与 nightly 循环:容器 --rm 即丢,该坑在 farm 测量面必复演,根治=镜像内置或测量脚本前置装);②cargo-llvm-cov 拒绝出 lcov(测试含红)——旁路:llvm-profdata merge + llvm-cov export -instr-profile 手动出 lcov(等价数据);③farm host sudo 密码失效(CLAUDE.md 凭据面过期,root 拥有残留经 `docker compose run` 容器内清除)。
