@@ -199,3 +199,6 @@ size/compile 双审计(`.plans/audits-20261017/{size,compile}-audit-report.md`)�
 
 
 **全量终判(静点树,2026-10-18 23:1x)**:1792 tests / 1791 passed / 1 failed=cp_async_push_exit_latency_100x(已注册负载时序面,隔离绿)——**残留=0**;I 波守卫触发 0(无被假绿掩盖面);G/K 波 node_fs 二次残余新登记 4 项列后续池(readv async 已由 K 修/位移细分/writeFile encoding 已由 K 修/cb 收紧已由 K 修——终态=K 后全清)。
+
+
+**第 6 例 fleet-starvation 根治(2026-10-19,用户令「那去根治失败的问题」)**:终判唯一红 `cp_async_push_exit_latency_100x` 归因闭环——①产品链路读码健全(drain 线程每迭代 waitpid WNOHANG+poll POLLHUP 即醒+exit-tail 1ms 节奏,无量子滞后);②隔离绿(load 48 下 0.174s,30× 余量);③同负载 5/5 全绿(load 52.8)。与 nextest.toml 既有 5 条完全同型(deadline-bound/fleet-only/never isolated)。根治=第 6 条 `threads-required = "num-test-threads"` override(5ms 墙钟预算禁与舰队同跑;零测试代码/断言弱化)。

@@ -139,6 +139,29 @@ threads-required = "num-test-threads"
 filter = 'package(bao-browser) and test(https_popup_fetch_settles_under_ignore_certificate_errors)'
 threads-required = "num-test-threads"
 
+# Test resource isolation (task: e-final full-suite residual, REQ-ENG-007
+# test-infrastructure fidelity, isolated 2026-10-19):
+#
+# `node_child_process::cp_async_push_tests::cp_async_push_exit_latency_100x`
+# spawns 100 × `sh -c "echo x"` children and gates each iteration's
+# exit-push latency (last output byte → `poll_exit_info` observable) under a
+# hard 5ms wall-clock budget. Product chain is sound: the drain thread
+# re-probes waitpid(WNOHANG) every iteration, poll() wakes instantly on
+# POLLHUP, and the exit-only tail re-probes at a 1ms cadence — the isolated
+# run passes with ~30× headroom (0.17s for all 100 iterations) even at load
+# 48. But in the full 1792-test fleet run (with cross-project co-tenants
+# pushing load to ~2.4× oversubscription) the 100 short-lived children's
+# spawn/drain scheduling starved past the 5ms window in exactly one
+# iteration — the sixth instance of the fleet-starvation class documented
+# above (deadline-bound test, fleet-only red, never isolated).
+#
+# Reserve the full test-thread budget so this latency-budgeted battery never
+# co-runs with the fleet (same documented mechanism as the five entries
+# above). No test code or assertions are weakened.
+[[profile.default.overrides]]
+filter = 'package(bun_runtime) and test(cp_async_push_exit_latency_100x)'
+threads-required = "num-test-threads"
+
 # Process-hygiene convention (task: e204 spawn-family process-leak root fix,
 # REQ-LIB-001 test-infrastructure face, 2026-10-13):
 #
