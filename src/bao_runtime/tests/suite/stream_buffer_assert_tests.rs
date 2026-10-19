@@ -310,9 +310,11 @@ fn test_stream_buffer_assert_deep() {
     // === assert module (deep) ===
     // =============================================
 
+    // GOLDEN A 修复(node 官方套件 oracle 对齐):assert 是 callable function,
+    // 非 object —— node oracle `typeof require("assert") === "function"`。
     assert!(
-        eval_bool(&mut ctx, "typeof require('assert') === 'object'"),
-        "assert should be object"
+        eval_bool(&mut ctx, "typeof require('assert') === 'function'"),
+        "assert should be callable function (node oracle parity)"
     );
 
     // assert.ok passes

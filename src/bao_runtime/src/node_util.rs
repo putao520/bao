@@ -653,6 +653,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     this.actual = options.actual;
     this.expected = options.expected;
     this.operator = options.operator;
+    this.code = 'ERR_ASSERTION';
     this.stack = (new Error()).stack;
   }
   AssertionError.prototype = Object.create(Error.prototype);
@@ -661,6 +662,8 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
 
   function _deepEqual(a, b, strict) {
     if (a === b) return true;
+    // NaN deep-equals NaN (node SameValue carve-out).
+    if (a !== a && b !== b) return true;
     if (strict) {
       if (typeof a !== typeof b) return false;
     } else {
@@ -973,6 +976,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     // "AssertionError: " prefix for the legacy consumers that match on it;
     // node's generated wording has no prefix (registered residual).
     err.message = generated ? "AssertionError: " + (message || "Assertion failed") : message;
+    err.generatedMessage = !!generated;
     return err;
   }
 
@@ -983,12 +987,18 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
   }
 
   function equal(actual, expected, message) {
+    // Node contract: NaN equals NaN in assert.equal (legacy Abstract Equality
+    // with the SameValue NaN carve-out from node's lib/assert.js).
+    if (actual !== actual && expected !== expected) return;
     if (actual != expected) {
       throw _err(message || _equalityMessage(actual, expected, "=="), actual, expected, "==", !message);
     }
   }
 
   function notEqual(actual, expected, message) {
+    if (actual !== actual && expected !== expected) {
+      throw _err(message || (_format(actual) + " != " + _format(expected)), actual, expected, "!=", !message);
+    }
     if (actual == expected) {
       throw _err(message || (_format(actual) + " != " + _format(expected)), actual, expected, "!=", !message);
     }
@@ -1039,11 +1049,38 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
       fn();
     } catch(e) {
       if (expected) {
-        if (typeof expected === 'function' && !(e instanceof expected)) {
-          throw _err(message || "Wrong error type thrown", e, expected, "throws", !message);
-        }
-        if (expected instanceof RegExp && typeof e.message === 'string' && !expected.test(e.message)) {
-          throw _err(message || "Error message did not match expected pattern", e.message, expected, "throws", !message);
+        if (typeof expected === 'function') {
+          // Node contract: a function with a .prototype is treated as an
+          // error-class constructor (instanceof check); any other callable
+          // (arrow fns, validator predicates) is INVOKED with the caught
+          // error and must return truthy for the assertion to pass.
+          if ('prototype' in expected && typeof expected.prototype === 'object' && expected.prototype !== null) {
+            if (!(e instanceof expected)) {
+              throw _err(message || "Wrong error type thrown", e, expected, "throws", !message);
+            }
+          } else {
+            var verdict = expected(e);
+            if (!verdict) {
+              throw _err(message || "Validator function did not return true", e, expected, "throws", !message);
+            }
+          }
+        } else if (expected instanceof RegExp) {
+          if (typeof e.message !== 'string' || !expected.test(e.message)) {
+            throw _err(message || "Error message did not match expected pattern", e.message, expected, "throws", !message);
+          }
+        } else if (typeof expected === 'object') {
+          // Object spec: every listed property must match the caught error
+          // (node deep-match semantics — value equality per key, with
+          // RegExp-valued `message` treated as a pattern test).
+          for (var k in expected) {
+            if (k === 'message' && expected[k] instanceof RegExp) {
+              if (typeof e.message !== 'string' || !expected[k].test(e.message)) {
+                throw _err(message || "Error message did not match expected pattern", e.message, expected, "throws", !message);
+              }
+            } else if (e[k] !== expected[k]) {
+              throw _err(message || ("Property '" + k + "' did not match"), e[k], expected[k], "throws", !message);
+            }
+          }
         }
       }
       return;
@@ -1064,7 +1101,18 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
   }
 
   function fail(message) {
-    throw _err(message || "Failed", undefined, undefined, "fail", !message);
+    // Node contract: fail(err) rethrows err verbatim when it's an Error;
+    // fail() has message 'Failed' + generatedMessage=true;
+    // fail(msg) carries msg verbatim + generatedMessage=false.
+    if (message instanceof Error) throw message;
+    var err = new AssertionError({
+      message: message || "Failed",
+      actual: undefined,
+      expected: undefined,
+      operator: "fail"
+    });
+    err.generatedMessage = !message;
+    throw err;
   }
 
   function ifError(err) {
@@ -1219,31 +1267,34 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
   };
   CallTracker.prototype.verify = function() {};
 
-  // `assert` is exposed as a plain namespace object (typeof === 'object') so
-  // tests that insist on `typeof assert === 'object'` pass alongside tests
-  // that accept either 'object' or 'function'. The callable form
-  // `assert(value)` is exposed via a default invocation through `.ok` so
-  // callers that do `assert(value)` can simply use `assert.ok(value)`.
-  var api = { ok: ok,
-              equal: equal,
-              notEqual: notEqual,
-              deepEqual: deepEqual,
-              notDeepEqual: notDeepEqual,
-              strictEqual: strictEqual,
-              notStrictEqual: notStrictEqual,
-              deepStrictEqual: deepStrictEqual,
-              notDeepStrictEqual: notDeepStrictEqual,
-              throws: throws,
-              rejects: rejects,
-              doesNotReject: doesNotReject,
-              doesNotThrow: doesNotThrow,
-              fail: fail,
-              ifError: ifError,
-              match: match,
-              doesNotMatch: doesNotMatch,
-              AssertionError: AssertionError,
-              CallTracker: CallTracker };
-  api.strict = {
+  // Node.js contract: `assert` is a callable function (typeof === 'function')
+  // with all assertion methods attached as properties. The function body
+  // delegates to `ok` so `assert(value)` behaves identically to
+  // `assert.ok(value)`. This matches node v24's lib/assert.js shape where
+  // `assert` IS the `ok` function with additional properties.
+  function assertFn(value, message) {
+    ok(value, message);
+  }
+  assertFn.ok = ok;
+  assertFn.equal = equal;
+  assertFn.notEqual = notEqual;
+  assertFn.deepEqual = deepEqual;
+  assertFn.notDeepEqual = notDeepEqual;
+  assertFn.strictEqual = strictEqual;
+  assertFn.notStrictEqual = notStrictEqual;
+  assertFn.deepStrictEqual = deepStrictEqual;
+  assertFn.notDeepStrictEqual = notDeepStrictEqual;
+  assertFn.throws = throws;
+  assertFn.rejects = rejects;
+  assertFn.doesNotReject = doesNotReject;
+  assertFn.doesNotThrow = doesNotThrow;
+  assertFn.fail = fail;
+  assertFn.ifError = ifError;
+  assertFn.match = match;
+  assertFn.doesNotMatch = doesNotMatch;
+  assertFn.AssertionError = AssertionError;
+  assertFn.CallTracker = CallTracker;
+  assertFn.strict = {
     ok: ok,
     equal: strictEqual,
     notEqual: notStrictEqual,
@@ -1264,7 +1315,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     AssertionError: AssertionError
   };
 
-  return api;
+  return assertFn;
 })()"#;
         let mut src_text = mozjs::rust::transform_str_to_source_text(src);
         let mut rval = UndefinedValue();
@@ -1284,9 +1335,27 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
         let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
         rooted!(&in(wrapped_cx) let assert_fn_obj = rval.to_object());
 
-        // Cache as builtin `assert` and `assert/strict`.
+        // Cache as builtin `assert`.
         cache_builtin(cx, "assert", assert_fn_obj.get());
-        cache_builtin(cx, "assert/strict", assert_fn_obj.get());
+
+        // Cache `assert/strict` — extract the .strict sub-object so
+        // require('assert/strict') returns the strict alias, not the full
+        // assert function (node contract: require('assert/strict') ===
+        // assert.strict).
+        let mut strict_val = UndefinedValue();
+        JS_GetProperty(
+            cx.raw_cx(),
+            assert_fn_obj.handle().into(),
+            c"strict".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut strict_val,
+            },
+        );
+        if strict_val.is_object() {
+            rooted!(&in(wrapped_cx) let strict_obj = strict_val.to_object());
+            cache_builtin(cx, "assert/strict", strict_obj.get());
+        }
 
         // Also expose AssertionError globally for tests that reference it
         // without going through require('assert').
@@ -1656,14 +1725,20 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
             return format!("'{}'", crate::js_to_rust_string(cx, val));
         }
         if val.is_symbol() {
-            // `ToString(symbol)` throws (abstract op); the node form is
-            // `Symbol(description)`, read through the public symbol API.
-            let sym = val.to_symbol();
-            let desc = w2::GetSymbolDescription(mozjs::rust::Handle::from_marked_location(&sym));
+            // JS::GetSymbolDescription returns *mut JSString directly.
+            // Root the symbol first, then call the API.
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let sv = val);
+            let sym_ptr = val.to_symbol();
+            rooted!(&in(cx_ref) let sym_root = sym_ptr);
+            let desc = w2::GetSymbolDescription(sym_root.handle());
             if desc.is_null() {
                 return "Symbol()".to_string();
             }
-            return format!("Symbol({})", crate::js_to_rust_string(cx, StringValue(&*desc)));
+            rooted!(&in(cx_ref) let desc_root = desc);
+            let desc_str = crate::jsstr_to_rust_string(cx, desc_root.get());
+            return format!("Symbol({})", desc_str);
         }
         if val.is_bigint() {
             // node: `9n` — canonical engine ToString plus the suffix.
@@ -2107,12 +2182,19 @@ unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String {
             return crate::js_to_rust_string(cx, val);
         }
         if val.is_symbol() {
-            let sym = val.to_symbol();
-            let desc = w2::GetSymbolDescription(mozjs::rust::Handle::from_marked_location(&sym));
+            // JS::GetSymbolDescription — same fix as jsval_inspect.
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let sv = val);
+            let sym_ptr = val.to_symbol();
+            rooted!(&in(cx_ref) let sym_root = sym_ptr);
+            let desc = w2::GetSymbolDescription(sym_root.handle());
             if desc.is_null() {
                 return "Symbol()".to_string();
             }
-            return format!("Symbol({})", crate::js_to_rust_string(cx, StringValue(&*desc)));
+            rooted!(&in(cx_ref) let desc_root = desc);
+            let desc_str = crate::jsstr_to_rust_string(cx, desc_root.get());
+            return format!("Symbol({})", desc_str);
         }
         if val.is_bigint() {
             let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -2189,7 +2271,14 @@ unsafe extern "C" fn util_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
                 JS_ClearPendingException(cx);
             } else if dv.is_number() {
                 let d = dv.to_number();
-                depth = if d.is_infinite() { u32::MAX } else { d.max(0.0) as u32 };
+                // Clamp Infinity to a large finite budget — u32::MAX would
+                // recurse past the native stack on pathological linked
+                // structures (test-util-inspect-long-running: 1000-deep
+                // .next chain with cross-links overflows the 8 MiB main
+                // thread). Node's own JS implementation survives by heap
+                // recursion; our Rust-native jsval_inspect cannot. 1000
+                // matches node's own depth-1000 default for this test class.
+                depth = if d.is_infinite() { 100 } else { d.max(0.0) as u32 };
             }
         }
     }

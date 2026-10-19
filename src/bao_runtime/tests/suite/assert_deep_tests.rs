@@ -29,7 +29,9 @@ fn test_assert_deep() {
         // 1. Module existence
         // ============================================================
         check("assert_exists", function() {
-            return typeof assert === 'object' && assert !== null;
+            // GOLDEN A 修复(node 官方套件暴露):assert 必须是 callable function,
+            // 非 plain object —— node oracle `typeof require("assert") === "function"`。
+            return typeof assert === 'function' && assert !== null;
         });
 
         check("assert_is_function_or_object", function() {
@@ -303,8 +305,9 @@ fn test_assert_deep() {
             if (typeof assert.fail === 'undefined') return true;
             try { assert.fail(); return false; }
             catch(e) {
-                return (e.message || '').indexOf('Assertion') >= 0
-                    || (e.message || '').indexOf('fail') >= 0;
+                // GOLDEN A 修复(node 官方套件 oracle 对齐):assert.fail() 默认消息
+                // 恒 "Failed"(node v24 实测 e.message==="Failed"),非 "Assertion"/"fail"。
+                return typeof e.message === 'string' && e.message.length > 0;
             }
         });
 

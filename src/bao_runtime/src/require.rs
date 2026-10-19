@@ -34,9 +34,8 @@ pub fn get_builtin(cx: *mut JSContext, name: &str) -> Option<*mut JSObject> {
 }
 
 pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
-    use mozjs::jsval::{ObjectValue, UndefinedValue};
+    use mozjs::jsval::UndefinedValue;
     use mozjs::rooted;
-    use mozjs::rust::wrappers2 as w2;
 
     let assert_obj = gc_store::gc_store_get(unsafe { cx.raw_cx() }, "builtin:assert");
     let Some(assert_obj) = assert_obj else { return };
@@ -44,84 +43,27 @@ pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
         return;
     }
 
-    // (Bao, BCE) Root the cached module BEFORE allocating below —
-    // JS_NewPlainObject can trigger a minor GC that moves the nursery
-    // object, and a bare pointer held across it goes stale (same UB class
-    // as the stamp_promisify_customs SIGSEGV: dangling nursery pointer
-    // dereferenced on first property read).
     rooted!(&in(cx) let assert_root = assert_obj);
 
-    rooted!(&in(cx) let strict_obj = unsafe { w2::JS_NewPlainObject(cx) });
-    if strict_obj.get().is_null() {
-        return;
-    }
-
+    // Extract the .strict sub-object already assembled by the JS-side
+    // install_assert (GOLDEN A defect 1 fix): require('assert/strict')
+    // must return the SAME object as assert.strict (node contract).
+    let mut strict_val = UndefinedValue();
     unsafe {
-        let strict_h = strict_obj.handle();
-
-        for (name, _n_args) in &[
-            ("ok", 1),
-            ("equal", 2),
-            ("notEqual", 2),
-            ("deepEqual", 2),
-            ("notDeepEqual", 2),
-            ("strictEqual", 2),
-            ("notStrictEqual", 2),
-            ("deepStrictEqual", 2),
-            ("throws", 1),
-            ("rejects", 1),
-            ("doesNotThrow", 1),
-            ("fail", 0),
-            ("ifError", 1),
-        ] {
-            let mut fn_val = UndefinedValue();
-            let c_name = ZBox::from_bytes(name.as_bytes());
-            JS_GetProperty(
-                cx.raw_cx(),
-                assert_root.handle().into(),
-                c_name.as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut fn_val,
-                },
-            );
-            if fn_val.is_object() {
-                rooted!(&in(cx) let fn_obj = fn_val.to_object());
-                rooted!(&in(cx) let fn_obj_val = ObjectValue(fn_obj.get()));
-                JS_DefineProperty(
-                    cx.raw_cx(),
-                    strict_h.into(),
-                    c_name.as_ptr(),
-                    fn_obj_val.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-            }
-        }
-
-        let mut ae_val = UndefinedValue();
         JS_GetProperty(
             cx.raw_cx(),
             assert_root.handle().into(),
-            c"AssertionError".as_ptr(),
+            c"strict".as_ptr(),
             MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ae_val,
+                ptr: &mut strict_val,
             },
         );
-        if ae_val.is_object() {
-            rooted!(&in(cx) let ae_obj = ae_val.to_object());
-            rooted!(&in(cx) let ae_val2 = ObjectValue(ae_obj.get()));
-            JS_DefineProperty(
-                cx.raw_cx(),
-                strict_h.into(),
-                c"AssertionError".as_ptr(),
-                ae_val2.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
     }
-
-    cache_builtin(cx, "assert/strict", strict_obj.get());
+    if strict_val.is_object() {
+        rooted!(&in(cx) let strict_obj = strict_val.to_object());
+        cache_builtin(cx, "assert/strict", strict_obj.get());
+    }
 }
 
 /// Install require() on a target object (REQ-SEC-002 parameter injection).

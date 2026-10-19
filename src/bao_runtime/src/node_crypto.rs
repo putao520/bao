@@ -723,8 +723,12 @@ unsafe fn arg_to_string(cx: *mut JSContext, val: JSVal) -> Option<String> {
 // convergence — the two copies were byte-identical).
 #[allow(unsafe_op_in_unsafe_fn)]
 pub(crate) unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
-    let c_str = ZBox::from_bytes(s.as_bytes());
-    let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+    // UTF-16 encode so non-ASCII (e.g. path.win32 Unicode) survives the
+    // JS→Rust→JS round trip. The previous JS_NewStringCopyZ + raw UTF-8
+    // bytes path treated multi-byte UTF-8 as Latin-1, producing mojibake
+    // for every non-ASCII code point (GOLDEN A defect 2).
+    let utf16: Vec<u16> = s.encode_utf16().collect();
+    let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
     if js_str.is_null() {
         args.rval().set(UndefinedValue());
     } else {

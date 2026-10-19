@@ -1052,9 +1052,9 @@ unsafe fn populate_process_object(
         }
     }
 
-    // process.version
+    // process.version — aligned to the node v24 oracle target (REQ-ENG-048).
     {
-        let ver_str = JS_NewStringCopyZ(cx.raw_cx(), c"v18.0.0".as_ptr());
+        let ver_str = JS_NewStringCopyZ(cx.raw_cx(), c"v24.19.0".as_ptr());
         if !ver_str.is_null() {
             rooted!(&in(cx) let v = StringValue(&*ver_str));
             JS_DefineProperty(
@@ -1071,7 +1071,7 @@ unsafe fn populate_process_object(
     {
         rooted!(&in(cx) let ver_obj = JS_NewPlainObject(cx));
         if !ver_obj.get().is_null() {
-            let node_ver = JS_NewStringCopyZ(cx.raw_cx(), c"18.0.0".as_ptr());
+            let node_ver = JS_NewStringCopyZ(cx.raw_cx(), c"24.19.0".as_ptr());
             if !node_ver.is_null() {
                 rooted!(&in(cx) let v = StringValue(&*node_ver));
                 JS_DefineProperty(
