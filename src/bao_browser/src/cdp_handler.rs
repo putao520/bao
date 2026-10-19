@@ -921,6 +921,22 @@ fn cmd_network_enable(page: &PageHandle) -> Result<Value, String> {
                 },
             );
         }
+        servo::BaoNetworkTapEvent::DataReceived {
+            request_id,
+            data_length,
+            encoded_data_length,
+            webview_id: _,
+        } => {
+            send_servo_event(
+                &event_tx,
+                ServoEvent::NetworkDataReceived {
+                    target_id: page_target.clone(),
+                    request_id,
+                    data_length,
+                    encoded_data_length,
+                },
+            );
+        }
     });
     servo::set_network_event_tap(Some(tap));
     Ok(serde_json::json!({}))

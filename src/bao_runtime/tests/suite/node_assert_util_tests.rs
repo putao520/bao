@@ -27,7 +27,7 @@ fn test_node_assert_util() {
         // === assert module ===
         check("assert_exists", function() {
             var assert = require('assert');
-            return typeof assert === 'object' && assert !== null;
+            return typeof assert === 'function' && assert !== null;
         });
 
         check("assert_ok_true", function() {

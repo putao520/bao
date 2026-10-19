@@ -170,7 +170,7 @@ fn test_runtime_deep() {
         check("require_net", function() { return typeof require('net') === 'object'; });
         check("require_dns", function() { return typeof require('dns') === 'object'; });
         check("require_child_process", function() { return typeof require('child_process') === 'object'; });
-        check("require_assert", function() { return typeof require('assert') === 'object'; });
+        check("require_assert", function() { return typeof require('assert') === 'function'; });
         check("require_vm", function() { return typeof require('vm') === 'object'; });
         check("require_tls", function() { return typeof require('tls') === 'object'; });
         check("require_tty", function() { return typeof require('tty') === 'object'; });

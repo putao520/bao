@@ -813,3 +813,208 @@ fn sw_mediated_fetch_loading_finished_reports_sw_body_bytes() {
          and this test proved nothing"
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// 字节级中间事件 + data: 载具链判别锁(REQ-CDP-006 dataReceived/data: 链
+// 合同):Network.dataReceived 每 chunk 送达边 + data:-URL 导航四事件全链
+// (Chrome oracle 实测序列同形)。
+// ══════════════════════════════════════════════════════════════════════
+
+/// plain(无 Content-Encoding)HTTP 响应的 `Network.dataReceived`:
+/// `dataLength == encodedDataLength == 发送字节数`(plain 面 wire == decoded
+/// 的恒等面,同 loadingFinished 的判别律)。
+///
+/// @trace REQ-CDP-006 [level:e2e]
+#[test]
+fn plain_body_data_received_reports_chunk_bytes_equal_to_body_len() {
+    let _registry_guard = REGISTRY_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let plain_body = minimal_page("datarecv-plain-probe");
+    let wire_len = plain_body.len() as u64;
+    let fixture = RawBytesFixture::spawn(
+        "datarecv-plain-fixture",
+        vec![("/drplain", vec![], plain_body)],
+    );
+
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: None,
+            ..Default::default()
+        })
+        .expect("page");
+    let _ = page;
+
+    let slot: VerdictSlot = Arc::new(Mutex::new(None));
+    let waiter = spawn_finish_waiter_for_event(slot.clone(), fixture.url("/drplain"), "Network.dataReceived");
+
+    let params = pump_to_verdict(&runtime, slot);
+    let _ = waiter.join();
+
+    assert_eq!(
+        params["dataLength"],
+        json!(wire_len),
+        "plain response: dataLength must be the decoded chunk total == body \
+         bytes, got: {params}"
+    );
+    assert_eq!(
+        params["encodedDataLength"],
+        json!(wire_len),
+        "plain response: encodedDataLength (wire-counter delta) must equal the \
+         body bytes when there is no transfer encoding, got: {params}"
+    );
+    assert!(
+        params["requestId"].is_string() && !params["requestId"].as_str().unwrap().is_empty(),
+        "dataReceived must carry the request's real requestId, got: {params}"
+    );
+}
+
+/// data:-URL 导航全链:四事件(requestWillBeSent → responseReceived →
+/// dataReceived → loadingFinished)逐一送达,且字节真值跨面一致。
+/// Chrome oracle 对 data: 导航实测同序列(修前 bao 对 data: 零 request/
+/// terminal 事件——本锁即该缺口的回归钉)。
+///
+/// 收集形态=四阶段顺序等待,每阶段先注册等待再导航(300ms 导航线程纪律),
+/// 该阶段事件必来自本阶段导航(前一导航的同名事件已在此之前流过,未注册
+/// 的等待器不接收 tap one-shot 交付)。每阶段 payload 字节数不同,
+/// dataReceived.dataLength / loadingFinished.encodedDataLength 与本阶段
+/// payload 长度逐格相等,即字节真值贯通全链的跨面绑定证明。
+/// (Network.enable 是进程级单 tap last-enable-wins,多连接并行等待会互
+/// 相饿死;memory:// 的 recv_event 队列仅 screencast 面 direct push,
+/// Network 事件不经它——顺序单等待是唯一无竞态面。)
+///
+/// @trace REQ-CDP-006 [level:e2e]
+#[test]
+fn data_url_navigation_announces_full_network_event_chain() {
+    let _registry_guard = REGISTRY_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: None,
+            ..Default::default()
+        })
+        .expect("page");
+    let _ = page;
+
+    // 每阶段独立 payload(填充位数各异 → 字节数各异)= 该阶段导航的字节
+    // 指纹;阶段断言以本阶段字节数判别,防跨阶段事件串扰假绿。
+    let stage_payload =
+        |n: usize| format!("<html><body>{}data-chain</body></html>", "x".repeat(n * 7));
+    let stage_url = |n: usize| format!("data:text/html,{}", stage_payload(n));
+
+    // 阶段 runner:注册等待(event,裸 CDP method 或 Playwright 名)→
+    // 300ms 后导航本阶段 URL → 泵至裁决。
+    let run_stage = |slot: &VerdictSlot, event: &'static str, url: String| {
+        let waiter = spawn_finish_waiter_for_event(Arc::clone(slot), url, event);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let outcome = loop {
+            if let Some(outcome) = slot.lock().unwrap().take() {
+                break outcome;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "stage event {event} never resolved within the 30s pump window"
+            );
+            runtime.pump_cdp(Duration::from_millis(10));
+        };
+        let _ = waiter.join();
+        outcome
+            .map_err(|e| format!("waitForEvent({event}) did not resolve: {e}"))
+            .expect("chain stage must resolve")
+    };
+
+    let stage = |n: usize| (stage_payload(n).len() as u64, stage_url(n));
+
+    // 阶段 1:requestWillBeSent — data: URL 本体入请求面(修前零发射格)。
+    let slot: VerdictSlot = Arc::new(Mutex::new(None));
+    let (len1, url1) = stage(1);
+    let req = run_stage(&slot, "Network.requestWillBeSent", url1);
+    assert!(
+        req["request"]["url"].as_str().unwrap_or("").starts_with("data:"),
+        "requestWillBeSent must announce the data: URL itself, got: {req}"
+    );
+    assert_eq!(
+        req["request"]["method"], "GET",
+        "data: navigation is a GET, got: {req}"
+    );
+
+    // 阶段 2:responseReceived — 状态 200 面同步到达。
+    let slot: VerdictSlot = Arc::new(Mutex::new(None));
+    let (len2, url2) = stage(2);
+    let resp = run_stage(&slot, "Network.responseReceived", url2);
+    assert_eq!(
+        resp["response"]["status"], 200,
+        "data: response is 200, got: {resp}"
+    );
+    assert!(
+        resp["requestId"].as_str().unwrap_or("").len() > 0,
+        "responseReceived carries the navigation requestId, got: {resp}"
+    );
+
+    // 阶段 3:dataReceived — dataLength == encodedDataLength == 本阶段
+    // payload 字节数(inline 体无 transfer encoding,wire 即 payload)。
+    let slot: VerdictSlot = Arc::new(Mutex::new(None));
+    let (len3, url3) = stage(3);
+    let data = run_stage(&slot, "Network.dataReceived", url3);
+    assert_eq!(
+        data["dataLength"],
+        json!(len3),
+        "dataReceived.dataLength must equal THIS navigation's payload bytes, got: {data}"
+    );
+    assert_eq!(
+        data["encodedDataLength"],
+        json!(len3),
+        "dataReceived.encodedDataLength must equal the payload (inline data: \
+         body has no transfer encoding), got: {data}"
+    );
+
+    // 阶段 4:loadingFinished — scheme 终态缝携同导航体字节真值。
+    let slot: VerdictSlot = Arc::new(Mutex::new(None));
+    let (len4, url4) = stage(4);
+    let fin = run_stage(&slot, "requestfinished", url4);
+    assert_eq!(
+        fin["encodedDataLength"],
+        json!(len4),
+        "loadingFinished must carry the data: body byte total (scheme terminal \
+         seam), got: {fin}"
+    );
+}
+/// 事件名参数化的 finish 等待线程(同 spawn_finish_waiter 形态;`event`
+/// 接受裸 CDP method 或 Playwright 名)。
+fn spawn_finish_waiter_for_event(
+    slot: VerdictSlot,
+    nav_url: String,
+    event: &'static str,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut browser = match Browser::connect("memory://bao") {
+            Ok(b) => b,
+            Err(e) => {
+                *slot.lock().unwrap() = Some(Err(format!("connect: {e}")));
+                return;
+            },
+        };
+        if let Err(e) = browser.send_command("Network.enable", json!({})) {
+            *slot.lock().unwrap() = Some(Err(format!("Network.enable: {e}")));
+            return;
+        }
+        // 导航线程:注册(waitForEvent 落 tap)先于导航事件。
+        let navigator_url = nav_url.clone();
+        let navigator = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let Ok(mut b) = Browser::connect("memory://bao") else {
+                eprintln!("[datarecv] navigator connect failed");
+                return;
+            };
+            if let Err(e) = b.send_command("Page.navigate", json!({ "url": navigator_url })) {
+                eprintln!("[datarecv] navigate failed: {e}");
+            }
+        });
+        match browser.send_command("Page.waitForEvent", json!({ "event": event, "timeout": 20000 })) {
+            Ok(v) => *slot.lock().unwrap() = Some(Ok(v)),
+            Err(e) => *slot.lock().unwrap() = Some(Err(format!("waitForEvent({event}): {e}"))),
+        }
+        let _ = navigator.join();
+    })
+}

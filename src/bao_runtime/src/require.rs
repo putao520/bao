@@ -778,16 +778,6 @@ unsafe fn get_prop(cx: *mut JSContext, obj: *mut JSObject, name: *const i8) -> V
     val
 }
 
-/// Helper: read a property from a JS object stored in a Value.
-/// Returns UndefinedValue if the Value is not an object.
-#[inline]
-unsafe fn get_prop_from_val(cx: *mut JSContext, val: Value, name: *const i8) -> Value {
-    if !val.is_object() {
-        return UndefinedValue();
-    }
-    get_prop(cx, val.to_object(), name)
-}
-
 /// BUG-ENG-365: Heuristic detect whether a file is an ESM module (vs CJS).
 ///
 /// Rules:
@@ -976,6 +966,163 @@ fn path_to_file_url_require(path: &Path) -> String {
     out
 }
 
+/// Normalize a leading shebang (`#!`) to a line comment (`//`) — byte length
+/// and line count identical. A HashbangComment is only valid at the very
+/// start of a Script source; inside the CommonJS function wrapper it would
+/// be a SyntaxError, so it is normalized before wrapping (Node's wrapSafe
+/// handles the shebang the same way).
+pub(crate) fn normalize_cjs_shebang(source: &str) -> String {
+    match source.strip_prefix("#!") {
+        Some(rest) => {
+            let mut buf = String::with_capacity(source.len());
+            buf.push_str("//");
+            buf.push_str(rest);
+            buf
+        }
+        None => source.to_string(),
+    }
+}
+
+/// Node v24 official CommonJS wrapper expression — oracle:
+/// `require("module").wrapper === ["(function (exports, require, module,
+/// __filename, __dirname) { ", "\n});"]`. The prefix carries NO trailing
+/// newline, so line N of the module body reports as line N of the module
+/// file in stack traces (byte parity with Node).
+fn wrap_cjs_function_source(source: &str) -> String {
+    let source = normalize_cjs_shebang(source);
+    let mut wrapped = String::with_capacity(source.len() + 96);
+    wrapped.push_str("(function (exports, require, module, __filename, __dirname) { ");
+    wrapped.push_str(&source);
+    wrapped.push_str("\n});");
+    wrapped
+}
+
+/// Compile `source` as a CommonJS module body (Node's official function
+/// wrapper) and execute it with the wrapper arguments
+/// `(exports, require, module, __filename, __dirname)` and `this = exports`.
+///
+/// `exports_obj` / `module_obj` must be two fresh plain objects; `exports`
+/// is defined as `module.exports` here, and after the call the caller reads
+/// back `module.exports` (the body may rebind it — Node semantics).
+///
+/// Returns `None` on compile or call failure with the pending exception
+/// cleared — the loader's neutral "Failed to load module" surface is
+/// unchanged.
+///
+/// # Safety
+/// `cx` must be a live JSContext of the calling thread with a current global.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn eval_cjs_body(
+    cx: *mut JSContext,
+    source: &str,
+    path: &Path,
+    exports_obj: *mut JSObject,
+    module_obj: *mut JSObject,
+) -> Option<Value> {
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let exports_root = exports_obj);
+    rooted!(&in(wrapped_cx) let module_root = module_obj);
+
+    // module.exports = exports (Node's initial alias; the body may rebind it).
+    rooted!(&in(wrapped_cx) let ev = mozjs::jsval::ObjectValue(exports_obj));
+    JS_DefineProperty(
+        cx,
+        module_root.handle().into(),
+        c"exports".as_ptr(),
+        ev.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    // Compile the wrapper function expression. The compile filename is the
+    // real module path so stack traces report module frames under the module
+    // file; wrapper line numbers equal body line numbers (no offset).
+    let filename_str = path.to_string_lossy().into_owned();
+    let c_filename = ZBox::from_vec(filename_str.clone().into_bytes());
+    let opts = NewCompileOptions(cx, c_filename.as_ptr(), 1);
+    if opts.is_null() {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    let wrapped = wrap_cjs_function_source(source);
+    let mut src = mozjs::rust::transform_str_to_source_text(&wrapped);
+    let mut fn_rval = UndefinedValue();
+    let compiled = mozjs_sys::jsapi::JS::Evaluate2(
+        cx,
+        opts,
+        &mut src,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut fn_rval,
+        },
+    );
+    mozjs::glue::DeleteCompileOptions(opts);
+    if !compiled || !fn_rval.is_object() {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    rooted!(&in(wrapped_cx) let fn_root = fn_rval);
+
+    // The module's `require`: the global require function (installed by
+    // install_require) — REQUIRE_DIR supplies the requiring module's
+    // directory for nested resolution.
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    rooted!(&in(wrapped_cx) let global_root = global);
+    let require_val = get_prop(cx, global, c"require".as_ptr());
+
+    // String arguments (allocated with every object pointer already rooted).
+    let dirname_str = path
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let c_filename_arg = ZBox::from_bytes(filename_str.into_bytes());
+    let filename_js = JS_NewStringCopyZ(cx, c_filename_arg.as_ptr());
+    let c_dirname_arg = ZBox::from_bytes(dirname_str.into_bytes());
+    let dirname_js = JS_NewStringCopyZ(cx, c_dirname_arg.as_ptr());
+    if filename_js.is_null() || dirname_js.is_null() {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    rooted!(&in(wrapped_cx) let filename_root = mozjs::jsval::StringValue(&*filename_js));
+    rooted!(&in(wrapped_cx) let dirname_root = mozjs::jsval::StringValue(&*dirname_js));
+
+    // Node calls compiledWrapper.call(exports, exports, require, module,
+    // filename, dirname) — `this` = exports.
+    rooted!(&in(wrapped_cx) let exports_val_root = mozjs::jsval::ObjectValue(exports_obj));
+    rooted!(&in(wrapped_cx) let module_val_root = mozjs::jsval::ObjectValue(module_obj));
+    rooted!(&in(wrapped_cx) let require_root = require_val);
+    let args = [
+        *exports_val_root,
+        *require_root,
+        *module_val_root,
+        *filename_root,
+        *dirname_root,
+    ];
+    let arg_array = HandleValueArray {
+        length_: args.len(),
+        elements_: args.as_ptr(),
+    };
+    let mut call_rval = UndefinedValue();
+    let called = JS_CallFunctionValue(
+        cx,
+        exports_root.handle().into(),
+        fn_root.handle().into(),
+        &arg_array,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut call_rval,
+        },
+    );
+    if !called {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    Some(call_rval)
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn load_cjs_module(
     cx: *mut JSContext,
@@ -983,9 +1130,20 @@ unsafe fn load_cjs_module(
     path: &Path,
     _base_dir: Option<&Path>,
 ) -> Option<Value> {
-    // Create exports object and set on global immediately (roots via global's property table).
+    // CJS module-body scoping (REQ-ENG-048 interning root-fix): Node wraps
+    // every CommonJS body in its official function wrapper (v24 oracle:
+    // `require("module").wrapper`) so module-level declarations are
+    // FUNCTION-LOCAL. The previous model evaluated the raw source as a
+    // global script: top-level const/let/class were interned into the
+    // realm's PERSISTENT global lexical environment (the same-name const in
+    // any later script → SyntaxError → "Failed to load module"), and
+    // top-level var/function leaked across modules as global properties.
     let exports_obj = JS_NewPlainObject(cx);
     if exports_obj.is_null() {
+        return None;
+    }
+    let module_obj = JS_NewPlainObject(cx);
+    if module_obj.is_null() {
         return None;
     }
 
@@ -997,135 +1155,30 @@ unsafe fn load_cjs_module(
     let saved_dir = REQUIRE_DIR.with(|d| d.borrow().clone());
     REQUIRE_DIR.with(|d| *d.borrow_mut() = Some(dir.to_path_buf()));
 
-    let global = CurrentGlobalOrNull(cx);
-    if global.is_null() {
-        REQUIRE_DIR.with(|d| *d.borrow_mut() = saved_dir);
-        return None;
-    }
+    let evaluated = eval_cjs_body(cx, source, path, exports_obj, module_obj);
 
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let global_root = global);
-
-    // Save old globals so we can restore them after evaluation.
-    let old_exports = get_prop(cx, global, c"exports".as_ptr());
-    let old_module = get_prop(cx, global, c"module".as_ptr());
-
-    // Set exports on global — this makes it GC-reachable via global's property table.
-    {
-        rooted!(&in(wrapped_cx) let ev = mozjs::jsval::ObjectValue(exports_obj));
-        JS_SetProperty(
-            cx,
-            global_root.handle().into(),
-            c"exports".as_ptr(),
-            ev.handle().into(),
-        );
-    }
-
-    // Create module object — JS_NewPlainObject CAN trigger GC.
-    // exports is safe because it's reachable from global, and SpiderMonkey updates
-    // all heap pointers (property values) when objects move.
-    {
-        let module_obj = JS_NewPlainObject(cx);
-        if !module_obj.is_null() {
-            rooted!(&in(wrapped_cx) let mv = mozjs::jsval::ObjectValue(module_obj));
-            JS_SetProperty(
-                cx,
-                global_root.handle().into(),
-                c"module".as_ptr(),
-                mv.handle().into(),
-            );
-
-            // Re-read exports from global to get a fresh pointer after potential GC.
-            // GC updates global.exports if the object moved; raw local `exports_obj` is stale.
-            let fresh_exports = get_prop(cx, global, c"exports".as_ptr());
-            if fresh_exports.is_object() {
-                rooted!(&in(wrapped_cx) let fresh_exp_obj = fresh_exports.to_object());
-                rooted!(&in(wrapped_cx) let fev = mozjs::jsval::ObjectValue(fresh_exp_obj.get()));
-                // Re-read module from global for the same reason.
-                let fresh_module = get_prop(cx, global, c"module".as_ptr());
-                if fresh_module.is_object() {
-                    rooted!(&in(wrapped_cx) let fm = fresh_module.to_object());
-                    JS_DefineProperty(
-                        cx,
-                        fm.handle().into(),
-                        c"exports".as_ptr(),
-                        fev.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
-            }
-        }
-    }
-
-    // Compile and evaluate the module source.
-    let filename_str = path.to_string_lossy().into_owned();
-    let c_filename = ZBox::from_vec(filename_str.into_bytes());
-    let opts = NewCompileOptions(cx, c_filename.as_ptr(), 1);
-    if opts.is_null() {
-        JS_DeleteProperty1(cx, global_root.handle().into(), c"exports".as_ptr());
-        JS_DeleteProperty1(cx, global_root.handle().into(), c"module".as_ptr());
-        REQUIRE_DIR.with(|d| *d.borrow_mut() = saved_dir);
-        return None;
-    }
-
-    let mut src = mozjs::rust::transform_str_to_source_text(source);
-    let mut rval = UndefinedValue();
-    let rval_h = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut rval,
-    };
-    let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_h);
-    mozjs::glue::DeleteCompileOptions(opts);
-
-    // IMPORTANT: read module.exports BEFORE restoring old globals.
-    // After Evaluate2 (which can trigger GC), re-read from global to get fresh pointers.
-    let module_after_eval = get_prop(cx, global, c"module".as_ptr());
-    let final_exports = get_prop_from_val(cx, module_after_eval, c"exports".as_ptr());
-
-    // Restore old globals.
-    JS_DeleteProperty1(cx, global_root.handle().into(), c"exports".as_ptr());
-    JS_DeleteProperty1(cx, global_root.handle().into(), c"module".as_ptr());
-    if !old_exports.is_undefined() {
-        rooted!(&in(wrapped_cx) let restore_exports = old_exports);
-        JS_SetProperty(
-            cx,
-            global_root.handle().into(),
-            c"exports".as_ptr(),
-            restore_exports.handle().into(),
-        );
-    }
-    if !old_module.is_undefined() {
-        rooted!(&in(wrapped_cx) let restore_module = old_module);
-        JS_SetProperty(
-            cx,
-            global_root.handle().into(),
-            c"module".as_ptr(),
-            restore_module.handle().into(),
-        );
-    }
-
-    if !ok {
-        JS_ClearPendingException(cx);
-        REQUIRE_DIR.with(|d| *d.borrow_mut() = saved_dir);
-        return None;
-    }
-
-    mozjs_sys::jsapi::js::RunJobs(cx);
     REQUIRE_DIR.with(|d| *d.borrow_mut() = saved_dir);
 
-    // module.exports was set (possibly to a primitive) — return it.
-    if !final_exports.is_undefined() {
-        return Some(final_exports);
-    }
+    evaluated?;
 
-    // Fallback: re-read exports from global (in case module.exports was never set
-    // but the module modified `exports.x = ...` via the global reference).
-    let fallback = get_prop(cx, global, c"exports".as_ptr());
-    if !fallback.is_undefined() {
-        return Some(fallback);
-    }
-
-    Some(mozjs::jsval::UndefinedValue())
+    // module.exports (possibly rebound by the body — `module.exports = …`)
+    // is the module's public value. Both objects are module-local now: no
+    // global save/restore dance, no cross-module global pollution, and a
+    // nested require during the call can no longer observe this module's
+    // partially-initialized exports/module through the global object.
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let module_root = module_obj);
+    let mut final_exports = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        module_root.handle().into(),
+        c"exports".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut final_exports,
+        },
+    );
+    Some(final_exports)
 }
 
 fn resolve_specifier(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {

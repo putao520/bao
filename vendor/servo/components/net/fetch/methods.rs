@@ -987,15 +987,16 @@ async fn wait_for_response(
     context: &FetchContext,
 ) {
     // BAO PATCH (REQ-CDP-006): scheme-response terminal seam. Non-HTTP(S)
-    // scheme fetches (about:/blob:/file:/chrome:/custom protocol) settle
+    // scheme fetches (data:/about:/blob:/file:/chrome:/custom protocol) settle
     // without a network leg, so the network leg's own completion/failure seams
     // never fire — the scheme path's one terminal Network event is emitted
     // here, at the point the body settles (the byte total is the actual body
-    // size, never a fabricated or zero placeholder). `data:` URLs are skipped,
-    // mirroring the request-side tap (no `requestWillBeSent` is announced for
-    // data:, so no terminal event may be announced either — a terminal without
-    // its request would be an orphan on the CDP face).
-    let scheme_gate = !matches!(request.current_url().scheme(), "http" | "https" | "data");
+    // size, never a fabricated or zero placeholder). `data:` URLs are
+    // observed on this face too: Chrome announces the full event chain for
+    // data: navigations, and the request-side tap (which once skipped data:)
+    // now announces their `requestWillBeSent`, so the terminal event here is
+    // the chain's closing edge, not an orphan.
+    let scheme_gate = !matches!(request.current_url().scheme(), "http" | "https");
     let scheme_request_id = scheme_gate.then(|| request.id.0.to_string());
     let scheme_webview_id = scheme_gate.then(|| request.target_webview_id.map(|id| id.to_string()));
     if let Some(ref mut ch) = *done_chan {
@@ -1014,7 +1015,20 @@ async fn wait_for_response(
                     if let Some(body) = devtools_body.as_mut() {
                         body.extend(&bytes);
                     }
+                    let chunk_len = bytes.len() as u64;
                     target.process_response_chunk(request, bytes);
+                    // BAO PATCH (REQ-CDP-006): the streamed scheme body's
+                    // per-chunk `Network.dataReceived` — an inline scheme
+                    // payload has no transfer encoding, so the wire bytes for
+                    // the chunk are the chunk itself.
+                    if let Some(ref request_id) = scheme_request_id {
+                        crate::http_loader::bao_emit_network_data_received_tap(
+                            request_id.clone(),
+                            scheme_webview_id.clone().flatten(),
+                            chunk_len,
+                            chunk_len,
+                        );
+                    }
                 },
                 Some(Data::Error(network_error)) => {
                     if network_error == NetworkError::DecompressionError {
@@ -1069,6 +1083,19 @@ async fn wait_for_response(
                     // Now that we've replayed the entire cached body,
                     // notify the DevTools server with the full Response.
                     send_response_to_devtools(request, context, response, Some(vec.clone()));
+                }
+                // BAO PATCH (REQ-CDP-006): the inline-settled scheme body's
+                // one `Network.dataReceived` — the body replays as a single
+                // chunk and an inline scheme payload has no transfer encoding,
+                // so the wire bytes for it are the payload itself (data:
+                // navigations carry this edge in Chrome's event chain).
+                if let Some(ref request_id) = scheme_request_id {
+                    crate::http_loader::bao_emit_network_data_received_tap(
+                        request_id.clone(),
+                        scheme_webview_id.clone().flatten(),
+                        vec.len() as u64,
+                        vec.len() as u64,
+                    );
                 }
             },
             ResponseBody::Done(_) | ResponseBody::Empty => {},

@@ -162,6 +162,30 @@ fn e2e_network_loading_finish_to_loading_finished() {
 }
 
 #[test]
+// @trace REQ-CDP-006 [event:NetworkEvent] [level:integration]
+fn e2e_network_data_received_to_data_received() {
+    // Arrange — 键形与 Chrome oracle 逐字段同形(requestId/timestamp/
+    // dataLength/encodedDataLength)。
+    let ev = ServoEvent::NetworkDataReceived {
+        // Act
+        target_id: "T-NET".into(),
+        request_id: "R3".into(),
+        data_length: 41,
+        encoded_data_length: 178,
+    };
+    let out = translate(ev);
+    let params = assert_event(&out[0], "Network.dataReceived", "T-NET");
+    // Assert
+    assert_eq!(params["requestId"], "R3");
+    assert_eq!(params["dataLength"], 41);
+    assert_eq!(params["encodedDataLength"], 178);
+    assert!(
+        params["timestamp"].is_number(),
+        "dataReceived carries a timestamp, got: {params}"
+    );
+}
+
+#[test]
 // @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn e2e_network_loading_fail_to_loading_failed() {
     // Arrange

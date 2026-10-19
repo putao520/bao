@@ -503,10 +503,13 @@ macro_rules! thread_local_ast_store {
                 if disable_reset_get() || !memory_allocator().is_null() {
                     return;
                 }
-                // Caller contract — instance is set when reset() is called.
-                Backing::reset(
-                    instance_mut().expect(concat!($label, " Store::reset: instance not set")),
-                );
+                // A thread that never created its store has nothing to rewind —
+                // same semantics as `Backing::reset` on a fresh store (`head` is
+                // `None`). Not an invariant violation (REQ-ENG-048: any thread's
+                // first parse may arrive without a prior `create()`).
+                if let Some(store) = instance_mut() {
+                    Backing::reset(store);
+                }
             }
 
             /// Zig: `Data.Store.disable_reset = b;` — toggled by long-lived
@@ -533,11 +536,16 @@ macro_rules! thread_local_ast_store {
 
             #[inline]
             pub(crate) fn assert() {
-                if cfg!(debug_assertions) {
-                    if instance().is_null() && memory_allocator().is_null() {
-                        unreachable!("Store must be init'd");
-                    }
-                }
+                // Self-heal, not tripwire: an uninitialized thread holds a valid
+                // empty arena slot, and the set of entry points that can
+                // construct AST nodes (resolver `package.json` parses, runtime
+                // bridges, …) is not enumerable. The Zig original relies on
+                // open-coding `Store.create()` at every CLI entry — a convention
+                // that does not port to an embeddable runtime (bao: a fresh
+                // thread's first JSON parse crashed here, REQ-ENG-048).
+                // `create()` is idempotent and no-ops once an
+                // `ASTMemoryAllocator` override is installed.
+                create();
             }
 
             #[inline]
@@ -547,8 +555,18 @@ macro_rules! thread_local_ast_store {
                     return ma.append(value);
                 }
                 Disabler::assert();
-                // assert() guarantees instance is non-null on this thread; slab
-                // returns stable addresses until reset().
+                // Lazy self-init (REQ-ENG-048): a thread's first `append` may
+                // arrive with no prior `create()` (e.g. bao's require-resolver
+                // parsing a sibling `package.json` on the JS thread before any
+                // parse entry ran). Materialise the arena instead of panicking;
+                // `create()` is idempotent.
+                if instance().is_null() {
+                    create();
+                }
+                // Non-null post-`create()`: the allocator branch above already
+                // returned, and `create()` installs the instance on this
+                // thread's TLS. The slab returns stable addresses until
+                // reset(); the trailing expect is structural fail-closed.
                 $crate::StoreRef::from_non_null(Backing::append(
                     instance_mut().expect(concat!($label, " Store must be init'd")),
                     value,
@@ -559,3 +577,81 @@ macro_rules! thread_local_ast_store {
 }
 
 // ported from: src/js_parser/ast/NewStore.zig
+
+// ───────────────────────────────────────────────────────────────────────────
+// Tests — thread-local Store lifecycle (REQ-ENG-048 regression pins).
+//
+// The `INSTANCE` slots are thread-local, so each test runs its body on a
+// fresh `std::thread`: that is the only way to observe the "never
+// initialized" state deterministically (libtest/nextest pool threads may
+// have already run another test that called `initialize_store()`).
+#[cfg(test)]
+mod store_lifetime_tests {
+    use crate::{Expr, ExprData, Loc, S, Stmt};
+
+    /// bao's require-resolver parses a sibling `package.json` on the JS
+    /// thread before any parse entry ran — exactly this shape. Pre-fix the
+    /// first `Expr::init` panicked (`Store must be init'd`) and, unwinding
+    /// across the VM dispatch boundary, aborted as SIGSEGV.
+    #[test]
+    fn expr_init_on_uninitialized_thread_self_initializes() {
+        std::thread::spawn(|| {
+            // No `initialize_store()` on this thread.
+            let e = Expr::init(crate::E::EString::init(b"regression-pin"), Loc::EMPTY);
+            match e.data {
+                ExprData::EString(s) => assert!(
+                    s.eql_bytes(b"regression-pin"),
+                    "EString payload must read back from the self-initialized slab"
+                ),
+                _ => panic!("expected EString data"),
+            }
+        })
+        .join()
+        .expect("Expr::init on a fresh thread must not panic");
+    }
+
+    #[test]
+    fn stmt_alloc_on_uninitialized_thread_self_initializes() {
+        std::thread::spawn(|| {
+            let _s = Stmt::alloc(S::Empty {}, Loc::EMPTY);
+        })
+        .join()
+        .expect("Stmt::alloc on a fresh thread must not panic");
+    }
+
+    /// `reset()` on a never-created store is equivalent to `Backing::reset`
+    /// on a fresh store (`head` is `None`) — a no-op, not an invariant
+    /// violation. Pre-fix: `"Store::reset: instance not set"` expect-panic.
+    #[test]
+    fn reset_on_uninitialized_thread_is_noop() {
+        std::thread::spawn(|| {
+            crate::expr::data::Store::reset();
+            crate::stmt::data::Store::reset();
+        })
+        .join()
+        .expect("Store::reset on a fresh thread must be a no-op");
+    }
+
+    /// `deinit()` clears the slot; the next `append` must re-create it
+    /// (self-heal must not be a one-shot). Nodes allocated before `deinit()`
+    /// dangle once the slab is freed (debug builds poison freed blocks with
+    /// 0xAA), so they are never read after `deinit()`.
+    #[test]
+    fn deinit_then_append_reinitializes() {
+        std::thread::spawn(|| {
+            crate::expr::data::Store::create();
+            let _a = Expr::init(crate::E::EString::init(b"first"), Loc::EMPTY);
+            crate::expr::data::Store::deinit();
+            let b = Expr::init(crate::E::EString::init(b"second"), Loc::EMPTY);
+            match b.data {
+                ExprData::EString(y) => assert!(
+                    y.eql_bytes(b"second"),
+                    "post-deinit append must land in a fresh, usable slab"
+                ),
+                _ => panic!("expected EString data"),
+            }
+        })
+        .join()
+        .expect("append after deinit must reinitialize the store");
+    }
+}

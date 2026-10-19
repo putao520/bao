@@ -32,7 +32,7 @@ fn test_require_deep() {
         check("require_os", function() { return typeof require('os') === 'object'; });
         check("require_url", function() { return typeof require('url') === 'object'; });
         check("require_util", function() { return typeof require('util') === 'object'; });
-        check("require_assert", function() { return typeof require('assert') === 'object'; });
+        check("require_assert", function() { return typeof require('assert') === 'function'; });
         check("require_buffer", function() { return typeof require('buffer') === 'object'; });
         check("require_crypto", function() { return typeof require('crypto') === 'object'; });
         check("require_events", function() { return typeof require('events') === 'object'; });

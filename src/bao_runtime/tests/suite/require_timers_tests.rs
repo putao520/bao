@@ -112,7 +112,7 @@ fn test_require_timers_all() {
 
         // === require('assert') ===
         var assert = require('assert');
-        check("assert_require", function() { return typeof assert === 'object'; });
+        check("assert_require", function() { return typeof assert === 'function'; });
         check("assert_ok", function() { return typeof assert.ok === 'function'; });
         check("assert_equal", function() { return typeof assert.equal === 'function'; });
         check("assert_deepEqual", function() { return typeof assert.deepEqual === 'function'; });

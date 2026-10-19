@@ -50,6 +50,7 @@ mod child_process_spawn_events_tests;
 mod child_process_vm_module_tests;
 mod cli_browser_tests;
 mod cli_lib_tests;
+mod cjs_scoping_tests;
 mod cluster_isprimary_race_regression_tests;
 mod cluster_pump_loop_tests;
 mod cluster_worker_kill_tests;

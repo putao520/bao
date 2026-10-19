@@ -217,6 +217,23 @@ pub enum ServoEvent {
         error_text: String,
         canceled: bool,
     },
+    /// 网络体字节块送达(REQ-CDP-006 字节级中间事件)。
+    ///
+    /// → `Network.dataReceived`
+    ///
+    /// `data_length` 是解码后 chunk 长度(CDP `dataLength` 语义);
+    /// `encoded_data_length` 是归属该 chunk 的 wire(解压前)字节(CDP
+    /// `encodedDataLength` 语义)——内联 scheme 体(data:/file:/about:)
+    /// 即 payload 本身,网络响应为 Decoder wire 计数器的相邻 chunk 间增量
+    /// (各 chunk 增量之和恒等于 Finish 的终值)。
+    ///
+    /// @trace REQ-CDP-006 [event:NetworkEvent]
+    NetworkDataReceived {
+        target_id: String,
+        request_id: String,
+        data_length: u64,
+        encoded_data_length: u64,
+    },
 
     // ── DomMutation 类(REQ-BAO-API-003.4) — 2 个子事件
     /// DOM 属性变更。
@@ -350,6 +367,7 @@ impl ServoEvent {
             | ServoEvent::NetworkResponse { target_id, .. }
             | ServoEvent::NetworkLoadingFinish { target_id, .. }
             | ServoEvent::NetworkLoadingFail { target_id, .. }
+            | ServoEvent::NetworkDataReceived { target_id, .. }
             | ServoEvent::DomAttributeModified { target_id, .. }
             | ServoEvent::DomCharacterDataModified { target_id, .. }
             | ServoEvent::ScriptParsed { target_id, .. }
@@ -570,6 +588,28 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
                     "canceled": canceled,
                     "blockedReason": null,
                     "corsErrorStatus": null,
+                }),
+                session_id: Some(target_id),
+            }]
+        }
+        // @trace REQ-CDP-006 [event:NetworkEvent]
+        ServoEvent::NetworkDataReceived {
+            target_id,
+            request_id,
+            data_length,
+            encoded_data_length,
+        } => {
+            vec![CdpEvent {
+                method: "Network.dataReceived".into(),
+                // 键形与 Chrome oracle 逐字段同形(requestId/timestamp/
+                // dataLength/encodedDataLength;frameId 可选,bao 单 frame
+                // 面 requestWillBeSent 已携带 frameId,此处省略同 Chrome 的
+                // 可选语义)。
+                params: json!({
+                    "requestId": request_id,
+                    "timestamp": current_timestamp_s(),
+                    "dataLength": data_length,
+                    "encodedDataLength": encoded_data_length,
                 }),
                 session_id: Some(target_id),
             }]

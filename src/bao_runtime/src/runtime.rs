@@ -359,8 +359,9 @@ impl NodeRuntime {
         match (is_module, control) {
             (true, Some(control)) => self.eval_module_with_control(control, source, path, timeout),
             (true, None) => self.eval_module(source, path),
-            (false, Some(control)) => self.eval_with_control(control, source, path, timeout),
-            (false, None) => self.eval(source, path),
+            (false, Some(control)) => self
+                .eval_with_control(control, &wrap_cjs_entry_source(source), path, timeout),
+            (false, None) => self.eval(&wrap_cjs_entry_source(source), path),
         }
     }
 
@@ -435,8 +436,11 @@ impl NodeRuntime {
             // the module branch above — require('node:test') in a CJS file
             // registers into the same bun:test collector, and registered but
             // never-executed suites are the silent fake pass this runner
-            // exists to prevent.
-            self.eval(&source, path)?;
+            // exists to prevent. The source runs in Node's official CJS
+            // wrapper (REQ-ENG-048 interning root-fix) so entry-level
+            // declarations are function-local, same as require()-loaded
+            // modules.
+            self.eval(&wrap_cjs_entry_source(&source), path)?;
             ::std::result::Result::Ok(self.run_registered_tests())
         }
     }
@@ -463,4 +467,34 @@ impl NodeRuntime {
         let realm_cx: &mut mozjs::context::JSContext = &mut realm;
         unsafe { crate::bun_test::run_bun_tests_report(realm_cx.raw_cx()) }
     }
+}
+
+/// Wrap a plain-script entry file's source in Node's official CommonJS
+/// wrapper (v24 oracle: `require("module").wrapper`) with an inline-call
+/// tail, so entry-level declarations are function-local — the same interning
+/// root-fix as the require() loader (REQ-ENG-048: previously the entry ran
+/// as a global script, interning top-level const/let into the realm's
+/// persistent global lexical environment, where the same name in any later
+/// script was a SyntaxError).
+///
+/// The preamble shares one line with the wrapper prefix, so line N of the
+/// file still reports as line N of the script (no stack-shift). The tail's
+/// free variables resolve from globals the entry path always lays down:
+/// `require` (install_require), `__filename`/`__dirname`
+/// (install_file_globals). The two `__bao_cjs_*` preamble names are the only
+/// globals the entry adds — Node leaks none, which is the accepted
+/// remainder (strictly narrower than the pre-fix entry that leaked every
+/// top-level name).
+fn wrap_cjs_entry_source(source: &str) -> String {
+    let source = require::normalize_cjs_shebang(source);
+    let mut wrapped = String::with_capacity(source.len() + 320);
+    wrapped.push_str(
+        "var __bao_cjs_exports = {}, __bao_cjs_module = { exports: __bao_cjs_exports };",
+    );
+    wrapped.push_str("(function (exports, require, module, __filename, __dirname) { ");
+    wrapped.push_str(&source);
+    wrapped.push_str(
+        "\n}).call(__bao_cjs_exports, __bao_cjs_exports, require, __bao_cjs_module, __filename, __dirname);",
+    );
+    wrapped
 }

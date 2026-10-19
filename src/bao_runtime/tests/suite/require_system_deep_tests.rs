@@ -46,7 +46,7 @@ fn test_require_system_deep() {
         check("require_dns", function() { return typeof require('dns') === 'object'; });
         check("require_tls", function() { return typeof require('tls') === 'object'; });
         check("require_vm", function() { return typeof require('vm') === 'object'; });
-        check("require_assert", function() { return typeof require('assert') === 'object'; });
+        check("require_assert", function() { return typeof require('assert') === 'function'; });
         check("require_module", function() { return typeof require('module') === 'object'; });
 
         // === 3. require returns non-null objects ===

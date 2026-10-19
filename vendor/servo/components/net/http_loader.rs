@@ -150,6 +150,22 @@ pub enum BaoNetworkTapEvent {
         canceled: bool,
         webview_id: Option<String>,
     },
+    /// A decoded body chunk was delivered to the pipeline consumer (CDP
+    /// `Network.dataReceived`). One event per chunk at every body-settle
+    /// seam — the HTTP body-drain future, and the inline/streamed scheme
+    /// replay in `wait_for_response`.
+    DataReceived {
+        request_id: String,
+        /// Decoded chunk size (CDP `dataLength` semantics).
+        data_length: u64,
+        /// Wire (pre-decompression) bytes attributed to this chunk (CDP
+        /// `encodedDataLength` semantics) — the payload size for inline
+        /// scheme bodies, the `Decoder` wire-counter delta between chunk
+        /// seams for a network response. The per-chunk deltas sum to the
+        /// final `Finish` total.
+        encoded_data_length: u64,
+        webview_id: Option<String>,
+    },
 }
 
 /// The embedder-installed tap. Called on fetch worker threads; must be cheap
@@ -206,12 +222,13 @@ fn bao_header_pairs(headers: &HeaderMap<HeaderValue>) -> Vec<(String, String)> {
 }
 
 /// Request-side tap emit (main_fetch step 1, beside
-/// `send_early_httprequest_to_devtools`). Data URLs are skipped, mirroring
-/// the devtools instrumentation.
+/// `send_early_httprequest_to_devtools`). All schemes are observed: Chrome
+/// announces the full event chain for data: navigations too
+/// (requestWillBeSent → responseReceived → dataReceived → loadingFinished),
+/// so skipping data: here would strand its responseReceived/terminal events
+/// as orphans on the CDP face. The devtools instrumentation keeps its own
+/// upstream skip — that face is untouched.
 pub(crate) fn bao_emit_network_request_tap(request: &Request) {
-    if request.url().scheme() == "data" {
-        return;
-    }
     with_network_tap(|tap| {
         tap(BaoNetworkTapEvent::Request {
             request_id: request.id.0.to_string(),
@@ -289,6 +306,27 @@ pub(crate) fn bao_emit_network_failed_tap(
             request_id,
             error_text,
             canceled,
+            webview_id,
+        });
+    });
+}
+
+/// Data-chunk tap emit — one decoded body chunk delivered to the pipeline
+/// consumer (CDP `Network.dataReceived`). `data_length` is the decoded chunk
+/// size; `encoded_data_length` is the wire bytes attributed to it — the
+/// payload size for inline scheme bodies (no transfer encoding), the
+/// `Decoder` wire-counter delta between chunk seams for a network response.
+pub(crate) fn bao_emit_network_data_received_tap(
+    request_id: String,
+    webview_id: Option<String>,
+    data_length: u64,
+    encoded_data_length: u64,
+) {
+    with_network_tap(|tap| {
+        tap(BaoNetworkTapEvent::DataReceived {
+            request_id,
+            data_length,
+            encoded_data_length,
             webview_id,
         });
     });
@@ -2614,26 +2652,54 @@ async fn http_network_fetch(
     let failed_request_id = request_id.clone();
     let failed_webview_id = finish_webview_id.clone();
     let failed_cancel_listener = cancellation_listener.clone();
+    // BAO PATCH (REQ-CDP-006): per-chunk `Network.dataReceived` faces — a
+    // second counter handle for the drain closure plus the running wire total
+    // at the last delivered chunk. The per-chunk wire attribution is the
+    // counter delta between chunk seams (the decoded chunk the consumer sees
+    // lags whatever wire bytes fed it), so the deltas are approximate per
+    // chunk for a compressed stream but always sum to the final Finish total.
+    let chunk_wire_counter = wire_byte_counter.clone();
+    let data_request_id = request_id.clone();
+    let data_webview_id = finish_webview_id.clone();
 
     spawn_task(
         response_stream
             .into_body()
-            .try_fold(response_body, move |response_body_accumulator, chunk| {
-                if cancellation_listener.cancelled() {
-                    *response_body_accumulator.lock() = ResponseBody::Done(vec![]);
-                    let _ = done_sender.send(Data::Cancelled);
-                    return future::ready(Err(std::io::Error::new(
-                        std::io::ErrorKind::Interrupted,
-                        "Fetch aborted",
-                    )));
-                }
-                if let ResponseBody::Receiving(ref mut body) = *response_body_accumulator.lock() {
-                    body.extend_from_slice(&chunk);
-                    let _ = done_sender.send(Data::Payload(chunk));
-                }
-                future::ready(Ok(response_body_accumulator))
-            })
-            .and_then(move |complete_response_body| {
+            .try_fold(
+                (response_body, 0u64),
+                move |(response_body_accumulator, last_wire_total), chunk| {
+                    if cancellation_listener.cancelled() {
+                        *response_body_accumulator.lock() = ResponseBody::Done(vec![]);
+                        let _ = done_sender.send(Data::Cancelled);
+                        return future::ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::Interrupted,
+                            "Fetch aborted",
+                        )));
+                    }
+                    let mut advanced_wire_total = last_wire_total;
+                    if let ResponseBody::Receiving(ref mut body) =
+                        *response_body_accumulator.lock()
+                    {
+                        let chunk_len = chunk.len() as u64;
+                        body.extend_from_slice(&chunk);
+                        let _ = done_sender.send(Data::Payload(chunk));
+                        let wire_total = chunk_wire_counter.load(Ordering::Relaxed);
+                        let encoded_delta = wire_total.saturating_sub(last_wire_total);
+                        // BAO PATCH (REQ-CDP-006): the live
+                        // `Network.dataReceived` producer — one event per
+                        // decoded chunk, wire bytes from the shared counter.
+                        bao_emit_network_data_received_tap(
+                            data_request_id.clone(),
+                            data_webview_id.clone(),
+                            chunk_len,
+                            encoded_delta,
+                        );
+                        advanced_wire_total = wire_total;
+                    }
+                    future::ready(Ok((response_body_accumulator, advanced_wire_total)))
+                },
+            )
+            .and_then(move |(complete_response_body, _final_wire_total)| {
                 debug!("successfully finished response for {:?}", url1);
                 let mut body = complete_response_body.lock();
                 let mut completed_body = match *body {
