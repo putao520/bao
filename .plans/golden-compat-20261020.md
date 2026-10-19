@@ -22,7 +22,8 @@ oracle: nodejs/node v24.x 官方 test/ 套件, bao 专属 runner(/tmp/golden-nod
 | ③ 落盘形态(E-sm-intern) | require.rs `load_cjs_module` 重写为 wrapper compile+call(新增 normalize_cjs_shebang/wrap_cjs_function_source/eval_cjs_body,删除孤儿 get_prop_from_val;global save/restore 往返整体消灭,exports/module 全程 Rust 侧 rooted);runtime.rs eval_file_body 两 script 臂+run_test_file script 臂改走 wrap_cjs_entry_source(preamble 与 wrapper 前缀同行,行号零漂移);回归钉 9 条(跨模块 const 撞名/export vs 局部变量/var 泄漏/入口词法隔离/wrapper 参数 parity/exports 重绑定/顶层 return/shebang/嵌套 require+cache)落 tests/suite/cjs_scoping_tests.rs | 树(待波末) |
 | ③ 波末 V(主会话代验) | **cjs_scoping 9/9 绿**(farm,尾调修复+钉翻转后);require_ 16/16 绿;module_ 33/34——唯一红=dns c13 resolveAny 三格,**本地同树隔离 PASS(0.036s)定案=farm 容器 DNS stub 环境差异非代码回归**(测试 offline-first localhost 设计,模块加载 7 格 farm 全绿证 wrapper 无碍) | — |
 | ③ E-sm-intern 终报补充 | 停滞真因=批 02:01 已完成但完成通知未被消费(投递面);其批三红归因=**陈旧钉第四例**——#114 assert-callable 修复漏翻的 typeof 钉(node oracle 实证 assert=function),已横扫翻转 5 处(require_deep:35/require_system_deep:49/require_timers:115/runtime_deep:173/node_assert_util:30);宽容钉(`\|\|'function'` 形)不动 | 树(待波末) |
-| 登记项(后续波候选) | `require('assert/strict')` 现=object,node oracle=function——assert/strict 形态偏差,待核 install_assert 的 strict 面 | — |
+| ③ 终验(E-sm-intern 终报) | farm nextest --no-fail-fast **107/107 全绿 RC=0**(9 新钉+3 翻转文件+runtime_deep+node_assert_util+module_eval_error/node_silent_fake/execution_control_entry/resolve_once 全组),与主会话独立批双源一致;commit c7e8746b1 已收口(18 文件+1028/−181) | c7e8746b1 |
+| 登记项(后续波候选) | ①`require('assert/strict')` 现=object,node oracle=function——assert/strict 形态偏差,待核 install_assert 的 strict 面 ②bun_sm `cjs_compat_wrapper_source` named-export getter 挂 exports 对象而非 ESM namespace(ESM `import {X} from 'cjs'` 链路面) ③dns c13 farm 面=容器 DNS stub 环境差异(本地定案,非代码) | — |
 | 复验 | test-assert 5/18→8+; CRASH 消除; 37/37 既有面绿(assert/c17_util/fs_coverage/cp_path_tty/types_isproxy) | — |
 | 测试钉翻转×2 | assert_deep_tests(typeof object→function, fail() 消息 "Failed"); stream_buffer_assert_tests(:313 同面) | 75f43d120 |
 
@@ -43,12 +44,23 @@ oracle: Chrome 155.0.8059.39 headless=new(9333, 独立 user-data-dir);被测 bao
 | 停报 | ①dataReceived/ExtraInfo/data:-URL 事件链=vendor 事件面(待派 vendor 波) ②objectId 跨调用句柄表(架构级) ③getFrameTree loaderId(无 per-load 持久身份,小架构后续) | — |
 | 停报①清偿(E-vendor-net,2026-10-20) | dataReceived 变体落地(五变体+三体交付缝发射,wire delta 总和恒等于 Finish 终值)+data: 导航全四链(request skip 移除+scheme_gate 收窄);oracle 双载具双跑 dataLength 41/55 逐字相等 ALL STABLE;窄域 V 11/11+1/1;CLAUDE.md vendor patch 行已登记(重放要点 3 条+grep 锚 DataReceived/scheme_gate);诚实边界四条(SW 面顺序歪斜既有/ExtraInfo 不做/单 tap 语义未动/压缩流 per-chunk 近似) | 树(待波末) |
 
-## GOLDEN B — WPT 全量(REQ-BRW-051)
+## GOLDEN B — WPT 全量(REQ-BRW-051)【收官 2026-10-20 05:30】
 
-载具: /tmp/golden-wpt/(venv + run_bao_wpt.py + 私有 meta/MANIFEST 168784 items/281 域;配方 memory wpt-runner-playbook)
-状态: batch2 推进中(css/fetch/mathml/navigation-api/mixed-content/xhr/webaudio/service-workers 已落盘, --processes 4 llvmpipe 上限, 端口 flock 跨整批)
-已证零回归锚: dom 域 736 零回归(评估波);六域基线对照待全量回报
-预期产物: /tmp/golden-wpt/fullrun-report.md(逐域 unexpected 表+zero-regression 判定+偏差分类)
+载具: /tmp/golden-wpt/(官方 wptrunner + 私有 meta/MANIFEST;二进制 sha256 b4ec7b1c… 全程恒一)
+
+| 项 | 值 |
+|---|---|
+| 域数 | **261 全跑毕**(batch0×6+batch1×2+batch2×17+batch3×53+batch4×183),零静默丢失 |
+| test_start/end | 68067/68067(零挂死) |
+| file 级 as-expected | **58594(86.08%)**;unexpected 9473(uF 6510/uT 2206/uE 700/uP 137/uC 14/uOK 21) |
+| 批 0 六域基线对照 | **zero-regression 成立**:dom 736 精确一致/css 33502 精确一致且 uF −2/editing 851 file 级零 unexpected/svg 1272 逐格全等/webvtt+compat 首跑基线态 |
+| stop 条件③ | 未触发(css uCRASH=0,全量 CRASH 仅 14 格已归产品缺陷候选) |
+| 缺陷 TOP 分类 | A 真引擎缺口(speculation-rules/bluetooth/webcodecs/IndexedDB uT 族/WebSocketStream 等)/B 上游同 FAIL 继承(css 布局 backlog/mathml/webvtt)/C 正向漂移(uP 137) |
+| 环境事件 | 两次 GL-OOM 崩溃窗(llvmpipe 内存压力,webrender/surfman panic,非 bao 缺陷)→重试协议(预飞+分母门+retry≤3)实证有效全恢复 |
+| 报告 | /tmp/golden-wpt/fullrun-report.md(逐域表+环境取证+可复现命令) |
+| 产品缺陷波候选(只登记) | ①GL-OOM 启动防御 ②html uCRASH 12 格 ③IndexedDB 全族 TIMEOUT ④WS/SW TIMEOUT 族 |
+
+**GOLDEN 三战役全收官**:A(Node 官方套件 5+1 缺陷根治+2 停报清偿)/B(WPT 261 域全量基线 86.08%+六域零回归)/C(Chrome CDP 5 项+停报① 清偿),commit 链 75f43d120→3dfdcf2eb→69fa13ada→c7e8746b1。
 
 ---
 
