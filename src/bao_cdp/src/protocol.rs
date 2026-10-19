@@ -106,7 +106,7 @@ pub fn handle_command(
         "ServiceWorker" => handle_service_worker(command, target_id, params, bridge),
         // Browser domain — Playwright's connect_over_cdp handshake sends
         // Browser.getVersion as the first command after the WS opens.
-        "Browser" => handle_browser(command),
+        "Browser" => handle_browser(command, params),
         _ => Err(CdpError {
             code: ERR_METHOD_NOT_FOUND,
             message: format!("'{}' wasn't found", msg.method),
@@ -352,7 +352,19 @@ fn handle_target(
                 },
             )
         }
-        "getBrowserContexts" => bridge_send(bridge, BridgeCommand::ListBrowserContexts),
+        // REQ-CDP-010 golden-oracle parity: Chrome's result carries
+        // `defaultBrowserContextId` alongside `browserContextIds` (Playwright
+        // locates the default context from it). The bridge owns the context
+        // registry; add the default-context id (the canonical constant) to
+        // whatever the registry returned — a real value, never a placeholder.
+        "getBrowserContexts" => {
+            let mut resp = bridge_send(bridge, BridgeCommand::ListBrowserContexts)?;
+            if let Some(obj) = resp.as_object_mut() {
+                obj.entry("defaultBrowserContextId")
+                    .or_insert_with(|| serde_json::json!(DEFAULT_BROWSER_CONTEXT_ID));
+            }
+            Ok(resp)
+        }
         "closeTarget" => {
             // CDP semantics: closes the target named by params.targetId (the
             // session's own target when omitted). Blocking bridge round-trip —
@@ -491,15 +503,37 @@ fn handle_page(
             // frame id (REQ-CDP-004) — the same identifier navigate/reload
             // report and the frame events carry. Child frames are not
             // enumerable from the embedder — none are fabricated.
+            // REQ-CDP-010 golden-oracle parity (Chrome 155 oracle, measured):
+            // the frame face also carries
+            // domainAndRegistry/securityOriginDetails/secureContextType/
+            // crossOriginIsolatedContextType/gatedAPIFeatures/adFrameStatus.
+            // All are derived from the live location/document, none invented:
+            // secureContextType follows the potentially-trustworthy rule
+            // (https or localhost/loopback), domainAndRegistry is "" for
+            // empty/IP/loopback hosts (Chrome's rule; for named hosts the
+            // hostname is the honest best value — no PSL in the embedding
+            // surface, eTLD+1 reduction not attempted). loaderId is honestly
+            // absent: no persisted per-load loader identity exists on this
+            // face (navigate mints per-command values, nothing stores them).
             let mut frame = eval_json(
                 bridge,
                 &tid,
-                r#"(function(){ return JSON.stringify({
-                    url: location.href,
-                    mimeType: document.contentType,
-                    name: window.name,
-                    securityOrigin: location.origin
-                }); })()"#,
+                r#"(function(){
+                    var h = location.hostname;
+                    var isLocal = (h === 'localhost' || h === '::1' || h.indexOf('::1') === 0 || h.indexOf('127.') === 0);
+                    var ipLike = isLocal || /^\d+\.\d+\.\d+\.\d+$/.test(h) || (h === '' && location.protocol !== 'file:');
+                    return JSON.stringify({
+                        url: location.href,
+                        mimeType: document.contentType,
+                        name: window.name,
+                        securityOrigin: location.origin,
+                        domainAndRegistry: (h === '' || ipLike) ? '' : h,
+                        secureContextType: ((location.protocol === 'https:') || isLocal) ? 'SecureContext' : 'InsecureScheme',
+                        securityOriginDetails: { isLocalhost: isLocal },
+                        crossOriginIsolatedContextType: window.crossOriginIsolated ? 'Isolated' : 'NotIsolated',
+                        gatedAPIFeatures: [],
+                        adFrameStatus: { adFrameType: 'none' }
+                    }); })()"#,
             )?;
             if let Some(obj) = frame.as_object_mut() {
                 obj.insert(
@@ -582,19 +616,43 @@ fn handle_page(
             // Real layout data read from the live document: viewport size from
             // window.innerWidth/innerHeight, content extent from
             // documentElement scroll size. No hardcoded 1920×1080.
+            // REQ-CDP-010 golden-oracle parity (Chrome 155 oracle, measured):
+            // layoutViewport is {pageX,pageY,clientWidth,clientHeight} (the
+            // former {x,y,width,height} keys were the pre-2020 DIP face), and
+            // the visualViewport/cssVisualViewport pair is
+            // {offsetX,offsetY,pageX,pageY,clientWidth,clientHeight,scale,zoom},
+            // read off window.visualViewport when present. bao has no
+            // device-pixel-ratio scaling — device and CSS values are identical
+            // (same convention as the memory-bridge face in bao_cdp_client
+            // layout_metrics_to_json).
             let m = eval_json(
                 bridge,
                 &tid,
                 r#"(function(){ var d = document.documentElement;
+                    var vv = window.visualViewport;
                     return JSON.stringify({
                         iw: window.innerWidth, ih: window.innerHeight,
-                        cw: d.scrollWidth, ch: d.scrollHeight
+                        cw: d.scrollWidth, ch: d.scrollHeight,
+                        vvx: vv ? vv.offsetLeft : 0,
+                        vvy: vv ? vv.offsetTop : 0,
+                        vvpagex: vv ? vv.pageLeft : 0,
+                        vvpagey: vv ? vv.pageTop : 0,
+                        vvW: vv ? vv.width : window.innerWidth,
+                        vvH: vv ? vv.height : window.innerHeight
                     }); })()"#,
             )?;
+            let vv = serde_json::json!({
+                "offsetX": m["vvx"], "offsetY": m["vvy"],
+                "pageX": m["vvpagex"], "pageY": m["vvpagey"],
+                "clientWidth": m["vvW"], "clientHeight": m["vvH"],
+                "scale": 1, "zoom": 1
+            });
             Ok(serde_json::json!({
-                "layoutViewport": { "x": 0, "y": 0, "width": m["iw"], "height": m["ih"] },
+                "layoutViewport": { "pageX": 0, "pageY": 0, "clientWidth": m["iw"], "clientHeight": m["ih"] },
+                "visualViewport": vv,
                 "contentSize": { "x": 0, "y": 0, "width": m["cw"], "height": m["ch"] },
-                "cssLayoutViewport": { "x": 0, "y": 0, "width": m["iw"], "height": m["ih"] },
+                "cssLayoutViewport": { "pageX": 0, "pageY": 0, "clientWidth": m["iw"], "clientHeight": m["ih"] },
+                "cssVisualViewport": vv,
                 "cssContentSize": { "x": 0, "y": 0, "width": m["cw"], "height": m["ch"] }
             }))
         }
@@ -636,6 +694,13 @@ fn handle_page(
                 },
             )
         }
+        // REQ-CDP-010 golden-oracle parity: servo has no print-to-PDF
+        // pipeline — an explicit capability-absent -32000 (Chrome's
+        // ServerError class), never the unknown-command -32601.
+        "printToPDF" => Err(not_supported(
+            "Page.printToPDF",
+            "servo WebView has no print-to-PDF pipeline (no PDF backend in the embedding surface)",
+        )),
         _ => Err(CdpError {
             code: -32601,
             message: format!("'Page.{}' wasn't found", command),
@@ -2674,7 +2739,7 @@ fn num_cpus() -> u32 {
 ///
 /// `Browser.getVersion` is the first command Playwright's connect_over_cdp
 /// sends after the WebSocket opens; the values are the real runtime's.
-fn handle_browser(command: &str) -> HandlerResult {
+fn handle_browser(command: &str, params: &Option<Value>) -> HandlerResult {
     match command {
         "getVersion" => Ok(serde_json::json!({
             "protocolVersion": "1.3",
@@ -2683,10 +2748,38 @@ fn handle_browser(command: &str) -> HandlerResult {
             "userAgent": format!("Bao/{}", env!("CARGO_PKG_VERSION")),
             "jsVersion": "SpiderMonkey",
         })),
-        // Preference ack: records the download-behavior preference (bao has
-        // no download manager yet — the preference is stored, nothing is
-        // fabricated).
-        "setDownloadBehavior" => ok_empty(),
+        // REQ-CDP-010 golden-oracle parity (Chrome 155 oracle, measured): the
+        // binding rejects a MISSING `behavior` (-32602 mandatory field), and
+        // behavior allow/allowAndName require `downloadPath` (-32602
+        // "downloadPath not provided"); any other behavior value — unknown
+        // enums, empty string included — is accepted as a no-op success.
+        // bao has no download manager yet, so every accepted call records
+        // nothing: the shape mirrors Chrome exactly, malformed clients still
+        // fail with -32602.
+        "setDownloadBehavior" => {
+            let behavior = params
+                .as_ref()
+                .and_then(|p| p.get("behavior"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| CdpError {
+                    code: ERR_INVALID_PARAMS,
+                    message: "'Browser.setDownloadBehavior' requires a behavior param".into(),
+                })?;
+            if matches!(behavior, "allow" | "allowAndName") {
+                let has_path = params
+                    .as_ref()
+                    .and_then(|p| p.get("downloadPath"))
+                    .and_then(|v| v.as_str())
+                    .is_some();
+                if !has_path {
+                    return Err(CdpError {
+                        code: ERR_INVALID_PARAMS,
+                        message: "'Browser.setDownloadBehavior' with behavior \"allow\" requires a downloadPath param".into(),
+                    });
+                }
+            }
+            ok_empty()
+        }
         _ => Err(CdpError {
             code: -32601,
             message: format!("'Browser.{}' wasn't found", command),

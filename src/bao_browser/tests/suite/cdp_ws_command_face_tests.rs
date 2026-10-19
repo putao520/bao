@@ -378,12 +378,18 @@ fn object_protocol_phase(ws_url: String, done: Arc<AtomicBool>) {
         }),
     );
     assert!(resp.get("error").is_none(), "throw path: {resp}");
+    // GOLDEN C 修复(REQ-CDP-010 Chrome oracle 对齐): exceptionDetails.text 恒
+    // "Uncaught", 消息在 exceptionDetails.exception.description (Chrome 155
+    // 实测同形; 修前 text 直接携带消息是钉的旧形)。
     let text = resp["result"]["exceptionDetails"]["text"]
         .as_str()
         .unwrap_or("");
+    let desc = resp["result"]["exceptionDetails"]["exception"]["description"]
+        .as_str()
+        .unwrap_or("");
     assert!(
-        text.contains("boom-cdp"),
-        "exceptionDetails must carry the message, got: {resp}"
+        text == "Uncaught" && desc.contains("boom-cdp"),
+        "exceptionDetails must be Chrome-shaped (text=Uncaught, exception.description carries message), got: {resp}"
     );
 
     // 7. getProperties roundtrip: nested object values carry real objectIds.

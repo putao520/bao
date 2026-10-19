@@ -98,6 +98,38 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
                 },
             };
         }
+        // REQ-CDP-010 golden-oracle parity: an unknown
+        // removeScriptToEvaluateOnNewDocument identifier is Chrome's
+        // ServerError class ("Script not found", -32000) — domain-owned, so
+        // it rides the classified funnel like Fetch.resolve's UnknownId.
+        BridgeCommand::RemoveScriptToEvaluateOnNewDocument {
+            target_id,
+            identifier,
+        } => {
+            return BridgeResponse {
+                result: with_page_classified(pool, &target_id, |page| {
+                    cmd_remove_script(page, &identifier)
+                }),
+            };
+        }
+        // REQ-CDP-010 golden-oracle parity: capability-absent verdicts are
+        // domain-owned (Chrome answers both classes with -32000, its
+        // ServerError code), so they ride the classified funnel — the
+        // transport funnel can only carry -32603.
+        BridgeCommand::GetResponseBody { .. } => {
+            return BridgeResponse {
+                result: Err(BridgeError::domain(
+                    "Network.getResponseBody not supported: servo does not expose stored response bodies to the embedder",
+                )),
+            };
+        }
+        BridgeCommand::MemoryGetDOMCounters { .. } => {
+            return BridgeResponse {
+                result: Err(BridgeError::domain(
+                    "Memory.getDOMCounters not supported: jsEventListeners count is not introspectable in SpiderMonkey",
+                )),
+            };
+        }
         _ => {}
     }
     let result = match cmd {
@@ -217,7 +249,8 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             target_id,
             identifier,
         } => {
-            with_page(pool, &target_id, |page| cmd_remove_script(page, &identifier))
+            let _ = (target_id, identifier);
+            Err("domain-classified command reached the transport funnel".into())
         }
         BridgeCommand::Reload {
             target_id,
@@ -260,11 +293,12 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         } => with_page(pool, &target_id, |page| {
             cmd_set_cookie(page, &name, &value, url.as_deref(), domain.as_deref())
         }),
-        // servo does not store network response bodies for embedder access —
-        // explicit error instead of an empty-body fake success.
-        BridgeCommand::GetResponseBody { .. } => Err(
-            "Network.getResponseBody not supported: servo does not expose stored response bodies to the embedder".into(),
-        ),
+        // Domain-classified above (REQ-CDP-010 hoist): the transport funnel
+        // can only carry String errors; the capability-absent verdict is
+        // domain-owned (-32000) and dispatched in the classified block.
+        BridgeCommand::GetResponseBody { .. } => {
+            Err("domain-classified command reached the transport funnel".into())
+        }
 
         // Network domain — cache/cookies clearing, enable/disable.
         // NetworkEnable installs the net-layer Network event tap so
@@ -427,11 +461,12 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             with_page(pool, &target_id, cmd_collect_garbage)
         }
         // ── Memory commands ──
-        // jsEventListeners is not introspectable in SpiderMonkey — explicit
-        // error rather than a zeroed counters object.
-        BridgeCommand::MemoryGetDOMCounters { .. } => Err(
-            "Memory.getDOMCounters not supported: jsEventListeners count is not introspectable in SpiderMonkey".into(),
-        ),
+        // Domain-classified above (REQ-CDP-010 hoist): the transport funnel
+        // can only carry String errors; the capability-absent verdict is
+        // domain-owned (-32000) and dispatched in the classified block.
+        BridgeCommand::MemoryGetDOMCounters { .. } => {
+            Err("domain-classified command reached the transport funnel".into())
+        }
         BridgeCommand::MemoryPurgeJS { target_id } => {
             with_page(pool, &target_id, cmd_collect_garbage)
         }
@@ -1010,15 +1045,30 @@ fn evaluate_by_value_envelope_js(expr_json: &str) -> String {
                         }}
                     }}
                     var first = frames.length > 0 ? frames[0] : {{ lineNumber: 0, columnNumber: 0 }};
+                    // REQ-CDP-010 golden-oracle parity: Chrome's top-level
+                    // `result` for a thrown Error is the Error RemoteObject
+                    // itself — type object / subtype error / className /
+                    // description — the former undefined-typed face
+                    // swallowed the exception object. The exception value is
+                    // not JSON-serializable (message/stack captured instead,
+                    // matching Chrome's `description` text); the registry
+                    // objectId would need a cross-call handle table and is
+                    // honestly absent (clients classify on className here).
                     return JSON.stringify({{
-                        result: {{ type: 'undefined' }},
+                        result: {{
+                            type: 'object',
+                            subtype: 'error',
+                            className: (e && e.name) || 'Error',
+                            description: String(e),
+                        }},
                         exceptionDetails: {{
                             exceptionId: 0,
-                            text: String((e && e.name) ? (e.name + ': ' + (e.message || '')) : e),
+                            text: 'Uncaught',
                             lineNumber: first.lineNumber,
                             columnNumber: first.columnNumber,
                             exception: {{
                                 type: 'object',
+                                subtype: 'error',
                                 className: (e && e.name) || 'Error',
                                 description: String(e),
                             }},
@@ -1031,19 +1081,24 @@ fn evaluate_by_value_envelope_js(expr_json: &str) -> String {
 }
 
 /// Normalize the by-value envelope result face: consume the internal
-/// `undefined_result` marker, map the carried value to its CDP `type`, and
-/// leave `exceptionDetails` untouched.
+/// `undefined_result` marker (try arm), map the carried value to its CDP
+/// `type`; the catch arm's result is already the Error RemoteObject face
+/// (type object / subtype error / className / description — REQ-CDP-010
+/// golden-oracle parity) and passes through untouched.
 fn normalize_by_value_envelope(mut envelope: Value) -> Value {
-    let undefined_result = envelope["result"]["undefined_result"]
-        .as_bool()
-        .unwrap_or(false);
-    let value = envelope["result"]["value"].take();
-    let (value_type, value) = if undefined_result {
-        ("undefined".to_string(), Value::Null)
-    } else {
-        (json_type(&value).to_string(), value)
-    };
-    envelope["result"] = serde_json::json!({ "type": value_type, "value": value });
+    let marker = envelope
+        .get("result")
+        .and_then(|r| r.get("undefined_result"))
+        .and_then(|v| v.as_bool());
+    if let Some(undefined_result) = marker {
+        let value = envelope["result"]["value"].take();
+        let (value_type, value) = if undefined_result {
+            ("undefined".to_string(), Value::Null)
+        } else {
+            (json_type(&value).to_string(), value)
+        };
+        envelope["result"] = serde_json::json!({ "type": value_type, "value": value });
+    }
     envelope
 }
 
@@ -1058,7 +1113,12 @@ fn evaluate_handle_wrapper_js(expr_json: &str) -> String {
                     return JSON.stringify({{ result: window.__bao_cdp.wrap(r, false, ''), exceptionDetails: null }});
                 }} catch (e) {{
                     var exObj = (e !== null && typeof e === 'object') ? window.__bao_cdp.wrap(e, false, '') : undefined;
-                    return JSON.stringify({{ result: {{ type: 'undefined' }}, exceptionDetails: {{ text: String((e && e.message) || e), exception: exObj, exceptionId: 0 }} }});
+                    // Same golden-oracle parity as the by-value envelope: the
+                    // thrown object is the result face (registry RemoteObject
+                    // with objectId when wrappable, the className/description
+                    // face otherwise) — never a swallowed type-undefined.
+                    var errFace = exObj || {{ type: 'object', subtype: 'error', className: (e && e.name) || 'Error', description: String(e) }};
+                    return JSON.stringify({{ result: errFace, exceptionDetails: {{ text: 'Uncaught', exception: exObj, exceptionId: 0 }} }});
                 }}
             }})()"#,
     )
@@ -1427,7 +1487,54 @@ fn cmd_get_document(page: &PageHandle) -> Result<Value, String> {
         })()
     "#;
     let doc_str = page.evaluate_js(js).map_err(to_browser_error)?;
-    let doc_val: Value = serde_json::from_str(&doc_str).unwrap_or_else(|_| serde_json::json!({}));
+    let mut doc_val: Value = serde_json::from_str(&doc_str).unwrap_or_else(|_| serde_json::json!({}));
+    // Chrome-shape metadata (REQ-CDP-010 golden-oracle parity): the root node's
+    // documentURL/baseURL/compatibilityMode/xmlVersion — read from the live
+    // document, never placeholders. `document.charset` is the HTML standard's
+    // alias of characterSet; about:blank's empty body yields the empty string
+    // exactly like Chrome.
+    if let Some(obj) = doc_val.as_object_mut() {
+        obj.entry("documentURL")
+            .or_insert_with(|| page.current_url().unwrap_or_else(|| "about:blank".into()).into());
+        obj.entry("baseURL").or_insert_with(|| {
+            let url = page.current_url().unwrap_or_else(|| "about:blank".into());
+            let base = page
+                .evaluate_js(
+                    "(function(){ var b = document.querySelector('base[href]'); return b ? b.href : ''; })()",
+                )
+                .unwrap_or_default();
+            let base = base.trim_matches('"');
+            if base.is_empty() {
+                url.into()
+            } else {
+                base.to_string().into()
+            }
+        });
+        obj.entry("compatibilityMode").or_insert_with(|| {
+            let v = page
+                .evaluate_js(
+                    "(function(){ return document.compatMode === 'BackCompat' ? 'QuirksMode' : 'NoQuirksMode'; })()",
+                )
+                .unwrap_or_default();
+            let v = v.trim_matches('"');
+            if v.is_empty() {
+                "NoQuirksMode".into()
+                // A failed/empty read falls back to the standards-mode value
+                // (the same constant Chrome reports for a standards doc);
+                // about:blank is the dominant case here and servo's blank
+                // document is standards-mode.
+            } else {
+                v.to_string().into()
+            }
+        });
+        obj.entry("xmlVersion").or_insert_with(|| {
+            let v = page
+                .evaluate_js("(function(){ return document.xmlVersion || ''; })()")
+                .unwrap_or_default();
+            let v = v.trim_matches('"');
+            v.to_string().into()
+        });
+    }
     Ok(serde_json::json!({ "root": doc_val }))
 }
 
@@ -1762,19 +1869,21 @@ fn cmd_add_script(page: &PageHandle, source: &str) -> Result<Value, String> {
     Ok(serde_json::json!({ "identifier": script_id.to_string() }))
 }
 
-fn cmd_remove_script(page: &PageHandle, identifier: &str) -> Result<Value, String> {
+fn cmd_remove_script(page: &PageHandle, identifier: &str) -> Result<Value, BridgeError> {
     // Chrome (content/browser/devtools/protocol/page_handler.cc): the
     // identifier is looked up in the page's script map; unknown →
     // ServerError "Script not found" (an error, never a silent ok — a
     // client that believes a script is armed must learn it is not).
+    // Domain-owned unknown-id verdict → domain-classified (the protocol
+    // face maps it to ERR_NOT_SUPPORTED -32000, Chrome's ServerError class).
     let Ok(script_id) = identifier.parse::<u64>() else {
-        return Err("Script not found".into());
+        return Err(BridgeError::domain("Script not found"));
     };
     let removed = page
         .remove_script_to_evaluate_on_new_document(script_id)
-        .map_err(to_browser_error)?;
+        .map_err(|e| BridgeError::no_bridge(to_browser_error(e)))?;
     if !removed {
-        return Err("Script not found".into());
+        return Err(BridgeError::domain("Script not found"));
     }
     Ok(serde_json::json!({}))
 }
@@ -2894,7 +3003,11 @@ fn runtime_call_function_on_js(
                 return JSON.stringify({{ result: window.__bao_cdp.wrap(r, {rbv}, {group_json}), exceptionDetails: null }});
             }} catch (e) {{
                 var exObj = (e !== null && typeof e === 'object') ? window.__bao_cdp.wrap(e, false, {group_json}) : undefined;
-                return JSON.stringify({{ result: {{ type: 'undefined' }}, exceptionDetails: {{ text: String((e && e.message) || e), exception: exObj, exceptionId: 0 }} }});
+                // Same golden-oracle parity as the evaluate envelopes: the
+                // thrown object is the result face, never a swallowed
+                // type-undefined.
+                var errFace = exObj || {{ type: 'object', subtype: 'error', className: (e && e.name) || 'Error', description: String(e) }};
+                return JSON.stringify({{ result: errFace, exceptionDetails: {{ text: 'Uncaught', exception: exObj, exceptionId: 0 }} }});
             }}
         }})()"#,
     )
@@ -2974,7 +3087,11 @@ fn wait_bao_async_promise(
             if (!a || a.state === 'pending') return JSON.stringify({{ pending: true }});
             if (a.state === 'ok') return JSON.stringify({{ result: window.__bao_cdp.wrap(a.v, {rbv}, {group_json}), exceptionDetails: null }});
             var exObj = (a.e !== null && typeof a.e === 'object') ? window.__bao_cdp.wrap(a.e, false, {group_json}) : undefined;
-            return JSON.stringify({{ result: {{ type: 'undefined' }}, exceptionDetails: {{ text: String((a.e && a.e.message) || a.e), exception: exObj, exceptionId: 0 }} }});
+            // Same golden-oracle parity as the evaluate envelopes: the
+            // rejection value is the result face, never a swallowed
+            // type-undefined.
+            var errFace = exObj || {{ type: 'object', subtype: 'error', className: (a.e && a.e.name) || 'Error', description: String(a.e) }};
+            return JSON.stringify({{ result: errFace, exceptionDetails: {{ text: 'Uncaught', exception: exObj, exceptionId: 0 }} }});
         }})()"#,
         rbv = return_by_value,
         group_json = group_json,
