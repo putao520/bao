@@ -47,3 +47,4 @@
 {"date":"2026-10-17","started_at":"2026-10-17T16:17:20Z","duration_mins":60,"verdict":"completed","zero_hang":true,"counts_toward_entry":true,"streak_after":17,"note":"zero-hang 60min — entry condition 17/3"}
 {"date":"2026-10-18","started_at":"2026-10-18T16:13:20Z","duration_mins":60,"verdict":"completed","zero_hang":true,"counts_toward_entry":true,"streak_after":18,"note":"zero-hang 60min — entry condition 18/3"}
 {"date":"2026-10-19","started_at":"2026-10-19T16:15:18Z","duration_mins":60,"verdict":"completed","zero_hang":true,"counts_toward_entry":true,"streak_after":19,"note":"zero-hang 60min — entry condition 19/3"}
+{"date":"2026-10-20","started_at":"2026-10-20T16:10:20Z","duration_mins":60,"verdict":"failed","zero_hang":false,"counts_toward_entry":true,"streak_after":0,"note":"run.sh rc=101 (see /home/putao/code/rust/bao/bench/results/2026-10-20-75ea36bea/soak.run-1.log); streak reset 19→0"}
