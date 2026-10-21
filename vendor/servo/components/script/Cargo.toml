@@ -1,7 +1,7 @@
 [package]
 name = "bao-servo-script"
 build = "build.rs"
-version = "0.5.32"
+version = "0.5.33"
 publish = true
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
@@ -133,7 +133,9 @@ icu_locale_core = {version = "2.1.0"}
 indexmap = {version = "2.14.0", features = ["std"]}
 ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
 itertools = {version = "0.15"}
-js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = "^0.24", default-features = false, features = ["intl", "libz-sys"]}
+# Lower bound = the version that renamed safe_to_jsval/safe_from_jsval to the
+# canonical trait methods this crate calls.
+js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = ">=0.24.3, <0.25", default-features = false, features = ["intl", "libz-sys"]}
 jstraceable_derive = {package = "bao-servo-jstraceable-derive", path = "../jstraceable_derive", version = ">=0.5.2, <0.6.0"}
 k12 = {version = "0.5", optional = true}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
