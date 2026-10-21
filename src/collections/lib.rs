@@ -6,11 +6,13 @@
 // adt_const_params / unsized_const_params / const_cmp / const_trait_impl)
 // are retired outright: multi_array_list's SoA layout now runs on the
 // `derive(SoaRow)` field table (see bun_collections_macros). Only
-// allocator_api remains (nightly), because the container surfaces name
-// `core::alloc::Allocator` through bun_alloc's `core_alloc` facade and an
-// unstable feature must be declared by every crate that names the trait —
-// stable builds take the api2 mirror instead.
-#![cfg_attr(bao_nightly, feature(allocator_api))]
+// Only the allocator feature remains (nightly) — `allocator_api`, or its
+// 1.100.0 partial-stabilization successor `allocator_ext` where the running
+// nightly demands it (build.rs probes; see bun_alloc/build.rs) — because
+// the container surfaces name `core::alloc::Allocator` through bun_alloc's
+// `core_alloc` facade and an unstable feature must be declared by every
+// crate that names the trait — stable builds take the api2 mirror instead.
+#![cfg_attr(all(bao_nightly, not(bao_nightly_allocator_ext)), feature(allocator_api))]
 #![warn(unused_must_use)]
 // Let the derive's `::bun_collections::…` paths resolve inside this crate
 // itself (unit tests derive SoaRow on local structs).

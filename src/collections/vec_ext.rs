@@ -292,7 +292,54 @@ impl<T> VecExtCtor<T> for ::std::vec::Vec<T> {
     }
 }
 
+// `Vec::splice`/`drain` require `A: AllocatorNightly` — the nightly-only
+// unstable face beyond the `Allocator` bound these impls carry (no blanket
+// impl exists; core/src/alloc/mod.rs). Both `VecExt` splice sites spell the
+// semantics here instead, over the channel-agnostic `AllocVec` facade.
+// Unwind after the `set_len(start)` detach only leaks, matching `Vec::splice`'s
+// drop-panic semantics (never double-drops).
+#[cfg(bao_nightly)]
+#[inline]
+fn vecext_splice_raw<T: Clone, A: Allocator + Default + 'static>(
+    v: &mut bun_alloc::core_alloc::AllocVec<T, A>,
+    start: usize,
+    remove: usize,
+    new_items: &[T],
+) {
+    assert!(start + remove <= v.len(), "range out of bounds");
+    let tail_len = v.len() - start - remove;
+    let n = new_items.len();
+    if n > remove {
+        v.reserve(n - remove);
+    }
+    unsafe {
+        let p = v.as_mut_ptr();
+        // Detach everything at/after `start` from `v`'s ownership.
+        v.set_len(start);
+        // Drop the replaced range first (its slots are dead after this; an
+        // unwind here leaks range/tail, never double-drops).
+        core::ptr::drop_in_place(core::ptr::slice_from_raw_parts_mut(p.add(start), remove));
+        // Move the tail into its final slot (overlap-safe memmove).
+        core::ptr::copy(p.add(start + remove), p.add(start + n), tail_len);
+        // Write the clones (an unwind here leaks the written slots).
+        for (i, item) in new_items.iter().enumerate() {
+            p.add(start + i).write(item.clone());
+        }
+        v.set_len(start + n + tail_len);
+    }
+}
+
 macro_rules! impl_vec_ext_for_channel {
+    (@splice $self:ident, $start:expr, $remove:expr, $items:expr) => {{
+        #[cfg(bao_nightly)]
+        {
+            vecext_splice_raw($self, $start, $remove, $items);
+        }
+        #[cfg(not(bao_nightly))]
+        {
+            $self.splice($start..$start + $remove, $items.iter().cloned());
+        }
+    }};
     (@body) => {
 
     #[inline]
@@ -510,19 +557,24 @@ macro_rules! impl_vec_ext_for_channel {
     fn ordered_remove(&mut self, index: usize) -> T {
         self.remove(index)
     }
+    // splice semantics: on nightly the generic-`A` impls cannot call
+    // `Vec::splice`/`drain` (AllocatorNightly-gated, no blanket impl — see
+    // the helper doc), so they take the raw bypass; stable has no such gate
+    // and the single-parameter std `Vec<T>` impl (A = Global) satisfies the
+    // gate, so both keep the native call.
     #[inline]
     fn insert_slice(&mut self, index: usize, vals: &[T])
     where
         T: Clone,
     {
-        self.splice(index..index, vals.iter().cloned());
+        impl_vec_ext_for_channel!(@splice self, index, 0, vals);
     }
     #[inline]
     fn replace_range(&mut self, start: usize, len: usize, new_items: &[T])
     where
         T: Clone,
     {
-        self.splice(start..start + len, new_items.iter().cloned());
+        impl_vec_ext_for_channel!(@splice self, start, len, new_items);
     }
     #[inline]
     unsafe fn expand_to_capacity(&mut self) {

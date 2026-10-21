@@ -1,7 +1,11 @@
 [package]
 name = "bun_js_printer"
 # 0.1.1 (2026-08-19): W3 parser trio dual-mode (e00e3dcb)
-version = "0.2.3"
+# 0.2.4 (2026-10-21): republish HEAD source — the registry 0.2.3 references
+# `ImportRecordFlags::PRINT_NAMESPACE_IN_PATH`, which current `bun_ast` no
+# longer carries; ast 0.2.3 (first HEAD-source ast) breaks the ^0.2 resolve,
+# so this release realigns js_printer with the shipped ast line.
+version = "0.2.4"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

@@ -2914,7 +2914,7 @@ dependencies = [
 
 [[package]]
 name = "bun_ast"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -2985,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bundler"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3096,7 +3096,7 @@ dependencies = [
 
 [[package]]
 name = "bun_collections"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "allocator-api2",
  "bun_alloc",
@@ -3124,7 +3124,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -3161,7 +3161,7 @@ dependencies = [
 
 [[package]]
 name = "bun_crash_handler"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3187,7 +3187,7 @@ dependencies = [
 
 [[package]]
 name = "bun_css"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -3527,7 +3527,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_printer"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "bstr",
  "bumpalo",
@@ -3741,7 +3741,7 @@ dependencies = [
 
 [[package]]
 name = "bun_ptr"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -3765,7 +3765,7 @@ dependencies = [
 
 [[package]]
 name = "bun_resolver"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3978,7 +3978,7 @@ dependencies = [
 
 [[package]]
 name = "bun_shell_parser"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -4034,7 +4034,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sourcemap"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "allocator-api2",
  "bstr",

@@ -4,7 +4,7 @@
 // only needed on nightly for `SmolListAlloc` implementing the REAL
 // `core::alloc::Allocator`; on stable the impl routes through
 // `bun_alloc::core_alloc` (the `allocator_api2` mirror) instead.
-#![cfg_attr(bao_nightly, feature(allocator_api))]
+#![cfg_attr(all(bao_nightly, not(bao_nightly_allocator_ext)), feature(allocator_api))]
 #[path = "braces.rs"]
 pub mod braces;
 

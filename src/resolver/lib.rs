@@ -18,7 +18,7 @@
 // Dual-mode (stable ⇄ nightly; channel probe in build.rs): names the
 // facade allocator types (see fs.rs BOM helper) — unstable features must be
 // declared by every crate that names the trait; stable takes the api2 path.
-#![cfg_attr(bao_nightly, feature(allocator_api))]
+#![cfg_attr(all(bao_nightly, not(bao_nightly_allocator_ext)), feature(allocator_api))]
 pub mod data_url;
 pub mod dir_info;
 #[path = "fs.rs"]

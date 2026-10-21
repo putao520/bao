@@ -6,7 +6,11 @@
 // - thread_local: the bare `#[thread_local]` TLS slot (single-mov access,
 //   no LocalKey init/dtor) stays on nightly; stable uses `thread_local!`
 //   with a const initializer (no lazy-init, no dtor either).
-#![cfg_attr(bao_nightly, feature(allocator_api))]
+// allocator_api is only declared on pre-stabilization nightlies: 1.100.0
+// partially stabilized it (trait face now stable, no feature needed), and
+// bun_core uses no allocator_ext-only unstable face, so new nightlies
+// (probed via bao_nightly_allocator_ext) declare nothing.
+#![cfg_attr(all(bao_nightly, not(bao_nightly_allocator_ext)), feature(allocator_api))]
 #![cfg_attr(bao_nightly, feature(thread_local))] // bare `__thread` slot for `thread_id::current()` cache
 // `impl_field_parent!`'s `shared` arm rejects `Freeze` children at compile time
 #![cfg_attr(bao_nightly, feature(freeze))]

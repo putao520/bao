@@ -4739,7 +4739,16 @@ impl<T, const INLINED_MAX: usize> SmolList<T, INLINED_MAX> {
                 // without dropping it; for the arena-backed `!Drop` `T` used
                 // here that's identical, and for `Drop` `T` this is the
                 // non-leaking behaviour the spec intended.
-                heap.drain(0..starting_idx);
+                // drain needs `A: AllocatorNightly` on new nightlies (no
+                // blanket impl); memmove + truncate is the same
+                // shift-down-and-drop-prefix without the unstable bound
+                // (`copy_within` would need `T: Copy`).
+                unsafe {
+                    let p = heap.as_mut_ptr();
+                    let len = heap.len();
+                    core::ptr::copy(p.add(starting_idx), p, len - starting_idx);
+                    heap.truncate(len - starting_idx);
+                }
             }
         }
     }

@@ -2,7 +2,10 @@
 name = "bun_ptr"
 # 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
 # so this patch release ships alone. W4 stable dual-mode (allocator_api attr removal).
-version = "0.2.0"
+# 0.2.1 (2026-10-21): allocator_ext gate probe (
+# same-origin copy of
+# bun_alloc/build.rs) — compiles on floating new nightlies (1.101+).
+version = "0.2.1"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

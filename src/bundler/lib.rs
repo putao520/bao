@@ -6,7 +6,7 @@
 // `adt_const_params` feature needed on either channel. `allocator_api` stays
 // nightly-only (gated): arena lists come through the `bun_alloc::AstVec` /
 // `AstBox` facade, which is the api2 mirror on stable.
-#![cfg_attr(bao_nightly, feature(allocator_api))]
+#![cfg_attr(all(bao_nightly, not(bao_nightly_allocator_ext)), feature(allocator_api))]
 #![cfg_attr(bao_nightly, feature(thread_local))]
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 #![warn(unused_must_use)]

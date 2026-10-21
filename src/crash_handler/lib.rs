@@ -2904,13 +2904,16 @@ mod draft {
                 }
             }
             // Zig: `@trap()` — emits ud2 (x86_64 → SIGILL) / brk (aarch64 → SIGTRAP).
-            // Nightly keeps `core::intrinsics::abort()` (lowers to the same trap
-            // instruction, preserving the Zig exit signal). Stable has no
+            // Nightly keeps the abort intrinsic (lowers to the same trap
+            // instruction, preserving the Zig exit signal). `abort` was renamed
+            // `abort_immediate` in the 1.101 intrinsics cleanup; stable has no
             // intrinsics: `std::process::abort` raises SIGABRT instead — the
             // documented dual-mode divergence for the fatal path (a process
             // that is already crashing exits via a different fatal signal).
-            #[cfg(bao_nightly)]
+            #[cfg(all(bao_nightly, not(bao_nightly_allocator_ext)))]
             core::intrinsics::abort();
+            #[cfg(all(bao_nightly, bao_nightly_allocator_ext))]
+            core::intrinsics::abort_immediate();
             #[cfg(not(bao_nightly))]
             std::process::abort();
         }

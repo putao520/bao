@@ -1,7 +1,11 @@
 [package]
 name = "bun_crash_handler"
 # 0.1.1 (2026-08-19): ChanVec/VecExt sweep
-version = "0.2.4"
+# 0.2.5 (2026-10-21): floating-nightly fix — `core::intrinsics::abort` was
+# renamed `abort_immediate` in the 1.101 intrinsics cleanup; crash() now
+# probes the live compiler (build.rs, same-origin copy of bun_alloc/build.rs)
+# and calls whichever intrinsic the running nightly provides.
+version = "0.2.5"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

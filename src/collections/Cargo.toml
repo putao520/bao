@@ -7,7 +7,10 @@ name = "bun_collections"
 # 0.2.1 (2026-09-20): #46 SinglyLinkedList::remove unconditional asserts
 # (mirrors bun pool.zig:75-87; tests cdc5e40e) + bun_ptr req tightened to
 # ^0.2 (early-publish carried ^0.1, split TypeList identity vs consumers).
-version = "0.2.1"
+# 0.2.2 (2026-10-21): allocator_ext gate probe (
+# same-origin copy of
+# bun_alloc/build.rs) — compiles on floating new nightlies (1.101+).
+version = "0.2.2"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

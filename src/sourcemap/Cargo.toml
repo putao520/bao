@@ -3,7 +3,10 @@ name = "bun_sourcemap"
 # 0.1.1 (2026-08-19): W1 dual-mode — VecExt std-Vec imprint fix
 # (Mapping.rs proof) + ChanVec adaptation on core 0.1.2.
 # 0.1.2 (2026-08-19): post-0.1.1 sweep deltas.
-version = "0.2.2"
+# 0.2.3 (2026-10-21): allocator_ext gate probe (
+# same-origin copy of
+# bun_alloc/build.rs) — compiles on floating new nightlies (1.101+).
+version = "0.2.3"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

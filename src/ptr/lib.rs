@@ -2,7 +2,7 @@
 // allocator-api site (`boxed_slices_as_borrowed`) rides the facade —
 // nightly keeps core's `Box<[T], A>` byte-identical, stable uses the
 // allocator_api2 mirror.
-#![cfg_attr(bao_nightly, feature(allocator_api))]
+#![cfg_attr(all(bao_nightly, not(bao_nightly_allocator_ext)), feature(allocator_api))]
 #![allow(
     non_snake_case,
     non_camel_case_types,

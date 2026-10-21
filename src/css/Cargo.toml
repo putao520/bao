@@ -2,7 +2,10 @@
 name = "bun_css"
 # 0.1.1 (2026-08-19): W1 dual-mode — stable-channel green via bao_nightly
 # probe; type/signature sweep riding core 0.1.2 vec/strings API.
-version = "0.2.2"
+# 0.2.3 (2026-10-21): allocator_ext gate probe (
+# same-origin copy of
+# bun_alloc/build.rs) — compiles on floating new nightlies (1.101+).
+version = "0.2.3"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

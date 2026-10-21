@@ -1,7 +1,10 @@
 [package]
 name = "bun_shell_parser"
 # 0.1.1 (2026-08-19): W3 parser trio dual-mode (e00e3dcb)
-version = "0.2.0"
+# 0.2.1 (2026-10-21): allocator_ext gate probe (
+# same-origin copy of
+# bun_alloc/build.rs) — compiles on floating new nightlies (1.101+).
+version = "0.2.1"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
