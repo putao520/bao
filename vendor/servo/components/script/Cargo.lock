@@ -1199,7 +1199,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.32"
+version = "0.5.33"
 dependencies = [
  "accesskit",
  "aes",
@@ -1352,7 +1352,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-bindings"
-version = "0.5.25"
+version = "0.5.26"
 dependencies = [
  "atomic_refcell",
  "bao-mozjs",
