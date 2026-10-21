@@ -9,7 +9,12 @@ name = "bun_alloc"
 # 0.2.0 (2026-09-20): BREAKING — mimalloc face retired (#45, e2542105):
 # MimallocArena/c_thunks removed, Arena = StdArena (libc default_alloc
 # backend), bun_mimalloc_sys dependency dropped. Dependents follow at 0.2.
-version = "0.2.0"
+# 0.2.1 (2026-10-21): nightly gate fix — `allocator_api` partial
+# stabilization (1.100.0) succeeded it with `allocator_ext` (now gating
+# const `Vec::new_in`); build.rs probes the live compiler and lib.rs
+# declares whichever feature the running nightly accepts, so floating new
+# nightlies compile again. Const surface unchanged on every channel.
+version = "0.2.1"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

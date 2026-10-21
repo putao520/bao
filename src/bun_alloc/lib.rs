@@ -5,14 +5,18 @@
 // a dependency cycle.
 #![allow(clippy::disallowed_types)]
 // Dual-mode (stable ⇄ nightly; channel probe in build.rs):
-// - allocator_api: on nightly the allocators implement the real
+// - allocator_api/allocator_ext: on nightly the allocators implement the real
 //   `core::alloc::Allocator` (byte-identical fast path, `Vec<T, A>` and all);
 //   on stable they implement the `allocator_api2` mirror trait via the
 //   `core_alloc` facade below — same method shapes, `hashbrown` keeps
-//   working because its bound was already the api2 trait.
+//   working because its bound was already the api2 trait. `allocator_api`
+//   was partially stabilized in 1.100.0 and succeeded by `allocator_ext`
+//   (which also gates const `Vec::new_in`); build.rs probes the live
+//   compiler because the successor name is unknown to earlier nightlies.
 // - thread_local: the bare `#[thread_local]` TLS slot (single-mov access)
 //   stays on nightly; stable uses `thread_local!` with a const initializer.
-#![cfg_attr(bao_nightly, feature(allocator_api))]
+#![cfg_attr(all(bao_nightly, not(bao_nightly_allocator_ext)), feature(allocator_api))]
+#![cfg_attr(bao_nightly_allocator_ext, feature(allocator_ext))]
 // `#[thread_local]` (vs the `thread_local!` macro) compiles to a bare
 // `__thread` slot — single `mov reg, fs:[OFFSET]` access, no `LocalKey`
 // `__getit()` wrapper, no lazy-init flag check, no dtor-registration probe.

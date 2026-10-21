@@ -1,6 +1,10 @@
 [package]
 name = "bun_cares_sys"
-version = "0.2.0"
+# 0.2.1 (2026-10-21): republish to cut the registry chain to the 0.1 line —
+# 0.2.0 shipped bun_libuv_sys ^0.1.0, which drags bun_core 0.1.x / bun_alloc
+# 0.1.4 into downstream graphs; the workspace table now declares libuv
+# ^0.2.0 (published), so this release resolves onto the 0.2 line.
+version = "0.2.1"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
