@@ -1,1 +1,1 @@
-{"date":"2026-10-20","started_at":"2026-10-20T16:10:20Z","duration_mins":60,"verdict":"failed","zero_hang":false,"counts_toward_entry":true,"streak_after":0,"note":"run.sh rc=101 (see /home/putao/code/rust/bao/bench/results/2026-10-20-75ea36bea/soak.run-1.log); streak reset 19→0"}
+{"date":"2026-10-21","started_at":"2026-10-21T16:12:20Z","duration_mins":60,"verdict":"failed","zero_hang":false,"counts_toward_entry":true,"streak_after":0,"note":"run.sh rc=101 (see /home/putao/code/rust/bao/bench/results/2026-10-21-47f8b7a0a/soak.run-1.log)"}
