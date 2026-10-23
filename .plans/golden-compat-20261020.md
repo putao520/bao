@@ -895,3 +895,10 @@ util.inspect compact:false 委托(assert IIFE inspectValue 复用+oracle 分界�
 **归因（BCE-20261024-SESSION-ERRFAMILY）**:本域错误类失败 9 次全链归因——①泵泛型化后 14 编译错四族(E0596 签名缺 mut/E0502 settle 闭包捕获 ctx=迁移波误搬 drain/E0308 传值/E0433-E0425 迁移波误删 import):根因=E-pump-generic 的 workaround「存在理由」判定未编译实证;②格2 require 红:根因=correct_directory_index_mjs 只挂 external 分支,try_resolve fallback 同样产 index.mjs;③PumpStuck 误杀:根因=tripwire 把「有进展后稳态」当死锁(c17 签名是全程零进展);④Buffer 身份:根因=Buffer.prototype 为 NewPlainObject,constructor 沿链错指 Uint8Array;⑤net 白名单:根因=node_net 三段式导出(IIFE+白名单拷贝+单测清单)三处同步缺二(memory net-js-whitelist-copy-trap 已沉淀)。
 **横扫**:evidence 格式 codemod 84 处(9 文件一次根治);net 白名单 install+单测两处同修;vm 六函数 oracle 清单式横扫(6/6 一次注册面变换)。
 **根治与残留核验**:①②③④⑤全部根治且经 farm 复验残留=0(窄域 110/110、deep 51/53、stage-b 10 PASS 零回归、二进制行为探针逐项绿)。诚实边界:esm-cjs SIGABRT/partial-deep SIGSEGV/深链 inspect 栈漂移(245 层)=存量引擎面缺陷,已登记非本域引入(A/B 实证 HEAD 同现),留引擎崩溃立项合同——不冒充已根治。
+
+## SPEC 追平波(2026-10-24,用户指令「代码跑在 SPEC 前面,根治」)
+- 波1 提交 4058a866d:机械修复(attr-order 224/xref 11/结构 70/CS-2 18/注册表 2011 ghost)+status 对齐 4 REQ+Part C 断链 11/11 回建消号(TV-2 102→92)。
+- **波2=Part A(未执行)**:rename 158 元素(83 REQ+17 DEC+58 TEST,pad/unpad 机械)+ENG#13 裁决(013 保 TLSSocket,Bun.file→REQ-ENG-049)+**70 个 src 文件 @trace 旧 ID codemod 必须同波原子**(否则字面匹配断裂;清单在 spec-triage-report)。通道=spec_govern action=rename 事务级联+codemod。
+- **波3=Part B(未执行)**:94 条 TV-2 锚回填(E 报告附 file::fn 真实测试证据链,通道=spec_write create data={domain,reqRef,categories};batchData 通道契约不明弃用,顺序单发)+9 真缺口诚实登记(BRW-23/29/39/40/41/42=servo 承载/WPT 判定注记;ENG-45=负契约;BUILDGOV-001/ARCH-4=流程型)。
+- 方案全文:.plans/spec-triage-report-20261024.md(255 行,Part A rename 映射表/B 锚表/C 方案)。
+- 工具契约沉淀:spec_write create 的 data 键={domain,title,reqRef,categories}(camelCase);id 由注册表自分配(号权 SSOT);1905 batchData 契约不明(2 次失败弃)。
