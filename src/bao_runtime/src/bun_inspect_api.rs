@@ -980,7 +980,7 @@ unsafe fn invoke_custom_inspect(
 /// then the legacy plain-string property. Both stay user entry points.
 /// domain-check a21f02a988 (own-idiom fix, upstream oracle)
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn try_custom_inspect(
+pub(crate) unsafe fn try_custom_inspect(
     cx: *mut JSContext,
     cx_ref: &mut mozjs::context::JSContext,
     obj: mozjs::rust::Handle<*mut JSObject>,

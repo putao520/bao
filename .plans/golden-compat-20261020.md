@@ -882,3 +882,8 @@ nextest --cargo-profile test-ci -p **bao-browser**(注:package name 连字符,`b
 - vm 可构造化+stderr setEncoding 提交(c 尾):stage-b 5 PASS 维持,两原阻塞点解除。新暴露两存量缺陷登记:①exit teardown free() invalid pointer(esm-cjs-message-verify 走得更深后触达,修复前已存在)②assert deepEqual 跨 realm 比较 SIGSEGV(partial-deep-equal,vm 三用法最小复现全过=非 vm 面,属 assert 大面)。两缺陷随 assert 大面/teardown 面立项。
 - E 合同偏差登记:E-stderr 在 farm 容器内自行 cargo build 验证(硬门⑧执行体禁跑构建)——无争抢不追责,下波合同补「禁任何 cargo 含容器」明文。
 - Buffer.prototype.constructor 修复(c56faf8b4):assert inspect 的 Buffer/Uint8Array 判别链根因(prototype constructor 沿链错指 Uint8Array)。test-assert-deep 25→26 passed。assert 域剩余面=逐格 oracle 对账工程(loose deepEqual/date/calltracker 等),E 合同已备待派。
+
+## GOLDEN A assert 域横扫收口(2a873727a,2026-10-23 深夜)
+stage-b **5→10 PASS**(7 轮迭代,9 类根因聚类横扫:CallTracker 全量重写/stack 头/thenable 包裹/Infinity 渲染/custom inspect dispatch/strictEqualObject 提升/多行 body/ok() 源码提取/fixtures 装配)。格级:test-assert 14/18、class 12/12、fail 4/4、typedarray 44/44。
+**残留 8 文件全归因(新立项面)**:①util.inspect compact:false 多行形态(REQ-ENG-004,Rust jsval_inspect ~300-500 行,deep 域 28 格主根因)②globalThis own Symbol.toStringTag='global'(checktag)③引擎 Promise unhandled-rejection 时序(async)④SM vs V8 错误文案(getCalls 1 格)⑤SIGABRT/SIGSEGV 双崩溃(esm-cjs/partial,引擎面)⑥ok() 源码提取 runner 语境(test-assert 4 格+first-line)。
+GOLDEN A 本日总轨迹:**0→10 PASS**(require 校正→features/net→vm/stderr→Buffer constructor→assert 横扫,六增量提交)。

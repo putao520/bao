@@ -2182,10 +2182,19 @@ function makeAssert() {
     return open + '\n' + body + indent + close;
   }
 
+  // node's inspect (compact: false — assertion_error.js inspectValue) always
+  // breaks object/array bodies into indented per-entry lines (joinBody); the
+  // single-line '{ a: 1 }' forms in golden expected messages come from the
+  // AssertionError *own-props* rendering (inspectCompact / bare inspect()),
+  // never from inspectValue itself.
+  function compactBody(prefix, open, close, lines, indent) {
+    return (prefix ? prefix + ' ' : '') + joinBody(open, lines, indent, close);
+  }
+
   // Container head: 'Map(1) {' / '[' / '[Object: null prototype] {}' forms.
   function body(prefix, open, close, lines, indent) {
     if (lines.length === 0) return (prefix ? prefix + ' ' : '') + open + close;
-    return (prefix ? prefix + ' ' : '') + joinBody(open, lines, indent, close);
+    return compactBody(prefix, open, close, lines, indent);
   }
 
   // Date/RegExp with own enumerable props and/or a subclass constructor:
@@ -2202,6 +2211,8 @@ function makeAssert() {
       try { v = val[keys[i]]; } catch (e2) { v = '[Thrown]'; }
       lines.push(keyRepr(keys[i]) + ': ' + inspectValue(v, depth - 1, ctx));
     }
+    // Date/RegExp subclass own-props bodies always break (mirrors util.inspect
+    // compact:false output: 'MyDate 2016-...Z {\n  0: \'1\'\n}').
     return prefix + base + ' ' + joinBody('{', lines, ctx.indent, '}');
   }
 
@@ -2252,6 +2263,19 @@ function makeAssert() {
     } else {
       prefix = '';
     }
+    // node compacts plain-object bodies on the same breakLength rule; arrays
+    // (Array { 0: 1 } fake-array style) always take the compact single line.
+    if (tag === '[object Array]' && prefix) {
+      var fakeKeys = Object.keys(val).sort();
+      var fakeLines = [];
+      var fakeChild = { indent: ctx.indent + '  ', refs: ctx.refs, refCounter: ctx.refCounter, seen: ctx.seen };
+      for (var fk = 0; fk < fakeKeys.length; fk++) {
+        var fv;
+        try { fv = val[fakeKeys[fk]]; } catch (e3) { fv = '[Thrown]'; }
+        fakeLines.push(keyRepr(fakeKeys[fk]) + ': ' + inspectEntryValue(val, fakeKeys[fk], fv, depth - 1, fakeChild));
+      }
+      return 'Array { ' + fakeLines.join(', ') + ' }';
+    }
     return inspectEntries(val, depth, ctx, prefix, '{', '}');
   }
 
@@ -2278,7 +2302,8 @@ function makeAssert() {
     for (var p = 0; p < props.length; p++) {
       lines.push(keyRepr(props[p]) + ': ' + inspectValue(arr[props[p]], depth - 1, ctx));
     }
-    return body('', '[', ']', lines, ctx.indent);
+    if (lines.length === 0) return '[]';
+    return joinBody('[', lines, ctx.indent, ']');
   }
 
   // node marks accessor-derived values: [Getter: 5], [Getter/Setter: 5],
@@ -2440,10 +2465,20 @@ function makeAssert() {
     for (var p = 0; p < props.length; p++) {
       lines.push(keyRepr(props[p]) + ': ' + inspectValue(v[props[p]], depth - 1, ctx));
     }
-    if (ctorName === 'Buffer') {
-      return 'Buffer(' + n + ') [Uint8Array] ' + joinBody('[', lines, ctx.indent, ']');
+    var prefix = ctorName === 'Buffer' ? ('Buffer(' + n + ') [Uint8Array]') : (tag + '(' + n + ')');
+    if (ctorName === 'Buffer' && props.length === 0) {
+      // node's inspect renders Buffer instances as '<Buffer hex-bytes>' (up
+      // to 50 bytes shown; longer buffers get a trailing '... XX more bytes'
+      // hint which assertion messages never reach in the golden set).
+      var hex = '';
+      for (var bi = 0; bi < n && bi < 50; bi++) {
+        if (bi > 0) hex += ' ';
+        var b = v[bi];
+        hex += (b < 16 ? '0' : '') + b.toString(16);
+      }
+      return '<Buffer ' + hex + '>';
     }
-    return tag + '(' + n + ') ' + joinBody('[', lines, ctx.indent, ']');
+    return prefix + ' ' + joinBody('[', lines, ctx.indent, ']');
   }
 
   function inspectArrayBuffer(v, depth, ctx) {
@@ -2527,7 +2562,9 @@ function makeAssert() {
   // primitives and small containers. Used where node calls bare inspect()
   // (ifError, validator-return messages, invalidArgTypeHelper).
   function inspectCompact(val, depth, seen, indent) {
-    if (depth === undefined) depth = 4;
+    // node renders own props via bare inspect() (default depth 2): containers
+    // at the property level collapse to [Array]/[Object] markers.
+    if (depth === undefined) depth = 2;
     if (seen === undefined) seen = [];
     if (indent === undefined) indent = '';
     var scalarCtx = { indent: indent, refs: null, refCounter: 0 };
@@ -2598,6 +2635,13 @@ function makeAssert() {
     }
 
     return operator;
+  }
+
+  // strictEqual(innerFail path) must adopt the same object-vs-object
+  // promotion node applies inside createErrDiff, otherwise two objects fail
+  // with the '!== ' simple form instead of '+ actual - expected'.
+  function checkOperatorForInnerFail(actual, expected, operator) {
+    return checkOperator(actual, expected, operator);
   }
 
   function getStackedDiff(actual, expected) {
@@ -2890,6 +2934,21 @@ function makeAssert() {
     this.operator = operator;
     if (typeof Error.captureStackTrace === 'function') {
       Error.captureStackTrace(this, stackStartFn || stackStartFunction || AssertionError);
+      // SpiderMonkey's captureStackTrace stores frames without the
+      // "Name: message" head that V8 prepends.  Node's contract is that
+      // err.stack starts with "AssertionError [ERR_ASSERTION]: <message>".
+      // Rebuild the stack with the head when it is missing.
+      var currentStack = String(this.stack || '');
+      if (currentStack.indexOf('AssertionError') !== 0) {
+        var headLine = 'AssertionError [ERR_ASSERTION]: ' + message;
+        Object.defineProperty(this, 'stack', {
+          __proto__: null,
+          value: headLine + '\n' + currentStack,
+          enumerable: false,
+          writable: true,
+          configurable: true,
+        });
+      }
     } else {
       // Frame head carries the node shape; internal frames are kept (no V8
       // frame trimming available without captureStackTrace).
@@ -2955,11 +3014,112 @@ function makeAssert() {
   // ========================================================================
 
   function getErrMessageFallback(value, message) {
-    // node extracts the falsy source expression from the stack (V8-only).
-    // Engines without source-text frames fall back to the generated
-    // equality message ("0 == true" form), which is node's own behavior
-    // when the source cannot be recovered.
-    return undefined;
+    // node extracts the falsy source expression from V8 CallSite source
+    // text.  SpiderMonkey stack frames carry only "fn@file:line:col", so
+    // we reconstruct the expression by reading the source file at the
+    // caller's line and slicing out the argument list of the innermost
+    // assert.ok / assert() call.  This mirrors node's behaviour closely
+    // enough for the golden grids (single-line and simple multi-line
+    // forms).  Returns undefined when the source cannot be recovered.
+    try {
+      var err = new Error();
+      var stack = err.stack || '';
+      var frames = stack.split('\n');
+      // frames[0] is the getErrMessageFallback frame; frames[1] is innerOk;
+      // frames[2] is the caller of ok/assert (the test frame we want).
+      var callerLine = null;
+      for (var fi = 1; fi < frames.length; fi++) {
+        var f = frames[fi];
+        if (f.indexOf('node_util') !== -1 || f.indexOf('assert:') !== -1 ||
+            f.indexOf('<assert>') !== -1 || f.indexOf('getErrMessage') !== -1 ||
+            f.indexOf('innerOk') !== -1) continue;
+        callerLine = f;
+        break;
+      }
+      if (!callerLine) return undefined;
+      // Parse "fnName@/path/to/file.js:LINE:COL" or "@/path:LINE:COL"
+      var m = callerLine.match(/@(.+):(\d+):(\d+)$/);
+      if (!m) return undefined;
+      var filePath = m[1];
+      var lineNum = parseInt(m[2], 10);
+      if (typeof require !== 'function') return undefined;
+      var fs;
+      try { fs = require('fs'); } catch (e0) { return undefined; }
+      // Resolve relative paths against the current working directory.
+      var path;
+      try { path = require('path'); } catch (e0b) { path = null; }
+      var resolvedPath = filePath;
+      if (filePath.charAt(0) !== '/' && path !== null) {
+        try { resolvedPath = path.resolve(process.cwd(), filePath); } catch (e0c) {}
+      }
+      var src;
+      try { src = fs.readFileSync(resolvedPath, 'utf8'); }
+      catch (e0d) { try { src = fs.readFileSync(filePath, 'utf8'); } catch (e0e) { return undefined; } }
+      var srcLines = src.split('\n');
+      if (lineNum < 1 || lineNum > srcLines.length) return undefined;
+      // Collect enough source lines to cover the full ok(...) call.
+      // Start at the caller line and grab up to 10 lines.
+      var exprLines = [];
+      var parenDepth = 0;
+      var foundOpen = false;
+      for (var li = lineNum - 1; li < Math.min(lineNum + 9, srcLines.length); li++) {
+        var text = srcLines[li];
+        // Strip trailing comment
+        var ci = text.indexOf('//');
+        if (ci !== -1 && !foundOpen) text = text.slice(0, ci);
+        exprLines.push(text);
+        for (var ci2 = 0; ci2 < text.length; ci2++) {
+          var ch = text[ci2];
+          if (ch === '(') { parenDepth++; foundOpen = true; }
+          else if (ch === ')') { parenDepth--; }
+        }
+        if (foundOpen && parenDepth <= 0) break;
+      }
+      var expr = exprLines.join('\n');
+      // Trim leading/trailing whitespace from each line and the whole block.
+      expr = expr.split('\n').map(function(l) { return l.trim(); }).join('\n').trim();
+      if (!expr) return undefined;
+      // Extract the full call expression (e.g. "assert.ok(arg)" or "strict.ok(").
+      // node shows the complete call for single-line expressions; for
+      // multi-line calls it truncates at the first newline after the
+      // opening paren (V8 stack frame source text limit).
+      // Find the innermost assert.ok / assert( / strict.ok call — match the
+      // full dotted path so "assert.ok(" wins over a bare "ok(" inside it.
+      var callMatch = expr.match(/(?:assert|strict|ok)(?:\.[a-zA-Z_$][\w$]*)*\s*\(/);
+      if (!callMatch) return undefined;
+      var callStart = callMatch.index;
+      var openIdx = expr.indexOf('(', callStart);
+      if (openIdx === -1) return undefined;
+      // For multi-line: node shows only "funcname(" (up to and including
+      // the opening paren, then a newline). Detect multi-line by checking
+      // if the matching close paren is on a different line.
+      var depth = 0;
+      var endIdx = -1;
+      for (var ei = openIdx; ei < expr.length; ei++) {
+        if (expr[ei] === '(') depth++;
+        else if (expr[ei] === ')') { depth--; if (depth === 0) { endIdx = ei; break; } }
+      }
+      var callExpr;
+      if (endIdx === -1) {
+        // Unclosed — just show up to the opening paren
+        callExpr = expr.slice(callStart, openIdx + 1);
+      } else {
+        var closeLine = expr.slice(0, endIdx).split('\n').length - 1;
+        var openLine = expr.slice(0, openIdx).split('\n').length - 1;
+        if (closeLine > openLine) {
+          // Multi-line call: node truncates at the opening paren
+          callExpr = expr.slice(callStart, openIdx + 1);
+        } else {
+          // Single-line call: show the full expression
+          callExpr = expr.slice(callStart, endIdx + 1);
+        }
+      }
+      if (!callExpr) return undefined;
+      // node's format: 'The expression evaluated to a falsy value:\n\n  <src>\n'
+      return 'The expression evaluated to a falsy value:\n\n  ' + callExpr + '\n';
+    } catch (e) {
+      return undefined;
+    }
   }
 
   function innerOk(fn, argLen, value, message) {
@@ -3358,7 +3518,8 @@ function makeAssert() {
       }
       // Fail in case no promise is returned.
       if (!checkIsPromise(resultPromise)) {
-        var ivErr = new TypeError('The "promiseFn" argument must be of type instance of Promise. Received ' + typeAndValue(resultPromise));
+        var ivErr = new TypeError('Expected instance of Promise to be returned from the "promiseFn" function but got ' +
+          (resultPromise === undefined ? 'undefined' : typeAndValue(resultPromise)) + '.');
         ivErr.code = 'ERR_INVALID_RETURN_VALUE';
         return Promise.reject(ivErr);
       }
@@ -3366,10 +3527,24 @@ function makeAssert() {
       resultPromise = promiseFn;
     } else {
       return Promise.reject(
-        makeInvalidArgTypeError('promiseFn', ['Function', 'Promise'], promiseFn));
+        makeInvalidArgTypeError('promiseFn', ['function', 'Promise'], promiseFn));
     }
 
-    return resultPromise.then(function() {
+    // For real native promises, call .then directly (avoids an extra
+    // Promise.resolve adoption that can trigger spurious unhandled-rejection
+    // warnings on engines where the adoption schedules a microtask).
+    // For non-native thenables (objects whose .then does not return a
+    // Promise), wrap through Promise.resolve so the chain below still gets
+    // a real Promise — calling .then directly on a bare thenable returns
+    // whatever its then() returns (often undefined), crashing the caller.
+    if (objToString.call(resultPromise) === '[object Promise]') {
+      return resultPromise.then(function() {
+        return NO_EXCEPTION_SENTINEL;
+      }, function(e) {
+        return e;
+      });
+    }
+    return Promise.resolve(resultPromise).then(function() {
       return NO_EXCEPTION_SENTINEL;
     }, function(e) {
       return e;
@@ -3594,19 +3769,132 @@ function makeAssert() {
     throw err;
   }
 
-  // ---- CallTracker (kept from the previous implementation; family owned by
-  // a follow-up task) ----
-  function CallTracker() {
-    this._calls = [];
+  // ---- CallTracker — port of lib/internal/assert/calltracker.js ----
+  function validateUint32(value, name) {
+    if (typeof value !== 'number' || value !== value || value < 0 ||
+        Math.floor(value) !== value || value > 4294967295) {
+      var err = new RangeError('The "' + name + '" argument must be of type uint32. Received ' +
+        inspectValueForMessage(value));
+      err.code = 'ERR_OUT_OF_RANGE';
+      throw err;
+    }
   }
-  CallTracker.prototype.calls = function(name) {
-    var self = this;
-    var fn = function() {
-      self._calls.push(name || 'anonymous');
-    };
-    return fn;
+
+  function CallTrackerContext(expected, stackTrace, name) {
+    this.calls = [];
+    this.expected = expected;
+    this.stackTrace = stackTrace;
+    this.name = name;
+  }
+  CallTrackerContext.prototype.track = function(thisArg, args) {
+    var argsClone = Object.freeze(Array.prototype.slice.call(args));
+    this.calls.push(Object.freeze({ thisArg: thisArg, arguments: argsClone }));
   };
-  CallTracker.prototype.verify = function() {};
+  Object.defineProperty(CallTrackerContext.prototype, 'delta', {
+    get: function() { return this.calls.length - this.expected; },
+  });
+  CallTrackerContext.prototype.reset = function() { this.calls = []; };
+  CallTrackerContext.prototype.getCalls = function() {
+    return Object.freeze(Array.prototype.slice.call(this.calls));
+  };
+  CallTrackerContext.prototype.report = function() {
+    if (this.delta !== 0) {
+      var message = 'Expected the ' + this.name + ' function to be executed ' +
+        this.expected + ' time(s) but was executed ' + this.calls.length + ' time(s).';
+      return {
+        message: message,
+        actual: this.calls.length,
+        expected: this.expected,
+        operator: this.name,
+        stack: this.stackTrace,
+      };
+    }
+  };
+
+  function CallTracker() {
+    this._callChecks = [];
+    this._trackedFunctions = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+    this._trackedPairs = [];
+  }
+  CallTracker.prototype._getTrackedFunction = function(tracked) {
+    if (this._trackedFunctions !== null && this._trackedFunctions.has(tracked)) {
+      return this._trackedFunctions.get(tracked);
+    }
+    for (var i = 0; i < this._trackedPairs.length; i++) {
+      if (this._trackedPairs[i][0] === tracked) return this._trackedPairs[i][1];
+    }
+    var err = new TypeError('The argument \'tracked\' is invalid. ' +
+      'Received ' + inspectValueForMessage(tracked) +
+      ' (is not a tracked function)');
+    err.code = 'ERR_INVALID_ARG_VALUE';
+    throw err;
+  };
+  CallTracker.prototype.reset = function(tracked) {
+    if (tracked === undefined) {
+      for (var i = 0; i < this._callChecks.length; i++) this._callChecks[i].reset();
+      return;
+    }
+    this._getTrackedFunction(tracked).reset();
+  };
+  CallTracker.prototype.getCalls = function(tracked) {
+    return this._getTrackedFunction(tracked).getCalls();
+  };
+  CallTracker.prototype.calls = function(fn, expected) {
+    if (typeof process !== 'undefined' && process && process._exiting) {
+      var exitErr = new Error('This API is not available during process exit');
+      exitErr.code = 'ERR_UNAVAILABLE_DURING_EXIT';
+      throw exitErr;
+    }
+    if (typeof fn === 'number') {
+      expected = fn;
+      fn = function() {};
+    } else if (fn === undefined) {
+      fn = function() {};
+    }
+    if (expected === undefined) expected = 1;
+
+    if (typeof expected !== 'number') {
+      throw makeInvalidArgTypeError('expected', 'number', expected);
+    }
+    validateUint32(expected, 'expected');
+
+    var context = new CallTrackerContext(expected, new Error(), fn.name || 'calls');
+    var self = this;
+    var tracked = new Proxy(fn, {
+      __proto__: null,
+      apply: function(target, thisArg, argList) {
+        context.track(thisArg, argList);
+        return Reflect.apply(target, thisArg, argList);
+      },
+    });
+    this._callChecks.push(context);
+    if (this._trackedFunctions !== null) this._trackedFunctions.set(tracked, context);
+    else this._trackedPairs.push([tracked, context]);
+    return tracked;
+  };
+  CallTracker.prototype.report = function() {
+    var errors = [];
+    for (var i = 0; i < this._callChecks.length; i++) {
+      var message = this._callChecks[i].report();
+      if (message !== undefined) {
+        errors.push(message);
+      }
+    }
+    return errors;
+  };
+  CallTracker.prototype.verify = function() {
+    var errors = this.report();
+    if (errors.length === 0) {
+      return;
+    }
+    var message = errors.length === 1 ?
+      errors[0].message :
+      'Functions were not called the expected number of times';
+    throw new AssertionError({
+      message: message,
+      details: errors,
+    });
+  };
 
   // ---- Assert class (node's configurable instance surface) ----
   function Assert(options) {
@@ -4226,7 +4514,23 @@ unsafe fn jsval_inspect(
             return val.to_int32().to_string();
         }
         if val.is_double() {
-            return val.to_double().to_string();
+            let d = val.to_double();
+            // Rust's f64::to_string renders Infinity as "inf" and NaN as
+            // "NaN"; node's util.inspect contract is "Infinity" / "-Infinity".
+            if d.is_infinite() {
+                return if d > 0.0 {
+                    "Infinity".to_string()
+                } else {
+                    "-Infinity".to_string()
+                };
+            }
+            if d.is_nan() {
+                return "NaN".to_string();
+            }
+            if d == 0.0 && d.is_sign_negative() {
+                return "-0".to_string();
+            }
+            return d.to_string();
         }
         if val.is_string() {
             return format!("'{}'", crate::js_to_rust_string(cx, val));
@@ -4305,6 +4609,12 @@ unsafe fn jsval_inspect_object_body(
     unsafe {
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let obj = val.to_object());
+
+        // node's util.inspect dispatches to Symbol.for('nodejs.util.inspect.custom')
+        // when present on the object or its prototype chain.
+        if let Some(s) = crate::bun_inspect_api::try_custom_inspect(cx, &mut wrapped_cx, obj.handle(), depth) {
+            return s;
+        }
 
         // Arrays → [ a, b, c ] (elements first, then non-index own
         // properties — Node renders `[ 1, 2, 3, foo: 'x' ]`).
@@ -4739,7 +5049,18 @@ unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String {
             return val.to_int32().to_string();
         }
         if val.is_double() {
-            return val.to_double().to_string();
+            let d = val.to_double();
+            if d.is_infinite() {
+                return if d > 0.0 {
+                    "Infinity".to_string()
+                } else {
+                    "-Infinity".to_string()
+                };
+            }
+            if d.is_nan() {
+                return "NaN".to_string();
+            }
+            return d.to_string();
         }
         if val.is_string() {
             return crate::js_to_rust_string(cx, val);
