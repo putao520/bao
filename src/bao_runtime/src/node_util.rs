@@ -2104,7 +2104,36 @@ function makeAssert() {
         return '[Circular *' + (cycRef || (si + 1)) + ']';
       }
     }
-    if (depth < 0) return '[Unknown]';
+    if (depth < 0) {
+      // node's depth-exhaustion tags (util.inspect oracle): containers
+      // collapse to '[Object]' / '[Array]' / '[Map]' / '[Set]' /
+      // '[Promise]' / '[WeakMap]' / '[WeakSet]' / '[ArrayBuffer]' /
+      // '[<toStringTag>]' (typed arrays — tag lives on the prototype).
+      // Errors / Date / RegExp / functions / boxed primitives never
+      // truncate — they render fully at any depth.
+      // (The legacy '[Unknown]' shape came from the assert-only path where
+      // depth 1000 never truncates; util.inspect delegation can hit this
+      // arm with small depths, so node's exact tags are required.)
+      if (isError(val) || isDate(val) || isRegExp(val) || isBoxedPrimitiveTag(val)) {
+        // fall through to the full renderer below (depth stays < 0; the
+        // per-entry walks guard their own recursion via depth - 1, and
+        // scalar/leaf children render normally).
+      } else {
+        var tagStr = objToString.call(val);
+        if (tagStr === '[object Object]' || tagStr === '[object Module]') return '[Object]';
+        if (Array.isArray(val)) return '[Array]';
+        if (tagStr === '[object Map]') return '[Map]';
+        if (tagStr === '[object Set]') return '[Set]';
+        if (tagStr === '[object Promise]') return '[Promise]';
+        if (tagStr === '[object WeakMap]') return '[WeakMap]';
+        if (tagStr === '[object WeakSet]') return '[WeakSet]';
+        if (isAnyArrayBuffer(val)) return '[ArrayBuffer]';
+        var truncTag = '';
+        try { truncTag = val[Symbol.toStringTag]; } catch (e5) { /* ignore */ }
+        if (typeof truncTag === 'string' && truncTag) return '[' + truncTag + ']';
+        return '[Object]';
+      }
+    }
     seen.push(val);
     if (ctx.refs === null) ctx.refs = new Map();
     var refNum = ctx.refs.get(val);
@@ -2279,9 +2308,48 @@ function makeAssert() {
     return inspectEntries(val, depth, ctx, prefix, '{', '}');
   }
 
+  // node's container-head prefix for subclasses: a subclass of Map/Set
+  // renders 'Ctor(size) [Map]' / 'Ctor(size) [Set]'; a subclass of Array
+  // renders 'Ctor(len) [' (no '[Array]' tag — node oracle 'MyA(2) [').
+  function containerPrefix(val, baseName, sizeTag) {
+    var ctor = '';
+    try { ctor = val.constructor && val.constructor.name; } catch (e) { /* ignore */ }
+    if (!ctor || ctor === baseName) return baseName + '(' + sizeTag + ')';
+    if (baseName === 'Array') return ctor + '(' + sizeTag + ')';
+    return ctor + '(' + sizeTag + ') [' + baseName + ']';
+  }
+
   function inspectArray(arr, depth, ctx) {
     var n = arr.length;
     var props = Object.keys(arr).filter(function(k) { return !isArrayIndexKey(k); });
+    // Subclass arrays take the 'Ctor(len) [' head (node: 'MyArray(3) [');
+    // plain arrays keep the bare '[' head.
+    var isSub = false;
+    try { isSub = arr.constructor && arr.constructor !== Array; } catch (e0) { /* ignore */ }
+    if (isSub) {
+      var head = containerPrefix(arr, 'Array', String(n));
+      if (n === 0 && props.length === 0) return head + ' []';
+      var subLines = [];
+      var holeRun2 = 0;
+      for (var i2 = 0; i2 < n; i2++) {
+        if (i2 in arr) {
+          if (holeRun2 > 0) {
+            subLines.push(holeRun2 === 1 ? '<1 empty item>' : '<' + holeRun2 + ' empty items>');
+            holeRun2 = 0;
+          }
+          subLines.push(inspectValue(arr[i2], depth - 1, { indent: ctx.indent + '  ', refs: ctx.refs, refCounter: ctx.refCounter, seen: ctx.seen }));
+        } else {
+          holeRun2++;
+        }
+      }
+      if (holeRun2 > 0) {
+        subLines.push(holeRun2 === 1 ? '<1 empty item>' : '<' + holeRun2 + ' empty items>');
+      }
+      for (var p2 = 0; p2 < props.length; p2++) {
+        subLines.push(keyRepr(props[p2]) + ': ' + inspectValue(arr[props[p2]], depth - 1, ctx));
+      }
+      return body(head, '[', ']', subLines, ctx.indent);
+    }
     if (n === 0 && props.length === 0) return '[]';
     var lines = [];
     var holeRun = 0;
@@ -2372,13 +2440,22 @@ function makeAssert() {
       if (stack) {
         var sLines = stack.split('\n');
         for (var s = 1; s < sLines.length; s++) {
-          if (sLines[s]) frames.push(sLines[s].replace(/^\s+/, '    '));
+          // node indents frames relative to the head line: the base 4-space
+          // form plus the current entry indent (a nested error's frames
+          // carry the container's indentation — 'e: TypeError: x' inside
+          // an object body gets 6-space frames).
+          if (sLines[s]) frames.push(sLines[s].replace(/^\s+/, '    ' + ctx.indent));
         }
       }
     }
     var props = [];
     var errChild = { indent: ctx.indent + '  ', refs: ctx.refs, refCounter: ctx.refCounter, seen: ctx.seen };
-    var keys = Object.keys(err).filter(function(k) { return k !== 'message' && k !== 'name' && k !== 'stack'; });
+    var keys = Object.keys(err).filter(function(k) {
+      // 'cause' is rendered by the dedicated '[cause]:' arm below; SM makes
+      // it enumerable (node/V8 keeps it non-enumerable) so without this
+      // filter it would render twice ('cause:' + '[cause]:').
+      return k !== 'message' && k !== 'name' && k !== 'stack' && k !== 'cause';
+    });
     for (var i = 0; i < keys.length; i++) {
       var v;
       try { v = err[keys[i]]; } catch (e5) { v = '[Thrown]'; }
@@ -2394,13 +2471,6 @@ function makeAssert() {
     for (var f = 0; f < frames.length; f++) out += '\n' + frames[f];
     if (props.length > 0) out += ' ' + joinBody('{', props, ctx.indent, '}');
     return out;
-  }
-
-  // Variant that prepends a head line before the container (errors keep
-  // 'Name: msg' + frames + props in one block).
-  function body2(head, open, close, lines, indent) {
-    if (lines.length === 0) return head;
-    return head + ' ' + joinBody(open, lines, indent, close);
   }
 
   function inspectMap(m, depth, ctx) {
@@ -2421,6 +2491,11 @@ function makeAssert() {
     for (var mp = 0; mp < mprops.length; mp++) {
       mlines.push(keyRepr(mprops[mp]) + ': ' + inspectEntryValue(m, mprops[mp], m[mprops[mp]], depth - 1, mchild));
     }
+    // Subclass Maps take the node 'Ctor(size) [Map]' head (plain: 'Map(size)').
+    var isMapSub = false;
+    try { isMapSub = m.constructor && m.constructor !== Map; } catch (e7) { /* ignore */ }
+    var mhead = isMapSub ? containerPrefix(m, 'Map', String(m.size)) : 'Map(' + m.size + ')';
+    if (isMapSub) return body(mhead, '{', '}', mlines, ctx.indent);
     return body('Map(' + m.size + ')', '{', '}', mlines, ctx.indent);
   }
 
@@ -2438,6 +2513,11 @@ function makeAssert() {
     for (var sp = 0; sp < sprops.length; sp++) {
       lines.push(keyRepr(sprops[sp]) + ': ' + inspectEntryValue(s, sprops[sp], s[sprops[sp]], depth - 1, schild));
     }
+    // Subclass Sets take the node 'Ctor(size) [Set]' head (plain: 'Set(size)').
+    var isSetSub = false;
+    try { isSetSub = s.constructor && s.constructor !== Set; } catch (e8) { /* ignore */ }
+    var shead = isSetSub ? containerPrefix(s, 'Set', String(s.size)) : 'Set(' + s.size + ')';
+    if (isSetSub) return body(shead, '{', '}', lines, ctx.indent);
     return body('Set(' + s.size + ')', '{', '}', lines, ctx.indent);
   }
 
@@ -2466,18 +2546,13 @@ function makeAssert() {
       lines.push(keyRepr(props[p]) + ': ' + inspectValue(v[props[p]], depth - 1, ctx));
     }
     var prefix = ctorName === 'Buffer' ? ('Buffer(' + n + ') [Uint8Array]') : (tag + '(' + n + ')');
-    if (ctorName === 'Buffer' && props.length === 0) {
-      // node's inspect renders Buffer instances as '<Buffer hex-bytes>' (up
-      // to 50 bytes shown; longer buffers get a trailing '... XX more bytes'
-      // hint which assertion messages never reach in the golden set).
-      var hex = '';
-      for (var bi = 0; bi < n && bi < 50; bi++) {
-        if (bi > 0) hex += ' ';
-        var b = v[bi];
-        hex += (b < 16 ? '0' : '') + b.toString(16);
-      }
-      return '<Buffer ' + hex + '>';
-    }
+    // This renderer serves the assert-message path, which is node's
+    // assertion_error inspectWithNoCustomRetry (customInspect: false) —
+    // Buffers take the Buffer(N) [Uint8Array] element-list body, NOT the
+    // bare-util.inspect '<Buffer hex>' custom-inspector form (that shape
+    // belongs to the Rust single-line path, pinned by util_edge_tests).
+    // Golden test-assert-deep 'deepEqual' (Uint8Array vs Buffer diff)
+    // pins the Buffer(N) [Uint8Array] multi-line form on the '-' side.
     return prefix + ' ' + joinBody('[', lines, ctx.indent, ']');
   }
 
@@ -3981,6 +4056,18 @@ function makeAssert() {
   // node: assert.ok = assert (the ok function IS the module export).
   assertFn.ok = assertFn;
 
+  // Non-enumerable back-channel for util_inspect's compact:false
+  // delegation: the Section-3 inspectValue is the node assertion_error.js
+  // inspectValue shape (validated against host node v24 with a 220-case
+  // parity matrix).  Hidden behind a non-enumerable property so golden
+  // probes scanning assert's public surface never see it.
+  Object.defineProperty(assertFn, '__baoInspectValue', {
+    value: inspectValue,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+
   Object.assign(strict, assertFn, {
     equal: assertFn.strictEqual,
     deepEqual: assertFn.deepStrictEqual,
@@ -4035,6 +4122,25 @@ return makeAssert();
         if strict_val.is_object() {
             rooted!(&in(wrapped_cx) let strict_obj = strict_val.to_object());
             cache_builtin(cx, "assert/strict", strict_obj.get());
+        }
+
+        // Cache the Section-3 inspectValue (node assertion_error.js shape)
+        // as a hidden builtin for util_inspect's compact:false delegation
+        // path.  The JS side stores it as a non-enumerable property
+        // (__baoInspectValue) so it never leaks into golden probes.
+        let mut iv_val = UndefinedValue();
+        JS_GetProperty(
+            cx.raw_cx(),
+            assert_fn_obj.handle().into(),
+            c"__baoInspectValue".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut iv_val,
+            },
+        );
+        if iv_val.is_object() && JS_ObjectIsFunction(iv_val.to_object()) {
+            rooted!(&in(wrapped_cx) let iv_obj = iv_val.to_object());
+            cache_builtin(cx, "assert/__inspectValue", iv_obj.get());
         }
 
         // Also expose AssertionError globally for tests that reference it
@@ -5103,6 +5209,159 @@ unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String {
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+/// Read an options-object numeric field as an f64 (JS-side NaN/Infinity
+/// preserved; non-numeric/missing/failed get = None).
+///
+/// # Safety
+/// `cx` must be a valid live JSContext; `oobj` must be rooted for the call.
+unsafe fn util_inspect_num_field(
+    cx: *mut JSContext,
+    oobj: mozjs::rust::Handle<*mut JSObject>,
+    key: &str,
+) -> Option<f64> {
+    let c_key = ZBox::from_bytes(key.as_bytes());
+    let mut v = UndefinedValue();
+    let got = JS_GetProperty(
+        cx,
+        oobj.into(),
+        c_key.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    if !got {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    if v.is_number() {
+        Some(v.to_number())
+    } else {
+        None
+    }
+}
+
+/// `true` when node's own formatter would break the container into
+/// indented per-entry lines.  Node rules (v24.19.0 oracle-verified,
+/// `inspect.js` `if (compact === false || compact === null || breakLength === 0)`
+/// then `compact > 0` numeric gate):
+///   * `compact: false` → always break.
+///   * `compact: N` (number) → break iff nested levels exceed N; N ≤ 0
+///     always breaks (compact: 0 breaks at every level).
+///   * `compact: null` → `=== false` type-check fails, falls to
+///     `breakLength === 0` test; not the unambiguous-break shape, so stay
+///     on the Rust path (no behaviour change vs pre-delegation).
+///   * `compact` omitted/true/undefined → node defaults to compact with
+///     breakLength 80 auto-break.  Only `breakLength: 0` is an
+///     unambiguous break trigger here; a breakLength overflow depends on
+///     the single-line rendering length (not computed in Rust), so those
+///     calls stay on the Rust path.
+/// Oracle probes: `{a:1,b:2}` @default = 1 line; `compact:false` = 3
+/// lines; `compact:0` = 7 lines; 8 short keys @default = 10 lines;
+/// `breakLength:Infinity` = 1 line regardless of length.
+///
+/// # Safety
+/// `cx` must be a valid live JSContext; `oobj` must be rooted for the call.
+unsafe fn util_inspect_would_break(
+    cx: *mut JSContext,
+    oobj: mozjs::rust::Handle<*mut JSObject>,
+) -> bool {
+    let mut v = UndefinedValue();
+    let got = JS_GetProperty(
+        cx,
+        oobj.into(),
+        c"compact".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    if !got {
+        JS_ClearPendingException(cx);
+        return false;
+    }
+    if v.is_boolean() {
+        return !v.to_boolean();
+    }
+    if v.is_number() {
+        return v.to_number() <= 0.0;
+    }
+    // compact omitted (undefined), null, or a string → no unambiguous
+    // break trigger from compact itself; fall through to the breakLength
+    // check (node only breaks on breakLength === 0 when compact is not
+    // already a boolean false).
+    matches!(util_inspect_num_field(cx, oobj, "breakLength"), Some(0.0))
+}
+
+/// Delegate one inspected value to the assert module's Section-3
+/// `inspectValue` (node `assertion_error.js` shape, 220-case
+/// parity-validated).  Returns the rendered string, or None on any bridge
+/// failure (util_inspect then falls back to the Rust single-line path
+/// rather than silently dropping the render).  The JS side already
+/// implements node's depth contract — `inspectValue(val, N, ctx)` counts N
+/// nested levels — so no +1 budget is added here (distinct from the Rust
+/// `jsval_inspect` path, whose root call carries one extra level).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn inspect_value_delegate(cx: *mut JSContext, val: JSVal, depth: u32) -> Option<String> {
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        return None;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    // Fetch the cached assert builtin's Section-3 inspectValue function.
+    // The install_assert setup stashes it under a non-enumerable
+    // __baoInspectValue property and caches the function as
+    // "builtin:assert/__inspectValue" for the Rust side.
+    let inspect_raw = crate::gc_store::gc_store_get(cx, "builtin:assert/__inspectValue")?;
+    if inspect_raw.is_null() {
+        return None;
+    }
+    rooted!(&in(cx_ref) let inspect_obj = inspect_raw);
+    // inspectValue(val, depth, ctx={indent:'',refs:null,refCounter:0})
+    rooted!(&in(cx_ref) let val_root = val);
+    rooted!(&in(cx_ref) let depth_root = mozjs::jsval::DoubleValue(depth as f64));
+    let call_vals = [val_root.get(), depth_root.get()];
+    let call_args = HandleValueArray {
+        length_: 2,
+        elements_: call_vals.as_ptr(),
+    };
+    let mut rval = UndefinedValue();
+    // The callee slot takes a VALUE handle — root the jsval form.
+    rooted!(&in(cx_ref) let inspect_root = ObjectValue(inspect_obj.get()));
+    let ok = JS_CallFunctionValue(
+        cx,
+        global_root.handle().into(),
+        inspect_root.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    if !ok {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    if !rval.is_string() {
+        return None;
+    }
+    Some(crate::js_to_rust_string(cx, rval))
+}
+
+/// Emit a JS string result back into util_inspect's rval slot.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn util_inspect_set_result(cx: *mut JSContext, args: &CallArgs, result: &str) {
+    let utf16: Vec<u16> = result.encode_utf16().collect();
+    let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
+    args.rval().set(if js_str.is_null() {
+        UndefinedValue()
+    } else {
+        StringValue(&*js_str)
+    });
+}
+
 unsafe extern "C" fn util_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
@@ -5120,9 +5379,14 @@ unsafe extern "C" fn util_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     // depth = 2). This is distinct from util.format display semantics.
     //
     // Options (2nd arg, Node contract): null/undefined ignored; any other
-    // non-object throws ERR_INVALID_ARG_TYPE. Supports `depth` (the
-    // jsval_inspect formatter has no colors path). Root call carries one
-    // extra level of budget — `depth: N` caps NESTED levels, so
+    // non-object throws ERR_INVALID_ARG_TYPE.  The Rust jsval_inspect
+    // single-line path honours `depth` (the formatter has no colors path).
+    // Multi-line forms (compact:false, compact:N≤0, breakLength:0) delegate
+    // to the assert module's Section-3 inspectValue (node assertion_error.js
+    // shape, 220-case parity) — the node multi-line body is never
+    // re-implemented in Rust.  Default compact calls stay on the Rust path
+    // unchanged.  Root call carries one extra level of budget on the Rust
+    // path only — `depth: N` caps NESTED levels, so
     // inspect({d:{e:{f:1}}}, {depth:0}) → "{ d: [Object] }" (same
     // convention as Bun.inspect).
     // domain-check a21f02a988 (own-idiom fix, upstream oracle)
@@ -5140,21 +5404,8 @@ unsafe extern "C" fn util_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             let cx_ref = &mut wrapped_cx;
             rooted!(&in(cx_ref) let oobj = o.to_object());
-            let c_key = ZBox::from_bytes(b"depth");
-            let mut dv = UndefinedValue();
-            let got = JS_GetProperty(
-                cx,
-                oobj.handle().into(),
-                c_key.as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut dv,
-                },
-            );
-            if !got {
-                JS_ClearPendingException(cx);
-            } else if dv.is_number() {
-                let d = dv.to_number();
+            let d = util_inspect_num_field(cx, oobj.handle(), "depth");
+            if let Some(d) = d {
                 // depth: Infinity = node's honest "no contract cap" (R7 §8
                 // second-deviation ruling). The real bound is the native
                 // recursion budget (INSPECT_NATIVE_BUDGET) which mirrors
@@ -5169,6 +5420,16 @@ unsafe extern "C" fn util_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
                     d.max(0.0) as u32
                 };
             }
+            // Delegation condition (node v24.19.0 oracle-verified):
+            // compact:false, compact:N with N≤0, or breakLength:0 force a
+            // multi-line body; all other option shapes keep the Rust
+            // single-line path (the pre-delegation behaviour).
+            if util_inspect_would_break(cx, oobj.handle()) {
+                if let Some(out) = inspect_value_delegate(cx, val, depth) {
+                    util_inspect_set_result(cx, &args, &out);
+                    return true;
+                }
+            }
         }
     }
     // One traversal context per util.inspect call (node: each call owns its
@@ -5176,13 +5437,7 @@ unsafe extern "C" fn util_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     // is what folds the R7 exponential back-edge explosion into node's
     // `[Circular *N]` / `<ref *N>` forms (REQ-ENG-048).
     let result = jsval_inspect_fresh(cx, val, depth.saturating_add(1));
-    let utf16: Vec<u16> = result.encode_utf16().collect();
-    let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
-    args.rval().set(if js_str.is_null() {
-        UndefinedValue()
-    } else {
-        StringValue(&*js_str)
-    });
+    util_inspect_set_result(cx, &args, &result);
     true
 }
 

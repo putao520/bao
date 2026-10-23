@@ -887,3 +887,6 @@ nextest --cargo-profile test-ci -p **bao-browser**(注:package name 连字符,`b
 stage-b **5→10 PASS**(7 轮迭代,9 类根因聚类横扫:CallTracker 全量重写/stack 头/thenable 包裹/Infinity 渲染/custom inspect dispatch/strictEqualObject 提升/多行 body/ok() 源码提取/fixtures 装配)。格级:test-assert 14/18、class 12/12、fail 4/4、typedarray 44/44。
 **残留 8 文件全归因(新立项面)**:①util.inspect compact:false 多行形态(REQ-ENG-004,Rust jsval_inspect ~300-500 行,deep 域 28 格主根因)②globalThis own Symbol.toStringTag='global'(checktag)③引擎 Promise unhandled-rejection 时序(async)④SM vs V8 错误文案(getCalls 1 格)⑤SIGABRT/SIGSEGV 双崩溃(esm-cjs/partial,引擎面)⑥ok() 源码提取 runner 语境(test-assert 4 格+first-line)。
 GOLDEN A 本日总轨迹:**0→10 PASS**(require 校正→features/net→vm/stderr→Buffer constructor→assert 横扫,六增量提交)。
+
+## GOLDEN A deep 域多行委托波(2026-10-24 凌晨)
+util.inspect compact:false 委托(assert IIFE inspectValue 复用+oracle 分界三类委托+4 处 inspectValue 偏差根治):test-assert-deep **25→51/53**,文件级 10 PASS 零回归。GOLDEN A 累计:**0→10 PASS/18 文件,格级 assert 域基本清零**(残留=SM 文案/引擎崩溃/源码提取 runner 语境等既有登记域)。新登记:深链 inspect SIGSEGV 栈成本漂移(245 层,Oct-20 后引入)。
