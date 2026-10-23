@@ -861,3 +861,9 @@ nextest --cargo-profile test-ci -p **bao-browser**(注:package name 连字符,`b
 **新登记缺口**:GOLDEN A stage-b 推进至 common/index.js:59 `process.features undefined`——Node compat 面下一层(process.features 对象未实现),18/18 全卡同一点=单点解锁面,立项下波。
 **fmt 事故教训**(memory 候选):cargo fmt 全仓=26438 行 churn,必须只对本波文件面;回滚法=保留清单+checkout HEAD 其余。
 **遗留**:c17 死锁产品面根修(fetch 线程⇄JS 线程双等环,架构级,需 SPEC 契约);43 泵文件迁移残留=真实形态差异面。
+
+## GOLDEN A 解锁波(2026-10-23 晚,两增量提交)
+- ed8f3f503:require() CJS 目录索引校正+统一泵泛型化收口(GOLDEN A 载具阻塞解除)
+- 本波:process.features 13 字段+versions.sqlite+net autoSelectFamilyAttemptTimeout 两函数+internal/test/binding 最小真实面 → **stage-b 0→5 PASS**,common/index.js 全链加载成功。
+- 剩余 13 红=assert 域真兼容差异(AssertionError 消息格式 actual:[Array] 缩写/waitForActual promise 链/calltracker 语义),非载具面——GOLDEN A assert 域正餐立项,每格需 node oracle 对账。
+- 教训沉淀:net-js-whitelist-copy-trap(memory)——node_* 模块三段式导出面(NET_JS IIFE+install 白名单拷贝+单测断言清单),加导出必须三处同步。
