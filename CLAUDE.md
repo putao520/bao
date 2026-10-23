@@ -446,7 +446,7 @@ MPL-2.0(SpiderMonkey + Servo) + MIT(Bun crates)
 | spidermonkey-windows-jsapi-init | `.gsc/domain-knowledge/spidermonkey-windows-jsapi-init.md` | SM Windows JSAPI init | 2026-09-26 |
 | w3c-editing-media | `.gsc/domain-knowledge/w3c-editing-media.md` | EditContext/WebVTT/Selection/InputEvents 全语义+Chromium parity 坑 | 2026-10-14 |
 | tls-fingerprinting | `.gsc/domain-knowledge/tls-fingerprinting.md` | JA3/JA4 序列化/H2 AKAMAI 帧/浏览器基线锚+反指纹坑 | 2026-10-14 |
-| nodejs-compat | `.gsc/domain-knowledge/nodejs-compat.md` | dgram/net/vm/child_process/tls/process 官方契约+bao 实证态 | 2026-10-14 |
+| nodejs-compat | `.gsc/domain-knowledge/nodejs-compat.md` | dgram/net/vm/child_process/tls/process 官方契约+bao 实证态+GOLDEN A 六契约(require 目录索引/Buffer ctor/vm 可构造/net autoselect/process.features/三段式导出陷阱) | 2026-10-24 |
 | whatwg-core | `.gsc/domain-knowledge/whatwg-core.md` | fetch 算法/事件循环 microtask/DOM 导航+WPT 测试坑 | 2026-10-14 |
 | cdp-protocol | `.gsc/domain-knowledge/cdp-protocol.md` | CDP 15 域 114 方法契约+bao 已知坑+TOT 演进差 | 2026-10-14 |
 | lsp | `.gsc/domain-knowledge/lsp.md` | LSP 三类失效+替代取证通道+GREP-GUARD 放行边界+SPEC 读取配方+gsc MCP 工具契约坑速查(commit_gate 直调 runner/architect 断连/spec_read action 枚举) | 2026-10-23 |
