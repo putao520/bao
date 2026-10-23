@@ -17,6 +17,7 @@ use style::selector_parser::PseudoElement;
 use stylo_atoms::atom;
 use web_atoms::{local_name, ns};
 
+use crate::dom::NodeExt;
 use crate::dom_traversal::NodeAndStyleInfo;
 use crate::geom::{PhysicalPoint, PhysicalRect, PhysicalSize, SyncPhysicalRectAu};
 
@@ -167,17 +168,13 @@ impl From<ServoLayoutNode<'_>> for BaseFragmentInfo {
                 // TODO(mrobinson): It seems that anonymous boxes should take part in hit testing in some
                 // cases, but currently this means that the order of hit test results isn't as expected for
                 // some WPT tests. This needs more investigation.
-                PseudoElement::ServoAnonymousBox |
-                PseudoElement::ServoAnonymousTable |
-                PseudoElement::ServoAnonymousTableCell |
-                PseudoElement::ServoAnonymousTableRow => return Self::anonymous(),
+                PseudoElement::ServoAnonymousBox
+                | PseudoElement::ServoAnonymousTable
+                | PseudoElement::ServoAnonymousTableCell
+                | PseudoElement::ServoAnonymousTableRow => return Self::anonymous(),
                 // A `<br>` forces a new line using a `::before` pseudo-element. Both of them need to get
                 // this flag.
-                PseudoElement::Before
-                    if node
-                        .as_html_element()
-                        .is_some_and(|element| element.local_name() == &local_name!("br")) =>
-                {
+                PseudoElement::Before if node.is_html_br_element() => {
                     flags.insert(FragmentFlags::IS_BR_ELEMENT);
                 },
                 _ => {},

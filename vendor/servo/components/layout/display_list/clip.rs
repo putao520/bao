@@ -147,8 +147,8 @@ impl StackingContextTreeClipStore {
 
                 // `inner_rect()` will cause an assertion failure if the insets are larger than the
                 // rectangle dimension.
-                let shape_rect = if insets.left + insets.right >= layout_box.width() ||
-                    insets.top + insets.bottom > layout_box.height()
+                let shape_rect = if insets.left + insets.right >= layout_box.width()
+                    || insets.top + insets.bottom > layout_box.height()
                 {
                     LayoutRect::from_origin_and_size(layout_box.min, LayoutSize::zero())
                 } else {

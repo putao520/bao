@@ -17,6 +17,7 @@ use crate::dom::document::Document;
 use crate::dom::element::{CustomElementCreationMode, Element, ElementCreator};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
+use crate::dom::mathml::MathMLElement;
 use crate::dom::html::htmlanchorelement::HTMLAnchorElement;
 use crate::dom::html::htmlareaelement::HTMLAreaElement;
 use crate::dom::html::htmlaudioelement::HTMLAudioElement;
@@ -149,6 +150,23 @@ fn create_svg_element(
         local_name!("use") => make!(SVGUseElement),
         _ => make!(SVGElement),
     }
+}
+
+/// Create a MathML element.
+///
+/// BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): every element in the
+/// MathML namespace is a `MathMLElement`; the per-element MathML interfaces of
+/// MathML Core do not exist in this snapshot, and MathML Core itself only
+/// requires the shared `HTMLOrSVGOrMathMLElement` surface.
+fn create_mathml_element(
+    cx: &mut JSContext,
+    name: QualName,
+    prefix: Option<Prefix>,
+    document: &Document,
+    proto: Option<HandleObject>,
+) -> DomRoot<Element> {
+    assert_eq!(name.ns, ns!(mathml));
+    DomRoot::upcast(MathMLElement::new(cx, name.local, prefix, document, proto))
 }
 
 /// <https://dom.spec.whatwg.org/#concept-create-element>
@@ -488,6 +506,10 @@ pub(crate) fn create_element(
     match name.ns {
         ns!(html) => create_html_element(cx, name, prefix, is, document, creator, mode, proto),
         ns!(svg) => create_svg_element(cx, name, prefix, document, proto),
+        // BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): MathML elements
+        // are `MathMLElement`s, which expose the `dataset`/`style`/`tabIndex`/
+        // focus surface that MathML Core requires.
+        ns!(mathml) => create_mathml_element(cx, name, prefix, document, proto),
         _ => Element::new(cx, name.local, name.ns, prefix, document, proto),
     }
 }

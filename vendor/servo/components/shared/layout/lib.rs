@@ -251,6 +251,70 @@ pub struct HTMLMediaData {
     pub current_frame: Option<MediaFrame>,
     pub metadata: Option<MediaMetadata>,
     pub poster_url: Option<ServoUrl>,
+    /// Active WebVTT cue boxes painted on top of the video frame
+    /// (BAO patch, fork-maintained, 2026-10-20 — replayed after the e99
+    /// snapshot swap, REQ-BRW-051 / REQ-BRW-047).
+    pub cue_overlays: Vec<WebVttCueBoxData>,
+}
+
+// BAO patch (fork-maintained, 2026-10-20): active-cue render snapshot types
+// for the WebVTT cue overlay (REQ-BRW-051, replay of the fc02334b0 pipeline).
+// The script thread rebuilds the `Vec<WebVttCueBoxData>` snapshot on every
+// active-cue set change (step 18 of
+// <https://html.spec.whatwg.org/multipage/#time-marches-on>); layout reads it
+// through `HTMLMediaData::cue_overlays` when constructing the video replaced
+// content. Plain data only — never page-visible DOM; deliberately not `MallocSizeOf`
+// so the snapshot can move out of the script runtime into the hand-built
+// `HTMLMediaData` without aliasing a borrowed collection.
+//
+// Rendering presentation (color / background / font) is deliberately NOT part
+// of the snapshot: layout resolves it from the `::cue` cascade
+// (`layout::webvtt_cue_overlay::resolve_cue_style`), so author and UA cue
+// styling applies with full fidelity.
+
+/// <https://w3c.github.io/webvtt/#webvtt-cue-position-alignment>
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum WebVttPositionAlign {
+    LineLeft,
+    Center,
+    LineRight,
+    #[default]
+    Auto,
+}
+
+/// <https://w3c.github.io/webvtt/#webvtt-cue-text-alignment>
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum WebVttTextAlign {
+    Start,
+    #[default]
+    Center,
+    End,
+    Left,
+    Right,
+}
+
+/// One visible WebVTT cue box of the media element's active-cue render
+/// snapshot, in <https://html.spec.whatwg.org/multipage/#text-track-cue-order>.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WebVttCueBoxData {
+    /// Text lines of the cue box: WebVTT cue text with tags resolved to plain
+    /// text, split on line breaks.
+    pub text_lines: Vec<String>,
+    /// <https://w3c.github.io/webvtt/#webvtt-cue-line> — `None` is `auto`.
+    pub line: Option<f64>,
+    /// <https://w3c.github.io/webvtt/#webvtt-cue-snap-to-lines-flag>
+    pub snap_to_lines: bool,
+    /// <https://w3c.github.io/webvtt/#webvtt-cue-position> — `None` is `auto`.
+    pub position: Option<f64>,
+    /// <https://w3c.github.io/webvtt/#webvtt-cue-position-alignment>
+    pub position_align: WebVttPositionAlign,
+    /// <https://w3c.github.io/webvtt/#webvtt-cue-text-alignment>
+    pub align: WebVttTextAlign,
+    /// <https://w3c.github.io/webvtt/#webvtt-cue-size> (percentage).
+    pub size: f64,
+    /// Position of this cue in
+    /// <https://html.spec.whatwg.org/multipage/#text-track-cue-order>.
+    pub order: usize,
 }
 
 #[derive(Debug)]

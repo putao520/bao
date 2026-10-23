@@ -184,8 +184,8 @@ impl PaintTraversalHandler for HitTest<'_> {
         &mut self,
         stacking_context: &StackingContext,
     ) -> Self::StackingContextState {
-        if let Some(reference_frame_info) = stacking_context.reference_frame_info.as_ref() &&
-            reference_frame_info.captured_clip_id != ClipId::INVALID
+        if let Some(reference_frame_info) = stacking_context.reference_frame_info.as_ref()
+            && reference_frame_info.captured_clip_id != ClipId::INVALID
         {
             self.collected_reference_frame_clips
                 .push(reference_frame_info.captured_clip_id);
@@ -256,9 +256,9 @@ impl Fragment {
                         None => return false,
                     };
 
-                if !is_root_element &&
-                    style.get_box().backface_visibility == BackfaceVisibility::Hidden &&
-                    transform.is_backface_visible()
+                if !is_root_element
+                    && style.get_box().backface_visibility == BackfaceVisibility::Hidden
+                    && transform.is_backface_visible()
                 {
                     return false;
                 }
@@ -285,8 +285,8 @@ impl Fragment {
                     return false;
                 }
 
-                let point_in_target = point_in_spatial_node.cast_unit() -
-                    Vector2D::new(
+                let point_in_target = point_in_spatial_node.cast_unit()
+                    - Vector2D::new(
                         fragment_rect.origin.x.to_f32_px(),
                         fragment_rect.origin.y.to_f32_px(),
                     );
@@ -299,8 +299,8 @@ impl Fragment {
 
                 // Selection boundaries cannot intersect generated content, which is what
                 // the pseudo_element_chain check does here.
-                if hit_test.flags.intersects(HitTestFlags::IncludeDomPosition) &&
-                    tag.pseudo_element_chain.is_empty()
+                if hit_test.flags.intersects(HitTestFlags::IncludeDomPosition)
+                    && tag.pseudo_element_chain.is_empty()
                 {
                     hit_test.dom_position_candidate = Some(DomPositionCandidate {
                         fragment: self.clone(),
@@ -380,10 +380,10 @@ fn rounded_rect_contains_point(
         Ellipse::new(center, radius, 0.0).contains((point.x, point.y).into())
     };
 
-    check_corner(rect.top_left(), &border_radius.top_left, false, false) &&
-        check_corner(rect.top_right(), &border_radius.top_right, true, false) &&
-        check_corner(rect.bottom_right(), &border_radius.bottom_right, true, true) &&
-        check_corner(rect.bottom_left(), &border_radius.bottom_left, false, true)
+    check_corner(rect.top_left(), &border_radius.top_left, false, false)
+        && check_corner(rect.top_right(), &border_radius.top_right, true, false)
+        && check_corner(rect.bottom_right(), &border_radius.bottom_right, true, true)
+        && check_corner(rect.bottom_left(), &border_radius.bottom_left, false, true)
 }
 
 fn cursor(kind: CursorKind, auto_cursor: Cursor) -> Cursor {
@@ -474,9 +474,9 @@ impl ClosestFragmentSearch {
             )
         };
 
-        if let Some(tag) = text_fragment.base.tag.as_ref() &&
-            tag.pseudo_element_chain.is_empty() &&
-            self.closest.as_ref().is_none_or(|closest_fragment| {
+        if let Some(tag) = text_fragment.base.tag.as_ref()
+            && tag.pseudo_element_chain.is_empty()
+            && self.closest.as_ref().is_none_or(|closest_fragment| {
                 closest_fragment.should_replace(distance, point_in_vertical_bounds)
             })
         {

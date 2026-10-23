@@ -118,8 +118,9 @@ fn test_require_timers_all() {
         check("assert_deepEqual", function() { return typeof assert.deepEqual === 'function'; });
 
         // === require('assert/strict') ===
+        // node v24.19.0 oracle (2026-10-23): the strict alias is callable.
         var strict = require('assert/strict');
-        check("assert_strict_require", function() { return typeof strict === 'object'; });
+        check("assert_strict_require", function() { return typeof strict === 'function'; });
 
         // === require('module') ===
         var mod = require('module');

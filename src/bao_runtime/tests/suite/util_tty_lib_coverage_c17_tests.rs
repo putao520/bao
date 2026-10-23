@@ -170,9 +170,13 @@ fn c17_util_assert_diff_faces() {
         r#"
         var assert = require('assert');
 
-        // node oracle wording: "Expected values to be loosely deep-equal:"
-        // + diff body. The diff body shape (object lines, +/- markers on the
-        // differing key) is the contract under test.
+        // node v24.19.0 oracle (2026-10-23, local binary): the LOOSE
+        // deep-equal failure headline is "Expected values to be loosely
+        // deep-equal:" with the linkage form ("should loosely deep-equal")
+        // and NO +/- diff body — node renders diffs only for the strict
+        // deep family. The diff-body shape itself is pinned by the
+        // strict-family checks (util_edge deepStrictEqual_diff_body and the
+        // conformance obj_diff_markers pin).
         check("deep_equal_loose_diff_body", function() {
             var msg = '';
             try { assert.deepEqual({ a: 1, b: 2 }, { a: 1, b: 3 }); }
@@ -184,7 +188,7 @@ fn c17_util_assert_diff_faces() {
                 && msg.indexOf('loosely deeply equal') === -1
                 && msg.indexOf('a: 1') !== -1
                 && msg.indexOf('b: 2') !== -1 && msg.indexOf('b: 3') !== -1
-                && msg.indexOf('+') !== -1 && msg.indexOf('-') !== -1;
+                && msg.indexOf('+ actual - expected') === -1;
         });
         // equal() on objects: node renders both sides joined by `==`
         // (multi-line inspect), never the collapsed `[object Object]` form.
@@ -220,9 +224,16 @@ fn c17_util_assert_diff_faces() {
             catch (e) { return e.name === 'AssertionError' && e.message.indexOf('Failed') !== -1; }
             return false;
         });
+        // node v24.19.0 oracle (2026-10-23): ifError wraps ANY truthy value
+        // in an AssertionError whose message is "ifError got unwanted
+        // exception: <original message>" — the original error is NOT
+        // rethrown verbatim.
         check("if_error_non_error_throws", function() {
             try { assert.ifError(new Error('wrapped')); return false; }
-            catch (e) { return e.message === 'wrapped'; }
+            catch (e) {
+                return e.name === 'AssertionError'
+                    && e.message === 'ifError got unwanted exception: wrapped';
+            }
         });
         check("if_error_falsy_ok", function() {
             assert.ifError(null);

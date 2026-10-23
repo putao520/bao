@@ -22,7 +22,9 @@ use malloc_size_of_derive::MallocSizeOf;
 use net_traits::blob_url_store::{BlobTokenCommunicator, parse_blob_url};
 use net_traits::filemanager_thread::{FileManagerThreadMsg, FileTokenCheck};
 use net_traits::pub_domains::public_suffix_list_size_of;
-use net_traits::request::{Destination, PreloadEntry, PreloadId, RequestBuilder, RequestId};
+use net_traits::request::{
+    Destination, Origin, PreloadEntry, PreloadId, RequestBuilder, RequestId,
+};
 use net_traits::response::{Response, ResponseInit};
 use net_traits::{
     AsyncRuntime, CookieAsyncResponse, CookieData, CookieSource, CoreResourceMsg,
@@ -52,11 +54,13 @@ use servo_url::ServoUrl;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::async_runtime::{init_async_runtime, spawn_task};
-use crate::connector::{
-    CACertificates, CertificateErrorOverrideManager, create_http_client, create_tls_config,
-};
+// BAO (rustls excision, 2026-10-21): `create_http_client`/`create_tls_config`
+// dropped with the dead rustls HTTP client (`HttpState.client` field removed);
+// the override manager stays live (bun bridge trust-store folding).
+use crate::connector::{CACertificates, CertificateErrorOverrideManager};
 use crate::cookie::ServoCookie;
 use crate::cookie_storage::CookieStorage;
+use crate::dbsc::model::RequestOrigin;
 use crate::embedder::NetToEmbedderMsg;
 use crate::fetch::cors_cache::CorsCache;
 use crate::fetch::fetch_params::{FetchParams, SharedPreloadedResources};
@@ -212,24 +216,18 @@ struct ResourceChannelManager {
 /// This returns a tuple HttpState and a private HttpState.
 fn create_http_states(
     config_dir: Option<&Path>,
-    ca_certificates: CACertificates<'static>,
-    ignore_certificate_errors: bool,
     embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
 ) -> (Arc<HttpState>, Arc<HttpState>) {
+    // BAO (rustls excision, 2026-10-21): the `ca_certificates` /
+    // `ignore_certificate_errors` pass-through parameters are gone with the
+    // dead rustls client; the live CA face flows through `FetchContext`
+    // (fetch / WebSocket / bun bridge) straight from `ResourceChannelManager`.
     let public = create_http_state(
         config_dir,
         HttpCacheAssignment::Public,
-        ca_certificates.clone(),
-        ignore_certificate_errors,
         embedder_proxy.clone(),
     );
-    let private = create_http_state(
-        None,
-        HttpCacheAssignment::Private,
-        ca_certificates,
-        ignore_certificate_errors,
-        embedder_proxy,
-    );
+    let private = create_http_state(None, HttpCacheAssignment::Private, embedder_proxy);
     (Arc::new(public), Arc::new(private))
 }
 
@@ -243,8 +241,6 @@ fn create_http_states(
 fn create_http_state(
     persist_config_dir: Option<&Path>,
     assignment: HttpCacheAssignment,
-    ca_certificates: CACertificates<'static>,
-    ignore_certificate_errors: bool,
     embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
 ) -> HttpState {
     let mut hsts_list = HstsList::default();
@@ -262,12 +258,15 @@ fn create_http_state(
         cookie_jar: RwLock::new(cookie_jar),
         auth_cache: RwLock::new(auth_cache),
         history_states: RwLock::new(FxHashMap::default()),
+        // BAO PATCH (REQ-BRW-051): DBSC sessions share the cookie
+        // partition's lifecycle — in-memory (like the jar's session
+        // cookies), never persisted to disk in this slice.
+        dbsc: crate::dbsc::store::DbscStore::new(),
         http_cache: HttpCache::new(assignment),
-        client: create_http_client(create_tls_config(
-            ca_certificates,
-            ignore_certificate_errors,
-            override_manager.clone(),
-        )),
+        // BAO (rustls excision, 2026-10-21): no `client` field — the
+        // rustls-backed hyper client was constructed here but never issued a
+        // request; the excision drops its per-`HttpState` construction cost
+        // (rustls ClientConfig + verifier) entirely.
         override_manager,
         embedder_proxy,
     }
@@ -285,12 +284,8 @@ impl ResourceChannelManager {
         protocols: Arc<ProtocolRegistry>,
         embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
     ) {
-        let (public_http_state, private_http_state) = create_http_states(
-            self.config_dir.as_deref(),
-            self.ca_certificates.clone(),
-            self.ignore_certificate_errors,
-            embedder_proxy,
-        );
+        let (public_http_state, private_http_state) =
+            create_http_states(self.config_dir.as_deref(), embedder_proxy);
 
         let mut rx_set = GenericReceiverSet::new();
         let private_id = rx_set.add(private_receiver);
@@ -446,8 +441,6 @@ impl ResourceChannelManager {
         let state = Arc::new(create_http_state(
             None,
             HttpCacheAssignment::Private,
-            self.ca_certificates.clone(),
-            self.ignore_certificate_errors,
             self.embedder_proxy.clone(),
         ));
         self.partition_states.insert(partition, state);
@@ -595,6 +588,30 @@ impl ResourceChannelManager {
             // moved verbatim — payloads, ordering, lock discipline, and the
             // `return` semantics are unchanged. The `Exit` handler returns
             // the thread-stopping `false` through unchanged.
+            // BAO PATCH (REQ-BRW-051): the `navigator.deviceBoundSession`
+            // faces — pure store operations on this partition's DBSC
+            // sessions. Kill-switched like the wire hooks: a disabled
+            // feature reports "no sessions" / success rather than failing
+            // (the JS object never exists with the pref off, so these arms
+            // are unreachable from the DOM anyway).
+            CoreResourceMsg::DbscHasSession(url, callback) => {
+                let has_session = servo_config::pref!(network_dbsc_enabled) &&
+                    http_state.dbsc.has_sessions_for_site(&url);
+                let _ = callback.send(has_session);
+            },
+            CoreResourceMsg::DbscClearSession(url, session_identifier, callback) => {
+                if servo_config::pref!(network_dbsc_enabled) {
+                    match session_identifier.as_deref() {
+                        Some(identifier) => {
+                            http_state.dbsc.remove_session(&url, identifier);
+                        },
+                        None => http_state.dbsc.clear_for_origin(&url),
+                    }
+                    let _ = callback.send(Ok(()));
+                } else {
+                    let _ = callback.send(Ok(()));
+                }
+            },
             CoreResourceMsg::GetHistoryState(..)
             | CoreResourceMsg::SetHistoryState(..)
             | CoreResourceMsg::RemoveHistoryStates(..) => {
@@ -602,6 +619,27 @@ impl ResourceChannelManager {
             },
             CoreResourceMsg::GetCacheEntries(..) | CoreResourceMsg::ClearCache(..) => {
                 self.handle_cache_message(msg, http_state);
+            },
+            // BAO PATCH (REQ-BRW-051): web bundle registration lifecycle. Pure
+            // registry mutations on the resource thread; every mutation wakes
+            // the fetch tasks waiting on a pending loader.
+            CoreResourceMsg::WebBundleRegister(pipeline, rule) => {
+                crate::webbundle::register(pipeline, rule);
+            },
+            CoreResourceMsg::WebBundleLoaded(pipeline, data) => {
+                crate::webbundle::loaded(pipeline, data);
+            },
+            CoreResourceMsg::WebBundleFailed(pipeline, loader_id) => {
+                crate::webbundle::failed(pipeline, loader_id);
+            },
+            CoreResourceMsg::WebBundleUnregister(pipeline, element_id) => {
+                crate::webbundle::unregister(pipeline, element_id);
+            },
+            CoreResourceMsg::WebBundleDropLoader(pipeline, loader_id) => {
+                crate::webbundle::drop_loader(pipeline, loader_id);
+            },
+            CoreResourceMsg::WebBundleClearPipeline(pipeline) => {
+                crate::webbundle::clear_pipeline(pipeline);
             },
             CoreResourceMsg::ToFileManager(msg) => self.handle_file_manager_message(msg),
             CoreResourceMsg::TotalSizeOfInFlightKeepAliveRecords(..) => {
@@ -873,43 +911,53 @@ impl ResourceChannelManager {
         protocols: Arc<ProtocolRegistry>,
     ) {
         match msg {
-            CoreResourceMsg::Fetch(request_builder, channels) => match channels {
-                FetchChannels::ResponseMsg(sender) => {
-                    let cancellation_listener =
-                        self.get_or_create_cancellation_listener(request_builder.id);
-                    self.resource_manager.fetch(
-                        request_builder,
-                        None,
-                        sender,
-                        http_state,
-                        cancellation_listener,
-                        protocols,
-                    );
-                },
-                FetchChannels::WebSocket {
-                    event_sender,
-                    action_receiver,
-                } => {
-                    let cancellation_listener =
-                        self.get_or_create_cancellation_listener(request_builder.id);
-
-                    self.resource_manager.websocket_connect(
-                        request_builder,
+            CoreResourceMsg::Fetch(mut request_builder, channels) => {
+                // BAO PATCH (REQ-BRW-051): decide the web bundle binding here,
+                // on the resource thread, where `<script type=webbundle>`
+                // registration messages are applied in channel order. The
+                // async fetch task then uses this binding instead of racing a
+                // URL lookup against later registration updates.
+                crate::webbundle::bind_request(&mut request_builder);
+                match channels {
+                    FetchChannels::ResponseMsg(sender) => {
+                        let cancellation_listener =
+                            self.get_or_create_cancellation_listener(request_builder.id);
+                        self.resource_manager.fetch(
+                            request_builder,
+                            None,
+                            sender,
+                            http_state,
+                            cancellation_listener,
+                            protocols,
+                        );
+                    },
+                    FetchChannels::WebSocket {
                         event_sender,
                         action_receiver,
+                        flow_control,
+                    } => {
+                        let cancellation_listener =
+                            self.get_or_create_cancellation_listener(request_builder.id);
+
+                        self.resource_manager.websocket_connect(
+                            request_builder,
+                            event_sender,
+                            action_receiver,
+                            flow_control,
+                            http_state,
+                            cancellation_listener,
+                            protocols,
+                        )
+                    },
+                    FetchChannels::Prefetch => self.resource_manager.fetch(
+                        request_builder,
+                        None,
+                        DiscardFetch,
                         http_state,
-                        cancellation_listener,
+                        Arc::new(Default::default()),
                         protocols,
-                    )
-                },
-                FetchChannels::Prefetch => self.resource_manager.fetch(
-                    request_builder,
-                    None,
-                    DiscardFetch,
-                    http_state,
-                    Arc::new(Default::default()),
-                    protocols,
-                ),
+                    ),
+                }
             },
             CoreResourceMsg::Cancel(request_ids) => {
                 for cancellation_listener in request_ids
@@ -1162,6 +1210,7 @@ impl CoreResourceManager {
         mut request: RequestBuilder,
         event_sender: ProfileGenericCallback<WebSocketNetworkEvent>,
         action_receiver: CallbackSetter<WebSocketDomAction>,
+        flow_control: bool,
         http_state: &Arc<HttpState>,
         cancellation_listener: Arc<CancellationListener>,
         protocols: Arc<ProtocolRegistry>,
@@ -1193,9 +1242,9 @@ impl CoreResourceManager {
                 .unwrap_or_else(|_| panic!("Can't set scheme to {scheme}"));
 
             match create_handshake_request(request, http_state.clone()) {
-                Ok(request) => {
+                Ok(mut request) => {
                     let context = FetchContext {
-                        state: http_state,
+                        state: http_state.clone(),
                         sw_managers,
                         user_agent: servo_config::pref!(user_agent),
                         devtools_chan,
@@ -1208,12 +1257,65 @@ impl CoreResourceManager {
                         websocket_chan: Some(Arc::new(Mutex::new(WebSocketChannel::new(
                             event_sender.clone(),
                             Some(action_receiver),
+                            flow_control,
                         )))),
                         ca_certificates,
                         ignore_certificate_errors,
                         preloaded_resources,
                         in_flight_keep_alive_records,
                     };
+                    // BAO PATCH (REQ-BRW-051): DBSC applies to WebSocket
+                    // handshakes — the handshake is an HTTP request whose
+                    // cookies must be refreshed before the wire leg (WPT
+                    // websockets "An established session applies to
+                    // WebSocket handshakes"). The handshake header list is
+                    // already built here (`create_handshake_request` read the
+                    // jar), so a rotated bound cookie is re-attached after
+                    // the refresh. `request.origin` is still `Client` at this
+                    // point (`populate_request_from_client` runs inside
+                    // `fetch`), so the initiating origin is read from the
+                    // client exactly as that step would.
+                    if servo_config::pref!(network_dbsc_enabled) {
+                        let handshake_url = request.current_url();
+                        let request_origin = match &request.origin {
+                            Origin::Origin(origin) => RequestOrigin::from_origin(origin),
+                            Origin::Client => request
+                                .client
+                                .as_ref()
+                                .map_or_else(RequestOrigin::default, |client| {
+                                    match &client.origin {
+                                        Origin::Origin(origin) => {
+                                            RequestOrigin::from_origin(origin)
+                                        },
+                                        Origin::Client => RequestOrigin::default(),
+                                    }
+                                }),
+                        };
+                        let outcome = crate::dbsc::exchange::refresh_sessions_for_request(
+                            &handshake_url,
+                            &request_origin,
+                            request.target_webview_id,
+                            request.pipeline_id,
+                            &http_state,
+                            &context,
+                        )
+                        .await;
+                        if let Some(value) =
+                            crate::dbsc::exchange::skipped_header_value(&outcome.skipped)
+                        {
+                            request.headers.insert(
+                                crate::dbsc::exchange::SKIPPED_HEADER,
+                                value,
+                            );
+                        }
+                        if outcome.restart_cookies {
+                            crate::dbsc::exchange::set_request_cookie_header(
+                                &handshake_url,
+                                &mut request.headers,
+                                &http_state,
+                            );
+                        }
+                    }
                     fetch(request, &mut event_sender, &context).await;
                 },
                 Err(e) => {

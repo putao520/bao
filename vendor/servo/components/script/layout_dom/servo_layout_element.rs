@@ -253,4 +253,11 @@ impl<'dom> LayoutElement<'dom> for ServoLayoutElement<'dom> {
     fn is_root(&self) -> bool {
         self.element.is_root()
     }
+
+    /// BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): whether this is a
+    /// MathML element. Pseudo-elements are never MathML elements: they are
+    /// generated boxes of their originating element.
+    fn is_mathml_element(&self) -> bool {
+        self.pseudo_element_chain.is_empty() && *self.element.namespace() == ns!(mathml)
+    }
 }

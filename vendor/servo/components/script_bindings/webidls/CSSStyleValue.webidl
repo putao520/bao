@@ -3,8 +3,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // https://drafts.css-houdini.org/css-typed-om-1/#cssstylevalue
-// NOTE: should this be exposed to Window?
-[Pref="dom_worklet_enabled", Exposed=(Worklet)]
+[Exposed=(Window, Worker), Pref="dom_typed_om_enabled"]
 interface CSSStyleValue {
     stringifier;
+
+    [Exposed=Window, Throws] static CSSStyleValue parse(USVString property, USVString cssText);
+    [Exposed=Window, Throws] static sequence<CSSStyleValue> parseAll(USVString property, USVString cssText);
 };

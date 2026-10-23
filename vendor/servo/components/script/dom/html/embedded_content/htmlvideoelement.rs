@@ -624,6 +624,9 @@ impl LayoutDom<'_, HTMLVideoElement> {
                     .clone()
                     .map(|url| url.url())
             },
+            // BAO patch (fork-maintained, 2026-10-20): active WebVTT cue
+            // boxes painted on top of the video frame (REQ-BRW-051).
+            cue_overlays: video.htmlmediaelement.cue_overlays_for_layout(),
         }
     }
 

@@ -95,8 +95,8 @@ impl SameFormattingContextBlock {
     ) -> Arc<BoxFragment> {
         let mut allows_caching = sequential_layout_state.is_none();
 
-        if allows_caching &&
-            let Some(cached_result) = self
+        if allows_caching
+            && let Some(cached_result) = self
                 .base
                 .cached_same_formatting_context_block_if_applicable(
                     containing_block,
@@ -248,9 +248,9 @@ impl SameFormattingContextBlock {
                 // NB: This will be a no-op if we're collapsing margins with our children since that
                 // can only happen if we have no block-start padding and border.
                 sequential_layout_state.advance_block_position(
-                    pbm.padding.block_start +
-                        pbm.border.block_start +
-                        clearance.unwrap_or_else(Au::zero),
+                    pbm.padding.block_start
+                        + pbm.border.block_start
+                        + clearance.unwrap_or_else(Au::zero),
                 );
 
                 // We are about to lay out children. Update the offset between the block formatting
@@ -261,10 +261,10 @@ impl SameFormattingContextBlock {
                 let inline_start = sequential_layout_state
                     .floats
                     .containing_block_info
-                    .inline_start +
-                    pbm.padding.inline_start +
-                    pbm.border.inline_start +
-                    effective_margin_inline_start;
+                    .inline_start
+                    + pbm.padding.inline_start
+                    + pbm.border.inline_start
+                    + effective_margin_inline_start;
                 let new_cb_offsets = ContainingBlockPositionInfo {
                     block_start: sequential_layout_state.bfc_relative_block_position,
                     block_start_margins_not_collapsed: sequential_layout_state.current_margin,
@@ -335,9 +335,9 @@ impl SameFormattingContextBlock {
         } else {
             &containing_block_for_children.size.block
         };
-        let collapsed_through = collapsible_margins_in_children.collapsed_through &&
-            pbm.padding_border_sums.block.is_zero() &&
-            tentative_block_size.definite_or_min().is_zero();
+        let collapsed_through = collapsible_margins_in_children.collapsed_through
+            && pbm.padding_border_sums.block.is_zero()
+            && tentative_block_size.definite_or_min().is_zero();
         block_margins_collapsed_with_children.collapsed_through = collapsed_through;
 
         let end_margin_can_collapse_with_children =
@@ -369,9 +369,9 @@ impl SameFormattingContextBlock {
         // It would probably make more sense to check the definiteness of the containing
         // block in the logic above (when we check if there is some block-end padding or
         // border), or maybe drop the condition altogether. But for now, we match Blink.
-        let end_margin_can_collapse_with_children = end_margin_can_collapse_with_children &&
-            block_size == content_block_size &&
-            (collapsed_through || !tentative_block_size.is_definite());
+        let end_margin_can_collapse_with_children = end_margin_can_collapse_with_children
+            && block_size == content_block_size
+            && (collapsed_through || !tentative_block_size.is_definite());
         if end_margin_can_collapse_with_children {
             block_margins_collapsed_with_children
                 .end
@@ -406,12 +406,12 @@ impl SameFormattingContextBlock {
 
         let content_rect = LogicalRect {
             start_corner: LogicalVec2 {
-                block: (pbm.padding.block_start +
-                    pbm.border.block_start +
-                    clearance.unwrap_or_else(Au::zero)),
-                inline: pbm.padding.inline_start +
-                    pbm.border.inline_start +
-                    effective_margin_inline_start,
+                block: (pbm.padding.block_start
+                    + pbm.border.block_start
+                    + clearance.unwrap_or_else(Au::zero)),
+                inline: pbm.padding.inline_start
+                    + pbm.border.inline_start
+                    + effective_margin_inline_start,
             },
             size: LogicalVec2 {
                 block: block_size,
@@ -424,8 +424,8 @@ impl SameFormattingContextBlock {
         // An anonymous block doesn't establish a containing block for its contents. Therefore,
         // if its contents depend on block constraints, its block size (which is intrinsic) also
         // depends on block constraints.
-        if depends_on_block_constraints ||
-            (is_anonymous && flow_layout.depends_on_block_constraints)
+        if depends_on_block_constraints
+            || (is_anonymous && flow_layout.depends_on_block_constraints)
         {
             base_fragment_info.flags.insert(
                 FragmentFlags::SIZE_DEPENDS_ON_BLOCK_CONSTRAINTS_AND_CAN_BE_CHILD_OF_FLEX_ITEM,

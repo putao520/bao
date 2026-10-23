@@ -27,6 +27,7 @@ use crate::dom::bindings::callback::ExceptionHandling;
 use crate::dom::bindings::codegen::Bindings::IntersectionObserverBinding::{
     IntersectionObserverCallback, IntersectionObserverInit, IntersectionObserverMethods,
 };
+use crate::dom::bindings::codegen::Bindings::PerformanceScriptTimingBinding::ScriptInvokerType;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::codegen::UnionTypes::{DoubleOrDoubleSequence, ElementOrDocument};
 use crate::dom::bindings::error::{Error, Fallible};
@@ -414,6 +415,15 @@ impl IntersectionObserver {
             .collect();
 
         // Step 4-5
+        crate::dom::performance::long_animation_frame_recorder::note_rendering_work(
+            self.owner_doc.window().pipeline_id(),
+        );
+        let _long_animation_frame_guard =
+            crate::dom::performance::long_animation_frame_recorder::begin_script_entry(
+                self.owner_doc.window(),
+                ScriptInvokerType::User_callback,
+                "IntersectionObserverCallback".to_owned(),
+            );
         let _ = self
             .callback
             .Call_(cx, self, queued_entries, self, ExceptionHandling::Report);
@@ -603,8 +613,8 @@ impl IntersectionObserver {
         {
             is_intersecting.into()
         } else {
-            (intersection_rect.size.width.0 as f64 / target_rect.size.width.0 as f64) *
-                (intersection_rect.size.height.0 as f64 / target_rect.size.height.0 as f64)
+            (intersection_rect.size.width.0 as f64 / target_rect.size.width.0 as f64)
+                * (intersection_rect.size.height.0 as f64 / target_rect.size.height.0 as f64)
         };
 
         // Step 13
@@ -663,12 +673,29 @@ impl IntersectionObserver {
             // > [[RegisteredIntersectionObservers]] slot whose observer property is equal to observer.
             let registration = target.get_intersection_observer_registration(self).unwrap();
 
+            // Skip targets whose node document has no browsing context (for example a
+            // document created via `document.implementation.createHTMLDocument`): such a
+            // document is never rendered, so no intersection notification may be produced
+            // for its targets. Mirrors Chromium, which refuses to compute an intersection
+            // when the target's document has no view — without this, the first update
+            // would queue a bogus all-zero entry for the detached target
+            // (intersection-observer/target-in-detached-document.html).
+            // Bao patch (REQ-BRW-051): upstream origin/main has the same gap.
+            if !target.owner_document().has_browsing_context() {
+                continue;
+            }
+
             // Step 2
             // > If (time - registration.lastUpdateTime < observer.delay), skip further processing for target.
-            if time - registration.last_update_time.get() <
-                Duration::from_millis(self.delay.get().max(0) as u64)
+            //
+            // NOTE: The skip is per target — a throttled target must not prevent the
+            // remaining targets of this observer from being processed.
+            // Bao patch (REQ-BRW-051): upstream's `return` here aborts the whole
+            // observer's update pass on the first throttled target.
+            if time - registration.last_update_time.get()
+                < Duration::from_millis(self.delay.get().max(0) as u64)
             {
-                return;
+                continue;
             }
 
             // Step 3
@@ -692,9 +719,9 @@ impl IntersectionObserver {
             // > if isVisible does not equal previousIsVisible,
             // > queue an IntersectionObserverEntry, passing in observer, time, rootBounds,
             // > targetRect, intersectionRect, isIntersecting, isVisible, and target.
-            if Some(intersection_output.threshold_index) != previous_threshold_index ||
-                intersection_output.is_intersecting != previous_is_intersecting ||
-                intersection_output.is_visible != previous_is_visible
+            if Some(intersection_output.threshold_index) != previous_threshold_index
+                || intersection_output.is_intersecting != previous_is_intersecting
+                || intersection_output.is_visible != previous_is_visible
             {
                 // TODO(stevennovaryo): Per IntersectionObserverEntry interface, the rootBounds
                 //                      should be null for cross-origin-domain target.
@@ -991,8 +1018,8 @@ fn compute_the_intersection(
         // >      by applying container’s clip.
         // TODO(#35767): handle `overflow: clip` and resolve clipping for x-axis and y-axis independently.
         // Additionally, handle css `clip-path` as well.
-        if IntersectionObserver::has_content_clip(&containing_element) &&
-            let Some(container_padding_box) = containing_element
+        if IntersectionObserver::has_content_clip(&containing_element)
+            && let Some(container_padding_box) = containing_element
                 .upcast::<Node>()
                 .padding_box_without_reflow()
         {

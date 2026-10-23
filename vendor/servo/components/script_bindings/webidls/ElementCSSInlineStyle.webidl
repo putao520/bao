@@ -7,4 +7,5 @@
 [Exposed=Window]
 interface mixin ElementCSSInlineStyle {
   [SameObject, PutForwards=cssText] readonly attribute CSSStyleDeclaration style;
+  [SameObject, Pref="dom_typed_om_enabled"] readonly attribute StylePropertyMap attributeStyleMap;
 };

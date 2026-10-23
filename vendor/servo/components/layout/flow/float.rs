@@ -112,10 +112,10 @@ impl<'a> PlacementAmongFloats<'a> {
             let next_band = float_context.bands.find_next(ceiling).unwrap();
             (current_bands, next_band)
         };
-        let min_inline_start = float_context.containing_block_info.inline_start +
-            pbm.margin.inline_start.auto_is(Au::zero);
-        let max_inline_end = (float_context.containing_block_info.inline_end -
-            pbm.margin.inline_end.auto_is(Au::zero))
+        let min_inline_start = float_context.containing_block_info.inline_start
+            + pbm.margin.inline_start.auto_is(Au::zero);
+        let max_inline_end = (float_context.containing_block_info.inline_end
+            - pbm.margin.inline_end.auto_is(Au::zero))
         .max(min_inline_start + object_size.inline);
         PlacementAmongFloats {
             float_context,
@@ -578,8 +578,8 @@ impl FloatBand {
 
                 // If this band has an existing inline-start float in it, then make sure that the object
                 // doesn't stick out past the inline-end edge (rule 7).
-                if self.inline_start.is_some() &&
-                    candidate_inline_start + object.size.inline > walls.inline_end
+                if self.inline_start.is_some()
+                    && candidate_inline_start + object.size.inline > walls.inline_end
                 {
                     return false;
                 }
@@ -601,8 +601,8 @@ impl FloatBand {
 
                 // If this band has an existing inline-end float in it, then make sure that the new
                 // object doesn't stick out past the inline-start edge (rule 7).
-                if self.inline_end.is_some() &&
-                    candidate_inline_end - object.size.inline < walls.inline_start
+                if self.inline_end.is_some()
+                    && candidate_inline_end - object.size.inline < walls.inline_start
                 {
                     return false;
                 }
@@ -822,9 +822,9 @@ impl FloatBandLink {
     ///     A   B          B   R
     /// ```
     fn skew(&self) -> FloatBandLink {
-        if let Some(ref this) = self.0 &&
-            let Some(ref left) = this.left.0 &&
-            this.level == left.level
+        if let Some(ref this) = self.0
+            && let Some(ref left) = this.left.0
+            && this.level == left.level
         {
             return FloatBandLink(Some(Arc::new(FloatBandNode {
                 level: this.level,
@@ -851,10 +851,10 @@ impl FloatBandLink {
     ///         B   X    A   B
     /// ```
     fn split(&self) -> FloatBandLink {
-        if let Some(ref this) = self.0 &&
-            let Some(ref right) = this.right.0 &&
-            let Some(ref right_right) = right.right.0 &&
-            this.level == right_right.level
+        if let Some(ref this) = self.0
+            && let Some(ref right) = this.right.0
+            && let Some(ref right_right) = right.right.0
+            && this.level == right_right.level
         {
             return FloatBandLink(Some(Arc::new(FloatBandNode {
                 level: this.level + 1,
@@ -1064,8 +1064,9 @@ impl SequentialLayoutState {
 
     /// Get the offset of the current containing block and any uncollapsed margins.
     pub(crate) fn current_containing_block_offset(&self) -> Au {
-        self.floats.containing_block_info.block_start +
-            self.floats
+        self.floats.containing_block_info.block_start
+            + self
+                .floats
                 .containing_block_info
                 .block_start_margins_not_collapsed
                 .solve()
@@ -1079,8 +1080,9 @@ impl SequentialLayoutState {
         margins_collapsing_with_parent_containing_block: CollapsedMargin,
         block_offset_from_containing_block_top: Au,
     ) {
-        let block_start_of_containing_block_in_bfc = self.floats.containing_block_info.block_start +
-            self.floats
+        let block_start_of_containing_block_in_bfc = self.floats.containing_block_info.block_start
+            + self
+                .floats
                 .containing_block_info
                 .block_start_margins_not_collapsed
                 .adjoin(&margins_collapsing_with_parent_containing_block)

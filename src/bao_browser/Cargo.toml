@@ -29,6 +29,22 @@ name = "bao_browser"
 # host (webdriver_host.rs). Off by default for library consumers; bao_cli
 # enables it so the `bao` binary is a wptrunner-launchable WebDriver server.
 webdriver = ["dep:webdriver_server"]
+# GStreamer media backend (packaging decision, 2026-10-21 根治波): servo's
+# media backend is a compile-time three-way pick (servo.rs `media_platform`:
+# gstreamer / ohos / dummy) — upstream design = product release shape, not a
+# library default. bao is an embeddable library, so the default build now
+# takes the pure-Rust face (DummyBackend + WebCodecs PCM/image backends —
+# same shape the Windows leg already had) and gstreamer is opt-in for the
+# desktop packager. Enabling it hard-links the 11 gstreamer-* system
+# libraries into DT_NEEDED (gstreamer-rs system-deps has no dlopen mode), so
+# the resulting artifact REQUIRES the gstreamer 1.18+ runtime on the target
+# machine — ship the .so files yourself (scripts/package/desktop-linux.sh)
+# or declare the system dependency (apt: libgstreamer1.0-0
+# libgstreamer-plugins-base1.0-0 libgstreamer-plugins-bad1.0-0 ...). With
+# the feature off, the artifact runs on a pristine Linux with zero gstreamer
+# presence (media capability honestly degraded: canPlayType("") /
+# isTypeSupported(false) — DummyBackend's existing upstream behaviour).
+media-gstreamer = ["servo/media-gstreamer"]
 
 [dependencies]
 # webgl/webcrypto (e109 REQ-BRW-002 replay): the post-swap upstream snapshot
@@ -45,12 +61,44 @@ webdriver = ["dep:webdriver_server"]
 # Bao's product contract is that the Gamepad API is an always-on surface
 # (headless with no embedder-provided pads => getGamepads() returns an empty
 # array, same as Chrome headless), so the feature is enabled unconditionally
-# here. The target-gated servo declarations below (media-gstreamer / no-wgl)
-# inherit it by cargo feature unification — no per-target repetition needed.
+# here. The target-gated servo declarations below (no-wgl) inherit it by
+# cargo feature unification — no per-target repetition needed.
 # Pure compile-time gate: gamepad = ["script/gamepad",
 # "servo-constellation/gamepad", "embedder_traits/gamepad"] all forward to
 # empty feature stubs, zero new crates/system libs.
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.25, <0.6.0", default-features = false, features = ["baked-in-resources", "webgl", "webcrypto", "gamepad"] }
+# bluetooth (REQ-BRW-051, 2026-10-20): upstream ships the whole Web Bluetooth
+# surface — 10 `Bluetooth*.webidl` files marked `skip-unless
+# CARGO_FEATURE_BLUETOOTH`, `script/dom/bluetooth/` (Bluetooth/Device/GATTServer/
+# GATTService/GATTCharacteristic/GATTDescriptor/AdvertisingEvent/UUID/TestRunner)
+# and the `bao-servo-bluetooth` component — behind this non-default cargo
+# feature. Without it the webidls are codegen-skipped, so `navigator.bluetooth`,
+# `BluetoothUUID` and the whole GATT face are `undefined` (a fingerprintable
+# API gap: real Chrome/Firefox expose them on every page). Enabled
+# unconditionally, mirroring the webgl/webcrypto/gamepad precedent. The
+# component's default cargo feature is `bluetooth-test` (blurmock mock
+# backend, pure Rust); `native-bluetooth` (btleplug + OS stack) stays off —
+# see the `dom_bluetooth_enabled` flip in `src/lib.rs` (`BrowserRuntime::new`).
+# Feature fanout:
+# servo-bluetooth-traits + servo-bluetooth + servo-constellation[-traits]/
+# bluetooth + script/bluetooth (which pulls script_bindings/bluetooth).
+# webcodecs (REQ-BRW-051, 2026-10-21): the WebCodecs exposure axis is gated the
+# same way — 9 `webcodecs` webidl files (12 interfaces: AudioData/AudioDecoder/
+# AudioEncoder/EncodedAudioChunk/EncodedVideoChunk/ImageDecoder/ImageTrack/
+# ImageTrackList/VideoColorSpace/VideoDecoder/VideoEncoder/VideoFrame, the four
+# codec control interfaces live in `WebCodecs.webidl`) carry `// skip-unless
+# CARGO_FEATURE_WEBCODECS`, so without the feature codegen drops the whole set
+# and the interfaces are `undefined` at runtime. Impl face is complete (12 DOM
+# type modules under `script/dom/` + `webcodecs_error`/`webcodecs_pcm` helpers,
+# each `#[cfg(feature = "webcodecs")]`-gated in `script/dom/mod.rs`; codegen
+# materializes `crate::dom::<iface.lower()>::<Iface>`, matching one-for-one), so
+# enable unconditionally, mirroring the webgl/webcrypto/gamepad precedent.
+# Feature fanout: servo/webcodecs = script/webcodecs = script_bindings/webcodecs
+# (webidl codegen gate) + dep bao-servo-webcodecs (decode plane, default
+# features empty => pure Rust). The GStreamer video/audio backend rides on the
+# `media-gstreamer` feature below (packaging decision, not a build default);
+# without it every platform gets the pure-Rust control/PCM/image backends
+# (CLAUDE.md Windows 交叉编译准入律).
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.25, <0.6.0", default-features = false, features = ["baked-in-resources", "webgl", "webcrypto", "gamepad", "bluetooth", "webcodecs"] }
 # WebDriver embedder host (feature "webdriver"): the upstream component that
 # owns the whole WebDriver HTTP protocol — bao only pumps the embedder channel.
 webdriver_server = { package = "bao-servo-webdriver-server", path = "../../vendor/servo/components/webdriver_server", version = "=0.5.19", optional = true }
@@ -96,9 +144,11 @@ euclid = "0.22"
 
 # win-cross, #18 (media 门控裁决): glib/gstreamer 是 pkg-config 系统库,无 MSVC
 # 交叉构建路径 — windows target 不启用 servo 的 media-gstreamer 后端(baked-in-
-# resources 保持全 target);media 面=独立后续波。非 windows 维持 gstreamer 媒体栈。
-[target.'cfg(not(windows))'.dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.25, <0.6.0", features = ["media-gstreamer"] }
+# resources 保持全 target)。2026-10-21 根治波:非 windows 同样不再默认启用——
+# gstreamer 从「库默认硬链」翻转为「打包决策」(三平台一致形态),由上方
+# `media-gstreamer` feature 由最终打包者开启;默认 Linux/非 windows 构建与
+# Windows 腿同形 = 纯 Rust 媒体面(DummyBackend),零 gstreamer DT_NEEDED。
+# 此 target 段不再存在:历史上它给非 windows 腿无条件注入 media-gstreamer。
 
 # win-cross GL backend selection (Windows GL context class root fix): surfman's
 # WGL backend restores the *previous* (null) context when `create_context`

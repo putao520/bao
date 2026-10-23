@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use log::{info, warn};
+use log::{error, info, warn};
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use rusqlite::{Connection, Error, OptionalExtension, params};
 use sea_query::{Condition, Expr, ExprTrait, IntoCondition, SqliteQueryBuilder};
@@ -89,12 +89,11 @@ impl SqliteEngine {
         pool: Arc<ThreadPool>,
     ) -> Result<Self, Error> {
         let db_path = path.join("indexeddb.sqlite");
+        // BAO PATCH (REQ-BRW-7, idb-journal-storm): `DB_PRAGMAS` are applied
+        // inside `init_db` so they also cover the schema-creation writes
+        // (see the per-connection pragma note there). Applying them a second
+        // time here after `init_db` would be redundant.
         let connection = Self::init_db(&db_path, db_info)?;
-
-        for stmt in DB_PRAGMAS {
-            // TODO: Handle errors properly
-            let _ = connection.execute(stmt, ());
-        }
 
         Ok(Self {
             connection,
@@ -111,7 +110,38 @@ impl SqliteEngine {
     }
 
     fn init_db(path: &Path, db_info: &IndexedDBDescription) -> Result<Connection, Error> {
+        // BAO PATCH (REQ-BRW-7, idb-journal-storm): every IndexedDB connection
+        // must carry `DB_PRAGMAS` (notably `synchronous = NORMAL`; in WAL mode
+        // that syncs only at checkpoint instead of once per commit). The
+        // manager connection used to receive them *after* this function
+        // returned, which left the schema-creation commits below at SQLite's
+        // default `synchronous = FULL`: one ext4 journal commit per CREATE
+        // TABLE / INSERT. Under IO pressure that parks the single-threaded
+        // IndexedDBManager thread in D-state (`jbd2_log_wait_commit`) for
+        // seconds per new database, blowing WPT's per-file harness budget and
+        // turning whole IndexedDB files into TIMEOUTs (GOLDEN-B uT cluster).
+        // The shared/mod.rs note is explicit: "These pragmas need to be run
+        // once per connection" — that includes this one and the per-transaction
+        // connections in `process_transaction`.
         let connection = Connection::open(path)?;
+        for stmt in DB_PRAGMAS {
+            // BAO PATCH (REQ-BRW-051, P-1 fail-closed): a pragma that fails to
+            // apply must propagate — an unapplied `synchronous = NORMAL` is
+            // the per-commit journal commit storm this function exists to
+            // prevent, so the failure IS the bug and `init_db` returns `Err`
+            // instead of leaving the connection in an unknown durability mode.
+            // The carrier is `execute_batch` rather than `execute(..)?` for a
+            // verified reason: SQLite set-form pragmas echo the applied value
+            // as a result row (`PRAGMA journal_size_limit = 67108864` returns
+            // the row `(67108864,)`), and rusqlite's `execute` reports any
+            // row as `Error::ExecuteReturnedResults` (rusqlite 0.38.0
+            // statement.rs:692) — a plain `?` there would fail every database
+            // init on a perfectly supported pragma. `execute_batch` steps to
+            // completion and is row-tolerant by contract (rusqlite lib.rs:
+            // "Some PRAGMA may return rows"), so real failures (unknown
+            // pragma, IO, locked db) still propagate via `?`.
+            connection.execute_batch(stmt)?;
+        }
         if connection.table_exists(None, "database")? {
             // Database already exists, no need to initialize
             return Ok(connection);
@@ -121,10 +151,15 @@ impl SqliteEngine {
             // FIXME(arihant2math): this fails occasionally
             let _ = connection.execute(stmt, ());
         }
-        create::create_tables(&connection)?;
+        // BAO PATCH (REQ-BRW-7, idb-journal-storm): run the whole first-time
+        // schema creation (6 CREATE TABLEs + the version-0 row) as one
+        // transaction. Autocommit mode committed each statement separately,
+        // multiplying journal commits by 7 on the manager thread.
+        let transaction = connection.unchecked_transaction()?;
+        create::create_tables(&transaction)?;
         // From https://w3c.github.io/IndexedDB/#database-version:
         // "When a database is first created, its version is 0 (zero)."
-        connection.execute(
+        transaction.execute(
             "INSERT INTO database (name, origin, version) VALUES (?, ?, ?)",
             params![
                 db_info.name.to_owned(),
@@ -132,6 +167,7 @@ impl SqliteEngine {
                 i64::from_ne_bytes(0_u64.to_ne_bytes())
             ],
         )?;
+        transaction.commit()?;
         Ok(connection)
     }
 
@@ -511,6 +547,40 @@ impl KvsEngine for SqliteEngine {
                     return;
                 },
             };
+            // BAO PATCH (REQ-BRW-7, idb-journal-storm): this is a fresh
+            // connection per transaction batch (the manager keeps its own),
+            // and pragmas are per-connection. Without this every write ran at
+            // SQLite's default `synchronous = FULL`, forcing one ext4 journal
+            // commit per statement on the shared global pool and starving the
+            // read/write scheduling under IO pressure. Applies the exact set
+            // the manager connection uses (shared/mod.rs "once per
+            // connection" contract).
+            for stmt in DB_PRAGMAS {
+                // BAO PATCH (REQ-BRW-051, P-1 fail-closed): same contract as
+                // `init_db` — pragmas are per-connection and a failed one
+                // silently reverts every write below to `synchronous = FULL`
+                // (one journal commit per statement), which is the bug itself,
+                // so it must not be swallowed. This closure is not a `Result`
+                // context and the transaction has a JS-visible completion
+                // contract, so on a real pragma failure we fail the batch the
+                // same way the failed-connection arm above does: notify every
+                // pending request, run `on_complete`, and stop — never
+                // continue with an unknown durability mode. `execute_batch`
+                // is row-tolerant for the set-pragma echo row (see the note
+                // in `init_db`).
+                if let Err(error) = connection.execute_batch(stmt) {
+                    error!(
+                        "IndexedDB pragma failed on transaction connection, failing the batch: {stmt} -> {error:?}"
+                    );
+                    for request in &transaction.requests {
+                        request
+                            .operation
+                            .notify_error(BackendError::DbErr(format!("{error:?}")));
+                    }
+                    on_complete();
+                    return;
+                }
+            }
             for request in transaction.requests {
                 if let AsyncOperation::Schema(AsyncSchemaOperation::CreateObjectStore {
                     callback,

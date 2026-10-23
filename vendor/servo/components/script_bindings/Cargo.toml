@@ -70,6 +70,9 @@ bluetooth = []
 gamepad = []
 testbinding = []
 tracing = ["dep:tracing"]
+# Bao fork self-build (REQ-BRW-051): gates the WebCodecs webidl set via
+# `// skip-unless CARGO_FEATURE_WEBCODECS` in script_bindings/webidls.
+webcodecs = []
 webcrypto = []
 webgpu = []
 webgl = []

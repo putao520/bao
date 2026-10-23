@@ -136,6 +136,61 @@ pub enum BridgeCommand {
     GetUrl {
         target_id: String,
     },
+    /// Read the target's current per-load CDP `loaderId` (REQ-CDP-010).
+    ///
+    /// The identity lives in the browser-side load state
+    /// (`BaoWebViewState::loader_id`, minted at page creation and re-minted
+    /// at every embedder navigation entry). `Page.getFrameTree` consumes it
+    /// so the frame face and the `Page.navigate` response report the SAME
+    /// load identity (Chrome 155 oracle: they agree; the pre-registry
+    /// navigate response minted a per-command value nothing stored, so
+    /// getFrameTree had to omit the field).
+    GetLoaderId {
+        target_id: String,
+    },
+    /// Read the target's CDP session-history journal (REQ-CDP-010
+    /// `Page.getNavigationHistory`).
+    ///
+    /// The journal lives in the browser-side load state
+    /// (`BaoWebViewState::navigation_journal`) — the embedder observed every
+    /// entry: page creation, embedder navigation entries
+    /// (navigate/reload/go_back/go_forward) and script-initiated committed
+    /// navigations reported by `notify_url_changed`. The response is
+    /// `{currentIndex, entries: [...]}` verbatim.
+    GetNavigationHistory {
+        target_id: String,
+    },
+    /// Install a `Runtime.addBinding` binding on the page's global (REQ-CDP-010).
+    ///
+    /// The binding function reports its call through the page-realm
+    /// `__BAO_CDPEVT__` carrier (→ `Runtime.bindingCalled`). Install happens
+    /// on the current document immediately and on every future document
+    /// through an internal embedder-new-document script (the id is kept in
+    /// `BaoWebViewState::cdp_bindings_script_id`).
+    RuntimeAddBinding {
+        target_id: String,
+        name: String,
+    },
+    /// Remove a `Runtime.addBinding` binding (REQ-CDP-010): delete the global,
+    /// drop the name from the install list, re-register (or unregister) the
+    /// internal new-document script.
+    RuntimeRemoveBinding {
+        target_id: String,
+        name: String,
+    },
+    /// Read the target's opener relationship (REQ-CDP-010
+    /// `TargetInfo.canAccessOpener` face) — `true` exactly for popups
+    /// adopted through `window.open` (`BaoWebViewState::opener_page_id`).
+    GetTargetOpenerAccess {
+        target_id: String,
+    },
+    /// Arm the `Page.domContentEventFired` observability for this page
+    /// (REQ-CDP-010): an internal DOMContentLoaded listener is installed on
+    /// the live document and registered as an embedder-new-document script
+    /// for every future document. `Page.enable` drives it (idempotent).
+    InstallDomContentHook {
+        target_id: String,
+    },
     GetDocument {
         target_id: String,
     },

@@ -307,7 +307,10 @@ fn scenario_user_agent_isolation(pool: &PagePool, report: &mut Report) {
     };
     let none_page = match pool.create_page(&PageConfig {
         url: Some("data:text/html;charset=utf-8,<html><body>none</body></html>".into()),
-        stealth_profile: None,
+        // 显式 stealth-free 退出面(用户裁决 2026-10-21「默认 = 随机身份」后,
+        // 无 profile 的默认页不再 stealth-free;本场景的 none 页角色=「无覆写」
+        // 对照面,故显式声明退出)。
+        stealth_disabled: true,
         ..Default::default()
     }) {
         Ok(p) => p,

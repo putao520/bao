@@ -396,11 +396,17 @@ fn scenario_screenshot_capture(pool: &bao_browser::PagePool, report: &mut Report
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Real-world scenario: a user runs `Bao` headless with no extra config and
-// expects navigator.webdriver === false and a Firefox UA out of the box.
+// expects navigator.webdriver === false and a coherent random identity out of
+// the box (user ruling 2026-10-21: 默认 = 随机身份,推翻固定预设默认).
 //
-// Per CLAUDE.md: "Stealth defaults are ON — install_all() sets stealth defaults
-// automatically." `BrowserRuntime::create_page()` calls inject_all_with_profile
-// which is the integration point. We test that integration here.
+// Default identity semantics (StealthProfile::default_identity): one random
+// draw per PROCESS, shared by every page created without an explicit profile
+// or explicit stealth-free opt-out — stable within a launch (logins survive
+// reloads), unrelated across launches. The bucket family is Chrome-form, so
+// a default page's UA carries "Chrome" and vendor is "Google Inc.".
+//
+// `BrowserRuntime::create_page()` calls inject_all_with_profile which is the
+// integration point. We test that integration here.
 //
 // NOTE: this scenario requires the servo event loop to actually execute the
 // injected JS polyfill / getters. If servo doesn't fully execute the script
@@ -438,32 +444,71 @@ fn scenario_stealth_defaults(runtime: &BrowserRuntime, report: &mut Report) {
         ),
     }
 
-    // userAgent must contain Firefox (default stealth profile is firefox_default).
-    match page.evaluate_js("navigator.userAgent") {
-        Ok(s) if s.contains("Firefox") => report.pass(&format!("{}::ua_firefox", name)),
+    // userAgent must be the coherent Chrome-form identity (默认 = 随机身份,
+    // 档族钉 Chrome 形 — 见 bao_stealth derive_tables).
+    let ua = page.evaluate_js("navigator.userAgent");
+    match &ua {
+        Ok(s) if s.contains("Chrome") => report.pass(&format!("{}::ua_chrome", name)),
         Ok(other) => report.fail(
-            &format!("{}::ua_firefox", name),
-            &format!("UA missing 'Firefox': {other}"),
+            &format!("{}::ua_chrome", name),
+            &format!("UA missing 'Chrome': {other}"),
         ),
         Err(e) => report.skip(
-            &format!("{}::ua_firefox", name),
+            &format!("{}::ua_chrome", name),
             &format!("evaluate_js failed: {e}"),
         ),
     }
 
-    // navigator.vendor must be empty (Firefox profile contract).
+    // navigator.vendor must be Chrome-form ("Google Inc.").
     match page.evaluate_js("navigator.vendor") {
-        Ok(s) if s.is_empty() => report.pass(&format!("{}::vendor_empty", name)),
+        Ok(s) if s == "Google Inc." => report.pass(&format!("{}::vendor_google", name)),
         Ok(other) => report.fail(
-            &format!("{}::vendor_empty", name),
+            &format!("{}::vendor_google", name),
             &format!("got '{other}'"),
         ),
         Err(e) => report.skip(
-            &format!("{}::vendor_empty", name),
+            &format!("{}::vendor_google", name),
             &format!("evaluate_js failed: {e}"),
         ),
     }
 
+    // Process-shared identity: a second default page reads the SAME UA (one
+    // random draw per process — per-page rerolling would itself be a
+    // detection vector).
+    let page2 = match runtime.create_page(&PageConfig {
+        url: Some("data:text/html,<html><body>stealth2</body></html>".into()),
+        ..Default::default()
+    }) {
+        Ok(p) => p,
+        Err(e) => {
+            report.skip(
+                &format!("{}::identity_shared", name),
+                &format!("second page create failed: {e}"),
+            );
+            let _ = page.close();
+            return;
+        }
+    };
+    wait_for_load(&page2, 1200);
+    match (ua, page2.evaluate_js("navigator.userAgent")) {
+        (Ok(first), Ok(second)) if first == second => {
+            report.pass(&format!("{}::identity_shared", name))
+        }
+        (Ok(first), Ok(second)) => report.fail(
+            &format!("{}::identity_shared", name),
+            &format!("default pages diverge: '{first}' vs '{second}'"),
+        ),
+        (_, Err(e)) => report.skip(
+            &format!("{}::identity_shared", name),
+            &format!("evaluate_js failed: {e}"),
+        ),
+        (Err(e), _) => report.skip(
+            &format!("{}::identity_shared", name),
+            &format!("first page evaluate failed: {e}"),
+        ),
+    }
+
+    let _ = page2.close();
     let _ = page.close();
 }
 

@@ -226,7 +226,7 @@ fn test_invariant_bridge_dependent_errors() {
         ("Page.navigate", NO_BRIDGE),
         ("Page.reload", NO_BRIDGE),
         ("Page.getFrameTree", NO_BRIDGE),
-        ("Page.getNavigationHistory", NOT_SUPPORTED),
+        ("Page.getNavigationHistory", NO_BRIDGE),
         ("Page.captureScreenshot", NO_BRIDGE),
         ("Page.setContent", INVALID_PARAMS),
         ("Page.close", NO_BRIDGE),
@@ -824,13 +824,14 @@ fn test_page_get_frame_tree_default_url() {
 
 #[test]
 fn test_page_get_navigation_history() {
-    // New contract (6983871b): servo exposes no session-history enumeration
-    // — explicit -32000, never a fabricated 1-entry history.
+    // REQ-CDP-010 golden-oracle parity: the history journal is bridge-backed
+    // (BaoWebViewState::navigation_journal) — no bridge = no history source,
+    // explicit transport-class -32603, never a fabricated 1-entry history.
     let r = dispatch("Page.getNavigationHistory", None);
     assert_jsonrpc_invariant(&r, "Page.getNavigationHistory");
     let e = r.error.unwrap();
-    assert_eq!(e.code, -32000);
-    assert!(e.message.contains("not supported"));
+    assert_eq!(e.code, -32603);
+    assert!(e.message.contains("no servo bridge"));
 }
 
 #[test]

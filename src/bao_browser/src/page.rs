@@ -1,5 +1,6 @@
 // @trace REQ-BRW-001 [entity:PageHandle]  REQ-BRW-002: Page lifecycle management (navigate, evaluate, screenshot)
 // @trace REQ-LIB-001 REQ-LIB-004: PageHandle high-level API (waitForSelector, click, type, fill, etc.)
+// @trace REQ-BRW-051: renderer-init GL-OOM fails page creation closed (gl-oom-defense-001)
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -253,6 +254,7 @@ impl PageInner {
             crate::phase_watch::phase::NAVIGATE,
             self.id as u64,
         );
+        let parsed_url_string = parsed.to_string();
         self.webview.load(parsed);
         drop(_nav_phase);
         self.touch();
@@ -278,6 +280,15 @@ impl PageInner {
             let mut ws = self.webview_state.borrow_mut();
             ws.load_status = servo::LoadStatus::Started;
             ws.load_generation += 1;
+            // REQ-CDP-010: per-load loader identity re-mints at exactly the
+            // same seam as the generation gate (every embedder navigation
+            // entry = one new load).
+            ws.loader_id = crate::delegate::mint_loader_id();
+            // REQ-CDP-010: the session-history journal records the embedder
+            // navigation entry (typed intent) at the same seam — the forward
+            // tail truncation happens there. The committed-url sync in
+            // notify_url_changed is then a no-op for this entry (same url).
+            ws.history_push_entry(&parsed_url_string, "typed", true);
         }
         self.nav_seq.set(self.nav_seq.get() + 1);
         Ok(())
@@ -590,6 +601,13 @@ impl PageInner {
             let mut ws = self.webview_state.borrow_mut();
             ws.load_status = servo::LoadStatus::Started;
             ws.load_generation += 1;
+            // REQ-CDP-010: per-load loader identity re-mints at exactly the
+            // same seam as the generation gate (every embedder navigation
+            // entry = one new load).
+            ws.loader_id = crate::delegate::mint_loader_id();
+            // REQ-CDP-010: a reload adds NO history entry (Chrome keeps the
+            // current entry; its measured getNavigationHistory on a reloaded
+            // page reports the same entries).
         }
         self.nav_seq.set(self.nav_seq.get() + 1);
         Ok(())
@@ -608,6 +626,13 @@ impl PageInner {
             let mut ws = self.webview_state.borrow_mut();
             ws.load_status = servo::LoadStatus::Started;
             ws.load_generation += 1;
+            // REQ-CDP-010: per-load loader identity re-mints at exactly the
+            // same seam as the generation gate (every embedder navigation
+            // entry = one new load).
+            ws.loader_id = crate::delegate::mint_loader_id();
+            // REQ-CDP-010: session-history traversal moves the journal's
+            // current index, adds no entry.
+            ws.history_move_back();
         }
         self.nav_seq.set(self.nav_seq.get() + 1);
         Ok(())
@@ -626,6 +651,13 @@ impl PageInner {
             let mut ws = self.webview_state.borrow_mut();
             ws.load_status = servo::LoadStatus::Started;
             ws.load_generation += 1;
+            // REQ-CDP-010: per-load loader identity re-mints at exactly the
+            // same seam as the generation gate (every embedder navigation
+            // entry = one new load).
+            ws.loader_id = crate::delegate::mint_loader_id();
+            // REQ-CDP-010: session-history traversal moves the journal's
+            // current index, adds no entry.
+            ws.history_move_forward();
         }
         self.nav_seq.set(self.nav_seq.get() + 1);
         Ok(())
@@ -1566,7 +1598,12 @@ impl PageHandle {
             builder = builder.browser_context_partition(partition);
         }
 
-        let webview = builder.build();
+        // REQ-BRW-051 (gl-oom-defense-001): renderer init failure (GL OOM
+        // under memory pressure) now fails this page creation closed instead
+        // of aborting the whole browser process; the caller retries or skips.
+        let webview = builder.build().map_err(|error| {
+            BrowserError::Init(format!("webrender init failed: {error:?}"))
+        })?;
 
         // CDP target-face resolution registry (see WEBVIEW_ID_BY_PAGE): let
         // the CDP command face resolve this page's decimal id to its

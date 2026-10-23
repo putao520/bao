@@ -8,9 +8,11 @@ use servo::Preferences;
 
 /// Apply raw `--pref=K=V` overrides onto the process-global servo prefs.
 ///
-/// coercion: `true`/`false` → bool, numeric → f64, everything else stays a
-/// string. Fail-closed: a bad override aborts the launch instead of silently
-/// running with missing test prefs.
+/// coercion: `true`/`false` → bool, integer-syntax numerics → JSON integer
+/// (i64 kept integral so i64 pref fields like `editing_caret_blink_time`
+/// accept int-valued strings), non-integer numerics → f64, everything else
+/// stays a string. Fail-closed: a bad override aborts the launch instead of
+/// silently running with missing test prefs.
 pub fn apply_pref_overrides(overrides: &[(String, String)]) -> Result<(), String> {
     if overrides.is_empty() {
         return Ok(());
@@ -40,14 +42,27 @@ pub fn apply_pref_overrides_to(
         return Err("prefs did not serialize to a JSON object".into());
     };
     for (key, raw) in overrides {
+        // @trace REQ-BRW-001 — integer-string prefs must stay JSON integers
+        // (i64 tried before f64): the servo Preferences schema declares e.g.
+        // `editing_caret_blink_time` as i64, and an f64 value there is a serde
+        // type error ("invalid type: floating point 0.0, expected i64"), which
+        // structurally breaks upstream wpt-prefs.json files that spell int
+        // prefs plainly (e.g. the official servo wpt-prefs.json carries int 0
+        // for that field).
         let coerced = match raw.as_str() {
             "true" => serde_json::Value::Bool(true),
             "false" => serde_json::Value::Bool(false),
             other => other
-                .parse::<f64>()
+                .parse::<i64>()
                 .ok()
-                .and_then(serde_json::Number::from_f64)
-                .map(serde_json::Value::Number)
+                .map(|int| serde_json::Value::Number(serde_json::Number::from(int)))
+                .or_else(|| {
+                    other
+                        .parse::<f64>()
+                        .ok()
+                        .and_then(serde_json::Number::from_f64)
+                        .map(serde_json::Value::Number)
+                })
                 .unwrap_or_else(|| serde_json::Value::String(other.to_string())),
         };
         map.insert(key.clone(), coerced);

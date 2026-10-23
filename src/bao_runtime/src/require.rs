@@ -694,14 +694,24 @@ unsafe extern "C" fn require_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
             }
         }
     } else {
+        // @trace REQ-ENG-048 — Node error propagation: the module's own
+        // exception (body-thrown object or engine SyntaxError) propagates
+        // verbatim to the require() caller, preserving identity, own
+        // properties and the module-line stack. The neutral
+        // "Failed to load module" surface is kept ONLY for loader-internal
+        // failures (module-object / string allocation, compile-options
+        // creation) where the context carries no module exception.
         match load_cjs_module(cx, &content, &resolved, base_dir.as_deref()) {
-            Some(val) => val,
-            None => {
+            Ok(val) => val, // @evidence .spec/10-REQUIREMENTS.html:2324
+            Err(CjsLoadError::NoException) => { // @evidence .spec/10-REQUIREMENTS.html:2324
                 let msg = format!("Failed to load module '{}'", specifier);
                 let c_msg = ZBox::from_bytes(msg.as_bytes());
                 JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                 return false;
             }
+            // A module exception is pending on the context — return false so
+            // the engine re-throws it to the require() caller unchanged.
+            Err(CjsLoadError::ExceptionPending) => return false, // @evidence .spec/10-REQUIREMENTS.html:2324
         }
     };
 
@@ -997,6 +1007,25 @@ fn wrap_cjs_function_source(source: &str) -> String {
     wrapped
 }
 
+/// Failure mode of a CommonJS module-body load (REQ-ENG-048 error
+/// propagation).
+///
+/// Node rethrows the module's own exception verbatim: the object the body
+/// threw (or the SyntaxError from compiling it) is exactly what the caller
+/// of `require()` catches — same identity, same stack. The loader must
+/// therefore never replace a live pending exception with its neutral
+/// "Failed to load module" surface.
+enum CjsLoadError {
+    /// A JS exception raised by the module itself is pending on the
+    /// context. The caller propagates it unchanged by returning `false` to
+    /// the engine (SM re-throws the pending value to the require() caller).
+    ExceptionPending,
+    /// Infrastructural failure with no module exception (allocation /
+    /// compile-options failure); the caller reports the neutral loader
+    /// error.
+    NoException,
+}
+
 /// Compile `source` as a CommonJS module body (Node's official function
 /// wrapper) and execute it with the wrapper arguments
 /// `(exports, require, module, __filename, __dirname)` and `this = exports`.
@@ -1005,9 +1034,11 @@ fn wrap_cjs_function_source(source: &str) -> String {
 /// is defined as `module.exports` here, and after the call the caller reads
 /// back `module.exports` (the body may rebind it — Node semantics).
 ///
-/// Returns `None` on compile or call failure with the pending exception
-/// cleared — the loader's neutral "Failed to load module" surface is
-/// unchanged.
+/// On compile or call failure returns the failure mode: a compile-time
+/// SyntaxError or a body-thrown exception stays pending on the context for
+/// the caller to propagate verbatim (`CjsLoadError::ExceptionPending`);
+/// only exceptions the loader itself raised (allocation failures) are
+/// cleared (`CjsLoadError::NoException`).
 ///
 /// # Safety
 /// `cx` must be a live JSContext of the calling thread with a current global.
@@ -1018,7 +1049,7 @@ unsafe fn eval_cjs_body(
     path: &Path,
     exports_obj: *mut JSObject,
     module_obj: *mut JSObject,
-) -> Option<Value> {
+) -> ::std::result::Result<Value, CjsLoadError> {
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let exports_root = exports_obj);
     rooted!(&in(wrapped_cx) let module_root = module_obj);
@@ -1041,7 +1072,7 @@ unsafe fn eval_cjs_body(
     let opts = NewCompileOptions(cx, c_filename.as_ptr(), 1);
     if opts.is_null() {
         JS_ClearPendingException(cx);
-        return None;
+        return Err(CjsLoadError::NoException);
     }
     let wrapped = wrap_cjs_function_source(source);
     let mut src = mozjs::rust::transform_str_to_source_text(&wrapped);
@@ -1056,9 +1087,18 @@ unsafe fn eval_cjs_body(
         },
     );
     mozjs::glue::DeleteCompileOptions(opts);
-    if !compiled || !fn_rval.is_object() {
+    if !compiled {
+        // The compile-time exception (a SyntaxError carrying the module
+        // filename and body line — the wrapper prefix adds no newline, so
+        // body line numbers are byte-parity) stays pending; the caller
+        // propagates it verbatim (Node parity: require() of a syntactically
+        // broken module throws the engine's SyntaxError, not a loader
+        // replacement).
+        return Err(CjsLoadError::ExceptionPending);
+    }
+    if !fn_rval.is_object() {
         JS_ClearPendingException(cx);
-        return None;
+        return Err(CjsLoadError::NoException);
     }
     rooted!(&in(wrapped_cx) let fn_root = fn_rval);
 
@@ -1068,7 +1108,7 @@ unsafe fn eval_cjs_body(
     let global = CurrentGlobalOrNull(cx);
     if global.is_null() {
         JS_ClearPendingException(cx);
-        return None;
+        return Err(CjsLoadError::NoException);
     }
     rooted!(&in(wrapped_cx) let global_root = global);
     let require_val = get_prop(cx, global, c"require".as_ptr());
@@ -1084,7 +1124,7 @@ unsafe fn eval_cjs_body(
     let dirname_js = JS_NewStringCopyZ(cx, c_dirname_arg.as_ptr());
     if filename_js.is_null() || dirname_js.is_null() {
         JS_ClearPendingException(cx);
-        return None;
+        return Err(CjsLoadError::NoException);
     }
     rooted!(&in(wrapped_cx) let filename_root = mozjs::jsval::StringValue(&*filename_js));
     rooted!(&in(wrapped_cx) let dirname_root = mozjs::jsval::StringValue(&*dirname_js));
@@ -1117,10 +1157,16 @@ unsafe fn eval_cjs_body(
         },
     );
     if !called {
-        JS_ClearPendingException(cx);
-        return None;
+        // The body threw: the exception pending on the context IS the
+        // module's own error object. Node rethrows it verbatim — the
+        // require() caller catches the original error with its identity,
+        // properties and module-line stack. Leave it pending and tell the
+        // caller to propagate; clearing it here (and reporting the loader's
+        // neutral "Failed to load module" instead) is what erased every
+        // diagnostic in the pre-fix behavior.
+        return Err(CjsLoadError::ExceptionPending);
     }
-    Some(call_rval)
+    Ok(call_rval)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1129,7 +1175,7 @@ unsafe fn load_cjs_module(
     source: &str,
     path: &Path,
     _base_dir: Option<&Path>,
-) -> Option<Value> {
+) -> ::std::result::Result<Value, CjsLoadError> {
     // CJS module-body scoping (REQ-ENG-048 interning root-fix): Node wraps
     // every CommonJS body in its official function wrapper (v24 oracle:
     // `require("module").wrapper`) so module-level declarations are
@@ -1140,16 +1186,18 @@ unsafe fn load_cjs_module(
     // top-level var/function leaked across modules as global properties.
     let exports_obj = JS_NewPlainObject(cx);
     if exports_obj.is_null() {
-        return None;
+        JS_ClearPendingException(cx);
+        return Err(CjsLoadError::NoException);
     }
     let module_obj = JS_NewPlainObject(cx);
     if module_obj.is_null() {
-        return None;
+        JS_ClearPendingException(cx);
+        return Err(CjsLoadError::NoException);
     }
 
     let dir = match path.parent() {
         Some(d) => d,
-        None => return Some(mozjs::jsval::ObjectValue(exports_obj)),
+        None => return Ok(mozjs::jsval::ObjectValue(exports_obj)), // @evidence .spec/10-REQUIREMENTS.html:237
     };
 
     let saved_dir = REQUIRE_DIR.with(|d| d.borrow().clone());
@@ -1178,7 +1226,7 @@ unsafe fn load_cjs_module(
             ptr: &mut final_exports,
         },
     );
-    Some(final_exports)
+    Ok(final_exports)
 }
 
 fn resolve_specifier(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {

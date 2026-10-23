@@ -34,10 +34,11 @@ use super::{InlineFormattingContextLayout, SharedInlineStyles};
 use crate::ArcRefCell;
 use crate::context::LayoutContext;
 use crate::dom::WeakLayoutBox;
-use crate::flow::inline::shaping_queue::ShapingQueueEntry;
+use crate::flow::inline::shaping_queue::{ShapingQueueEntry, breaks_for_break_spaces};
 use crate::flow::inline::text_transform::OffsetMap;
 use crate::flow::inline::{BidiLevels, LineBlockSizes, LineItem, SegmentContentFlags};
 use crate::fragment_tree::BaseFragmentInfo;
+use crate::style_ext::ComputedValuesExt;
 
 // There are two reasons why we might want to break at the start:
 //
@@ -237,9 +238,9 @@ impl TextRunSegment {
             return false;
         }
 
-        !script_is_specific(self.info.script) ||
-            !script_is_specific(new_script) ||
-            self.info.script == new_script
+        !script_is_specific(self.info.script)
+            || !script_is_specific(new_script)
+            || self.info.script == new_script
     }
 
     /// Update this segment to end at the given byte and character index. The update will only ever
@@ -282,7 +283,7 @@ impl TextRunSegment {
             }
 
             let run_start = text_run.run_data.character_range_in_ifc_text.start;
-            ifc.push_glyph_store_to_unbreakable_segment(
+            ifc.push_shaped_text_slice_to_unbreakable_segment(
                 run.clone(),
                 text_run,
                 &self.info,
@@ -316,7 +317,10 @@ pub(crate) enum TextRunItem {
     /// A hard line break i.e. a "\n" as other types line breaks are normalized to "\n".
     LineBreak(Option<CaretPlaceholder>),
     /// A preserved tab character that should advance the line to a tab stop.
-    Tab { bidi_level: Level },
+    Tab {
+        bidi_level: Level,
+        break_at_start: bool,
+    },
     /// Any other text for which a font can be matched. We store a `Box` here as [`TextRunSegment`]
     /// is quite a bit larger than the other enum variants.
     TextSegment(Box<TextRunSegment>),
@@ -536,12 +540,13 @@ impl TextRun {
         let text_run_text =
             &formatting_context_text[Utf8CodeUnits::to_usize_range(&self.text_range)];
         let char_iterator = TwoCharsAtATimeIterator::new(text_run_text.chars());
+
         // The next bytes index of the character within the entire inline formatting context's text.
         let mut next_byte_index = self.text_range.start;
         for (relative_character_index, (character, next_character)) in char_iterator.enumerate() {
             // The current character index within the entire inline formatting context's text.
-            let current_character_index = self.run_data.character_range_in_ifc_text.start +
-                Utf32CodeUnits(relative_character_index as u32);
+            let current_character_index = self.run_data.character_range_in_ifc_text.start
+                + Utf32CodeUnits(relative_character_index as u32);
 
             let current_byte_index = next_byte_index;
             next_byte_index += Utf8CodeUnits::length_of_char(character);
@@ -563,8 +568,19 @@ impl TextRun {
 
             if character == '\t' {
                 finish_current_segment(&mut current, &mut results);
+
+                // There is a soft wrap opportunity between a preceding space and a tab
+                // under `break-spaces`.
+                let break_at_start = *parent_style.get_white_space_collapse()
+                    == WhiteSpaceCollapse::BreakSpaces
+                    && formatting_context_text[0..current_byte_index.0 as usize]
+                        .chars()
+                        .next_back()
+                        .is_some_and(breaks_for_break_spaces);
+
                 results.push(TextRunItem::Tab {
                     bidi_level: bidi_levels.level(current_byte_index.into()),
+                    break_at_start,
                 });
                 continue;
             }
@@ -589,8 +605,8 @@ impl TextRun {
             };
 
             // If the existing segment is compatible with the character, just merge the character into it.
-            if let Some(current) = current.as_mut() &&
-                current.is_compatible(&font, script, bidi_level)
+            if let Some(current) = current.as_mut()
+                && current.is_compatible(&font, script, bidi_level)
             {
                 current.update(
                     next_byte_index,
@@ -669,7 +685,10 @@ impl TextRun {
                 TextRunItem::LineBreak(caret_placeholder) => {
                     ifc.defer_forced_line_break_at_character_offset(caret_placeholder);
                 },
-                TextRunItem::Tab { bidi_level } => self.process_preserved_tab(ifc, *bidi_level),
+                TextRunItem::Tab {
+                    bidi_level,
+                    break_at_start,
+                } => self.process_preserved_tab(ifc, *bidi_level, *break_at_start),
                 TextRunItem::TextSegment(segment) => {
                     segment.layout_into_line_items(self, soft_wrap_policy, ifc)
                 },
@@ -682,32 +701,52 @@ impl TextRun {
         &self,
         ifc_layout: &mut InlineFormattingContextLayout,
         bidi_level: Level,
+        break_at_start: bool,
     ) {
-        let advance = ifc_layout.ifc.next_tab_stop_after_inline_advance(
-            &self.inline_styles().style.borrow(),
-            ifc_layout.potential_line_size().inline,
-        );
+        if break_at_start {
+            ifc_layout.process_soft_wrap_opportunity();
+        }
+
+        let position_after_current_segment =
+            ifc_layout.current_line.inline_position + ifc_layout.current_line_segment.inline_size;
+        let style = self.inline_styles().style.borrow();
+        let advance = ifc_layout
+            .ifc
+            .next_tab_stop_after_inline_advance(&style, position_after_current_segment);
         if advance.is_zero() {
             return;
         }
 
+        let conditionally_hangs = style.white_space_may_hang_conditionally();
+        let (flags, hanging_advance) = if conditionally_hangs {
+            (SegmentContentFlags::Contentful, advance)
+        } else {
+            (
+                SegmentContentFlags::Contentful
+                    | SegmentContentFlags::IncorporateTrailingWhiteSpace,
+                Au::zero(),
+            )
+        };
+
         ifc_layout.update_unbreakable_segment_for_new_content(
             &LineBlockSizes::zero(),
             advance,
-            SegmentContentFlags::empty(),
+            hanging_advance,
+            Au::zero(),
+            flags,
         );
         ifc_layout.push_line_item_to_unbreakable_segment(LineItem::Tab {
             inline_box_identifier: ifc_layout.current_inline_box_identifier(),
             advance,
             bidi_level,
+            conditionally_hangs,
         });
 
-        if ifc_layout
+        if *ifc_layout
             .current_inline_container_state()
             .style
-            .get_inherited_text()
-            .white_space_collapse ==
-            WhiteSpaceCollapse::BreakSpaces
+            .get_white_space_collapse()
+            == WhiteSpaceCollapse::BreakSpaces
         {
             ifc_layout.process_soft_wrap_opportunity();
         }
@@ -721,13 +760,13 @@ impl TextRun {
 fn is_cursive_script(script: Script) -> bool {
     matches!(
         script,
-        Script::Arabic |
-            Script::Hanifi_Rohingya |
-            Script::Mandaic |
-            Script::Mongolian |
-            Script::Nko |
-            Script::Phags_Pa |
-            Script::Syriac
+        Script::Arabic
+            | Script::Hanifi_Rohingya
+            | Script::Mandaic
+            | Script::Mongolian
+            | Script::Nko
+            | Script::Phags_Pa
+            | Script::Syriac
     )
 }
 
@@ -747,11 +786,11 @@ fn character_cannot_change_font(character: char) -> bool {
 
     matches!(
         LineBreak::for_char(character),
-        LineBreak::CombiningMark |
-            LineBreak::Glue |
-            LineBreak::ZWSpace |
-            LineBreak::WordJoiner |
-            LineBreak::ZWJ
+        LineBreak::CombiningMark
+            | LineBreak::Glue
+            | LineBreak::ZWSpace
+            | LineBreak::WordJoiner
+            | LineBreak::ZWJ
     )
 }
 

@@ -44,6 +44,7 @@ use crate::dom::bindings::utils::to_frozen_array;
 use crate::dom::bluetooth::Bluetooth;
 use crate::dom::clipboard::Clipboard;
 use crate::dom::credentialmanagement::credentialscontainer::CredentialsContainer;
+use crate::dom::deviceboundsession::DeviceBoundSession;
 use crate::dom::csp::{GlobalCspReporting, Violation};
 #[cfg(feature = "gamepad")]
 use crate::dom::gamepad::Gamepad;
@@ -123,6 +124,9 @@ pub(crate) struct Navigator {
     plugins: MutNullableDom<PluginArray>,
     mime_types: MutNullableDom<MimeTypeArray>,
     service_worker: MutNullableDom<ServiceWorkerContainer>,
+    // BAO PATCH (REQ-BRW-051): the `navigator.deviceBoundSession` singleton
+    // (pref-gated exposure — see Navigator.webidl).
+    device_bound_session: MutNullableDom<DeviceBoundSession>,
     #[cfg(feature = "webxr")]
     xr: MutNullableDom<XRSystem>,
     mediadevices: MutNullableDom<MediaDevices>,
@@ -153,6 +157,10 @@ impl Navigator {
             plugins: Default::default(),
             mime_types: Default::default(),
             service_worker: Default::default(),
+            // BAO PATCH (REQ-BRW-051): lazy — no eager enrollment needed
+            // (unlike the SW container there is no net-side manager to
+            // register with at creation time).
+            device_bound_session: Default::default(),
             #[cfg(feature = "webxr")]
             xr: Default::default(),
             mediadevices: Default::default(),
@@ -434,6 +442,22 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
     fn ServiceWorker(&self, cx: &mut js::context::JSContext) -> DomRoot<ServiceWorkerContainer> {
         self.service_worker
             .or_init(|| ServiceWorkerContainer::new(cx, &self.global()))
+    }
+
+    // BAO PATCH (REQ-BRW-051): the DBSC query singleton. Exposure is gated
+    // by `dom_dbsc_enabled` at the webidl layer; this getter only runs when
+    // the attribute exists.
+    #[allow(unsafe_code)]
+    fn DeviceBoundSession(&self) -> DomRoot<DeviceBoundSession> {
+        // The generated trait's plain `SameObject` attribute takes no cx;
+        // derive it from the thread-local JSContext (cache.rs thread_cx
+        // precedent, same shape as the DBSC wave's other getters).
+        fn thread_cx() -> js::context::JSContext {
+            unsafe { js::context::JSContext::get_from_thread() }
+                .expect("no active JS context")
+        }
+        self.device_bound_session
+            .or_init(|| DeviceBoundSession::new(&mut thread_cx(), &self.global()))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-navigator-cookieenabled>

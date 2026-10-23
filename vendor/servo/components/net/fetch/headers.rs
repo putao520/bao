@@ -4,7 +4,7 @@
 
 use content_security_policy::Destination;
 use headers::{Error, Header};
-use http::{HeaderName, HeaderValue};
+use http::{HeaderMap, HeaderName, HeaderValue};
 use net_traits::request::RequestMode;
 
 static SEC_FETCH_DEST: HeaderName = HeaderName::from_static("sec-fetch-dest");
@@ -14,6 +14,17 @@ static SEC_FETCH_MODE: HeaderName = HeaderName::from_static("sec-fetch-mode");
 static SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
 
 static SEC_FETCH_USER: HeaderName = HeaderName::from_static("sec-fetch-user");
+
+/// BAO PATCH (REQ-BRW-051): `Sec-Fetch-Dest: webbundle` for web bundle
+/// subresource-loading fetches.
+///
+/// The fetch-spec destination set (and the `content-security-policy` crate that
+/// owns `Destination`) has no `webbundle` member, so the web bundle request is
+/// identified by `request.initiator == Initiator::WebBundle` and this header is
+/// written directly. WPT `request-destination` requires the exact token.
+pub fn insert_sec_fetch_dest_webbundle(headers: &mut HeaderMap) {
+    headers.insert(SEC_FETCH_DEST.clone(), HeaderValue::from_static("webbundle"));
+}
 
 /// The `sec-fetch-dest` header
 pub struct SecFetchDest(pub Destination);

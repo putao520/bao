@@ -12,7 +12,7 @@ use style::str::char_is_whitespace;
 use style::values::specified::box_::DisplayOutside as StyloDisplayOutside;
 
 use super::OutsideMarker;
-use super::inline::construct::InlineFormattingContextBuilder;
+use super::inline::construct::{InlineFormattingContextBuilder, construct_ruby_container};
 use super::inline::inline_box::InlineBox;
 use super::inline::{InlineFormattingContext, SharedInlineStyles};
 use crate::PropagatedBoxTreeData;
@@ -212,8 +212,8 @@ impl BlockContainer {
     ) -> BlockContainer {
         let mut builder = BlockContainerBuilder::new(context, info, propagated_data);
 
-        if is_list_item &&
-            let Some((marker_info, marker_contents)) = crate::lists::make_marker(context, info)
+        if is_list_item
+            && let Some((marker_info, marker_contents)) = crate::lists::make_marker(context, info)
         {
             match marker_info.style.get_list_style_position() {
                 ListStylePosition::Inside => {
@@ -301,9 +301,9 @@ impl<'dom, 'style> BlockContainerBuilder<'dom, 'style> {
         // otherwise-phantom final line the strut height (see
         // `InlineFormattingContextLayout::finish_current_line_and_reset`).
         let (info, context) = (self.info, self.context);
-        if inline_formatting_context.is_none() &&
-            info.node.is_editing_host() &&
-            self.block_level_boxes.is_empty()
+        if inline_formatting_context.is_none()
+            && info.node.is_editing_host()
+            && self.block_level_boxes.is_empty()
         {
             let mut builder = InlineFormattingContextBuilder::new(
                 info,
@@ -437,7 +437,11 @@ impl<'dom> TraversalHandler<'dom> for BlockContainerBuilder<'dom, '_> {
 
                 match outside {
                     DisplayOutside::Inline => {
-                        self.handle_inline_level_element(info, inside, contents, box_slot)
+                        if inside == DisplayInside::Ruby {
+                            self.handle_ruby_container_element(info, contents, box_slot)
+                        } else {
+                            self.handle_inline_level_element(info, inside, contents, box_slot)
+                        }
                     },
                     DisplayOutside::Block => {
                         let box_style = info.style.get_box();
@@ -449,9 +453,17 @@ impl<'dom> TraversalHandler<'dom> for BlockContainerBuilder<'dom, '_> {
                             )
                         } else if box_style.float.is_floating() {
                             self.handle_float_element(info, inside, contents, box_slot)
+                        } else if inside == DisplayInside::Ruby {
+                            self.handle_block_level_ruby_container_element(info, contents, box_slot)
                         } else {
                             self.handle_block_level_element(info, inside, contents, box_slot)
                         }
+                    },
+                    // CSS Ruby §2.2 rule 2: an internal ruby box whose parent is
+                    // not a ruby container is wrapped in an anonymous ruby
+                    // container.
+                    DisplayOutside::InternalRuby => {
+                        self.handle_anonymous_ruby_container_element(info, contents, box_slot)
                     },
                 };
             },
@@ -595,8 +607,12 @@ impl<'dom> BlockContainerBuilder<'dom, '_> {
         );
         box_slot.set(LayoutBox::InlineLevel(inline_item));
 
-        if is_list_item &&
-            let Some((marker_info, marker_contents)) =
+        if info.node.is_html_wbr_element() {
+            inline_builder.push_soft_wrap_opportunity();
+        }
+
+        if is_list_item
+            && let Some((marker_info, marker_contents)) =
                 crate::lists::make_marker(self.context, info)
         {
             // Ignore `list-style-position` here:
@@ -613,6 +629,124 @@ impl<'dom> BlockContainerBuilder<'dom, '_> {
             .as_mut()
             .expect("Should be building an InlineFormattingContext")
             .end_inline_box();
+    }
+
+    // BAO patch (fork-maintained, 2026-10-21): ruby box generation
+    // (REQ-BRW-051 W1). Upstream servo has no ruby box model; the three handlers
+    // below generate it per CSS Ruby §2.2 and hand the segments to the ruby
+    // inline items.
+    /// Generate the box tree of an inline-level ruby container
+    /// (`display: ruby`) as items of the current inline formatting context.
+    ///
+    /// The ruby container itself is an inline box (it can carry padding,
+    /// borders and margins); its segments become
+    /// [`crate::flow::inline::InlineItem::RubyBase`] items inside it.
+    fn handle_ruby_container_element(
+        &mut self,
+        info: &NodeAndStyleInfo<'dom>,
+        contents: Contents,
+        box_slot: BoxSlot<'dom>,
+    ) {
+        let context = self.context;
+        let propagated_data = self.propagated_data;
+        let old_layout_box = box_slot.take_layout_box();
+        let inline_item = self
+            .ensure_inline_formatting_context_builder()
+            .start_inline_box(
+                || ArcRefCell::new(InlineBox::new(info, context)),
+                old_layout_box,
+            );
+        box_slot.set(LayoutBox::InlineLevel(inline_item));
+
+        match contents {
+            Contents::NonReplaced(non_replaced_contents) => self
+                .ensure_inline_formatting_context_builder()
+                .push_ruby_container(context, info, non_replaced_contents, propagated_data),
+            // `used_value_for_contents` turns replaced ruby containers and
+            // widgets into ordinary inline-level flow boxes (CSS Display §2.7),
+            // so they never reach the ruby container path.
+            Contents::Replaced(_) | Contents::Widget(_) => {
+                unreachable!("A replaced element never generates a ruby container")
+            },
+        }
+
+        self.finish_anonymous_table_if_needed();
+
+        self.inline_formatting_context_builder
+            .as_mut()
+            .expect("Should be building an InlineFormattingContext")
+            .end_inline_box();
+    }
+
+    /// Generate the box tree of a block-level ruby container
+    /// (`display: block ruby`): the ruby segments form the inline content of a
+    /// block container (§2.1: the ruby container establishes a ruby formatting
+    /// context).
+    fn handle_block_level_ruby_container_element(
+        &mut self,
+        info: &NodeAndStyleInfo<'dom>,
+        contents: Contents,
+        box_slot: BoxSlot<'dom>,
+    ) {
+        let context = self.context;
+        let propagated_data = self.propagated_data;
+        let block_container = construct_ruby_container(
+            context,
+            info,
+            match contents {
+                Contents::NonReplaced(non_replaced_contents) => non_replaced_contents,
+                Contents::Replaced(_) | Contents::Widget(_) => {
+                    unreachable!("A replaced element never generates a ruby container")
+                },
+            },
+            propagated_data,
+        );
+
+        let job = BlockLevelJob {
+            info: info.clone(),
+            box_slot,
+            propagated_data,
+            kind: BlockLevelCreator::SameFormattingContextBlock(
+                IntermediateBlockContainer::InlineFormattingContext(block_container),
+            ),
+        };
+
+        if let Some(builder) = self.inline_formatting_context_builder.as_mut() {
+            if builder.currently_processing_inline_box() {
+                builder.push_block_level_box(job.finish(self.context));
+                return;
+            }
+            if let Some(context) = self.finish_ongoing_inline_formatting_context() {
+                self.push_block_level_job_for_inline_formatting_context(context);
+            }
+        }
+        self.block_level_boxes.push(job);
+
+        // Any block also counts as the first line for the purposes of text indent.
+        self.have_already_seen_first_formatted_line = true;
+    }
+
+    /// Generate the box tree of an internal ruby box whose parent is not a ruby
+    /// container (CSS Ruby §2.2 rule 2): wrap it in an anonymous ruby container.
+    fn handle_anonymous_ruby_container_element(
+        &mut self,
+        info: &NodeAndStyleInfo<'dom>,
+        contents: Contents,
+        box_slot: BoxSlot<'dom>,
+    ) {
+        let context = self.context;
+        let propagated_data = self.propagated_data;
+        let anonymous_info = info
+            .with_pseudo_element(context, PseudoElement::ServoAnonymousBox)
+            .expect("Should always be able to construct info for anonymous boxes");
+        // The internal ruby box is the only child of the anonymous container;
+        // its own box is materialized as the cell of the unit it generates.
+        // Drop any stale box for the element here.
+        let _ = box_slot.take_layout_box();
+        let children =
+            super::inline::construct::anonymous_ruby_container_children(context, info, contents);
+        self.ensure_inline_formatting_context_builder()
+            .push_ruby_segments(context, &anonymous_info, children, propagated_data);
     }
 
     fn handle_block_level_element(
@@ -707,8 +841,8 @@ impl<'dom> BlockContainerBuilder<'dom, '_> {
         contents: Contents,
         box_slot: BoxSlot<'dom>,
     ) {
-        if let Some(builder) = self.inline_formatting_context_builder.as_mut() &&
-            !builder.is_empty
+        if let Some(builder) = self.inline_formatting_context_builder.as_mut()
+            && !builder.is_empty
         {
             let constructor = || {
                 ArcRefCell::new(FloatBox::construct(

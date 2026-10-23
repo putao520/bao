@@ -472,10 +472,10 @@ impl FontContext {
         if matches!(
             format_hint,
             FontFaceSourceFormat::Keyword(
-                FontFaceSourceFormatKeyword::Truetype |
-                    FontFaceSourceFormatKeyword::Opentype |
-                    FontFaceSourceFormatKeyword::Woff |
-                    FontFaceSourceFormatKeyword::Woff2
+                FontFaceSourceFormatKeyword::Truetype
+                    | FontFaceSourceFormatKeyword::Opentype
+                    | FontFaceSourceFormatKeyword::Woff
+                    | FontFaceSourceFormatKeyword::Woff2
             )
         ) {
             return true;
@@ -487,11 +487,11 @@ impl FontContext {
                 return true;
             }
 
-            return pref!(layout_variable_fonts_enabled) &&
-                (string == "truetype-variations" ||
-                    string == "opentype-variations" ||
-                    string == "woff-variations" ||
-                    string == "woff2-variations");
+            return pref!(layout_variable_fonts_enabled)
+                && (string == "truetype-variations"
+                    || string == "opentype-variations"
+                    || string == "woff-variations"
+                    || string == "woff2-variations");
         }
 
         false
@@ -654,8 +654,8 @@ impl WebFontDownloadState {
                     if self
                         .font_context
                         .number_of_loading_web_fonts
-                        .fetch_sub(1, Ordering::SeqCst) ==
-                        1
+                        .fetch_sub(1, Ordering::SeqCst)
+                        == 1
                     {
                         // This was the last loading font - we must inform the script thread that the load
                         // has finished because this an opportunity to resolve document.fonts.ready.
@@ -691,8 +691,8 @@ impl WebFontDownloadState {
                 if self
                     .font_context
                     .number_of_loading_web_fonts
-                    .fetch_sub(1, Ordering::SeqCst) ==
-                    1
+                    .fetch_sub(1, Ordering::SeqCst)
+                    == 1
                 {
                     // This was the last loading font - we must inform the script thread that the load
                     // has finished because this an opportunity to resolve document.fonts.ready.
@@ -826,14 +826,14 @@ impl FontContextWebFontMethods for Arc<FontContext> {
 
         for subscriber in subscribers {
             // See if the font load was cancelled in the meantime
-            if let WebFontLoadInitiator::Stylesheet(stylesheet_initiator) = &subscriber.initiator &&
-                !self.is_font_active(&stylesheet_initiator.font_face_rule)
+            if let WebFontLoadInitiator::Stylesheet(stylesheet_initiator) = &subscriber.initiator
+                && !self.is_font_active(&stylesheet_initiator.font_face_rule)
             {
                 // This font load was cancelled.
                 if self
                     .number_of_loading_web_fonts
-                    .fetch_sub(1, Ordering::SeqCst) ==
-                    1
+                    .fetch_sub(1, Ordering::SeqCst)
+                    == 1
                 {
                     // This was the last loading font - we must inform the script thread that the load
                     // has finished because this an opportunity to resolve document.fonts.ready.
@@ -1650,8 +1650,8 @@ fn font_face_rules_conflict(
     first_rule: &FontFaceRuleDescriptors,
     second_rule: &FontFaceRuleDescriptors,
 ) -> bool {
-    first_rule.font_width == second_rule.font_width &&
-        first_rule.font_style == second_rule.font_style &&
-        first_rule.font_weight == second_rule.font_weight &&
-        first_rule.unicode_range == second_rule.unicode_range
+    first_rule.font_width == second_rule.font_width
+        && first_rule.font_style == second_rule.font_style
+        && first_rule.font_weight == second_rule.font_weight
+        && first_rule.unicode_range == second_rule.unicode_range
 }

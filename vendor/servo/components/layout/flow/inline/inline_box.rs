@@ -272,33 +272,33 @@ impl InlineBoxContainerState {
     }
 
     pub(super) fn pbm_inline_start(&self) -> Au {
-        self.pbm.padding.inline_start +
-            self.pbm.border.inline_start +
-            self.pbm.margin.inline_start.auto_is(Au::zero)
+        self.pbm.padding.inline_start
+            + self.pbm.border.inline_start
+            + self.pbm.margin.inline_start.auto_is(Au::zero)
     }
 
     pub(super) fn pbm_inline_end(&self) -> Au {
-        self.pbm.padding.inline_end +
-            self.pbm.border.inline_end +
-            self.pbm.margin.inline_end.auto_is(Au::zero)
+        self.pbm.padding.inline_end
+            + self.pbm.border.inline_end
+            + self.pbm.margin.inline_end.auto_is(Au::zero)
     }
 
     /// Whether or not this inline box had any non-zero starting padding, border, or
     /// margin. This is different from the sum of these values, because margin can be
     /// negative.
     pub(super) fn has_pbm_inline_start(&self) -> bool {
-        !self.pbm.padding.inline_start.is_zero() ||
-            !self.pbm.border.inline_start.is_zero() ||
-            !self.pbm.margin.inline_start.auto_is(Au::zero).is_zero()
+        !self.pbm.padding.inline_start.is_zero()
+            || !self.pbm.border.inline_start.is_zero()
+            || !self.pbm.margin.inline_start.auto_is(Au::zero).is_zero()
     }
 
     /// Whether or not this inline box had any non-zero ending padding, border, or
     /// margin. This is different from the sum of these values, because margin can be
     /// negative.
     pub(super) fn has_pbm_inline_end(&self) -> bool {
-        !self.pbm.padding.inline_end.is_zero() ||
-            !self.pbm.border.inline_end.is_zero() ||
-            !self.pbm.margin.inline_end.auto_is(Au::zero).is_zero()
+        !self.pbm.padding.inline_end.is_zero()
+            || !self.pbm.border.inline_end.is_zero()
+            || !self.pbm.margin.inline_end.auto_is(Au::zero).is_zero()
     }
 }
 
@@ -318,9 +318,9 @@ fn inline_box_style_breaks_shaping(style: &ComputedValues) -> (bool, bool) {
     // intrinsically by the fact that bidi isolation inserts bidi characters into the inline
     // formatting context text content. This leads to non-contiguous character offsets between
     // shaping queue entries.
-    if style.get_baseline_shift() != &BaselineShift::zero() ||
-        style.get_baseline_source() != &BaselineSource::Auto ||
-        style.get_alignment_baseline() != &AlignmentBaseline::Baseline
+    if style.get_baseline_shift() != &BaselineShift::zero()
+        || style.get_baseline_source() != &BaselineSource::Auto
+        || style.get_alignment_baseline() != &AlignmentBaseline::Baseline
     {
         return (true, true);
     }
@@ -331,15 +331,15 @@ fn inline_box_style_breaks_shaping(style: &ComputedValues) -> (bool, bool) {
     let margin = style.margin(style.writing_mode);
 
     (
-        !border_widths.inline_start.is_zero() ||
-            !padding.inline_start.is_zero() ||
-            !margin
+        !border_widths.inline_start.is_zero()
+            || !padding.inline_start.is_zero()
+            || !margin
                 .inline_start
                 .non_auto()
                 .is_none_or(LengthPercentage::is_zero),
-        !border_widths.inline_end.is_zero() ||
-            !padding.inline_end.is_zero() ||
-            !margin
+        !border_widths.inline_end.is_zero()
+            || !padding.inline_end.is_zero()
+            || !margin
                 .inline_end
                 .non_auto()
                 .is_none_or(LengthPercentage::is_zero),

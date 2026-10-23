@@ -117,16 +117,17 @@ const BUN_TEST_SHIM: &str = r#"
       // success path
       chain.then(function() {
         if (expectFail) {
-          // @trace REQ-ENG-005 — it.failing graduation.
-          // jest/bun contract: an it.failing test that unexpectedly passes
-          // signals the bug is fixed and the test should "graduate" back to a
-          // normal it(). Upstream test runners emit a "test passed unexpectedly"
-          // diagnostic but the run still counts as passing for graduation
-          // purposes (so green builds aren't blocked by a fixed test). Bao
-          // counts the unexpected pass as a normal pass; the next author
-          // review flips .failing → it.
-          _passed++;
-          _passNames.push(name);
+          // @trace REQ-ENG-048 — node oracle 2026-10-20: an expected-failure
+          // test whose body does NOT throw is a FAILURE ("// EXPECTED FAILURE"
+          // on the ✗ line, 'test was expected to fail but passed'). The
+          // former graduation arm counted the unexpected pass as a normal
+          // pass, so a fixed-but-not-flipped expectFailure/it.failing test
+          // silently faked green.
+          var unexp = new Error('test was expected to fail but passed');
+          if (_runningDepth > 0) {
+            unexp.message = '# EXPECTED FAILURE ' + unexp.message;
+          }
+          _emitError(name, unexp);
         } else {
           _passed++;
           _passNames.push(name);
@@ -1087,6 +1088,51 @@ const BUN_TEST_SHIM: &str = r#"
     printConsole: function() {}
   };
 
+  // @trace REQ-ENG-048 — immediate single-test primitive for the node:test
+  // runner bridge. `t.test()` (a subtest invoked from INSIDE a running test
+  // body) cannot register-then-defer: the runner only walks _pendingTests
+  // when __run_bun_tests() starts, which would order every subtest AFTER the
+  // whole top-level phase and report nothing for nested suites. Instead the
+  // bridge runs one test immediately, in-line, with the CURRENT hook chain
+  // (running tests already execute inside their captured ancestor chain, so
+  // beforeEach/afterEach parity with node's subtests holds — the nesting
+  // counters below give node's inner→outer afterEach reversal without
+  // rebuilding the chain). The fullName ("outer > inner") is computed at the
+  // call site: the bridge has the lexical parent context, the runner does not.
+  // Registration still goes through _registerTest so an error thrown by a
+  // synchronous body surfaces through _emitError exactly like a deferred
+  // test (name/message parity in the report).
+  var _runningDepth = 0;
+  _g.__run_one_bun_test = function(name, fn, fullName) {
+    _registerTest(name, fn);
+    var entry = _pendingTests.pop();
+    _runningDepth++;
+    var display = fullName || name;
+    // NOTE: _currentDescribe is deliberately NOT touched here — its
+    // save/restore would race across interleaved (fire-and-forget) subtests
+    // and leak a stale prefix into later registrations (it.failing reads it
+    // at registration time). The bridge supplies the display name itself.
+    // Capture the body's error for the outcome carrier (the awaited-subtest
+    // coupling rethrows the ORIGINAL error in the parent — node parity for
+    // the failure message). Bodies are sequential-nested, so the fail-delta
+    // below attributes to exactly this test.
+    var entryError = null;
+    var probeFn = function() {
+      var r;
+      try { r = entry.fn(); } catch (e) { entryError = e; throw e; }
+      if (r && typeof r.then === 'function') {
+        return r.then(undefined, function(e) { entryError = e; throw e; });
+      }
+      return r;
+    };
+    var beforeFailed = _failed;
+    return _runOneTest(display, probeFn, entry.expectFail, entry.suiteChain)
+      .then(function() {
+        _runningDepth--;
+        return { ok: (_failed - beforeFailed) === 0, error: entryError };
+      });
+  };
+
   _g.__bun_test_module = bunTestModule;
 
   // Helper: invoke a hook fn (beforeAll/afterAll/beforeEach/afterEach) that
@@ -1543,9 +1589,31 @@ pub unsafe fn run_bun_tests_report(raw: *mut JSContext) -> TestReport {
   return globalThis;
 })();";
 
+    // @trace REQ-ENG-048 — honest counting. A report that never materializes
+    // is NOT an empty run: the former `TestReport::default()` here reported
+    // 0 passed / 0 failed for a runner that never started or a test body that
+    // never settled (the execFile-callback hang was the flagship case), and
+    // the CLI maps failed==0 to exit 0 — a vacuous fake PASS. Both arms below
+    // surface one counted FAILURE so the run turns red instead.
+    let missing_report = |why: &str| {
+        log::warn!("run_bun_tests: {}; counted as a failure", why);
+        TestReport {
+            passed: 0,
+            failed: 1,
+            passes: Vec::new(),
+            failures: vec![TestFailure {
+                name: "run_bun_tests".into(),
+                message: format!(
+                    "test runner report missing: {} — counted as a failure instead of a vacuous 0/0 pass",
+                    why
+                ),
+                stack: String::new(),
+            }],
+        }
+    };
+
     if eval_shim_get_obj(raw, setup).is_null() {
-        log::warn!("run_bun_tests: failed to start runner");
-        return TestReport::default();
+        return missing_report("the runner shim failed to start");
     }
 
     // If the runner produced a synchronous report (no async tests) we already
@@ -1557,7 +1625,15 @@ pub unsafe fn run_bun_tests_report(raw: *mut JSContext) -> TestReport {
     let report = read_global_object(raw, "globalThis.__bunTestReport");
     match report {
         Some(obj) => read_report_from_obj(raw, obj),
-        None => TestReport::default(),
+        None => {
+            if is_done(raw) {
+                missing_report("the runner marked itself done but published no report")
+            } else {
+                missing_report(
+                    "no report arrived within the iteration cap — a test body never settled (hung test or runner failure)",
+                )
+            }
+        }
     }
 }
 

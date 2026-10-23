@@ -8,12 +8,11 @@ use std::sync::Arc;
 
 use app_units::Au;
 use bitflags::bitflags;
-use fonts::ShapedTextSlice;
+use fonts::{ShapedTextSlice, TrailingWhiteSpace};
 use itertools::Either;
 use servo_base::text::Utf32CodeUnits;
 use style::Zero;
 use style::computed_values::position::T as Position;
-use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 use style::values::computed::BaselineShift;
 use style::values::generics::box_::BaselineShiftKeyword;
 use style::values::specified::align::AlignFlags;
@@ -24,7 +23,10 @@ use super::inline_box::{InlineBoxContainerState, InlineBoxIdentifier, InlineBoxT
 use super::{InlineFormattingContextLayout, LineBlockSizes, line_height};
 use crate::cell::ArcRefCell;
 use crate::flow::inline::text_run::{FontAndScriptInfo, SharedTextRunData};
-use crate::fragment_tree::{BaseFragment, BaseFragmentInfo, BoxFragment, Fragment, TextFragment};
+use crate::flow::ruby::layout::ResolvedRubyPosition;
+use crate::fragment_tree::{
+    BaseFragment, BaseFragmentInfo, BoxFragment, Fragment, FragmentFlags, TextFragment,
+};
 use crate::geom::{
     LogicalRect, LogicalSides, LogicalVec2, PhysicalRect, PhysicalSize, ToLogical,
     ToLogicalWithContainingBlock,
@@ -369,6 +371,7 @@ impl LineItemLayout<'_, '_> {
                         last_level
                     },
                     LineItem::BlockLevel(..) => last_level,
+                    LineItem::RubyBase(_, ruby) => ruby.bidi_level,
                     LineItem::Tab { bidi_level, .. } => *bidi_level,
                 };
                 last_level = level;
@@ -408,6 +411,7 @@ impl LineItemLayout<'_, '_> {
                 LineItem::AbsolutelyPositioned(_, absolute) => self.layout_absolute(absolute),
                 LineItem::Float(_, float) => self.layout_float(float),
                 LineItem::BlockLevel(_, block_level) => self.layout_block_level(block_level),
+                LineItem::RubyBase(_, ruby) => self.layout_ruby(ruby),
                 LineItem::Tab { advance, .. } => self.layout_tab(advance),
             }
         }
@@ -504,8 +508,8 @@ impl LineItemLayout<'_, '_> {
                 .flags
                 .contains(LineLayoutInlineContainerFlags::HAD_INLINE_END_PBM);
 
-            if containing_block_writing_mode.is_bidi_ltr() !=
-                inline_box.base.style.writing_mode.is_bidi_ltr()
+            if containing_block_writing_mode.is_bidi_ltr()
+                != inline_box.base.style.writing_mode.is_bidi_ltr()
             {
                 std::mem::swap(&mut had_start, &mut had_end)
             }
@@ -546,7 +550,7 @@ impl LineItemLayout<'_, '_> {
             let relative_adjustement = relative_adjustement(style, containing_block);
             content_rect.start_corner += relative_adjustement;
             relative_adjustement
-                .to_physical_vector(containing_block_writing_mode)
+                .to_physical_translation(containing_block_writing_mode)
                 .to_size()
         } else {
             PhysicalSize::zero()
@@ -579,6 +583,16 @@ impl LineItemLayout<'_, '_> {
             margin.to_physical(containing_block_writing_mode),
             None, /* specific_layout_info */
         );
+        // BAO patch (upstream #46445, css-backgrounds box-shadow): when an inline box is split
+        // by a block-level descendant, the fragment that only wraps the block-level must not
+        // paint (no browser paints its box-shadow/background there). Spec:
+        // https://drafts.csswg.org/css2/#inline-box-dimensions — such a fragment has no
+        // inline content area of its own; painting it produced the extra shadow bands.
+        // Upstream regression test: css/css-backgrounds/box-shadow/
+        // block-in-inline-fragmentation-001.html
+        if self.for_block_level {
+            fragment.base.flags.insert(FragmentFlags::DO_NOT_PAINT);
+        }
 
         let offset_from_parent_ifc = LogicalVec2 {
             inline: pbm_sums.inline_start + self.current_state.inline_advance,
@@ -647,8 +661,8 @@ impl LineItemLayout<'_, '_> {
                 self.line_metrics.block_size - line_height + half_leading
             },
             _ => {
-                self.line_metrics.baseline_block_offset + inline_box_state.base.baseline_offset -
-                    space_above_baseline
+                self.line_metrics.baseline_block_offset + inline_box_state.base.baseline_offset
+                    - space_above_baseline
             },
         }
     }
@@ -680,9 +694,9 @@ impl LineItemLayout<'_, '_> {
         let font_metrics = text_item.info.font_info.font.metrics();
         let start_corner = LogicalVec2 {
             inline: self.current_state.inline_advance,
-            block: self.current_state.baseline_offset -
-                font_metrics.ascent -
-                self.current_state.parent_offset.block,
+            block: self.current_state.baseline_offset
+                - font_metrics.ascent
+                - self.current_state.parent_offset.block,
         };
         let content_rect = LogicalRect {
             start_corner,
@@ -730,10 +744,10 @@ impl LineItemLayout<'_, '_> {
                 .to_logical(ifc_writing_mode);
 
             let mut atomic_offset = LogicalVec2 {
-                inline: self.current_state.inline_advance +
-                    padding_border_margin_sides.inline_start,
-                block: block_start - self.current_state.parent_offset.block +
-                    padding_border_margin_sides.block_start,
+                inline: self.current_state.inline_advance
+                    + padding_border_margin_sides.inline_start,
+                block: block_start - self.current_state.parent_offset.block
+                    + padding_border_margin_sides.block_start,
             };
 
             let style = atomic_fragment.style();
@@ -789,8 +803,8 @@ impl LineItemLayout<'_, '_> {
         // absolutely positioned element. If it's `inline` it would be placed inline
         // at the top of the line, but if it's block it would be placed in a new
         // block position after the linebox established by this line.
-        let block_position = self.layout.placement_state.current_margin.solve() -
-            self.current_state.parent_offset.block;
+        let block_position = self.layout.placement_state.current_margin.solve()
+            - self.current_state.parent_offset.block;
         let initial_start_corner =
             if style.get_box().original_display.outside() == DisplayOutside::Inline {
                 // Top of the line at the current inline position.
@@ -858,10 +872,11 @@ impl LineItemLayout<'_, '_> {
             inline: Au::zero(),
             block: -self.line_metrics.block_offset,
         };
-        float
-            .fragment
-            .base
-            .translate_rect(offset.to_physical_size(self.containing_block().style.writing_mode));
+        float.fragment.base.translate_rect(
+            offset
+                .to_physical_translation(self.containing_block().style.writing_mode)
+                .to_size(),
+        );
         self.current_state
             .fragments_and_data
             .push(FragmentAndData::new(
@@ -884,6 +899,120 @@ impl LineItemLayout<'_, '_> {
             ));
     }
 
+    /// Lay out one ruby segment.
+    ///
+    /// The cells have already been laid out and measured by the
+    /// [`super::InlineItem::RubyBase`] item, which resolved the column widths,
+    /// the §4.2 alignment offsets and the §3.1.2/§3.6 block-axis extents with
+    /// the pure functions in `flow/ruby/layout.rs`. This converts those
+    /// resolved positions into fragments relative to the line.
+    fn layout_ruby(&mut self, ruby: RubyBaseLineItem) {
+        let ruby_inline_start = self.current_state.inline_advance;
+        let line_baseline = self.line_metrics.baseline_block_offset;
+
+        // The inline-axis start of each column relative to the segment start.
+        let mut column_starts = Vec::with_capacity(ruby.column_widths.len());
+        let mut column_position = Au::zero();
+        for width in ruby.column_widths.iter() {
+            column_starts.push(column_position);
+            column_position += *width;
+        }
+
+        // Base row (§3.1.2): cells are baseline-aligned with the line; the
+        // segment's margin-box extents around the baseline are `base_ascent`
+        // and `base_descent`.
+        let base_row_top = line_baseline - ruby.base_ascent;
+        let base_row_bottom = line_baseline + ruby.base_descent;
+        for (index, cell) in ruby.base_cells.into_iter().enumerate() {
+            let Some(cell) = cell else {
+                continue;
+            };
+            let column_offset = column_starts.get(index).copied().unwrap_or_default();
+            let content_inline =
+                ruby_inline_start + column_offset + cell.inline_offset + cell.pbm_sums.inline_start;
+            let content_block = line_baseline - cell.baseline;
+            self.place_ruby_cell(cell, content_inline, content_block);
+        }
+
+        // Annotation levels stack outward from the base row with zero gaps
+        // (§3.1.2). Levels keep their document order within each side, so the
+        // first `over` level is the one adjacent to the base row.
+        let (under_levels, over_levels): (Vec<_>, Vec<_>) = ruby
+            .levels
+            .into_iter()
+            .partition(|level| level.position == ResolvedRubyPosition::Under);
+
+        let mut level_top = base_row_top;
+        for level in over_levels {
+            level_top -= level.height;
+            self.place_ruby_level(level, ruby_inline_start, level_top, &column_starts);
+        }
+
+        let mut level_top = base_row_bottom;
+        for level in under_levels {
+            let height = level.height;
+            self.place_ruby_level(level, ruby_inline_start, level_top, &column_starts);
+            level_top += height;
+        }
+
+        self.current_state.inline_advance += ruby.total_inline_size;
+    }
+
+    fn place_ruby_level(
+        &mut self,
+        level: RubyLevelLineItem,
+        ruby_inline_start: Au,
+        level_top: Au,
+        column_starts: &[Au],
+    ) {
+        for cell in level.cells {
+            let column_offset = column_starts
+                .get(cell.span.start)
+                .copied()
+                .unwrap_or_default();
+            let content_inline =
+                ruby_inline_start + column_offset + cell.inline_offset + cell.pbm_sums.inline_start;
+            let content_block = level_top + cell.pbm_sums.block_start;
+            self.place_ruby_cell(cell, content_inline, content_block);
+        }
+    }
+
+    fn place_ruby_cell(&mut self, cell: RubyLaidOutCell, content_inline: Au, content_block: Au) {
+        let mut start_corner = LogicalVec2 {
+            inline: content_inline,
+            block: content_block - self.current_state.parent_offset.block,
+        };
+        // Ruby cells honor `position: relative` the same way as atomic inlines.
+        if cell.fragment.style().get_box().position == Position::Relative {
+            start_corner += relative_adjustement(&cell.fragment.style(), self.containing_block());
+        }
+        let logical_rect = LogicalRect {
+            start_corner,
+            size: cell.content_size,
+        };
+
+        // Mirror the atomic inline path for absolutely positioned descendants of
+        // the cell: their static positions are relative to the cell's content
+        // box, which is only known now.
+        if let Some(mut positioning_context) = cell.positioning_context {
+            let physical_rect_as_if_in_root =
+                logical_rect.as_physical(Some(self.containing_block()));
+            positioning_context.adjust_static_position_of_hoisted_fragments_with_offset(
+                &physical_rect_as_if_in_root.origin.to_vector(),
+                PositioningContextLength::zero(),
+            );
+            self.current_positioning_context_mut()
+                .append(positioning_context);
+        }
+
+        self.current_state
+            .fragments_and_data
+            .push(FragmentAndData::new(
+                Fragment::Box(cell.fragment),
+                logical_rect,
+            ));
+    }
+
     #[inline]
     fn containing_block(&self) -> &ContainingBlock<'_> {
         self.layout.containing_block()
@@ -902,18 +1031,63 @@ pub(super) enum LineItem {
     AbsolutelyPositioned(Option<InlineBoxIdentifier>, AbsolutelyPositionedLineItem),
     Float(Option<InlineBoxIdentifier>, FloatLineItem),
     BlockLevel(Option<InlineBoxIdentifier>, Arc<BoxFragment>),
+    // BAO patch (fork-maintained, 2026-10-21, REQ-BRW-051 W1): ruby segments.
+    /// One ruby segment: its base row and its annotation levels, already laid
+    /// out and measured by the [`super::InlineItem::RubyBase`] item.
+    RubyBase(Option<InlineBoxIdentifier>, RubyBaseLineItem),
     Tab {
         inline_box_identifier: Option<InlineBoxIdentifier>,
         advance: Au,
         bidi_level: Level,
+        conditionally_hangs: bool,
     },
+}
+
+/// One laid-out ruby cell. The geometry of the segment itself (column widths,
+/// alignment offsets, block extents) was resolved at measurement time with the
+/// pure functions in `flow/ruby/layout.rs`; this just carries the result to the
+/// line placement phase.
+pub(super) struct RubyLaidOutCell {
+    pub(super) fragment: Arc<BoxFragment>,
+    pub(super) content_size: LogicalVec2<Au>,
+    pub(super) pbm_sums: LogicalSides<Au>,
+    /// The baseline of the cell's content box, from its content-box top.
+    pub(super) baseline: Au,
+    /// The inline-axis offset of the cell's margin box inside the columns it
+    /// spans (§4.2 distribution).
+    pub(super) inline_offset: Au,
+    /// The half-open range of columns this cell occupies.
+    pub(super) span: Range<usize>,
+    pub(super) positioning_context: Option<PositioningContext>,
+}
+
+/// One laid-out annotation level: its resolved block side, the margin-box
+/// height of its row, and its cells.
+pub(super) struct RubyLevelLineItem {
+    pub(super) position: ResolvedRubyPosition,
+    pub(super) height: Au,
+    pub(super) cells: Vec<RubyLaidOutCell>,
+}
+
+/// One laid-out ruby segment (CSS Ruby §2.3).
+pub(super) struct RubyBaseLineItem {
+    /// One entry per column; `None` for a column with no base content.
+    pub(super) base_cells: Vec<Option<RubyLaidOutCell>>,
+    pub(super) levels: Vec<RubyLevelLineItem>,
+    pub(super) column_widths: Vec<Au>,
+    /// The distance from the base row's margin-box top to the line baseline.
+    pub(super) base_ascent: Au,
+    /// The distance from the line baseline to the base row's margin-box bottom.
+    pub(super) base_descent: Au,
+    pub(super) total_inline_size: Au,
+    pub(super) bidi_level: Level,
 }
 
 impl LineItem {
     pub(crate) fn is_in_flow_content(&self) -> bool {
         matches!(
             self,
-            Self::TextRun(..) | Self::Atomic(..) | Self::BlockLevel(..)
+            Self::TextRun(..) | Self::Atomic(..) | Self::BlockLevel(..) | Self::RubyBase(..)
         )
     }
 
@@ -926,23 +1100,11 @@ impl LineItem {
             LineItem::AbsolutelyPositioned(identifier, _) => *identifier,
             LineItem::Float(identifier, _) => *identifier,
             LineItem::BlockLevel(identifier, _) => *identifier,
+            LineItem::RubyBase(identifier, _) => *identifier,
             LineItem::Tab {
                 inline_box_identifier,
                 ..
             } => *inline_box_identifier,
-        }
-    }
-
-    pub(super) fn trim_whitespace_at_end(&mut self, whitespace_trimmed: &mut Au) -> bool {
-        match self {
-            LineItem::InlineStartBoxPaddingBorderMargin(_) => true,
-            LineItem::InlineEndBoxPaddingBorderMargin(_) => true,
-            LineItem::TextRun(_, item) => item.trim_whitespace_at_end(whitespace_trimmed),
-            LineItem::Atomic(..) => false,
-            LineItem::AbsolutelyPositioned(..) => true,
-            LineItem::Float(..) => true,
-            LineItem::BlockLevel(..) => true,
-            LineItem::Tab { .. } => false,
         }
     }
 
@@ -955,6 +1117,7 @@ impl LineItem {
             LineItem::AbsolutelyPositioned(..) => true,
             LineItem::Float(..) => true,
             LineItem::BlockLevel(..) => true,
+            LineItem::RubyBase(..) => false,
             LineItem::Tab { .. } => false,
         }
     }
@@ -974,54 +1137,23 @@ pub(super) struct TextRunLineItem {
 }
 
 impl TextRunLineItem {
-    fn trim_whitespace_at_end(&mut self, whitespace_trimmed: &mut Au) -> bool {
-        if matches!(
-            self.text_fragment_run_data
-                .inline_styles
-                .style
-                .borrow()
-                .get_inherited_text()
-                .white_space_collapse,
-            WhiteSpaceCollapse::Preserve | WhiteSpaceCollapse::BreakSpaces
-        ) {
-            return false;
+    /// Trim the removable white space at the end of this [`TextRunLineItem`].
+    pub(crate) fn trim_removable_white_space_at_end(&mut self) {
+        while let Some(last) = self.text.last_mut() {
+            if last.all_removable() {
+                self.text.pop();
+                continue;
+            }
+            *last = last.without_removable_white_space();
+            break;
         }
-
-        let index_of_last_non_whitespace = self
-            .text
-            .iter()
-            .rev()
-            .position(|glyph| !glyph.is_whitespace())
-            .map(|offset_from_end| self.text.len() - offset_from_end);
-
-        let first_whitespace_index = index_of_last_non_whitespace.unwrap_or(0);
-        *whitespace_trimmed += self
-            .text
-            .drain(first_whitespace_index..)
-            .map(|glyph| glyph.total_advance())
-            .sum();
-
-        // Only keep going if we only encountered whitespace.
-        index_of_last_non_whitespace.is_none()
     }
 
     fn trim_whitespace_at_start(&mut self, whitespace_trimmed: &mut Au) -> bool {
-        if matches!(
-            self.text_fragment_run_data
-                .inline_styles
-                .style
-                .borrow()
-                .get_inherited_text()
-                .white_space_collapse,
-            WhiteSpaceCollapse::Preserve | WhiteSpaceCollapse::BreakSpaces
-        ) {
-            return false;
-        }
-
         let index_of_first_non_whitespace = self
             .text
             .iter()
-            .position(|glyph| !glyph.is_whitespace())
+            .position(|slice| !slice.all_removable())
             .unwrap_or(self.text.len());
 
         *whitespace_trimmed += self
@@ -1032,6 +1164,37 @@ impl TextRunLineItem {
 
         // Only keep going if we only encountered whitespace.
         self.text.is_empty()
+    }
+
+    /// Returns a [`TrailingWhiteSpace`] with the measurement of hanging
+    /// and removable white space and boolean saying whether or not there
+    /// was preceding content.
+    pub(crate) fn trailing_white_space(&self) -> (TrailingWhiteSpace<Au>, bool) {
+        let mut hangable = Au::zero();
+        let mut removable = Au::zero();
+        let mut preceded_by_content = false;
+
+        for slice in self.text.iter().rev() {
+            if hangable.is_zero() {
+                removable += slice.removable_advance();
+            } else {
+                hangable += slice.removable_advance();
+            }
+            hangable += slice.hangable_advance();
+
+            if slice.has_non_hangable_non_removable_content() {
+                preceded_by_content = true;
+                break;
+            }
+        }
+
+        (
+            TrailingWhiteSpace {
+                hangable,
+                removable,
+            },
+            preceded_by_content,
+        )
     }
 }
 

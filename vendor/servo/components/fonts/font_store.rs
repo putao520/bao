@@ -175,8 +175,8 @@ impl FontTemplates {
     pub fn add_template(&mut self, new_template: FontTemplate) {
         for existing_template in &self.templates {
             let existing_template = existing_template.borrow();
-            if *existing_template.identifier() == new_template.identifier &&
-                existing_template.descriptor == new_template.descriptor
+            if *existing_template.identifier() == new_template.identifier
+                && existing_template.descriptor == new_template.descriptor
             {
                 return;
             }

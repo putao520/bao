@@ -163,14 +163,14 @@ impl MislabelFixture {
                 // the initial about:blank realm first (the test arms its
                 // chain inside that window).
                 std::thread::sleep(Duration::from_millis(800));
-                let gen = popup_loads.fetch_add(1, Ordering::SeqCst) + 1;
+                let load_gen = popup_loads.fetch_add(1, Ordering::SeqCst) + 1;
                 (
                     "200 OK",
                     format!(
-                        "<!DOCTYPE html><html><head><title>p{gen}</title></head>\
+                        "<!DOCTYPE html><html><head><title>p{load_gen}</title></head>\
                          <body><script>\
-                         window.__gen = {gen};\
-                         fetch('/hit?src=inline&gen={gen}');\
+                         window.__gen = {load_gen};\
+                         fetch('/hit?src=inline&gen={load_gen}');\
                          </script><p>popup</p></body></html>"
                     )
                     .into_bytes(),

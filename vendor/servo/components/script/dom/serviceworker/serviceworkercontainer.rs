@@ -712,7 +712,22 @@ impl ServiceWorkerContainerMethods<crate::DomTypeHolder> for ServiceWorkerContai
                     },
                 }
             },
-            None => script_url.join("./").unwrap(),
+            None => match script_url.join("./") {
+                Ok(url) => url,
+                Err(_) => {
+                    // BAO PATCH (REQ-BRW-051): `join("./")` fails with
+                    // `RelativeUrlWithCannotBeABaseBase` when the script URL
+                    // is a cannot-be-a-base URL (e.g. about:blank or a
+                    // non-hierarchical URL). Unwrapping here aborted the whole
+                    // process on the SW register path (panic signature:
+                    // `serviceworkercontainer.rs:715:43`, detached-register-crash);
+                    // upstream records the same expected:CRASH. The
+                    // derivation is invalid for such a base, so reject the
+                    // register() call with TypeError instead of crashing.
+                    promise.reject_error(realm, Error::Type(c"Invalid script URL".to_owned()));
+                    return promise;
+                },
+            },
         };
 
         // A: Step 6 -> invoke B.

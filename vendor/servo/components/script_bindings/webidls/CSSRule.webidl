@@ -35,3 +35,8 @@ partial interface CSSRule {
 partial interface CSSRule {
     const unsigned short FONT_FEATURE_VALUES_RULE = 14;
 };
+
+// https://drafts.csswg.org/css-counter-styles/#the-csscounterstylerule-interface
+partial interface CSSRule {
+    const unsigned short COUNTER_STYLE_RULE = 11;
+};

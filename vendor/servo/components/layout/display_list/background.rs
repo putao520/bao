@@ -65,8 +65,8 @@ impl<'a> BackgroundPainter<'a> {
         }
 
         let background = self.style.get_background();
-        if &BackgroundAttachment::Fixed ==
-            get_cyclic(&background.background_attachment.0, layer_index)
+        if &BackgroundAttachment::Fixed
+            == get_cyclic(&background.background_attachment.0, layer_index)
         {
             return builder.paint_info.viewport_details.layout_size().into();
         }
@@ -95,8 +95,8 @@ impl<'a> BackgroundPainter<'a> {
 
         // The 'backgound-clip' property maps directly to `clip_rect` in `CommonItemProperties`:
         let background = self.style.get_background();
-        let force_clip_creation = get_cyclic(&background.background_attachment.0, layer_index) ==
-            &BackgroundAttachment::Fixed;
+        let force_clip_creation = get_cyclic(&background.background_attachment.0, layer_index)
+            == &BackgroundAttachment::Fixed;
         match get_cyclic(&background.background_clip.0, layer_index) {
             Clip::ContentBox => {
                 fragment_builder.content_edge_clip(builder, state, force_clip_creation)
@@ -128,8 +128,8 @@ impl<'a> BackgroundPainter<'a> {
         if let Some(clip_chain_id) = clip {
             common.clip_chain_id = clip_chain_id;
         }
-        if &BackgroundAttachment::Fixed ==
-            get_cyclic(&style.get_background().background_attachment.0, layer_index)
+        if &BackgroundAttachment::Fixed
+            == get_cyclic(&style.get_background().background_attachment.0, layer_index)
         {
             common.spatial_id = builder.spatial_id(builder.current_reference_frame_scroll_node_id);
         }

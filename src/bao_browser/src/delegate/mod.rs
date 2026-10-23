@@ -3,6 +3,9 @@
 // @trace REQ-BRW-004 [entity:SharedWorker] [entity:SharedWorkerGlobalScope] SharedWorker cross-page routing + connect event
 // @trace REQ-BRW-004 [entity:ServiceWorker] [entity:ServiceWorkerGlobalScope] ServiceWorker registration + fetch interception + stealth/CDP boundary consistency
 // @trace REQ-CDP-006 [entity:ServoDelegateHooks] (servo delegate → CDP event forwarding)
+// @trace REQ-CDP-010 [entity:RuntimeBinding] [entity:DomContentEvent] page-realm CDP marker carrier + parser
+
+use bao_cdp_client::bridge::ServoEvent;
 
 mod service_worker;
 mod servo_delegate;
@@ -23,3 +26,38 @@ pub use worker_channel::*;
 pub use worker_lifecycle::*;
 pub use worker_scope::*;
 pub use worker_script::*;
+
+/// Parse the page-realm `__BAO_CDPEVT__` carrier into a structured
+/// [`ServoEvent`] bound to `target_id` (REQ-CDP-010: `Runtime.bindingCalled`
+/// + `Page.domContentEventFired` observability — the engine surface has no
+/// native embedder hook for either).
+///
+/// Carrier format: `__BAO_CDPEVT__<Json>` where Json =
+/// `{"kind":"bindingCalled", "name":"<binding>", "payload":"<arg0>"}` or
+/// `{"kind":"domContentLoaded"}`. `None` for every non-carrier string (the
+/// normal console flow) and for malformed carriers — a malformed carrier is
+/// dropped, never parsed as a log line.
+///
+/// @trace REQ-CDP-010 [entity:RuntimeBinding] [entity:DomContentEvent]
+pub(crate) fn parse_cdp_marker_event(message: &str, target_id: String) -> Option<ServoEvent> {
+    let body = message.strip_prefix(CDP_EVT_MARKER)?;
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    match v.get("kind").and_then(|k| k.as_str())? {
+        "bindingCalled" => Some(ServoEvent::BindingCalled { // @evidence .spec/10-REQUIREMENTS.html:2324
+            target_id,
+            name: v.get("name").and_then(|p| p.as_str()).unwrap_or("").to_string(),
+            payload: v
+                .get("payload")
+                .and_then(|p| p.as_str())
+                .unwrap_or("")
+                .to_string(),
+        }),
+        "domContentLoaded" => Some(ServoEvent::DomContentLoaded { target_id }), // @evidence .spec/10-REQUIREMENTS.html:2324
+        _ => None, // @evidence .spec/10-REQUIREMENTS.html:2324
+    }
+}
+
+/// The page-realm → embedder CDP event carrier prefix (REQ-CDP-010).
+/// Distinct from the legacy `__BAO_EVT__` Debugger transport (which stays
+/// the console-transport face); the modern route consumes only this marker.
+pub(crate) const CDP_EVT_MARKER: &str = "__BAO_CDPEVT__";

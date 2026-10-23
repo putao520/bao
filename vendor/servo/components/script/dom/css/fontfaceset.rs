@@ -68,6 +68,8 @@ impl FontFaceSet {
         global: &GlobalScope,
         proto: Option<HandleObject>,
     ) -> DomRoot<Self> {
+        // DIAG-TEMP
+        eprintln!("[fontfs-diag] NEW-SET");
         let promise = Promise::new(cx, global);
         reflect_dom_object_with_proto(
             cx,
@@ -177,6 +179,33 @@ impl FontFaceSet {
                 .iter()
                 .find(|entry| entry.is_connected_to_font_face_rule(removed_font_face_rule))
             else {
+                // DIAG-TEMP: dump the missing removal against the current set.
+                let fam = |rule: &ServoArc<FontFaceRuleInfo>| {
+                    rule.descriptors
+                        .font_family
+                        .as_ref()
+                        .map(|family| family.name.to_string())
+                        .unwrap_or_else(|| "<none>".to_string())
+                };
+                let entries_info: Vec<String> = entries
+                    .iter()
+                    .map(|entry| {
+                        let connected = entry.css_font_face_rule();
+                        format!(
+                            "[connected={} family={}]",
+                            connected.is_some(),
+                            connected
+                                .as_ref()
+                                .map(|rule| fam(rule))
+                                .unwrap_or_else(|| "<none>".to_string())
+                        )
+                    })
+                    .collect();
+                eprintln!(
+                    "[fontfs-diag] REMOVED-NOT-FOUND family={} entries={:?}",
+                    fam(removed_font_face_rule),
+                    entries_info
+                );
                 if cfg!(debug_assertions) {
                     unreachable!("Removed @font-face that was not previously present");
                 }
@@ -189,6 +218,43 @@ impl FontFaceSet {
             // > The connection is not restorable by any means.
             matching_font_face_object.disconnect_from_css();
         }
+    }
+
+    // DIAG-TEMP
+    pub(crate) fn diag_log_diff(&self, diff: &fonts_traits::WebFontSetDifference) {
+        let fam = |rule: &ServoArc<FontFaceRuleInfo>| {
+            rule.descriptors
+                .font_family
+                .as_ref()
+                .map(|family| family.name.to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        };
+        let entries: Vec<String> = self
+            .set_entries
+            .borrow()
+            .iter()
+            .map(|entry| {
+                let connected = entry.css_font_face_rule();
+                match connected.as_ref() {
+                    Some(rule) => format!("{}:conn", fam(rule)),
+                    None => "<disconnected>".to_string(),
+                }
+            })
+            .collect();
+        eprintln!(
+            "[fontfs-diag] DIFF removed=[{}] added=[{}] entries={:?}",
+            diff.removed_font_faces
+                .iter()
+                .map(fam)
+                .collect::<Vec<_>>()
+                .join(","),
+            diff.added_font_faces
+                .iter()
+                .map(fam)
+                .collect::<Vec<_>>()
+                .join(","),
+            entries
+        );
     }
 
     /// Uses the font matching rules to select font faces within `self` that can be used to
@@ -465,12 +531,35 @@ impl Setlike for FontFaceSet {
     #[inline(always)]
     fn clear(&self, cx: &mut JSContext) {
         self.flush_author_font_set(cx);
-        self.set_entries.borrow_mut().clear();
+        // DIAG-TEMP
+        eprintln!(
+            "[fontfs-diag] CLEAR before={} css_connected={}",
+            self.set_entries.borrow().len(),
+            self.set_entries
+                .borrow()
+                .iter()
+                .filter(|entry| entry.is_css_connected())
+                .count()
+        );
+        // https://drafts.csswg.org/css-font-loading-3/#dom-fontfaceset-clear
+        // CSS-connected font faces are owned by the style system and are not
+        // removed by script (fontfaceset-clear-css-connected.html). Removing
+        // them would also desynchronize the set from the style system, making a
+        // later @font-face rule removal panic in
+        // `notify_font_face_rules_removed`.
+        self.set_entries
+            .borrow_mut()
+            .retain(|face| face.is_css_connected());
     }
 
     #[inline(always)]
     fn delete(&self, cx: &mut JSContext, to_delete: Self::Key) -> bool {
         self.flush_author_font_set(cx);
+        // https://drafts.csswg.org/css-font-loading-3/#dom-fontfaceset-delete
+        // "If font is CSS-connected, return false" (delete has no effect).
+        if to_delete.is_css_connected() {
+            return false;
+        }
         self.delete_face(&to_delete)
     }
 }

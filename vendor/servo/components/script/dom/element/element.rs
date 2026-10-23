@@ -115,6 +115,10 @@ use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom, ToLayout};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::csp::{CspReporting, InlineCheckType, SourcePosition};
+use crate::dom::css::cssstyledeclaration::{
+    CSSModificationAccess, CSSStyleDeclaration, CSSStyleOwner,
+};
+use crate::dom::css::stylepropertymapreadonly::StylePropertyMapReadOnly;
 use crate::dom::customelementregistry::{
     CallbackReaction, CustomElementDefinition, CustomElementReaction, CustomElementRegistry,
     CustomElementState, is_valid_custom_element_name,
@@ -2989,6 +2993,25 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
         DOMString::from(&*name)
     }
 
+    /// <https://drafts.css-houdini.org/css-typed-om-1/#dom-element-computedstylemap>
+    ///
+    /// Bao fork self-build (REQ-BRW-051 C2): a live read-only
+    /// `StylePropertyMapReadOnly` over this element's resolved style.
+    fn ComputedStyleMap(
+        &self,
+        cx: &mut JSContext,
+    ) -> Fallible<DomRoot<StylePropertyMapReadOnly>> {
+        let global = self.owner_global();
+        let declaration = CSSStyleDeclaration::new(
+            cx,
+            global.as_window(),
+            CSSStyleOwner::Element(Dom::from_ref(self)),
+            None,
+            CSSModificationAccess::Readonly,
+        );
+        Ok(StylePropertyMapReadOnly::new(cx, &global, declaration))
+    }
+
     // https://dom.spec.whatwg.org/#dom-element-id
     // This always returns a string; if you'd rather see None
     // on a null id, call get_id
@@ -4707,6 +4730,12 @@ impl VirtualMethods for Element {
             .attribute_mutated(cx, attr, mutation);
         let node = self.upcast::<Node>();
         let doc = node.owner_doc();
+        // BAO PATCH (REQ-BRW-051 C2): an attribute change can make a link match
+        // (or stop matching) a document speculation rule — `href` changes the
+        // target URL, `class`/`id`/`style` changes affect `selector_matches`
+        // and rendered-ness. This is a cheap no-op unless a document rule set
+        // is registered.
+        crate::dom::speculation::document_maybe_changed(&doc);
         match *attr.local_name() {
             // https://html.spec.whatwg.org/multipage/#event-handler-attributes:event-handler-content-attributes-3
             // Event handler content attributes are defined on `Element` rather than `HTMLElement`

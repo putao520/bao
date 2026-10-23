@@ -14,6 +14,20 @@ path = "lib.rs"
 test = true
 doctest = false
 
+# BAO patch (fork-maintained, 2026-10-21): ruby plan/geometry tests
+# (REQ-BRW-051 W1). They live next to the module they cover, which is not an
+# auto-discovered test directory, so the target is declared explicitly.
+[[test]]
+name = "ruby_plan"
+path = "flow/ruby/tests/ruby_plan.rs"
+
+# BAO patch (fork-maintained, 2026-10-21): CSS Multi-column column geometry tests
+# (REQ-BRW-051 C2). They cover the pure pseudo-algorithm / filling / balancing
+# surface of `flow/multicol/columns.rs`, next to the module they cover.
+[[test]]
+name = "multicol_columns"
+path = "flow/multicol/tests/multicol_columns.rs"
+
 [features]
 tracing = ["dep:tracing"]
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["vendor/servo", "vendor/ipc-channel", "vendor/stylo", "vendor/stylo_atoms", "vendor/stylo_dom", "vendor/stylo_malloc_size_of", "vendor/stylo_static_prefs", "vendor/stylo_traits", "vendor/selectors", "vendor/servo_arc", "vendor/to_shmem", "vendor/to_shmem_derive", "vendor/freetype-wrapper", "vendor/usvg", "examples"]
+exclude = ["vendor/servo", "vendor/ipc-channel", "vendor/stylo", "vendor/stylo_atoms", "vendor/stylo_dom", "vendor/stylo_malloc_size_of", "vendor/stylo_static_prefs", "vendor/stylo_traits", "vendor/selectors", "vendor/servo_arc", "vendor/to_shmem", "vendor/to_shmem_derive", "vendor/freetype-wrapper", "vendor/usvg", "vendor/webrender", "vendor/surfman", "examples"]
 members = [
     # Public unified library entry (consumers depend on package `bao` only).
     "src/bao",
@@ -493,6 +493,15 @@ freetype = { path = "vendor/freetype-wrapper" }
 # (pristine registry source, checksum-verified) with a clipPath reference-cycle
 # guard - see vendor/usvg/src/parser/clippath.rs and the CLAUDE.md vendor list.
 usvg = { path = "vendor/usvg" }
+
+# BAO PATCH (REQ-BRW-051 gl-oom-defense-001, 2026-10-20): vendored webrender
+# 0.70.0 + surfman 0.14.0 (pristine registry source, sha256-verified against
+# Cargo.lock) with GL-out-of-memory panics degraded to logged errors /
+# propagated errors instead of process aborts. See
+# vendor/webrender/src/device/gl.rs (ErrorReactingGl callback) and
+# vendor/surfman/src/base/egl/surface.rs (surface create/destroy).
+webrender = { path = "vendor/webrender" }
+surfman = { path = "vendor/surfman" }
 
 # BAO PATCH (REQ-ARCH-4, 2026-10-16): the upstream-name stylo-family crates
 # (stylo_atoms / stylo_dom / stylo_malloc_size_of / stylo_static_prefs /

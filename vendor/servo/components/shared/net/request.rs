@@ -48,6 +48,15 @@ pub enum Initiator {
     XSLT,
     Prefetch,
     Link,
+    /// BAO PATCH (REQ-BRW-051): a `<script type=webbundle>` bundle fetch.
+    ///
+    /// There is no `Destination::WebBundle` in the `content-security-policy`
+    /// crate (0.9 only carries the fetch-spec destinations), so the web bundle
+    /// request is identified by this initiator instead: `http_loader` maps it to
+    /// the `Sec-Fetch-Dest: webbundle` header, service workers never mediate
+    /// such requests, and the net bundle registry never serves a bundle request
+    /// out of another bundle (nested bundles are not supported).
+    WebBundle,
 }
 
 /// A request [destination](https://fetch.spec.whatwg.org/#concept-request-destination)
@@ -483,6 +492,21 @@ impl RequestHeadersSize for HeaderMap {
     }
 }
 
+/// BAO PATCH (REQ-BRW-051): the `<script type=webbundle>` registration a
+/// request was bound to when the core resource thread dispatched it.
+///
+/// The binding is decided in `net::webbundle::bind_request` while the
+/// registration messages are processed in order on the resource thread. A
+/// request issued before an element is removed therefore still fails closed
+/// with that element's loader, instead of racing a task-local registry lookup
+/// against the removal message.
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+pub struct WebBundleBinding {
+    pub element_id: u64,
+    pub loader_id: u64,
+    pub bundle_url: ServoUrl,
+}
+
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
 pub struct RequestBuilder {
     pub id: RequestId,
@@ -570,6 +594,9 @@ pub struct RequestBuilder {
 
     /// <https://fetch.spec.whatwg.org/#concept-request-initiator>
     pub initiator: Initiator,
+    /// BAO PATCH (REQ-BRW-051): the web bundle registration this request is
+    /// bound to (decided at dispatch on the core resource thread).
+    pub web_bundle_binding: Option<WebBundleBinding>,
     pub response_tainting: ResponseTainting,
     /// Servo internal: if crash details are present, trigger a crash error page with these details.
     pub crash: Option<String>,
@@ -615,6 +642,7 @@ impl RequestBuilder {
             url_list: vec![],
             parser_metadata: ParserMetadata::Default,
             initiator: Initiator::None,
+            web_bundle_binding: None,
             response_tainting: ResponseTainting::Basic,
             is_internal_request: Default::default(),
             crash: None,
@@ -629,6 +657,13 @@ impl RequestBuilder {
     /// <https://fetch.spec.whatwg.org/#concept-request-initiator>
     pub fn initiator(mut self, initiator: Initiator) -> RequestBuilder {
         self.initiator = initiator;
+        self
+    }
+
+    /// BAO PATCH (REQ-BRW-051): bind this request to a web bundle registration
+    /// (set by `net::webbundle::bind_request` at dispatch time).
+    pub fn web_bundle_binding(mut self, binding: Option<WebBundleBinding>) -> RequestBuilder {
+        self.web_bundle_binding = binding;
         self
     }
 
@@ -795,6 +830,7 @@ impl RequestBuilder {
         );
         request.preload_id = self.preload_id;
         request.initiator = self.initiator;
+        request.web_bundle_binding = self.web_bundle_binding;
         request.method = self.method;
         request.headers = self.headers;
         request.unsafe_request = self.unsafe_request;
@@ -876,6 +912,9 @@ pub struct Request {
     pub service_workers_mode: ServiceWorkersMode,
     /// <https://fetch.spec.whatwg.org/#concept-request-initiator>
     pub initiator: Initiator,
+    /// BAO PATCH (REQ-BRW-051): the web bundle registration this request is
+    /// bound to (see [`WebBundleBinding`]).
+    pub web_bundle_binding: Option<WebBundleBinding>,
     /// <https://fetch.spec.whatwg.org/#concept-request-destination>
     pub destination: Destination,
     // TODO: priority object
@@ -944,6 +983,7 @@ impl Request {
             keep_alive: false,
             service_workers_mode: ServiceWorkersMode::All,
             initiator: Initiator::None,
+            web_bundle_binding: None,
             destination: Destination::None,
             origin: origin.unwrap_or(Origin::Client),
             referrer,

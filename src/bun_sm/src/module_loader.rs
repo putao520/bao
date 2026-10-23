@@ -1933,6 +1933,7 @@ const NODE_TEST_ESM_BRIDGE: &str = r#"var _m = require("node:test");
 export var test = _m.test;
 export var describe = _m.describe;
 export var it = _m.it;
+export var suite = _m.suite;
 export var before = _m.before;
 export var after = _m.after;
 export var beforeAll = _m.beforeAll;
@@ -1942,6 +1943,20 @@ export var afterEach = _m.afterEach;
 export var mock = _m.mock;
 export var assert = _m.assert;
 export var run = _m.run;
+// node v24 oracle (2026-10-20): the module's full named-export key set is
+// [after, afterEach, assert, before, beforeEach, describe, expectFailure,
+// getTestContext, it, mock, only, run, skip, snapshot, suite, test, todo].
+// only/skip/todo are the top-level test-variant aliases, snapshot is the
+// config-object face, expectFailure is the expected-failure registration,
+// getTestContext returns the running body's TestContext. The former bridge
+// exported only 14 of the 17 keys — the missing three broke every
+// destructuring import of them at LINK time (static export check).
+export var only = _m.only;
+export var skip = _m.skip;
+export var todo = _m.todo;
+export var snapshot = _m.snapshot;
+export var expectFailure = _m.expectFailure;
+export var getTestContext = _m.getTestContext;
 export default _m;
 "#;
 

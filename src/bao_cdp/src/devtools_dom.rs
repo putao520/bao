@@ -91,6 +91,16 @@ var __baoNodeFields = function(node, id) {
         }
         e.attributes = attrs;
     }
+    // REQ-CDP-010 golden-oracle parity (Chrome 155, measured): a document
+    // node carries the document metadata the document faces report
+    // (documentURL/baseURL/xmlVersion live-read; compatibilityMode mapped
+    // from the engine's BackCompat flag). Element/other nodes carry none.
+    if (node.nodeType === 9) {
+        e.documentURL = location.href;
+        e.baseURL = document.baseURI || location.href;
+        e.xmlVersion = document.xmlVersion || "";
+        e.compatibilityMode = document.compatMode === "BackCompat" ? "QuirksMode" : "NoQuirksMode";
+    }
     return e;
 };
 "#;
@@ -455,6 +465,38 @@ return JSON.stringify({{ model: {{
     border: quad(r.left, r.top, r.width, r.height),
     margin: quad(r.left - ml, r.top - mt, r.width + ml + mr, r.height + mt + mb)
 }} }});"#,
+        node_ref_prelude(r#ref),
+    )
+}
+
+/// Build the `DOM.getAttributes` body (REQ-CDP-010, Chrome 155 oracle
+/// measured): the addressed element's real attribute list in CDP's
+/// flat name/value pair form; a non-element node fails with Chrome's exact
+/// message ("Node is not an Element", -32000 class); an unknown id keeps the
+/// shared "No node with given id found" prelude error.
+pub(crate) fn attributes_body(r#ref: &NodeRef) -> String {
+    format!(
+        r#"{}if (el.nodeType !== 1) return JSON.stringify({{__bao_err: "Node is not an Element"}});
+var out = [];
+for (var a = 0; a < el.attributes.length; a++) {{
+    out.push(el.attributes[a].name);
+    out.push(el.attributes[a].value);
+}}
+return JSON.stringify({{ attributes: out }});"#,
+        node_ref_prelude(r#ref),
+    )
+}
+
+/// Build the `DOM.scrollIntoViewIfNeeded` body (REQ-CDP-010): a real
+/// scroll of the addressed element into the viewport (`block/inline:
+/// nearest` — scroll only when out of view, Chrome's "if needed"
+/// semantics). Unknown ids and non-element nodes keep the prelude/error
+/// faces; the success answer is the empty object Chrome returns.
+pub(crate) fn scroll_into_view_body(r#ref: &NodeRef) -> String {
+    format!(
+        r#"{}if (el.nodeType !== 1) return JSON.stringify({{__bao_err: "Node is not an Element"}});
+el.scrollIntoView({{ block: "nearest", inline: "nearest" }});
+return JSON.stringify({{}});"#,
         node_ref_prelude(r#ref),
     )
 }

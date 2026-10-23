@@ -235,8 +235,9 @@ impl fmt::Debug for LogicalRect<Au> {
 }
 
 impl<T: Clone> LogicalVec2<T> {
+    /// The physical size of a logical size. Sizes never change sign.
+    // https://drafts.csswg.org/css-writing-modes/#logical-to-physical
     pub fn to_physical_size(&self, mode: WritingMode) -> PhysicalSize<T> {
-        // https://drafts.csswg.org/css-writing-modes/#logical-to-physical
         let (x, y) = if mode.is_horizontal() {
             (&self.inline, &self.block)
         } else {
@@ -247,18 +248,45 @@ impl<T: Clone> LogicalVec2<T> {
 }
 
 impl<T: Copy + Neg<Output = T>> LogicalVec2<T> {
-    pub fn to_physical_vector(&self, mode: WritingMode) -> PhysicalVec<T> {
+    /// The physical translation of a logical offset. The sign of each component
+    /// depends on the physical direction that the logical axis points to:
+    ///
+    ///  - The block component is negated in `vertical-rl` (blocks stack from the
+    ///    right edge leftward) and in `sideways-lr`.
+    ///  - The inline component is negated when the inline direction runs against
+    ///    the physical axis (`direction: rtl` or a bottom-to-top vertical flow).
+    ///
+    /// Use this for offsets between boxes (for instance when translating child
+    /// fragments); use [`Self::to_physical_size`] for sizes, which never flip.
+    pub fn to_physical_translation(&self, mode: WritingMode) -> PhysicalVec<T> {
         if mode.is_horizontal() {
             if mode.is_bidi_ltr() {
                 PhysicalVec::new(self.inline, self.block)
             } else {
                 PhysicalVec::new(-self.inline, self.block)
             }
-        } else if mode.is_inline_tb() {
-            PhysicalVec::new(self.block, self.inline)
+        } else if mode.is_vertical_lr() {
+            // vertical-lr (and sideways-lr): blocks stack left to right.
+            let block = if mode.is_inline_tb() {
+                PhysicalVec::new(self.block, self.inline)
+            } else {
+                PhysicalVec::new(self.block, -self.inline)
+            };
+            block
         } else {
-            PhysicalVec::new(-self.block, self.inline)
+            // vertical-rl (and sideways-rl): blocks stack right to left.
+            if mode.is_inline_tb() {
+                PhysicalVec::new(-self.block, self.inline)
+            } else {
+                PhysicalVec::new(-self.block, -self.inline)
+            }
         }
+    }
+
+    /// Legacy alias of [`Self::to_physical_translation`], kept for offsets that
+    /// were historically converted with `to_physical_vector`.
+    pub fn to_physical_vector(&self, mode: WritingMode) -> PhysicalVec<T> {
+        self.to_physical_translation(mode)
     }
 }
 
@@ -551,6 +579,16 @@ impl<T> LogicalRect<T> {
 }
 
 impl LogicalRect<Au> {
+    /// The physical rectangle of this logical rectangle, relative to the top-left
+    /// corner of the given containing block's content box.
+    ///
+    /// The mapping honors both the block flow direction (`vertical-rl` measures
+    /// the block axis from the right edge) and the inline direction (`direction:
+    /// rtl` in horizontal flows and bottom-to-top vertical flows measure the
+    /// inline axis from the physical end edge). This requires knowing the size
+    /// of the containing block in the flipped axis; when the containing block is
+    /// `None` or its size is indefinite, the rectangle is measured from the
+    /// physical start edge instead.
     pub(crate) fn as_physical(
         &self,
         containing_block: Option<&ContainingBlock<'_>>,
@@ -558,23 +596,62 @@ impl LogicalRect<Au> {
         let mode = containing_block.map_or_else(WritingMode::horizontal_tb, |containing_block| {
             containing_block.style.writing_mode
         });
+
+        // Map one logical axis coordinate to a physical coordinate relative to
+        // the top-left corner of the containing block. `inline_axis` selects the
+        // logical axis to convert; the other axis is used as-is.
+        let convert_axis = |start: Au, size: Au, inline_axis: bool| -> Au {
+            // Whether this logical axis is measured against the physical end
+            // edge of its axis, which requires flipping the coordinate.
+            let measured_from_end = if mode.is_vertical() {
+                // The block axis of a vertical flow runs right-to-left in
+                // `vertical-rl`; the inline axis runs bottom-to-top when the
+                // inline base direction is reversed.
+                if inline_axis {
+                    !mode.is_inline_tb()
+                } else {
+                    mode.is_vertical_rl()
+                }
+            } else {
+                // The block axis of a horizontal flow always runs top-to-bottom;
+                // the inline axis runs right-to-left for `direction: rtl`.
+                inline_axis && !mode.is_bidi_ltr()
+            };
+            if !measured_from_end {
+                return start;
+            }
+
+            // Flipping needs the size of the containing block along the
+            // flipped physical axis. That is the inline size for the inline
+            // axis and the block size for the block axis.
+            let Some(containing_block) = containing_block else {
+                return start;
+            };
+            let axis_size = if inline_axis {
+                Some(containing_block.size.inline)
+            } else {
+                containing_block.size.block.to_definite()
+            };
+            match axis_size {
+                Some(axis_size) => axis_size - (start + size),
+                None => start,
+            }
+        };
+
         let (x, y, width, height) = if mode.is_vertical() {
-            // TODO: Bottom-to-top writing modes are not supported.
             (
-                self.start_corner.block,
-                self.start_corner.inline,
+                convert_axis(self.start_corner.block, self.size.block, false),
+                convert_axis(self.start_corner.inline, self.size.inline, true),
                 self.size.block,
                 self.size.inline,
             )
         } else {
-            let y = self.start_corner.block;
-            let x = match containing_block {
-                Some(containing_block) if !mode.is_bidi_ltr() => {
-                    containing_block.size.inline - self.max_inline_position()
-                },
-                _ => self.start_corner.inline,
-            };
-            (x, y, self.size.inline, self.size.block)
+            (
+                convert_axis(self.start_corner.inline, self.size.inline, true),
+                convert_axis(self.start_corner.block, self.size.block, false),
+                self.size.inline,
+                self.size.block,
+            )
         };
 
         PhysicalRect::new(PhysicalPoint::new(x, y), PhysicalSize::new(width, height))
@@ -640,11 +717,27 @@ pub(crate) trait ToLogicalWithContainingBlock<LogicalType> {
 impl ToLogicalWithContainingBlock<LogicalVec2<Au>> for PhysicalPoint<Au> {
     fn to_logical(&self, containing_block: &ContainingBlock) -> LogicalVec2<Au> {
         let writing_mode = containing_block.style.writing_mode;
-        // TODO: Bottom-to-top and right-to-left vertical writing modes are not supported yet.
         if writing_mode.is_vertical() {
             LogicalVec2 {
-                inline: self.y,
-                block: self.x,
+                // The inline axis of a vertical flow is the physical vertical axis;
+                // it runs bottom-to-top when the inline base direction is reversed.
+                inline: if writing_mode.is_inline_tb() {
+                    self.y
+                } else {
+                    containing_block.size.inline - self.y
+                },
+                // The block axis of a vertical flow is the physical horizontal
+                // axis; it runs right-to-left in `vertical-rl`.
+                block: if writing_mode.is_vertical_lr() {
+                    self.x
+                } else {
+                    containing_block
+                        .size
+                        .block
+                        .to_definite()
+                        .map(|block_size| block_size - self.x)
+                        .unwrap_or(self.x)
+                },
             }
         } else {
             LogicalVec2 {
@@ -668,11 +761,23 @@ impl ToLogicalWithContainingBlock<LogicalRect<Au>> for PhysicalRect<Au> {
 
         let writing_mode = containing_block.style.writing_mode;
         if writing_mode.is_vertical() {
-            // TODO: Bottom-to-top and right-to-left vertical writing modes are not supported yet.
             inline = self.size.height;
             block = self.size.width;
-            block_start = self.origin.x;
-            inline_start = self.origin.y;
+            block_start = if writing_mode.is_vertical_lr() {
+                self.origin.x
+            } else {
+                containing_block
+                    .size
+                    .block
+                    .to_definite()
+                    .map(|block_size| block_size - (self.origin.x + self.size.width))
+                    .unwrap_or(self.origin.x)
+            };
+            inline_start = if writing_mode.is_inline_tb() {
+                self.origin.y
+            } else {
+                containing_block.size.inline - (self.origin.y + self.size.height)
+            };
         } else {
             inline = self.size.width;
             block = self.size.height;

@@ -161,16 +161,19 @@ fn test_assert_conformance_suite() {
     run_checks(&mut ctx, &src);
 
     // ===== strict submodule =====
+    // node v24.19.0 oracle (2026-10-23, local binary): both require('assert/strict')
+    // and require('assert').strict are the CALLABLE strict alias
+    // (typeof === 'function' with .ok/.strictEqual functions).
     let src = format!(
         r##"
         {scaffold}
         check("strict_module_exists", function() {{
-            try {{ var s = require('assert/strict'); return typeof s === "object" && typeof s.ok === "function"; }}
+            try {{ var s = require('assert/strict'); return typeof s === "function" && typeof s.ok === "function"; }}
             catch(e) {{ return false; }}
         }});
         check("strict_property_alias", function() {{
             var assert = require('assert');
-            return typeof assert.strict === "object";
+            return typeof assert.strict === "function";
         }});
         results.join("|")
         "##,
@@ -257,18 +260,35 @@ fn test_assert_diff_rendering_conformance() {
             return '__NOT_THROWN__';
         }}
 
-        // --- object diff: deepEqual({{a:1,b:2}}, {{a:1,b:3}}) ---
-        // node v24 headline wording (U8); the diff body shape stays the
-        // registered C8b contract.
+        // --- object diff: deepStrictEqual({{a:1,b:2}}, {{a:1,b:3}}) ---
+        // node v24.19.0 oracle (2026-10-23, local binary): the +/- diff body
+        // exists only on the STRICT deep family; the loose deepEqual probe
+        // the former pin used renders node's no-diff linkage form instead
+        // ("...loosely deep-equal: {{..}} should loosely deep-equal {{..}}").
+        // Diff body shape = the registered C8b contract (unchanged lines
+        // bare, +/- on the differing key, no element commas), the same shape
+        // the array/scalar pins above pin.
         check("obj_diff_markers", function() {{
-            var m = msgOf(function() {{ assert.deepEqual({{a: 1, b: 2}}, {{a: 1, b: 3}}); }});
-            return m.indexOf('Expected values to be loosely deep-equal:') >= 0
+            var m = msgOf(function() {{ assert.deepStrictEqual({{a: 1, b: 2}}, {{a: 1, b: 3}}); }});
+            return m.indexOf('Expected values to be strictly deep-equal:') >= 0
                 && m.indexOf('+ actual - expected') >= 0
                 && m.indexOf('\n  {{') >= 0
                 && m.indexOf('\n    a: 1\n') >= 0
                 && m.indexOf('\n+   b: 2\n') >= 0
                 && m.indexOf('\n-   b: 3\n') >= 0
                 && m.indexOf('\n  }}') >= 0;
+        }});
+
+        // --- loose deepEqual renders the linkage form with NO diff body ---
+        // (node v24.19.0 oracle 2026-10-23: loose failures carry both values
+        // joined by "should loosely deep-equal", never '+ actual - expected').
+        check("obj_loose_no_diff_body", function() {{
+            var m = msgOf(function() {{ assert.deepEqual({{a: 1, b: 2}}, {{a: 1, b: 3}}); }});
+            return m.indexOf('Expected values to be loosely deep-equal:') >= 0
+                && m.indexOf('should loosely deep-equal') >= 0
+                && m.indexOf('a: 1') >= 0
+                && m.indexOf('b: 2') >= 0 && m.indexOf('b: 3') >= 0
+                && m.indexOf('+ actual - expected') === -1;
         }});
 
         // --- array diff: deepStrictEqual([1,2,3,4], [1,5,3,9]) ---

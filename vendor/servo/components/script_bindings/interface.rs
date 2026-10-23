@@ -147,8 +147,7 @@ pub(crate) type TraceHook = unsafe extern "C" fn(trc: *mut JSTracer, obj: *mut J
 // same class as the canvas noise seed global). With the switch off (default,
 // and what stealth-free pages reset it to), upstream host-derived behavior is
 // preserved byte-for-byte.
-static FORCE_UTC_REALMS: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static FORCE_UTC_REALMS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Arm/clear the engine-native forceUTC timezone policy for all subsequently
 /// created servo realms (BAO embedder API; re-exported via `servo` crate).
@@ -184,15 +183,19 @@ pub(crate) unsafe fn create_global_object<D: DomTypes>(
     // SM153 time-precision parity RTP token (callback is token-agnostic;
     // the Maybe must be non-empty for Date reads to take the clamped path).
     if force_utc_realms() {
-        js::glue::BaoSetRealmTimeZoneOverride(
+        unsafe {
+            js::glue::BaoSetRealmTimeZoneOverride(
+                std::ptr::from_mut(&mut *options),
+                c"Atlantic/Reykjavik".as_ptr(),
+            );
+        }
+    }
+    unsafe {
+        js::glue::BaoSetRealmOptionsReduceTimerPrecisionCallerType(
             std::ptr::from_mut(&mut *options),
-            c"Atlantic/Reykjavik".as_ptr(),
+            0,
         );
     }
-    js::glue::BaoSetRealmOptionsReduceTimerPrecisionCallerType(
-        std::ptr::from_mut(&mut *options),
-        0,
-    );
     if use_system_compartment {
         options.creationOptions_.compSpec_ = CompartmentSpecifier::NewCompartmentAndZone;
         options.creationOptions_.__bindgen_anon_1.comp_ = std::ptr::null_mut();
@@ -726,8 +729,8 @@ pub fn get_desired_proto(
             let global = GetNonCCWObjectGlobal(*new_target);
             let proto_or_iface_cache = get_proto_or_iface_array(global);
             desired_proto.set((*proto_or_iface_cache)[proto_id as usize]);
-            if *new_target != *original_new_target &&
-                !js::rust::wrappers2::JS_WrapObject(cx, desired_proto)
+            if *new_target != *original_new_target
+                && !js::rust::wrappers2::JS_WrapObject(cx, desired_proto)
             {
                 return Err(());
             }

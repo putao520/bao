@@ -111,8 +111,12 @@ fn test_assert_deep() {
         check("equal_different_throws", function() {
             try { assert.equal(1, 2); return false; }
             catch(e) {
-                // Throws via JS_ReportErrorUTF8 — message contains "AssertionError:"
-                return (e.message || '').indexOf('Assertion') >= 0;
+                // node v24.19.0 oracle (2026-10-23, local binary): throws
+                // AssertionError [ERR_ASSERTION] whose GENERATED message is
+                // the operator join "1 == 2" (no "Assertion" substring — the
+                // old JS_ReportErrorUTF8 prefix no longer exists).
+                return e.name === 'AssertionError'
+                    && (e.message || '').indexOf('1 == 2') >= 0;
             }
         });
 
@@ -132,7 +136,10 @@ fn test_assert_deep() {
         check("notEqual_same_throws", function() {
             try { assert.notEqual(1, 1); return false; }
             catch(e) {
-                return (e.message || '').indexOf('Assertion') >= 0;
+                // node v24.19.0 oracle (2026-10-23): generated message is
+                // the operator join "1 != 1", name AssertionError.
+                return e.name === 'AssertionError'
+                    && (e.message || '').indexOf('1 != 1') >= 0;
             }
         });
 
@@ -197,11 +204,14 @@ fn test_assert_deep() {
         });
 
         check("deepEqual_different_primitives_throws", function() {
-            // Different primitive displays: "1" != "2" — throws
+            // node v24.19.0 oracle (2026-10-23): the loose deep-equal failure
+            // headline is "Expected values to be loosely deep-equal:" and the
+            // message carries NO +/- diff body (node renders diffs only for
+            // the strict deep family).
             try { assert.deepEqual(1, 2); return false; }
             catch(e) {
-                return (e.message || '').indexOf('Assertion') >= 0
-                    || (e.message || '').indexOf('deeply') >= 0;
+                return e.name === 'AssertionError'
+                    && (e.message || '').indexOf('loosely deep-equal') >= 0;
             }
         });
 
@@ -365,9 +375,13 @@ fn test_assert_deep() {
 
         // ============================================================
         // 19. assert.strict self-reference
+        //     node v24.19.0 oracle (2026-10-23): assert.strict is the
+        //     CALLABLE strict alias (typeof === 'function', with
+        //     .strict.strictEqual a function) — never a plain object.
         // ============================================================
         check("strict_exists", function() {
-            return typeof assert.strict === 'object' && assert.strict !== null;
+            return typeof assert.strict === 'function'
+                && typeof assert.strict.strictEqual === 'function';
         });
 
         check("strict_has_ok", function() {

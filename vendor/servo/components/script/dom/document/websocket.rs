@@ -321,6 +321,10 @@ impl WebSocketMethods<crate::DomTypeHolder> for WebSocket {
                     };
                     task_source.queue(message_thread);
                 },
+                // REQ-BRW-051: write-completion acknowledgements are consumed
+                // by the WebSocketStream DOM layer only; the classic API's
+                // bufferedAmount bookkeeping is handled by its own task.
+                WebSocketNetworkEvent::SendComplete => {},
                 WebSocketNetworkEvent::Fail => {
                     fail_the_websocket_connection(address.clone(), &task_source);
                 },
@@ -333,6 +337,7 @@ impl WebSocketMethods<crate::DomTypeHolder> for WebSocket {
         let channels = FetchChannels::WebSocket {
             event_sender: resource_event_sender,
             action_receiver: resource_action_receiver,
+            flow_control: false,
         };
         let _ = send_fetch(&global.core_resource_thread(), request, channels);
 

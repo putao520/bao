@@ -26,9 +26,18 @@ path = "src/lib.rs"
 #
 # Product never depends on or force-links bao_native_stubs (no native-stubs feature).
 # Residual symbols arrive via real owners (product_process_exit / product_buffered_reader /
-# product_native_symbols / bun_*) — see STUB-INVENTORY.md.
+# product_native_symbols / bun_*) — see stub-inventory 清单文档.
+#
+# media-gstreamer (2026-10-21 根治波): transparent pass-through to bao-browser.
+# The default build is pure-Rust media (DummyBackend + WebCodecs PCM/image
+# backends, deployable on a pristine Linux with zero gstreamer presence);
+# enabling this feature opt-in the GStreamer backend for desktop packaging —
+# it hard-links the 11 gstreamer-* system libraries (gstreamer-rs system-deps
+# has no dlopen mode), so the artifact must ship the .so files or declare the
+# system dependency. See scripts/package/desktop-linux.sh.
 [features]
 default = []
+media-gstreamer = ["bao-browser/media-gstreamer"]
 
 [dependencies]
 # sibling 精确下限(用户裁决 2026-09-02):同波同版下限 — re-export 整栈,

@@ -328,11 +328,13 @@ fn test_page_get_frame_tree_no_bridge() {
 
 #[test]
 fn test_page_get_navigation_history_no_bridge() {
-    // New contract (6983871b): servo exposes no session-history enumeration —
-    // explicit -32000, never a fabricated single-entry history.
+    // REQ-CDP-010 golden-oracle parity: the history journal is bridge-backed
+    // (BaoWebViewState::navigation_journal). No bridge = no history source —
+    // explicit transport-class -32603, never a fabricated single-entry
+    // history.
     let e = err_result("Page.getNavigationHistory", None);
-    assert_eq!(e.code, -32000);
-    assert!(e.message.contains("not supported"));
+    assert_eq!(e.code, -32603);
+    assert!(e.message.contains("no servo bridge"));
 }
 
 #[test]

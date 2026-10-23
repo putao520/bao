@@ -466,13 +466,13 @@ impl DisplayListBuilder<'_> {
 
                 // WebRender only uses the stacking context to apply certain effects. If we don't
                 // actually need to create a stacking context, just avoid creating one.
-                if !is_blend_container &&
-                    effects.filter.0.is_empty() &&
-                    effects.opacity == 1.0 &&
-                    effects.mix_blend_mode == ComputedMixBlendMode::Normal &&
-                    !style.has_effective_transform_or_perspective(FragmentFlags::empty()) &&
-                    style.get_svg().clip_path == ComputedClipPath::None &&
-                    transform_style == TransformStyle::Flat
+                if !is_blend_container
+                    && effects.filter.0.is_empty()
+                    && effects.opacity == 1.0
+                    && effects.mix_blend_mode == ComputedMixBlendMode::Normal
+                    && !style.has_effective_transform_or_perspective(FragmentFlags::empty())
+                    && style.get_svg().clip_path == ComputedClipPath::None
+                    && transform_style == TransformStyle::Flat
                 {
                     return false;
                 }
@@ -774,8 +774,8 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
     fn visit_box(&mut self, state: &TraversalState, fragment: &BoxFragmentWithStyle<'_>) {
         fragment.base.visit_fragment(self);
 
-        if let Some(mut inspector_highlight) = self.inspector_highlight.take() &&
-            fragment.base.tag == Some(inspector_highlight.tag)
+        if let Some(mut inspector_highlight) = self.inspector_highlight.take()
+            && fragment.base.tag == Some(inspector_highlight.tag)
         {
             inspector_highlight.register_fragment_of_highlighted_dom_node(self, state, fragment);
             self.inspector_highlight = Some(inspector_highlight);
@@ -872,6 +872,54 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
                     fragment.url.clone(),
                     fragment.natural_width,
                     fragment.natural_height,
+                );
+            }
+        }
+
+        // BAO patch (fork-maintained, 2026-10-20): paint the active WebVTT
+        // cue boxes on top of the video frame (REQ-BRW-051; replayed after
+        // the e99 snapshot swap). The cue background box hugs the shaped
+        // glyphs' advance (the WebVTT cue background is per-cue-text, not the
+        // full cue box), then the shaped cue text paints on top of it.
+        if !fragment.cue_overlays.is_empty() {
+            for overlay in &fragment.cue_overlays {
+                let baseline_origin = overlay.baseline_origin
+                    + fragment.base.rect().origin.to_vector()
+                    + containing_block.origin.to_vector();
+                // The shaped line's total advance is the cue background's
+                // width (`glyphs` below reports the largest single glyph
+                // advance, not the line advance).
+                let line_advance: Au = overlay
+                    .glyphs
+                    .iter()
+                    .map(|slice| slice.total_advance())
+                    .sum();
+                let (glyphs, _, _) = glyphs(&overlay.glyphs, baseline_origin, Au::zero());
+                if glyphs.is_empty() {
+                    continue;
+                }
+                let line_height = (overlay.font_metrics.ascent + overlay.font_metrics.descent)
+                    .max(Au::from_px(1));
+                let mut line_rect_origin = baseline_origin;
+                line_rect_origin.y -= overlay.font_metrics.ascent;
+                let line_rect = PhysicalRect::new(
+                    line_rect_origin,
+                    PhysicalSize::new(line_advance, line_height),
+                );
+                if !overlay.background.is_transparent() {
+                    self.wr().push_rect(
+                        &common,
+                        line_rect.to_webrender(),
+                        rgba(overlay.background),
+                    );
+                }
+                self.wr().push_text(
+                    &common,
+                    line_rect.to_webrender(),
+                    &glyphs,
+                    overlay.font_key,
+                    rgba(overlay.color),
+                    None,
                 );
             }
         }
@@ -1065,30 +1113,78 @@ impl Fragment {
         // NB: The order of painting text components (CSS Text Decoration Module Level 3) is:
         // shadows, underline, overline, text, text-emphasis, and then line-through.
         let rect = fragment.base.rect().translate(state.origin.to_vector());
-        let mut baseline_origin = rect.origin;
-        baseline_origin.y += fragment.font_metrics.ascent;
 
-        let include_whitespace = fragment.run_data.selection.borrow().is_some() ||
-            state
-                .text_decorations
-                .iter()
-                .any(|item| !item.line.is_empty());
+        let parent_style = fragment.style();
+        let font_metrics = &fragment.font_metrics;
 
-        let (glyphs, largest_advance) = glyphs(
-            &fragment.glyphs,
-            baseline_origin,
-            fragment.justification_adjustment,
-            include_whitespace,
-        );
+        // Vertical writing modes paint the horizontally-shaped glyphs rotated into
+        // the inline direction. The rotation is implemented with a WebRender
+        // reference frame anchored at the baseline origin; inside that frame the
+        // glyphs are positioned exactly like horizontal text (advancing along the
+        // frame's x axis, with the baseline at y = 0).
+        // <https://drafts.csswg.org/css-writing-modes/#vertical-orientations>
+        let text_orientation = crate::writing_mode::text_orientation_for_style(&parent_style);
+        let (rotated_frame, baseline_origin) = match text_orientation {
+            crate::writing_mode::TextOrientation::Horizontal => {
+                let mut baseline_origin = rect.origin;
+                baseline_origin.y += font_metrics.ascent;
+                (None, baseline_origin)
+            },
+            // Glyphs run top-to-bottom; the line-over edge (where ascent is
+            // measured from) is the physical right edge of the fragment for
+            // every vertical writing mode.
+            crate::writing_mode::TextOrientation::SidewaysClockwise => {
+                let baseline_origin =
+                    PhysicalPoint::new(rect.max_x() - font_metrics.ascent, rect.min_y());
+                (Some(std::f32::consts::FRAC_PI_2), baseline_origin)
+            },
+            // `sideways-lr` runs bottom-to-top with the line-over edge on the
+            // physical left side of the fragment.
+            crate::writing_mode::TextOrientation::SidewaysCounterClockwise => {
+                let baseline_origin =
+                    PhysicalPoint::new(rect.min_x() + font_metrics.ascent, rect.max_y());
+                (Some(-std::f32::consts::FRAC_PI_2), baseline_origin)
+            },
+            // Glyphs are painted upright, stacked in the inline direction. This
+            // uses the horizontal advance of each glyph as its vertical advance,
+            // because vertical (`text`) shaping is not implemented; see the
+            // REQ-BRW-051 gap list. BAO gap: text-orientation: upright needs
+            // vertical HarfBuzz shaping for per-glyph vertical advances.
+            crate::writing_mode::TextOrientation::Upright => {
+                let baseline_origin =
+                    PhysicalPoint::new(rect.max_x() - font_metrics.ascent, rect.min_y());
+                (None, baseline_origin)
+            },
+        };
+
+        let layout_glyphs = |baseline_origin: PhysicalPoint<Au>| {
+            glyphs(
+                &fragment.glyphs,
+                baseline_origin,
+                fragment.justification_adjustment,
+            )
+        };
+        let upright = text_orientation == crate::writing_mode::TextOrientation::Upright;
+        let (glyphs, largest_advance, entirely_white_space) = if rotated_frame.is_some() {
+            // Glyph positions are computed in the rotated frame's local space,
+            // where the baseline starts at the frame origin.
+            layout_glyphs(PhysicalPoint::zero())
+        } else if upright {
+            upright_glyphs(
+                &fragment.glyphs,
+                baseline_origin,
+                fragment.justification_adjustment,
+            )
+        } else {
+            layout_glyphs(baseline_origin)
+        };
 
         if glyphs.is_empty() && !fragment.is_empty_for_text_cursor {
             return;
         }
 
-        let parent_style = fragment.style();
         let color = parent_style.slow_clone_color();
         let font_size = parent_style.get_font().font_size;
-        let font_metrics = &fragment.font_metrics;
         let dppx = builder.device_pixel_ratio.get();
 
         let resolve_thickness = |thickness: &TextDecorationThickness| -> Au {
@@ -1117,9 +1213,27 @@ impl Fragment {
         // contain the inked portion of the glyphs. We assume that the descent and
         // ascent are big enough and then just expand the advance-based boundaries by
         // twice the size of the biggest advance in the advance dimention.
-        let glyph_bounds = rect
+        //
+        // These are the physical bounds in the parent coordinate space; they are
+        // used for paint timing and largest contentful paint bookkeeping. For
+        // rotated text the fragment rectangle itself is the ink bounds, because a
+        // 90° rotation maps the run exactly onto it.
+        let physical_glyph_bounds = rect
             .inflate(largest_advance.scale_by(2.0), Au::zero())
             .to_webrender();
+
+        // The bounds of the text primitive itself. Rotated text is painted inside a
+        // reference frame whose local space has the run horizontal, starting at the
+        // baseline origin; for horizontal text these are the physical bounds.
+        let glyph_bounds = if rotated_frame.is_some() {
+            LayoutRect::from_origin_and_size(
+                LayoutPoint::new(0.0, -font_metrics.ascent.to_f32_px()),
+                LayoutSize::new(rect.size.height.to_f32_px(), rect.size.width.to_f32_px()),
+            )
+            .inflate(largest_advance.scale_by(2.0).to_f32_px(), 0.0)
+        } else {
+            physical_glyph_bounds
+        };
         let common = builder.common_properties(state, glyph_bounds, &parent_style);
 
         // Shadows. According to CSS-BACKGROUNDS, text shadows render in *reverse* order (front to
@@ -1142,9 +1256,63 @@ impl Fragment {
 
         Self::build_display_list_for_text_selection(fragment, builder, state, line_box_rect);
 
+        // Vertical writing modes paint the shaped (horizontal) glyphs rotated into
+        // the inline direction. Everything that has to be rotated -- the glyph run
+        // and the text decorations -- is painted inside a reference frame anchored
+        // at the baseline origin and rotated by 90° in the inline direction. Inside
+        // that frame the run is an ordinary horizontal run starting at (0, 0).
+        // <https://drafts.csswg.org/css-writing-modes/#vertical-orientations>
+        let rotated_spatial_id = rotated_frame.map(|radians| {
+            let transform =
+                units::LayoutTransform::rotation(0.0, 0.0, 1.0, euclid::Angle::radians(radians));
+            builder.wr().push_reference_frame(
+                baseline_origin.to_webrender(),
+                common.spatial_id,
+                wr::TransformStyle::Flat,
+                PropertyBinding::Value(transform),
+                wr::ReferenceFrameKind::Transform {
+                    is_2d_scale_translation: false,
+                    should_snap: false,
+                    paired_with_perspective: false,
+                },
+            )
+        });
+        let text_common = match rotated_spatial_id {
+            Some(spatial_id) => {
+                let mut common = common.clone();
+                common.spatial_id = spatial_id;
+                common
+            },
+            None => common.clone(),
+        };
+
+        // The top edge of the fragment in whichever coordinate space decorations
+        // are painted in. For rotated text that space is the frame's local space,
+        // where the fragment rectangle is the line extent (width along the local
+        // advance axis) by the run's extent.
+        //
+        // BAO gap: the "in phase" extension in the decoration painter anchors on
+        // this fragment's origin, so dotted, dashed and wavy decorations of
+        // vertical text do not stay in phase across fragments.
+        let fragment_top = if rotated_frame.is_some() {
+            -font_metrics.ascent
+        } else {
+            rect.origin.y
+        };
+        let decoration_rect = || -> PhysicalRect<Au> {
+            if rotated_frame.is_some() {
+                PhysicalRect::new(
+                    PhysicalPoint::new(Au::zero(), fragment_top),
+                    PhysicalSize::new(rect.size.height, rect.size.width),
+                )
+            } else {
+                rect
+            }
+        };
+
         for text_decoration in state.text_decorations.iter() {
             if text_decoration.line.contains(TextDecorationLine::UNDERLINE) {
-                let mut rect = rect;
+                let mut rect = decoration_rect();
                 rect.origin.y += font_metrics.ascent - font_metrics.underline_offset;
                 rect.size.height = resolve_thickness(&text_decoration.thickness);
                 Self::build_display_list_for_text_decoration(
@@ -1154,13 +1322,15 @@ impl Fragment {
                     &rect,
                     text_decoration,
                     TextDecorationLine::UNDERLINE,
+                    text_common.spatial_id,
                 );
             }
         }
 
         for text_decoration in state.text_decorations.iter() {
             if text_decoration.line.contains(TextDecorationLine::OVERLINE) {
-                let mut rect = rect;
+                let mut rect = decoration_rect();
+                rect.origin.y = fragment_top;
                 rect.size.height = resolve_thickness(&text_decoration.thickness);
                 Self::build_display_list_for_text_decoration(
                     state,
@@ -1169,12 +1339,13 @@ impl Fragment {
                     &rect,
                     text_decoration,
                     TextDecorationLine::OVERLINE,
+                    text_common.spatial_id,
                 );
             }
         }
 
         builder.wr().push_text(
-            &common,
+            &text_common,
             glyph_bounds,
             &glyphs,
             fragment.font_key,
@@ -1182,29 +1353,34 @@ impl Fragment {
             None,
         );
 
-        builder
-            .paint_timing_handler
-            .check_if_paintable(glyph_bounds, parent_style.slow_clone_opacity());
+        if !entirely_white_space {
+            builder
+                .paint_timing_handler
+                .check_if_paintable(physical_glyph_bounds, parent_style.slow_clone_opacity());
 
-        // From <https://www.w3.org/TR/paint-timing/#contentful>:
-        // An element target is contentful when one or more of the following apply:
-        // > target has a text node child, representing non-empty text, and the node’s used opacity is greater than zero.
-        builder.mark_is_contentful();
+            // From <https://www.w3.org/TR/paint-timing/#contentful>:
+            // An element target is contentful when one or more of the following apply:
+            // > target has a text node child, representing non-empty text, and the node’s
+            // > used opacity is greater than zero.
+            if *parent_style.get_opacity() > 0. {
+                builder.mark_is_contentful();
 
-        // Accumulate this text fragment for LCP by the containing element's tag
-        if let Some(tag) = state.containing_element_tag &&
-            builder.largest_contentful_paint_enabled
-        {
-            let transform = builder
-                .paint_info
-                .scroll_tree
-                .cumulative_node_to_root_transform(state.spatial_id);
-            builder.paint_timing_handler.accumulate_text_rect(
-                tag,
-                rect.to_webrender(),
-                transform,
-                &parent_style,
-            );
+                // Accumulate this text fragment for LCP by the containing element's tag
+                if let Some(tag) = state.containing_element_tag
+                    && builder.largest_contentful_paint_enabled
+                {
+                    let transform = builder
+                        .paint_info
+                        .scroll_tree
+                        .cumulative_node_to_root_transform(state.spatial_id);
+                    builder.paint_timing_handler.accumulate_text_rect(
+                        tag,
+                        rect.to_webrender(),
+                        transform,
+                        &parent_style,
+                    );
+                }
+            }
         }
 
         for text_decoration in state.text_decorations.iter() {
@@ -1212,7 +1388,7 @@ impl Fragment {
                 .line
                 .contains(TextDecorationLine::LINE_THROUGH)
             {
-                let mut rect = rect;
+                let mut rect = decoration_rect();
                 rect.origin.y += font_metrics.ascent - font_metrics.strikeout_offset;
                 rect.size.height = resolve_thickness(&text_decoration.thickness);
                 Self::build_display_list_for_text_decoration(
@@ -1222,8 +1398,13 @@ impl Fragment {
                     &rect,
                     text_decoration,
                     TextDecorationLine::LINE_THROUGH,
+                    text_common.spatial_id,
                 );
             }
+        }
+
+        if rotated_spatial_id.is_some() {
+            builder.wr().pop_reference_frame();
         }
 
         if !shadows.0.is_empty() {
@@ -1238,6 +1419,7 @@ impl Fragment {
         rect: &PhysicalRect<Au>,
         text_decoration: &FragmentTextDecoration,
         line: TextDecorationLine,
+        spatial_id: SpatialId,
     ) {
         if text_decoration.style == ComputedTextDecorationStyle::None {
             return;
@@ -1258,16 +1440,17 @@ impl Fragment {
         let expand_rect_for_text_decoration = |mut rect: Box2D<f32, LayoutPixel>| {
             if matches!(
                 text_decoration.style,
-                ComputedTextDecorationStyle::Dotted |
-                    ComputedTextDecorationStyle::Dashed |
-                    ComputedTextDecorationStyle::Wavy,
+                ComputedTextDecorationStyle::Dotted
+                    | ComputedTextDecorationStyle::Dashed
+                    | ComputedTextDecorationStyle::Wavy,
             ) {
                 rect.min.x = rect.min.x.min(0.0);
             }
             rect
         };
 
-        let common_properties = builder.common_properties(state, rect, parent_style);
+        let mut common_properties = builder.common_properties(state, rect, parent_style);
+        common_properties.spatial_id = spatial_id;
         builder.wr().push_line(
             &common_properties,
             &expand_rect_for_text_decoration(rect),
@@ -1284,7 +1467,8 @@ impl Fragment {
                 _ => rect.height() + half_height,
             };
             let rect = rect.translate(Vector2D::new(0.0, y_offset));
-            let common_properties = builder.common_properties(state, rect, parent_style);
+            let mut common_properties = builder.common_properties(state, rect, parent_style);
+            common_properties.spatial_id = spatial_id;
             builder.wr().push_line(
                 &common_properties,
                 &rect,
@@ -1338,8 +1522,8 @@ impl Fragment {
         // offsets. This allows updating this selection directly from the DOM (skipping layout).
         let selection_character_range = run_data.map_dom_range_to_transformed_range(selection);
 
-        if fragment.character_range_in_dom_node.start > selection_character_range.end ||
-            fragment.character_range_in_dom_node.end < selection_character_range.start
+        if fragment.character_range_in_dom_node.start > selection_character_range.end
+            || fragment.character_range_in_dom_node.end < selection_character_range.start
         {
             return;
         }
@@ -1348,8 +1532,8 @@ impl Fragment {
         // layout will push an empty fragment in order to trigger painting of the cursor on an empty line.
         // This code ensure that it is only painted if the cursor is on the starting index of the empty
         // fragment.
-        if fragment.is_empty_for_text_cursor &&
-            !fragment
+        if fragment.is_empty_for_text_cursor
+            && !fragment
                 .character_range_in_dom_node
                 .contains(&selection_character_range.start)
         {
@@ -1362,12 +1546,12 @@ impl Fragment {
         let mut end_advance = None;
         for glyph_store in fragment.glyphs.iter() {
             let glyph_store_character_count = glyph_store.character_count();
-            if current_character_index + glyph_store_character_count <
-                selection_character_range.start
+            if current_character_index + glyph_store_character_count
+                < selection_character_range.start
             {
-                current_advance += glyph_store.total_advance() +
-                    (fragment.justification_adjustment *
-                        glyph_store.total_word_separators() as i32);
+                current_advance += glyph_store.total_advance()
+                    + (fragment.justification_adjustment
+                        * glyph_store.total_word_separators() as i32);
                 current_character_index += glyph_store_character_count;
                 continue;
             }
@@ -1615,6 +1799,9 @@ impl<'a> BuilderForBoxFragment<'a> {
         if !self.fragment.is_table_grid_with_collapsed_borders() {
             self.build_border(builder, state);
         }
+        // BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): paint the solid
+        // rules carried by this fragment (the fraction bar of an `mfrac`).
+        self.build_math_rules(builder, state);
 
         let overflow = self
             .fragment
@@ -1622,9 +1809,9 @@ impl<'a> BuilderForBoxFragment<'a> {
             .effective_overflow(self.fragment.base.flags);
         let scrolls_via_user_input =
             |overflow| matches!(overflow, ComputedOverflow::Scroll | ComputedOverflow::Auto);
-        if (scrolls_via_user_input(overflow.x) || scrolls_via_user_input(overflow.y)) &&
-            self.fragment.style().get_inherited_ui().pointer_events !=
-                style::computed_values::pointer_events::T::None
+        if (scrolls_via_user_input(overflow.x) || scrolls_via_user_input(overflow.y))
+            && self.fragment.style().get_inherited_ui().pointer_events
+                != style::computed_values::pointer_events::T::None
         {
             let mut inner_state = state.clone();
             inner_state.spatial_id = self
@@ -1641,6 +1828,26 @@ impl<'a> BuilderForBoxFragment<'a> {
                     .translate(self.containing_block_origin.to_vector())
                     .to_webrender(),
             );
+        }
+    }
+
+    /// Paint the solid rules carried by this fragment.
+    ///
+    /// BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): the rule
+    /// rectangles are relative to this fragment's content box origin, like the
+    /// rectangles of this fragment's children.
+    fn build_math_rules(&mut self, builder: &mut DisplayListBuilder, state: &TraversalState) {
+        let rules = self.fragment.math_rules();
+        if rules.is_empty() {
+            return;
+        }
+
+        let style = self.fragment.style();
+        let origin = self.fragment.base.rect().origin + self.containing_block_origin.to_vector();
+        for rule in rules {
+            let rect = rule.rect.translate(origin.to_vector()).to_webrender();
+            let common = builder.common_properties(state, rect, style);
+            builder.wr().push_rect(&common, rect, rgba(rule.color));
         }
     }
 
@@ -1706,8 +1913,8 @@ impl<'a> BuilderForBoxFragment<'a> {
             return;
         }
         // If the `<body>` background was inherited by the root element, don't paint it again here.
-        if !builder.paint_body_background &&
-            flags.intersects(FragmentFlags::IS_BODY_ELEMENT_OF_HTML_ELEMENT_ROOT)
+        if !builder.paint_body_background
+            && flags.intersects(FragmentFlags::IS_BODY_ELEMENT_OF_HTML_ELEMENT_ROOT)
         {
             return;
         }
@@ -2316,29 +2523,33 @@ fn rgba(color: AbsoluteColor) -> wr::ColorF {
     )
 }
 
+/// Return a tuple for the given `shaped_text_slices` that contains:
+///
+/// - A vector of [`GlyphInstance`] for every glyph in the slices.
+/// - The measure of the largest advance
+/// - A boolean which is true if the slices only contained white space.
 fn glyphs(
     shaped_text_slices: &[Arc<ShapedTextSlice>],
     mut baseline_origin: PhysicalPoint<Au>,
     justification_adjustment: Au,
-    include_whitespace: bool,
-) -> (Vec<GlyphInstance>, Au) {
+) -> (Vec<GlyphInstance>, Au, bool) {
     let mut glyphs = vec![];
     let mut largest_advance = Au::zero();
+    let mut entirely_white_space = true;
 
     for shaped_text_slice in shaped_text_slices {
+        entirely_white_space &= shaped_text_slice.all_white_space();
         for glyph in shaped_text_slice.glyphs() {
-            if !shaped_text_slice.is_whitespace() || include_whitespace {
-                let glyph_offset = glyph.offset().unwrap_or(Point2D::zero());
-                let point = LayoutPoint::new(
-                    baseline_origin.x.to_f32_px() + glyph_offset.x.to_f32_px(),
-                    baseline_origin.y.to_f32_px() + glyph_offset.y.to_f32_px(),
-                );
-                let glyph_instance = GlyphInstance {
-                    index: glyph.id(),
-                    point,
-                };
-                glyphs.push(glyph_instance);
-            }
+            let glyph_offset = glyph.offset().unwrap_or(Point2D::zero());
+            let point = LayoutPoint::new(
+                baseline_origin.x.to_f32_px() + glyph_offset.x.to_f32_px(),
+                baseline_origin.y.to_f32_px() + glyph_offset.y.to_f32_px(),
+            );
+            let glyph_instance = GlyphInstance {
+                index: glyph.id(),
+                point,
+            };
+            glyphs.push(glyph_instance);
 
             if glyph.char_is_word_separator() {
                 baseline_origin.x += justification_adjustment;
@@ -2349,7 +2560,51 @@ fn glyphs(
             largest_advance.max_assign(advance);
         }
     }
-    (glyphs, largest_advance)
+    (glyphs, largest_advance, entirely_white_space)
+}
+
+/// Position the glyphs of a text run for `text-orientation: upright`, where every
+/// glyph is painted upright and the run advances in the inline direction, which is
+/// physically downward in vertical writing modes.
+///
+/// BAO gap: the per-glyph advance along the inline axis uses the glyph's
+/// horizontal advance, because vertical (`text`) HarfBuzz shaping is not
+/// implemented yet. See the REQ-BRW-051 gap list.
+fn upright_glyphs(
+    shaped_text_slices: &[Arc<ShapedTextSlice>],
+    baseline_origin: PhysicalPoint<Au>,
+    justification_adjustment: Au,
+) -> (Vec<GlyphInstance>, Au, bool) {
+    let mut glyphs = vec![];
+    let mut largest_advance = Au::zero();
+    let mut inline_offset = Au::zero();
+    let mut entirely_white_space = true;
+
+    for shaped_text_slice in shaped_text_slices {
+        entirely_white_space &= shaped_text_slice.all_white_space();
+        for glyph in shaped_text_slice.glyphs() {
+            let glyph_offset = glyph.offset().unwrap_or(Point2D::zero());
+            let point = LayoutPoint::new(
+                baseline_origin.x.to_f32_px() + glyph_offset.x.to_f32_px(),
+                baseline_origin.y.to_f32_px()
+                    + inline_offset.to_f32_px()
+                    + glyph_offset.y.to_f32_px(),
+            );
+            glyphs.push(GlyphInstance {
+                index: glyph.id(),
+                point,
+            });
+
+            if glyph.char_is_word_separator() {
+                inline_offset += justification_adjustment;
+            }
+
+            let advance = glyph.advance();
+            inline_offset += advance;
+            largest_advance.max_assign(advance);
+        }
+    }
+    (glyphs, largest_advance, entirely_white_space)
 }
 
 /// Given a set of corner radii for a rectangle, this function returns the corresponding radii
@@ -2545,10 +2800,10 @@ impl BoxFragment {
     fn border_radius(&self) -> BorderRadius {
         let style = self.style();
         let border = style.get_border();
-        if border.border_top_left_radius.0.is_zero() &&
-            border.border_top_right_radius.0.is_zero() &&
-            border.border_bottom_right_radius.0.is_zero() &&
-            border.border_bottom_left_radius.0.is_zero()
+        if border.border_top_left_radius.0.is_zero()
+            && border.border_top_right_radius.0.is_zero()
+            && border.border_bottom_right_radius.0.is_zero()
+            && border.border_bottom_left_radius.0.is_zero()
         {
             return BorderRadius::zero();
         }

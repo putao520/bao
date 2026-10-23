@@ -27,6 +27,13 @@ profilemozjs = ['js/profilemozjs']
 testbinding = ["script_bindings/testbinding"]
 tracing = ["dep:tracing", "script_bindings/tracing"]
 
+# Bao fork self-build (REQ-BRW-051): WebCodecs decode plane. Pure-Rust control
+# plane + PCM/image backends ride on `dep:webcodecs` alone; the GStreamer video
+# backend is chained separately so Windows builds (no gst runtime guarantee,
+# CLAUDE.md Windows 交叉编译准入律) can enable `webcodecs` without gst.
+webcodecs = ["script_bindings/webcodecs", "dep:webcodecs"]
+webcodecs-gstreamer = ["webcodecs", "webcodecs/media-gstreamer"]
+
 # Enable webcrypto
 webcrypto = [
     "script_bindings/webcrypto",
@@ -223,6 +230,15 @@ url = {version = "2.5"}
 urlpattern = {version = "0.3"}
 uuid = {version = "1.23.3", features = ["v4", "v5", "serde"]}
 web_atoms = {version = "0.3.0"}
+# Bao fork self-build (REQ-BRW-051): WebCodecs decode plane — codec-string
+# parsing, config validation + lifecycle state machines, gst video backend.
+# Consumed by the DOM face under `dom::webcodecs_pcm` / `dom::audiodata` and
+# the AudioDecoder/VideoDecoder DOM types (feature-gated, see [features]).
+webcodecs = {package = "bao-servo-webcodecs", path = "../webcodecs", version = ">=0.5.0, <0.6.0", optional = true}
+# BAO PATCH (REQ-BRW-051): WICG WebBundle (application/webbundle, draft-2)
+# parser for `<script type=webbundle>` subresource loading. Fork-only component
+# (upstream servo has no web-bundle support).
+webbundle = {package = "bao-servo-webbundle", path = "../webbundle", version = ">=0.5.0, <0.6.0"}
 webdriver = {version = "0.54.0"}
 webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../shared/webgpu", version = ">=0.5.17, <0.6.0", optional = true}
 webrender_api = {version = "0.70"}

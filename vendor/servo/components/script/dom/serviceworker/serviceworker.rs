@@ -11,7 +11,9 @@ use js::rust::{CustomAutoRooterGuard, HandleValue};
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::reflect_dom_object;
 use servo_base::id::ServiceWorkerId;
-use servo_constellation_traits::{DOMMessage, ScriptToConstellationMessage};
+use servo_constellation_traits::{
+    DOMMessage, ScriptToConstellationMessage, ServiceWorkerState as ConstellationServiceWorkerState,
+};
 use servo_url::ServoUrl;
 
 use crate::dom::abstractworker::SimpleWorkerErrorHandler;
@@ -82,15 +84,42 @@ impl ServiceWorker {
         service_worker.upcast().fire_event(cx, atom!("error"));
     }
 
+    /// <https://w3c.github.io/ServiceWorker/#update-worker-state> Step 4.4.
+    /// Ported from upstream servo 270fe198f (#48749): map the constellation's
+    /// six-state enum onto the WebIDL `ServiceWorkerState` and write the cell.
+    /// Returns whether the state actually changed (REQ-BRW-051 merge: the state
+    /// broadcast and the vendor WorkerActivated relay may both deliver the same
+    /// transition; the caller fires "statechange" once).
+    pub(crate) fn set_state(&self, state: ConstellationServiceWorkerState) -> bool {
+        let state = match state {
+            ConstellationServiceWorkerState::Parsed => {
+                debug_assert!(false, "An update is never for the parsed state.");
+                return false;
+            },
+            ConstellationServiceWorkerState::Installing => ServiceWorkerState::Installing,
+            ConstellationServiceWorkerState::Installed => ServiceWorkerState::Installed,
+            ConstellationServiceWorkerState::Activating => ServiceWorkerState::Activating,
+            ConstellationServiceWorkerState::Activated => ServiceWorkerState::Activated,
+            ConstellationServiceWorkerState::Redundant => ServiceWorkerState::Redundant,
+        };
+        let changed = self.state.get() != state;
+        self.state.set(state);
+        changed
+    }
+
     /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04):
     /// <https://w3c.github.io/ServiceWorker/#update-worker-state> — set the
     /// state of the service worker and fire "statechange" on this
     /// ServiceWorker object. Upstream never implemented the algorithm (the
     /// `state` cell is written exactly once, at construction), so workers
-    /// were observably stuck at "installing" forever.
+    /// were observably stuck at "installing" forever. REQ-BRW-051 merge: fires
+    /// only on an actual change (dual delivery, see `set_state`).
     pub(crate) fn update_state(&self, cx: &mut JSContext, state: ServiceWorkerState) {
+        let changed = self.state.get() != state;
         self.state.set(state);
-        self.upcast().fire_event(cx, atom!("statechange"));
+        if changed {
+            self.upcast().fire_event(cx, atom!("statechange"));
+        }
     }
 
     pub(crate) fn get_script_url(&self) -> ServoUrl {

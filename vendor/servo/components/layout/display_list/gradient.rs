@@ -248,12 +248,12 @@ pub(super) fn build_radial(
                 abs_vector_to_corner(gradient_box, center, f32::max).to_size()
             },
             ShapeExtent::ClosestCorner => {
-                abs_vector_to_corner(gradient_box, center, f32::min).to_size() *
-                    (std::f32::consts::FRAC_1_SQRT_2 * 2.0)
+                abs_vector_to_corner(gradient_box, center, f32::min).to_size()
+                    * (std::f32::consts::FRAC_1_SQRT_2 * 2.0)
             },
             ShapeExtent::FarthestCorner | ShapeExtent::Cover => {
-                abs_vector_to_corner(gradient_box, center, f32::max).to_size() *
-                    (std::f32::consts::FRAC_1_SQRT_2 * 2.0)
+                abs_vector_to_corner(gradient_box, center, f32::max).to_size()
+                    * (std::f32::consts::FRAC_1_SQRT_2 * 2.0)
             },
         },
     };
@@ -400,8 +400,8 @@ fn gradient_items_to_color_stops(
                     position: Some(if gradient_line_length.is_zero() {
                         0.
                     } else {
-                        position.to_used_value(gradient_line_length).to_f32_px() /
-                            gradient_line_length.to_f32_px()
+                        position.to_used_value(gradient_line_length).to_f32_px()
+                            / gradient_line_length.to_f32_px()
                     }),
                 }),
                 // FIXME: approximate like in:
@@ -523,8 +523,8 @@ fn interpolate_gradient_stop_colors(
     // gradient, we have to pretend there is another stop at position=1.0 that
     // duplicates the last stop, this is probably only used for things like a
     // color wheel.  No such problem for SVG as it doesn't have that complexity.
-    let extend = extend_mode == wr::ExtendMode::Clamp &&
-        interpolation_method.hue == HueInterpolationMethod::Longer;
+    let extend = extend_mode == wr::ExtendMode::Clamp
+        && interpolation_method.hue == HueInterpolationMethod::Longer;
 
     // We always emit at least two stops (start and end) for each input stop,
     // which avoids ambiguity with incomplete oklch/lch/hsv/hsb color stops for

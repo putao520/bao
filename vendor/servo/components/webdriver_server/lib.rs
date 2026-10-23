@@ -25,7 +25,7 @@ use std::{env, fmt, process, thread};
 use base64::Engine;
 use capabilities::ServoCapabilities;
 use cookie::{CookieBuilder, Expiration, SameSite};
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, after, select, unbounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 use embedder_traits::{
     CustomHandlersAutomationMode, EventLoopWaker, ImeEvent, InputEvent, JSValue,
     JavaScriptEvaluationError, JavaScriptEvaluationResultSerializationError, NewWindowTypeHint,
@@ -733,12 +733,24 @@ impl Handler {
         // Step 4. Handle any user prompt.
         self.handle_any_user_prompts(webview_id)?;
 
+        // BAO PATCH (REQ-BRW-051): remember the scheme before `url` is moved
+        // into the command. Spec step 8.2 only waits "if URL is special except
+        // for file and current URL and URL do not have the same absolute URL";
+        // `javascript:` is not a special scheme (URL Standard "special
+        // schemes"), and navigating to a `javascript:` URL may complete
+        // without creating a document (HTML "navigate to a javascript: URL"),
+        // in which case no readiness transition ever follows and the wait
+        // would block until the page-load timeout.
+        let is_javascript_url = url.scheme() == "javascript";
+
         let cmd_msg =
             WebDriverCommandMsg::LoadUrl(webview_id, url, self.load_status_sender.clone());
         self.send_message_to_embedder(cmd_msg)?;
 
         // Step 8.2.1: try to wait for navigation to complete.
-        self.wait_for_navigation_complete()?;
+        if !is_javascript_url {
+            self.wait_for_navigation_complete()?;
+        }
 
         // Step 8.3. Set current browsing context with session and current top browsing context
         self.session_mut()?
@@ -747,38 +759,73 @@ impl Handler {
         Ok(WebDriverResponse::Void)
     }
 
+    /// <https://w3c.github.io/webdriver/#dfn-wait-for-navigation-to-complete>
+    ///
+    /// BAO PATCH (REQ-BRW-051): rewritten from a one-shot `select!` into a
+    /// deadline-bounded receive loop.
+    ///
+    /// The spec runs the whole wait under one timer (step 5, "run these steps,
+    /// but abort when timer's timeout fired flag is set") and keeps waiting
+    /// when a further navigation attempt starts while the current one is in
+    /// flight (redirect, `window.location` assignment from the load event).
+    /// The old implementation treated such a `NavigationStart` as an
+    /// unexpected status and failed the command, and it panicked on a
+    /// `Complete`/`NavigationStop` that landed between two commands.
+    ///
+    /// The wait is bounded by the session's page load timeout; when the timer
+    /// fires the command returns the spec's timeout error (step 6) — never a
+    /// silent success. A `None` timeout means "no timer" per step 4 and waits
+    /// without a deadline.
     fn wait_document_ready(&self, timeout: Option<u64>) -> WebDriverResult<WebDriverResponse> {
-        let timeout_channel = match timeout {
-            Some(timeout) => after(Duration::from_millis(timeout)),
-            None => crossbeam_channel::never(),
-        };
+        let deadline = timeout.map(|timeout| Instant::now() + Duration::from_millis(timeout));
 
-        select! {
-            recv(self.load_status_receiver) -> res => {
-                match res {
-                    // If the navigation is navigation to IFrame, no document state event is fired.
-                    Ok(Ok(WebDriverLoadStatus::Blocked)) => {
-                        // TODO: evaluate the correctness later
-                        // Load status is block means an user prompt is shown.
-                        // Alot of tests expect this to return success
-                        // then the user prompt is handled in the next command.
-                        // If user prompt can't be handler, next command returns
-                        // an error anyway.
-                        Ok(WebDriverResponse::Void)
-                    },
-                    Ok(Ok(WebDriverLoadStatus::Complete)) |
-                    Ok(Ok(WebDriverLoadStatus::NavigationStop)) =>
-                        Ok(WebDriverResponse::Void)
-                    ,
-                    _ => Err(WebDriverError::new(
+        loop {
+            let received = match deadline {
+                Some(deadline) => self.load_status_receiver.recv_deadline(deadline),
+                None => self
+                    .load_status_receiver
+                    .recv()
+                    .map_err(|_| RecvTimeoutError::Disconnected),
+            };
+
+            match received {
+                // If the navigation is navigation to IFrame, no document state event is fired.
+                //
+                // Load status is block means a user prompt is shown.
+                // Alot of tests expect this to return success
+                // then the user prompt is handled in the next command.
+                // If user prompt can't be handler, next command returns
+                // an error anyway.
+                Ok(Ok(WebDriverLoadStatus::Blocked)) => return Ok(WebDriverResponse::Void),
+                Ok(Ok(WebDriverLoadStatus::Complete)) |
+                Ok(Ok(WebDriverLoadStatus::NavigationStop)) => {
+                    return Ok(WebDriverResponse::Void);
+                },
+                // A new attempt started while this wait is in flight: keep
+                // waiting for it under the same timer.
+                Ok(Ok(WebDriverLoadStatus::NavigationStart)) => continue,
+                Ok(Ok(WebDriverLoadStatus::Timeout)) => {
+                    return Err(WebDriverError::new(
+                        ErrorStatus::Timeout,
+                        "Navigation timed out",
+                    ));
+                },
+                Ok(Err(ipc_error)) => {
+                    return Err(WebDriverError::new(
                         ErrorStatus::UnknownError,
-                        "Unexpected load status received while waiting for document ready state",
-                    )),
-                }
-            },
-            recv(timeout_channel) -> _ => Err(
-                WebDriverError::new(ErrorStatus::Timeout, "Load timed out")
-            ),
+                        format!("Load status channel ipc error: {ipc_error}"),
+                    ));
+                },
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(WebDriverError::new(ErrorStatus::Timeout, "Load timed out"));
+                },
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(WebDriverError::new(
+                        ErrorStatus::UnknownError,
+                        "Load status channel disconnected",
+                    ));
+                },
+            }
         }
     }
 
@@ -845,8 +892,13 @@ impl Handler {
             // If the load status is blocked, it means a user prompt is shown.
             // We should handle the user prompt in the next command.
             WebDriverLoadStatus::Blocked => Ok(WebDriverResponse::Void),
+            // BAO PATCH (REQ-BRW-051): a terminal edge of a navigation that
+            // completed before this `try_recv` (fast load / same-document
+            // navigation) is not an error — the spec only waits while a
+            // navigation attempt is ongoing. Reaching here used to hit
+            // `unreachable!()` and kill the WebDriver HTTP thread.
             WebDriverLoadStatus::NavigationStop | WebDriverLoadStatus::Complete => {
-                unreachable!("Unexpected load status received")
+                Ok(WebDriverResponse::Void)
             },
         }
     }
@@ -2307,12 +2359,15 @@ impl Handler {
 
                 // Step 11. Try to wait for navigation to complete with session.
                 // Check if there is a navigation with script
-                let res = self.wait_for_navigation()?;
+                let res = self.wait_for_navigation();
 
-                // Clear the load status sender
+                // Clear the load status sender even when the wait failed
+                // (BAO PATCH REQ-BRW-051): a timeout must not leave the
+                // element-click load-status plumbing registered, otherwise
+                // the next command's fresh registration races a stale one.
                 self.clear_load_status_sender()?;
 
-                Ok(res)
+                res
             },
             // Step 13
             None => Ok(WebDriverResponse::Void),

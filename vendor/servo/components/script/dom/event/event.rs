@@ -46,6 +46,7 @@ use crate::dom::html::htmlslotelement::HTMLSlotElement;
 use crate::dom::mouseevent::MouseEvent;
 use crate::dom::node::virtualmethods::vtable_for;
 use crate::dom::node::{Node, NodeTraits};
+use crate::dom::performance::long_animation_frame_recorder;
 use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::types::{KeyboardEvent, PointerEvent, UserActivation};
 use crate::dom::window::Window;
@@ -328,6 +329,15 @@ impl Event {
         }
 
         let mut target = DomRoot::from_ref(target);
+
+        // Long animation frames report the timestamp of the first trusted UI
+        // event that contributed to the frame.
+        if self.is_trusted.get() &&
+            long_animation_frame_recorder::is_ui_event_type(&self.type_()) &&
+            let Some(window) = target.global().downcast::<Window>()
+        {
+            long_animation_frame_recorder::note_ui_event(window.pipeline_id(), self.time_stamp);
+        }
 
         // Save the original dispatch target. Keyboard default actions need the
         // element the event was originally fired on, not the retargeted host.

@@ -37,6 +37,7 @@ use crate::dom::characterdata::CharacterData;
 use crate::dom::css::cssstyledeclaration::{
     CSSModificationAccess, CSSStyleDeclaration, CSSStyleOwner,
 };
+use crate::dom::css::stylepropertymap::StylePropertyMap;
 use crate::dom::customelementregistry::{
     CallbackReaction, CustomElementRegistry, CustomElementState,
 };
@@ -109,6 +110,10 @@ pub(crate) struct HTMLElement {
     /// The associated [`EditContext`], set via the `editContext` attribute
     /// (<https://w3c.github.io/edit-context/#dom-htmlelement-editcontext>).
     edit_context: MutNullableDom<EditContext>,
+    /// <https://drafts.css-houdini.org/css-typed-om-1/#dom-elementcssinlinestyle-attributestylemap>
+    ///
+    /// Bao fork self-build (REQ-BRW-051 C2): lazy `attributeStyleMap`.
+    attribute_style_map: MutNullableDom<StylePropertyMap>,
 }
 
 impl HTMLElement {
@@ -137,6 +142,7 @@ impl HTMLElement {
             style_decl: Default::default(),
             dataset: Default::default(),
             edit_context: Default::default(),
+            attribute_style_map: Default::default(),
         }
     }
 
@@ -288,6 +294,17 @@ impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
         })
     }
 
+    /// <https://drafts.css-houdini.org/css-typed-om-1/#dom-elementcssinlinestyle-attributestylemap>
+    ///
+    /// Bao fork self-build (REQ-BRW-051 C2): a mutable `StylePropertyMap`
+    /// backed by the element's inline style declaration.
+    fn AttributeStyleMap(&self, cx: &mut JSContext) -> DomRoot<StylePropertyMap> {
+        self.attribute_style_map.or_init(|| {
+            let declaration = self.Style(cx);
+            StylePropertyMap::new(cx, &self.owner_global(), declaration)
+        })
+    }
+
     // https://html.spec.whatwg.org/multipage/#attr-title
     make_getter!(Title, "title");
     // https://html.spec.whatwg.org/multipage/#attr-title
@@ -320,7 +337,7 @@ impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-dataset>
     fn Dataset(&self, cx: &mut JSContext) -> DomRoot<DOMStringMap> {
-        self.dataset.or_init(|| DOMStringMap::new(cx, self))
+        self.dataset.or_init(|| DOMStringMap::new(cx, self.upcast()))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#handler-onerror>

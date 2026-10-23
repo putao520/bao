@@ -130,11 +130,12 @@ fn util_inspect_shape_arms() {
         check("inspect_circular_object_depth_capped", function() {
             var o = {name: 'root'};
             o.self = o;
-            // No cycle set on the plain-object path — the depth cap is the
-            // only guard: the SAME object re-expands (name included) until
-            // depth 0 renders '[Object]'.
-            return util.inspect(o)
-                === "{ name: 'root', self: { name: 'root', self: { name: 'root', self: [Object] } } }";
+            // node v24.19.0 oracle (2026-10-23, local binary): self-cycles
+            // fold at EVERY depth — "<ref *1> { name: 'root', self:
+            // [Circular *1] }" — the R7 ancestor-seen folding IS node
+            // semantics. The former pin (re-expansion until the depth cap
+            // renders '[Object]') predates the R7 root fix.
+            return util.inspect(o) === "<ref *1> { name: 'root', self: [Circular *1] }";
         });
 
         // Primitives: strings quoted, others bare.
@@ -623,10 +624,14 @@ fn assert_spec_forms_matrix() {
         var assert = require('assert');
 
         // throws with a class spec: wrong class → AssertionError.
+        // node v24.19.0 oracle (2026-10-23, local binary): the generated
+        // message is "The error is expected to be an instance of
+        // \"RangeError\". Received \"TypeError\"\n\nError message:\n\nt".
         check("throws_wrong_class", function() {
             try { assert.throws(function() { throw new TypeError('t'); }, RangeError); return false; }
             catch (e) {
-                return e.name === 'AssertionError' && String(e.message).indexOf('Wrong error type') !== -1;
+                return e.name === 'AssertionError'
+                    && String(e.message).indexOf('expected to be an instance of') !== -1;
             }
         });
         // throws with a regex spec: message mismatch → AssertionError.
@@ -658,10 +663,13 @@ fn assert_spec_forms_matrix() {
             try { assert.notStrictEqual(1, 1); return false; }
             catch (e) { return e.name === 'AssertionError'; }
         });
+        // node v24.19.0 oracle (2026-10-23, local binary):
+        // strictEqual(1, 2) → "Expected values to be strictly equal:\n\n1 !== 2\n"
+        // — the generated message joins with the UNEQUAL operator.
         check("strictEqual_diff_message_inline", function() {
             try { assert.strictEqual(1, 2); return false; }
             catch (e) {
-                return String(e.message).indexOf('1 === 2') !== -1;
+                return String(e.message).indexOf('1 !== 2') !== -1;
             }
         });
         // deepStrictEqual object failure renders the diff body.
@@ -672,17 +680,24 @@ fn assert_spec_forms_matrix() {
                 return m.indexOf('+ actual - expected') !== -1 && m.indexOf('a:') !== -1;
             }
         });
-        // match / doesNotMatch, incl. the string→RegExp coercion arm.
+        // match / doesNotMatch. node v24.19.0 oracle (2026-10-23, local
+        // binary): a string regexp argument is NOT coerced — TypeError
+        // ERR_INVALID_ARG_TYPE "The \"regexp\" argument must be an instance
+        // of RegExp. Received type string ('b')".
         check("match_ok_and_string_coercion", function() {
             assert.match('abc', /b/);
-            assert.match('abc', 'b');
-            return true;
+            try { assert.match('abc', 'b'); return false; }
+            catch (e) {
+                return e instanceof TypeError && e.code === 'ERR_INVALID_ARG_TYPE';
+            }
         });
+        // node v24.19.0 oracle (2026-10-23): the generated message reads
+        // "The input did not match the regular expression /z/. Input:...".
         check("match_failure_throws", function() {
             try { assert.match('abc', /z/); return false; }
             catch (e) {
                 return e.name === 'AssertionError'
-                    && String(e.message).indexOf('pattern') !== -1;
+                    && String(e.message).indexOf('regular expression') !== -1;
             }
         });
         check("doesNotMatch_failure_throws", function() {
@@ -715,11 +730,20 @@ fn assert_spec_forms_matrix() {
             tracker.verify();
             return typeof tracker.calls === 'function';
         });
-        // ok falsy value message arm.
+        // ok falsy value message arm. node v24.19.0 (getErrMessage, read
+        // from the embedded internal/assert/utils source via
+        // --expose-internals): the "The expression evaluated to a falsy
+        // value" form requires recovering the CALL-SITE SOURCE EXPRESSION
+        // from the V8 stack; when the source is unrecoverable getErrMessage
+        // returns undefined and the AssertionError falls back to the
+        // operator join — "0 == true". SpiderMonkey frames carry no source
+        // text, so the reachable node-parity form on bao is the operator
+        // join (node's own no-source fallback).
         check("ok_falsy_message", function() {
             try { assert.ok(0); return false; }
             catch (e) {
-                return String(e.message).indexOf('falsy') !== -1;
+                return e.name === 'AssertionError'
+                    && String(e.message).indexOf('0 == true') !== -1;
             }
         });
         "#
@@ -753,7 +777,12 @@ fn assert_async_rejects_matrix() {
         assert.rejects(function() { return Promise.reject(new Error('needle-here')); }, /needle/)
             .then(track('regex:true'), trackErr('regex'));
 
-        // 4. rejects with string spec — includes on message.
+        // 4. rejects with string spec identical to the rejection message —
+        // node v24.19.0 oracle (2026-10-23, local binary): TypeError
+        // ERR_INVALID_ARG_TYPE "The \"error/message\" argument is ambiguous.
+        // The error message \"str-needle\" is identical to the message."
+        // (a string spec DIFFERENT from the message is a valid includes-
+        // check; the identical string is the classic misuse node rejects).
         assert.rejects(function() { return Promise.reject(new Error('str-needle')); }, 'str-needle')
             .then(track('string:true'), trackErr('string'));
 
@@ -761,12 +790,12 @@ fn assert_async_rejects_matrix() {
         assert.rejects(function() { return Promise.reject(Object.assign(new Error('o'), {code: 'E1'})); }, {code: 'E1'})
             .then(track('obj:true'), trackErr('obj'));
 
-        // 6. rejects with validator function spec. IMPLEMENTATION DIVERGENCE
-        // (registered in the C8b report): the assert IIFE's _matchSpec treats
-        // ANY spec with `.prototype !== undefined` as a class — a plain
-        // validator function always has one, so node's validator-function
-        // form (prototype instanceof Error discriminator) is never invoked
-        // and the rejection reads as NOMATCH.
+        // 6. rejects with validator function spec. node v24.19.0 oracle
+        // (2026-10-23, local binary): a validator function returning true
+        // PASSES the rejection (the class arm requires an Error-prototype
+        // discriminator, so a plain function falls to the validator arm).
+        // The former C8b-registered divergence (validator read as class →
+        // NOMATCH) no longer exists in the implementation.
         assert.rejects(function() { return Promise.reject(new Error('v')); }, function(e) { return e.message === 'v'; })
             .then(track('validator:ok'), trackErr('validator'));
 
@@ -810,8 +839,12 @@ fn assert_async_rejects_matrix() {
         "obj:true",
         "regex:true",
         "resolved:AssertionError",
-        "string:true",
-        "validator:AssertionError",
+        // node v24.19.0 oracle 2026-10-23: identical-string spec → the
+        // ambiguous-argument TypeError, not a match.
+        "string:TypeError",
+        // node v24.19.0 oracle 2026-10-23: validator fn returning true
+        // passes → the resolve path fires (track pushes `validator:ok:<v>`).
+        "validator:ok",
     ] {
         assert!(
             results.contains(expected),

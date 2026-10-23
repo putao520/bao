@@ -25,6 +25,7 @@ use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom};
 use crate::dom::css::cssstyledeclaration::{
     CSSModificationAccess, CSSStyleDeclaration, CSSStyleOwner,
 };
+use crate::dom::css::stylepropertymap::StylePropertyMap;
 use crate::dom::document::Document;
 use crate::dom::document::focus::FocusableArea;
 use crate::dom::element::attributes::storage::AttrRef;
@@ -44,6 +45,10 @@ use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollRequirement};
 pub(crate) struct SVGElement {
     element: Element,
     style_decl: MutNullableDom<CSSStyleDeclaration>,
+    /// <https://drafts.css-houdini.org/css-typed-om-1/#dom-elementcssinlinestyle-attributestylemap>
+    ///
+    /// Bao fork self-build (REQ-BRW-051 C2): lazy `attributeStyleMap`.
+    attribute_style_map: MutNullableDom<StylePropertyMap>,
 }
 
 impl SVGElement {
@@ -64,6 +69,7 @@ impl SVGElement {
         SVGElement {
             element: Element::new_inherited_with_state(state, tag_name, ns!(svg), prefix, document),
             style_decl: Default::default(),
+            attribute_style_map: Default::default(),
         }
     }
 
@@ -161,6 +167,17 @@ impl SVGElementMethods<crate::DomTypeHolder> for SVGElement {
                 None,
                 CSSModificationAccess::ReadWrite,
             )
+        })
+    }
+
+    /// <https://drafts.css-houdini.org/css-typed-om-1/#dom-elementcssinlinestyle-attributestylemap>
+    ///
+    /// Bao fork self-build (REQ-BRW-051 C2): a mutable `StylePropertyMap`
+    /// backed by the element's inline style declaration.
+    fn AttributeStyleMap(&self, cx: &mut JSContext) -> DomRoot<StylePropertyMap> {
+        self.attribute_style_map.or_init(|| {
+            let declaration = self.Style(cx);
+            StylePropertyMap::new(cx, &self.owner_global(), declaration)
         })
     }
 

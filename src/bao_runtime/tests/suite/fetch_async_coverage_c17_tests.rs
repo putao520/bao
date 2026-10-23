@@ -17,11 +17,9 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bao_engine::context::JsContext;
-use bun_runtime::timers;
-use mozjs::rooted;
 #[path = "common/mod.rs"]
 mod common;
 
@@ -48,39 +46,16 @@ fn spawn_one_shot_server(status_line: &str, extra_headers: &str) -> u16 {
     port
 }
 
-/// Two-part pump (abort_signal_timeout_tests idiom): realm-entered
-/// drain_and_check for timer wheels, MiniEventLoop tick + RunJobs for the
-/// FetchTasklet ConcurrentTasks; polls until the marker leaves PENDING.
+/// Settle-pump delegate: the unified suite pump (`common::pump_until`) with
+/// the file's historical 2ms settle rhythm and "marker left PENDING" exit —
+/// same three actuators per tick (realm-entered timer drain, MiniEventLoop
+/// tick, RunJobs) plus the no-progress tripwire that turns a stalled settle
+/// into a `PumpStuck` FAIL naming the frozen poll value instead of a silent
+/// hang.
 fn pump_until_settled(ctx: &mut JsContext, poll_js: &str, timeout: Duration) -> String {
-    let cx_raw = ctx.raw_cx();
-    let deadline = Instant::now() + timeout;
-    let mut final_poll = String::new();
-    while Instant::now() < deadline {
-        {
-            let mut cxm = ctx.cx();
-            let global = bao_engine::context::thread_realm_global();
-            if let Some(g) = global {
-                rooted!(&in(cxm) let g_root = g);
-                let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-                let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-                timers::drain_and_check(realm_cx);
-            } else {
-                timers::drain_and_check(&mut cxm);
-            }
-        }
-        timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        std::thread::sleep(Duration::from_millis(2));
-        final_poll = eval_string(ctx, poll_js);
-        if !final_poll.contains("PENDING") {
-            break;
-        }
-    }
-    final_poll
+    common::pump_until(ctx, poll_js, timeout, common::eval_string_full, |poll| {
+        !poll.contains("PENDING")
+    })
 }
 
 fn fresh_ctx() -> JsContext {

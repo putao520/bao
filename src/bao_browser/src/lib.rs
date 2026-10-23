@@ -493,6 +493,28 @@ impl BrowserRuntime {
         // User ruling 2026-10-08 ruling A (e150 campaign root finding).
         // Same flip precedent as the eight above.
         preferences.dom_exec_command_enabled = true;
+        // `dom_bluetooth_enabled` defaults to false upstream; the vendor Web
+        // Bluetooth implementation is real (script/dom/bluetooth/* + the
+        // bao-servo-bluetooth backend + 10 pref-gated webidls), and the cargo
+        // `bluetooth` feature (Cargo.toml `servo` dependency) is the compile
+        // gate — this pref is the last gate for the DOM exposure axis. Real
+        // Chrome/Firefox expose `navigator.bluetooth` and `BluetoothUUID` on
+        // every page; their absence is itself a fingerprint signal
+        // (anti-fingerprint constitution A). REQ-BRW-051.
+        //
+        // `native-bluetooth` (btleplug + OS Bluetooth stack) stays OFF: the
+        // component's default `bluetooth-test` backend is pure Rust, and with
+        // no adapter `getAvailability()` resolves false / `requestDevice()`
+        // rejects with NotFound — exactly headless-Chrome behaviour (WPT's
+        // own `adapter-absent-getAvailability` expectation). Enabling the
+        // native backend is a per-platform system-library decision, not part
+        // of the API-surface wave.
+        //
+        // `dom_bluetooth_testing_enabled` (the non-standard `TestRunner` /
+        // `window.testRunner` surface) stays OFF — it is a test-only global
+        // and a fingerprint of its own. WPT/wptrunner can flip it per run via
+        // `--pref` (the `servo/prefs/set` WebDriver extension).
+        preferences.dom_bluetooth_enabled = true;
 
         // CLI pref overrides (user ruling 2026-10-08 ruling A): applied on
         // top of the curated flips. `Servo::new` ends with
@@ -782,6 +804,10 @@ impl BrowserRuntime {
     pub fn create_webdriver_page(&self, url: url::Url) -> Option<(servo::WebViewId, PageHandle)> {
         let config = PageConfig {
             url: Some(url.to_string()),
+            // WebDriver/WPT face = explicit stealth-free exit (显式退出面,
+            // user ruling 2026-10-21; the default identity would perturb the
+            // conformance baseline).
+            stealth_disabled: true,
             ..Default::default()
         };
         let page = self.create_page(&config).ok()?;
@@ -1497,7 +1523,6 @@ fn bao_execution_control_armer<'a>(
 }
 
 pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
-    let _stealth = config.stealth_profile.is_some();
     let url = config.url.clone();
     let webdriver_port = config.webdriver_port;
     let bao_config: BaoConfig = config.into();
@@ -1505,10 +1530,16 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
 
     let runtime = BrowserRuntime::new(bao_config)?;
 
-    // Create initial page
+    // Create initial page. Stealth identity resolves through the pool chain
+    // (user ruling 2026-10-21: 默认 = 随机身份): no explicit profile here →
+    // the runtime-level choice (CLI `--stealth` → firefox preset) or the
+    // process-wide random default identity. The WPT/WebDriver face is the
+    // explicit stealth-free exit (显式退出面): wptrunner asserts exact
+    // web-platform values (navigator/screen/canvas) — fingerprint overrides
+    // would perturb the conformance baseline.
     let page_config = PageConfig {
         url: url.clone(),
-        stealth_profile: None,
+        stealth_disabled: webdriver_port.is_some(),
         ..Default::default()
     };
     let page = runtime.create_page(&page_config)?;

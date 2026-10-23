@@ -408,8 +408,10 @@ fn object_protocol_phase(ws_url: String, done: Arc<AtomicBool>) {
     assert_eq!(answer["value"]["type"], "number");
     assert_eq!(answer["value"]["value"], 42);
 
-    // 8. releaseObject drops the entry: a follow-up getProperties sees an
-    //    unregistered object (empty result), proving the release landed.
+    // 8. releaseObject drops the entry: a follow-up getProperties on the
+    //    released id is Chrome's -32000 "Could not find object with given
+    //    id" (Chrome 155 oracle, measured) — an explicit error, never a
+    //    silent empty success. It proves the release landed.
     let resp = cdp.send(
         "Runtime.releaseObject",
         json!({ "objectId": oid2 }),
@@ -419,10 +421,16 @@ fn object_protocol_phase(ws_url: String, done: Arc<AtomicBool>) {
         "Runtime.getProperties",
         json!({ "objectId": oid2, "ownProperties": true }),
     );
-    assert!(resp.get("error").is_none());
-    assert_eq!(
-        resp["result"]["result"], json!([]),
-        "released objectId must no longer resolve"
+    let err = resp
+        .get("error")
+        .unwrap_or_else(|| panic!("released objectId must be an explicit error: {resp}"));
+    assert_eq!(err["code"], json!(-32000), "Chrome ServerError class: {err}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Could not find object with given id"),
+        "Chrome message form: {err}"
     );
 
     // 9. releaseObjectGroup: entries minted under objectGroup are freed
@@ -449,9 +457,206 @@ fn object_protocol_phase(ws_url: String, done: Arc<AtomicBool>) {
         "Runtime.getProperties",
         json!({ "objectId": grouped_oid, "ownProperties": true }),
     );
+    let err = resp
+        .get("error")
+        .unwrap_or_else(|| panic!("released group entries must not resolve: {resp}"));
+    assert_eq!(err["code"], json!(-32000), "Chrome ServerError class: {err}");
+
+    done.store(true, Ordering::Relaxed);
+}
+
+/// REQ-CDP-010 stop-report ② live face (Chrome 155 oracle parity): a thrown
+/// Error's by-value result carries a REAL registry objectId that survives
+/// into the NEXT commands — getProperties enumerates message/stack, and
+/// callFunctionOn on it reads `this.message` — and Runtime.getProperties on
+/// a released (missing) objectId is Chrome's explicit -32000 rather than a
+/// silent empty list.
+fn by_value_thrown_object_id_phase(ws_url: String, done: Arc<AtomicBool>) {
+    let mut cdp = WsCdp::connect(&ws_url);
+    let html = "<html><body><div id='d'>ok</div></body></html>";
+    let url = format!("data:text/html;charset=utf-8,{html}");
+    let resp = cdp.send("Page.navigate", json!({ "url": url }));
+    assert!(resp.get("error").is_none(), "navigate: {resp}");
+    let mut ready = false;
+    for _ in 0..200 {
+        let r = cdp.send(
+            "Runtime.evaluate",
+            json!({ "expression": "!!document.getElementById('d')", "returnByValue": true }),
+        );
+        if r["result"]["result"]["value"] == json!(true) {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(ready, "document never became ready");
+
+    // Thrown Error, returnByValue=true → result is the Error RemoteObject
+    // with a registry objectId (stop-report ② was exactly this absence).
+    let resp = cdp.send(
+        "Runtime.evaluate",
+        json!({ "expression": "throw new Error('reach-live')", "returnByValue": true }),
+    );
+    assert!(resp.get("error").is_none(), "throw face must succeed: {resp}");
+    let face = &resp["result"]["result"];
+    assert_eq!(face["type"], json!("object"), "Error RemoteObject: {resp}");
+    assert_eq!(face["subtype"], json!("error"));
+    assert_eq!(face["className"], json!("Error"));
+    let oid = face["objectId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("thrown Error by-value face must carry an objectId: {resp}"))
+        .to_string();
+    assert_ne!(oid, "", "objectId must be non-empty");
+
+    // Cross-call reachability: getProperties enumerates the error's props.
+    let resp = cdp.send(
+        "Runtime.getProperties",
+        json!({ "objectId": oid, "ownProperties": true }),
+    );
+    assert!(resp.get("error").is_none(), "getProperties: {resp}");
+    let names: Vec<&str> = resp["result"]["result"]
+        .as_array()
+        .expect("props array")
+        .iter()
+        .map(|p| p["name"].as_str().unwrap_or(""))
+        .collect();
+    // The thrown Error's own enumerable properties are the data slots the
+    // exception carries (message + fileName/lineNumber/columnNumber); `stack`
+    // is NOT an own property (it lives in ExceptionDetails.stackTrace).
+    assert!(
+        names.contains(&"message"),
+        "the thrown Error's own properties must enumerate: {names:?}"
+    );
+
+    // callFunctionOn reaches the SAME object across the calls.
+    let resp = cdp.send(
+        "Runtime.callFunctionOn",
+        json!({
+            "objectId": oid,
+            "functionDeclaration": "function() { return this.message; }",
+            "returnByValue": true,
+        }),
+    );
+    assert!(resp.get("error").is_none(), "callFunctionOn: {resp}");
     assert_eq!(
-        resp["result"]["result"], json!([]),
-        "released group entries must no longer resolve"
+        resp["result"]["result"]["value"], json!("reach-live"),
+        "the handle must resolve to the same Error across calls"
+    );
+
+    // Chrome oracle parity on the missing-id face: -32000, explicit.
+    let resp = cdp.send("Runtime.releaseObject", json!({ "objectId": oid }));
+    assert!(resp.get("error").is_none(), "releaseObject: {resp}");
+    let resp = cdp.send(
+        "Runtime.getProperties",
+        json!({ "objectId": oid, "ownProperties": true }),
+    );
+    let err = resp
+        .get("error")
+        .unwrap_or_else(|| panic!("released id must be an explicit error: {resp}"));
+    assert_eq!(err["code"], json!(-32000));
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Could not find object with given id")
+    );
+
+    // Thrown PRIMITIVE stays a value face (Chrome oracle: result.type is the
+    // value's own type, no objectId).
+    let resp = cdp.send(
+        "Runtime.evaluate",
+        json!({ "expression": "throw 'plain-string'", "returnByValue": true }),
+    );
+    assert!(resp.get("error").is_none(), "primitive throw: {resp}");
+    assert_eq!(resp["result"]["result"]["type"], json!("string"));
+    assert_eq!(resp["result"]["result"]["value"], json!("plain-string"));
+
+    // Serialization failures are Chrome's -32000 class at the command level.
+    let resp = cdp.send(
+        "Runtime.evaluate",
+        json!({ "expression": "var a = {}; a.self = a; a", "returnByValue": true }),
+    );
+    let err = resp
+        .get("error")
+        .unwrap_or_else(|| panic!("cyclic by-value must be a command error: {resp}"));
+    assert_eq!(err["code"], json!(-32000));
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Object reference chain is too long")
+    );
+
+    done.store(true, Ordering::Relaxed);
+}
+
+/// REQ-CDP-010 per-load loader registry live face (Chrome 155 oracle
+/// parity): Page.getFrameTree always carries a loaderId — including the
+/// initial about:blank load — and it is the SAME identity Page.navigate
+/// reported for that load; a second navigation and a reload each mint a
+/// fresh identity visible through getFrameTree. Page.reload's own response
+/// is the empty object (Chrome oracle).
+fn loader_id_registry_phase(ws_url: String, done: Arc<AtomicBool>) {
+    let mut cdp = WsCdp::connect(&ws_url);
+
+    let frame_loader = |cdp: &mut WsCdp| -> String {
+        let resp = cdp.send("Page.getFrameTree", json!({}));
+        assert!(resp.get("error").is_none(), "getFrameTree: {resp}");
+        resp["result"]["frameTree"]["frame"]["loaderId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("getFrameTree must carry loaderId: {resp}"))
+            .to_string()
+    };
+
+    // Initial about:blank load: Chrome reports a loaderId for it too.
+    let initial = frame_loader(&mut cdp);
+    assert_eq!(initial.len(), 32, "Chrome-shaped 32-hex loaderId: {initial}");
+    assert!(
+        initial
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()),
+        "uppercase hex loaderId: {initial}"
+    );
+
+    // Navigation 1: the response and the frame carry ONE identity.
+    let a = "data:text/html,<title>A</title><p>a</p>";
+    let resp = cdp.send("Page.navigate", json!({ "url": a }));
+    assert!(resp.get("error").is_none(), "navigate 1: {resp}");
+    let nav1 = resp["result"]["loaderId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("navigate must report loaderId: {resp}"))
+        .to_string();
+    assert_ne!(nav1, initial, "a navigation mints a new load identity");
+    assert_eq!(
+        frame_loader(&mut cdp),
+        nav1,
+        "getFrameTree reports the same per-load identity navigate reported"
+    );
+
+    // Navigation 2: fresh identity, frame follows.
+    let b = "data:text/html,<title>B</title><p>b</p>";
+    let resp = cdp.send("Page.navigate", json!({ "url": b }));
+    assert!(resp.get("error").is_none(), "navigate 2: {resp}");
+    let nav2 = resp["result"]["loaderId"]
+        .as_str()
+        .expect("navigate 2 loaderId")
+        .to_string();
+    assert_ne!(nav2, nav1);
+    assert_eq!(frame_loader(&mut cdp), nav2);
+
+    // Reload: Chrome's response is the empty object; the new load identity
+    // is observable through getFrameTree (re-minted at the navigation seam).
+    let resp = cdp.send("Page.reload", json!({}));
+    assert!(resp.get("error").is_none(), "reload: {resp}");
+    assert_eq!(
+        resp["result"],
+        json!({}),
+        "Page.reload returns the empty object (Chrome 155 oracle)"
+    );
+    let after_reload = frame_loader(&mut cdp);
+    assert_ne!(
+        after_reload, nav2,
+        "reload must mint a new per-load identity"
     );
 
     done.store(true, Ordering::Relaxed);
@@ -586,6 +791,77 @@ fn ws_runtime_object_protocol_roundtrip() {
         done.load(Ordering::Relaxed),
         "object protocol phase must have completed all assertions"
     );
+}
+
+/// Live dual-thread harness shared by the REQ-CDP-010 parity phases
+/// (production wiring: real servo spin + bridge drain + event translation).
+fn run_live_phase(phase: fn(String, Arc<AtomicBool>)) {
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: None,
+            ..Default::default()
+        })
+        .expect("initial page");
+
+    let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
+    let (event_tx, servo_event_rx) = bao_ipc::unbounded::<bao_cdp_client::bridge::ServoEvent>();
+    runtime.set_event_channel(event_tx);
+
+    let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
+    let port = pick_free_port();
+    let server_config = ServerConfig::builder()
+        .host("127.0.0.1")
+        .port(port)
+        .build();
+    let mut server = CdpServer::with_registry(server_config, registry);
+    server.set_target_provider(Arc::new(ServoTargetProvider::new(
+        bridge_tx,
+        page.id().to_string(),
+        "127.0.0.1".into(),
+        port,
+    )));
+    let broadcaster = server.broadcaster();
+    std::thread::spawn(move || {
+        let _ = server.run();
+    });
+
+    let ws_url = format!("ws://127.0.0.1:{port}/devtools/page/{}", page.id());
+
+    let done = Arc::new(AtomicBool::new(false));
+    let client = {
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || phase(ws_url, done))
+    };
+
+    use bao_cdp_client::bridge::translate;
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while !done.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+        runtime.spin_event_loop();
+        bridge_rx.drain(|cmd| handle_bridge_command(cmd, runtime.page_pool()));
+        while let Ok(servo_event) = servo_event_rx.try_recv() {
+            for cdp_event in translate(servo_event) {
+                broadcaster.send_event(&cdp_event.method, cdp_event.params);
+            }
+        }
+        std::thread::yield_now();
+    }
+
+    client.join().expect("phase must not panic");
+    assert!(
+        done.load(Ordering::Relaxed),
+        "phase must have completed all assertions"
+    );
+}
+
+#[test]
+fn ws_by_value_thrown_error_object_id_roundtrip() {
+    run_live_phase(by_value_thrown_object_id_phase);
+}
+
+#[test]
+fn ws_page_get_frame_tree_loader_id_per_load_registry() {
+    run_live_phase(loader_id_registry_phase);
 }
 
 /// Regression for the ws_registry unit face: the Fetch domain dispatches as a

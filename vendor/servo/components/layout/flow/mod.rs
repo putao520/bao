@@ -47,7 +47,19 @@ use crate::{ConstraintSpace, ContainingBlock, ContainingBlockSize, IndefiniteCon
 mod construct;
 pub mod float;
 pub mod inline;
+// BAO patch (fork-maintained, 2026-10-21): CSS Multi-column layout
+// (REQ-BRW-051 C2). `multicol` owns the column formatting context and the
+// column fragmentation of the block flow; `columns` is its pure, test-covered
+// geometry surface. See `flow/multicol/mod.rs` for the specification map and
+// the registered scope boundaries.
+pub mod multicol;
+// BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): the MathML
+// formatting context (`mfrac`, the script/limit schemata, `mtable`, `mspace`).
+// See `flow/mathml/mod.rs` for the specification map and the registered scope
+// boundaries.
+pub mod mathml;
 mod root;
+pub mod ruby;
 mod same_formatting_context_block;
 
 pub(crate) use construct::{BlockContainerBuilder, BlockLevelCreator};
@@ -98,6 +110,31 @@ impl BlockContainer {
             BlockContainer::InlineFormattingContext(inline_formatting_context) => {
                 inline_formatting_context.subtree_size()
             },
+        }
+    }
+
+    /// The style of the first box of this container, if any.
+    ///
+    /// This is used to find the principal writing mode of the document, which is
+    /// the writing mode of the root element:
+    /// <https://drafts.csswg.org/css-writing-modes/#principal-flow>
+    pub(crate) fn style(
+        &self,
+        _layout_context: &LayoutContext,
+    ) -> Option<ServoArc<ComputedValues>> {
+        match self {
+            BlockContainer::BlockLevelBoxes(boxes) => boxes.first().map(|block_level_box| {
+                block_level_box
+                    .borrow()
+                    .with_base(|base| base.style.clone())
+            }),
+            BlockContainer::InlineFormattingContext(inline_formatting_context) => Some(
+                inline_formatting_context
+                    .shared_inline_styles
+                    .style
+                    .borrow()
+                    .clone(),
+            ),
         }
     }
 }
@@ -212,8 +249,8 @@ impl BlockLevelBox {
             BlockLevelBox::SameFormattingContextBlock(same_formatting_context_block) => {
                 same_formatting_context_block.layout_style()
             },
-            BlockLevelBox::OutOfFlowAbsolutelyPositionedBox(_) |
-            BlockLevelBox::OutOfFlowFloatBox(_) => return true,
+            BlockLevelBox::OutOfFlowAbsolutelyPositionedBox(_)
+            | BlockLevelBox::OutOfFlowFloatBox(_) => return true,
             BlockLevelBox::OutsideMarker(_) => return false,
             BlockLevelBox::Independent(context) => {
                 // FIXME: If the element doesn't fit next to floats, it will get clearance.
@@ -293,8 +330,8 @@ impl BlockLevelBox {
             return false;
         }
 
-        if !tentative_block_size.definite_or_min().is_zero() ||
-            !pbm.padding_border_sums.block.is_zero()
+        if !tentative_block_size.definite_or_min().is_zero()
+            || !pbm.padding_border_sums.block.is_zero()
         {
             return false;
         }
@@ -378,9 +415,9 @@ impl OutsideMarker {
             LayoutStyle::Default(&self.list_item_style).padding_border_margin(containing_block);
         let content_rect = LogicalRect {
             start_corner: LogicalVec2 {
-                inline: -max_inline_size -
-                    (pbm_of_list_item.border.inline_start +
-                        pbm_of_list_item.padding.inline_start),
+                inline: -max_inline_size
+                    - (pbm_of_list_item.border.inline_start
+                        + pbm_of_list_item.padding.inline_start),
                 block: Zero::zero(),
             },
             size: LogicalVec2 {
@@ -464,15 +501,16 @@ impl BlockFormattingContext {
             sequential_layout_state.calculate_clearance(Clear::Both, &CollapsedMargin::zero())
         });
 
-        let content_block_size = flow_layout.content_block_size +
-            flow_layout.collapsible_margins_in_children.end.solve() +
-            clearance.unwrap_or_default();
+        let content_block_size = flow_layout.content_block_size
+            + flow_layout.collapsible_margins_in_children.end.solve()
+            + clearance.unwrap_or_default();
 
         // Buttons center their contents in the block axis. Therefore, create an `AnonymousFragment`
         // that contains the fragments of the contents, and place it as desired.
         // TODO: Use `align-content` instead, see https://github.com/w3c/csswg-drafts/issues/14190
-        if let Some(base) = base &&
-            base.base_fragment_info
+        if let Some(base) = base
+            && base
+                .base_fragment_info
                 .flags
                 .contains(FragmentFlags::IS_BUTTON)
         {
@@ -544,8 +582,8 @@ fn compute_inline_content_sizes_for_block_level_boxes(
 ) -> InlineContentSizesResult {
     let get_box_info = |box_: &ArcRefCell<BlockLevelBox>| {
         match &*box_.borrow() {
-            BlockLevelBox::OutOfFlowAbsolutelyPositionedBox(_) |
-            BlockLevelBox::OutsideMarker { .. } => None,
+            BlockLevelBox::OutOfFlowAbsolutelyPositionedBox(_)
+            | BlockLevelBox::OutsideMarker { .. } => None,
             BlockLevelBox::OutOfFlowFloatBox(float_box) => {
                 let inline_content_sizes_result = float_box.contents.outer_inline_content_sizes(
                     layout_context,
@@ -1115,9 +1153,9 @@ impl IndependentFormattingContext {
         let content_rect = LogicalRect {
             start_corner: LogicalVec2 {
                 block: pbm.padding.block_start + pbm.border.block_start,
-                inline: pbm.padding.inline_start +
-                    pbm.border.inline_start +
-                    effective_margin_inline_start,
+                inline: pbm.padding.inline_start
+                    + pbm.border.inline_start
+                    + effective_margin_inline_start,
             },
             size: LogicalVec2 {
                 block: block_size,
@@ -1430,8 +1468,8 @@ impl IndependentFormattingContext {
         // prevent margin collapse.
         let has_clearance = clear_position.is_some() || placement_rect.start_corner.block > ceiling;
         let clearance = has_clearance.then(|| {
-            placement_rect.start_corner.block -
-                sequential_layout_state
+            placement_rect.start_corner.block
+                - sequential_layout_state
                     .position_with_zero_clearance(&collapsed_margin_block_start)
         });
 
@@ -1468,12 +1506,12 @@ impl IndependentFormattingContext {
 
         let content_rect = LogicalRect {
             start_corner: LogicalVec2 {
-                block: pbm.padding.block_start +
-                    pbm.border.block_start +
-                    clearance.unwrap_or_else(Au::zero),
-                inline: pbm.padding.inline_start +
-                    pbm.border.inline_start +
-                    effective_margin_inline_start,
+                block: pbm.padding.block_start
+                    + pbm.border.block_start
+                    + clearance.unwrap_or_else(Au::zero),
+                inline: pbm.padding.inline_start
+                    + pbm.border.inline_start
+                    + effective_margin_inline_start,
             },
             size: content_size,
         };
@@ -1573,12 +1611,34 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
     } = layout_style.content_box_sizes_and_padding_border_margin(&containing_block.into());
 
     let pbm_sums = pbm.sums_auto_is_zero(ignore_block_margins_for_stretch);
-    let available_inline_size = Au::zero().max(containing_block.size.inline - pbm_sums.inline);
-    let available_block_size = containing_block
-        .size
-        .block
-        .to_definite()
-        .map(|block_size| Au::zero().max(block_size - pbm_sums.block));
+
+    // The available space has to be expressed in this box's own logical axes.
+    // For an orthogonal flow the containing block size is mapped through
+    // physical space, which swaps the axes: the inline size available to the
+    // box is the containing block's block size.
+    // <https://drafts.csswg.org/css-writing-modes/#orthogonal-flows>
+    let (containing_block_inline_size, containing_block_block_size) =
+        if crate::writing_mode::is_orthogonal_flow(style, containing_block.style) {
+            (
+                containing_block.size.block.to_definite(),
+                Some(containing_block.size.inline),
+            )
+        } else {
+            (
+                Some(containing_block.size.inline),
+                containing_block.size.block.to_definite(),
+            )
+        };
+    let available_inline_size = containing_block_inline_size
+        .map(|inline_size| Au::zero().max(inline_size - pbm_sums.inline));
+    let available_block_size =
+        containing_block_block_size.map(|block_size| Au::zero().max(block_size - pbm_sums.block));
+    // The stretch size as a plain value for APIs that have not been converted to
+    // handle indefinite available inline sizes. For a same-orientation flow the
+    // containing block inline size is always definite, so this is only ever zero
+    // for an orthogonal flow with an indefinite containing block block size, where
+    // the box is sized to its content anyway.
+    let inline_stretch_size = available_inline_size.unwrap_or_default();
 
     // TODO: support preferred aspect ratios on boxes that don't establish an independent
     // formatting context.
@@ -1589,7 +1649,7 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
     // https://drafts.csswg.org/css2/#the-height-property
     // https://drafts.csswg.org/css2/visudet.html#min-max-heights
     let tentative_block_content_size = context.and_then(|context| {
-        context.tentative_block_content_size(preferred_aspect_ratio, available_inline_size)
+        context.tentative_block_content_size(preferred_aspect_ratio, inline_stretch_size)
     });
     let tentative_block_size = if let Some(block_content_size) = tentative_block_content_size {
         SizeConstraint::Definite(content_box_sizes.block.resolve(
@@ -1622,7 +1682,7 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
         Direction::Inline,
         automatic_inline_size(justify_self, context),
         Au::zero,
-        Some(available_inline_size),
+        available_inline_size,
         get_inline_content_sizes,
         is_table,
     );
@@ -1634,15 +1694,6 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
         },
         style,
     };
-    // https://drafts.csswg.org/css-writing-modes/#orthogonal-flows
-    assert_eq!(
-        containing_block.style.writing_mode.is_horizontal(),
-        containing_block_for_children
-            .style
-            .writing_mode
-            .is_horizontal(),
-        "Vertical writing modes are not supported yet"
-    );
     ContainingBlockPaddingAndBorder {
         containing_block: containing_block_for_children,
         pbm,
@@ -1739,8 +1790,8 @@ fn automatic_inline_size<T>(
                 .base
                 .base_fragment_info
                 .flags
-                .intersects(FragmentFlags::IS_REPLACED | FragmentFlags::IS_WIDGET) ||
-                context.is_table()
+                .intersects(FragmentFlags::IS_REPLACED | FragmentFlags::IS_WIDGET)
+                || context.is_table()
         })
     };
     match justify_self {
@@ -2044,7 +2095,8 @@ impl<'container> PlacementState<'container> {
                         inline: Au::zero(),
                         block: self.current_margin.solve() + self.current_block_direction_position,
                     }
-                    .to_physical_size(self.containing_block.style.writing_mode),
+                    .to_physical_translation(self.containing_block.style.writing_mode)
+                    .to_size(),
                 );
 
                 if fragment_block_margins.collapsed_through {
@@ -2064,8 +2116,8 @@ impl<'container> PlacementState<'container> {
                 // the static position rectangle does not matter.
                 fragment.borrow_mut().original_static_position_rect = LogicalRect {
                     start_corner: LogicalVec2 {
-                        block: (self.current_margin.solve() +
-                            self.current_block_direction_position),
+                        block: (self.current_margin.solve()
+                            + self.current_block_direction_position),
                         inline: Au::zero(),
                     },
                     size: LogicalVec2::zero(),
@@ -2143,16 +2195,34 @@ impl IndependentFormattingContext {
         let preferred_aspect_ratio = self.preferred_aspect_ratio(&pbm.padding_border_sums);
         let is_table = self.is_table();
 
-        let available_inline_size =
-            Au::zero().max(containing_block.size.inline - pbm_sums.inline_sum());
-        let available_block_size = containing_block
-            .size
-            .block
-            .to_definite()
+        // The available space expressed in the inline box's own logical axes. For
+        // an orthogonal flow this is the containing block's block size, mapped
+        // through physical space.
+        // <https://drafts.csswg.org/css-writing-modes/#orthogonal-flows>
+        let (containing_block_inline_size, containing_block_block_size) =
+            if crate::writing_mode::is_orthogonal_flow(style, containing_block.style) {
+                (
+                    containing_block.size.block.to_definite(),
+                    Some(containing_block.size.inline),
+                )
+            } else {
+                (
+                    Some(containing_block.size.inline),
+                    containing_block.size.block.to_definite(),
+                )
+            };
+        let available_inline_size = containing_block_inline_size
+            .map(|inline_size| Au::zero().max(inline_size - pbm_sums.inline_sum()));
+        let available_block_size = containing_block_block_size
             .map(|block_size| Au::zero().max(block_size - pbm_sums.block_sum()));
 
-        let tentative_block_content_size =
-            self.tentative_block_content_size(preferred_aspect_ratio, available_inline_size);
+        let tentative_block_content_size = self.tentative_block_content_size(
+            preferred_aspect_ratio,
+            // Same-orientation flows always have a definite inline size; only an
+            // orthogonal flow with an indefinite available inline size misses out,
+            // and those are content-sized anyway.
+            available_inline_size.unwrap_or_default(),
+        );
         let tentative_block_size = if let Some(block_content_size) = tentative_block_content_size {
             SizeConstraint::Definite(content_box_sizes_and_pbm.content_box_sizes.block.resolve(
                 Direction::Block,
@@ -2180,7 +2250,7 @@ impl IndependentFormattingContext {
             Direction::Inline,
             Size::FitContent,
             Au::zero,
-            Some(available_inline_size),
+            available_inline_size,
             get_content_size,
             is_table,
         );
@@ -2192,11 +2262,6 @@ impl IndependentFormattingContext {
             },
             style,
         };
-        assert_eq!(
-            container_writing_mode.is_horizontal(),
-            style.writing_mode.is_horizontal(),
-            "Mixed horizontal and vertical writing modes are not supported yet"
-        );
 
         let lazy_block_size = LazySize::new(
             &content_box_sizes_and_pbm.content_box_sizes.block,

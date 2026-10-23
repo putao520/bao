@@ -60,6 +60,7 @@ pub mod quality;
 pub mod request;
 pub(crate) mod resource_fetch_timing;
 pub mod response;
+pub mod sfv;
 pub use resource_fetch_timing::{
     RedirectEndValue, RedirectStartValue, ResourceAttribute, ResourceFetchTiming,
     ResourceFetchTimingContainer, ResourceTimeValue, ResourceTimingType,
@@ -941,6 +942,10 @@ pub enum MessageData {
 pub enum WebSocketDomAction {
     SendMessage(MessageData),
     Close(Option<u16>, Option<String>),
+    /// REQ-BRW-051: grant the network loop one read credit. The
+    /// `WebSocketStream` readable half sends this from its pull algorithm, so
+    /// data is only read from the socket when the consumer asks for it.
+    RequestRead,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -948,6 +953,10 @@ pub enum WebSocketNetworkEvent {
     ReportCSPViolations(Vec<csp::Violation>),
     ConnectionEstablished { protocol_in_use: Option<String> },
     MessageReceived(MessageData),
+    /// REQ-BRW-051: one `SendMessage` action has been fully written to the
+    /// socket. `WebSocketStream` uses this to resolve write promises (and so
+    /// to propagate backpressure); the classic `WebSocket` API ignores it.
+    SendComplete,
     Close(Option<u16>, String),
     Fail,
 }
@@ -959,10 +968,61 @@ pub enum FetchChannels {
     WebSocket {
         event_sender: ProfileGenericCallback<WebSocketNetworkEvent>,
         action_receiver: CallbackSetter<WebSocketDomAction>,
+        /// REQ-BRW-051: `true` for `WebSocketStream`, whose readable half is
+        /// demand-driven (one `RequestRead` credit per message delivered).
+        /// `false` for the classic `WebSocket` API, which reads eagerly.
+        flow_control: bool,
     },
     /// If the fetch is just being done to populate the cache,
     /// not because the data is needed now.
     Prefetch,
+}
+
+// ── BAO PATCH (REQ-BRW-051): WebBundle subresource-loading wire types ──
+//
+// `<script type=webbundle>` lives in the script thread (it owns the JSON rule,
+// the element lifetime, and the bundle fetch), while every subresource fetch
+// settles in the net thread. The registrations therefore cross the core
+// resource channel as these messages. The script side resolves rule URLs and
+// parses the bundle; the net side only registers/serves the already-decoded
+// responses (it does not depend on the `webbundle` parser crate).
+//
+// `loader_id` identifies the shared script-side loader (one per
+// `(bundle URL, credentials mode)` pair, adoptable by a new element during a
+// synchronous remove/append), `element_id` identifies one element registration.
+// Several elements may reference one loader; the newest registration wins.
+
+/// One element registration: the resolved `resources`/`scopes` of its rule.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WebBundleRule {
+    pub element_id: u64,
+    pub loader_id: u64,
+    pub bundle_url: ServoUrl,
+    /// Absolute URLs listed in the rule's `resources` member (already filtered
+    /// to same-origin-with-bundle and path-restricted entries, plus
+    /// `uuid-in-package:` URLs).
+    pub resources: Vec<ServoUrl>,
+    /// Absolute scope prefixes from the rule's `scopes` member.
+    pub scopes: Vec<ServoUrl>,
+}
+
+/// One decoded response stored in a bundle.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WebBundleResource {
+    pub url: ServoUrl,
+    pub status: u16,
+    pub headers: Serde<HeaderMap>,
+    pub body: Vec<u8>,
+}
+
+/// The successful load of one bundle: every response plus the bundle fetch's
+/// resource timing. Subresources served from this bundle report the bundle's
+/// timing (resource timing contract for web bundle subresources).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WebBundleLoaderData {
+    pub loader_id: u64,
+    pub resources: Vec<WebBundleResource>,
+    pub timing: ResourceFetchTiming,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -979,6 +1039,33 @@ pub enum CoreResourceMsg {
     /// variant — the channel-implied public/private routing is untouched for
     /// everything else, so un-partitioned pages keep the pre-C6 behavior.
     Partition(WebViewId, Box<CoreResourceMsg>),
+    /// BAO PATCH (REQ-BRW-051): register a `<script type=webbundle>` element's
+    /// rule. The loader starts out pending; later subresource requests whose
+    /// URL matches `resources` or `scopes` wait for the loader to settle
+    /// instead of racing the network. Registering an element id that is
+    /// already present replaces it and moves it to the newest position (the
+    /// "last added element must be referred" rule).
+    WebBundleRegister(PipelineId, WebBundleRule),
+    /// BAO PATCH (REQ-BRW-051): the bundle body parsed successfully; every
+    /// subresource served from it uses these responses and this timing.
+    WebBundleLoaded(PipelineId, WebBundleLoaderData),
+    /// BAO PATCH (REQ-BRW-051): the bundle fetch/parse failed. Requests that
+    /// were already waiting on the pending loader fail closed (they never fall
+    /// back to the network); the element registration is dropped by the script
+    /// side at the same time, so requests issued after the failure fall through
+    /// to the network (WPT nested-bundle).
+    WebBundleFailed(PipelineId, u64),
+    /// BAO PATCH (REQ-BRW-051): drop one element registration. Matching
+    /// in-flight requests that were waiting on this registration fail
+    /// immediately; the shared loader stays cached for a synchronous
+    /// remove/append.
+    WebBundleUnregister(PipelineId, u64),
+    /// BAO PATCH (REQ-BRW-051): the script-side loader was destroyed (orphan
+    /// cleanup or document teardown); free its net-side data.
+    WebBundleDropLoader(PipelineId, u64),
+    /// BAO PATCH (REQ-BRW-051): the document was destroyed; drop every
+    /// registration and loader belonging to this pipeline (one document).
+    WebBundleClearPipeline(PipelineId),
     /// Initiate a fetch in response to processing a redirection
     FetchRedirect(
         RequestBuilder,
@@ -1063,6 +1150,14 @@ pub enum CoreResourceMsg {
     CollectMemoryReport(ReportsChan),
     RevokeTokenForFile(BlobTokenRevocationRequest),
     RefreshTokenForFile(BlobTokenRefreshRequest),
+    // BAO PATCH (REQ-BRW-051): the `navigator.deviceBoundSession` query
+    // face — does the session store of `url`'s site (specifically: the
+    // calling page's cookie partition) hold at least one session?
+    DbscHasSession(ServoUrl, GenericCallback<bool>),
+    // BAO PATCH (REQ-BRW-051): the `navigator.deviceBoundSession.clearSession`
+    // face — end the identified session, or (identifier `None`) every
+    // session of `url`'s origin.
+    DbscClearSession(ServoUrl, Option<String>, GenericCallback<Result<(), String>>),
 }
 
 #[derive(Debug, Deserialize, MallocSizeOf, Serialize)]
@@ -1110,6 +1205,13 @@ enum ToFetchThreadMessage {
         /* core resource thread channel */ CoreResourceThread,
     ),
     FetchResponse(FetchResponseMsg),
+    /// BAO PATCH (REQ-BRW-051): a `<script type=webbundle>` registration
+    /// message. It rides the same FIFO as this thread's fetches so the
+    /// dispatch-time web bundle binding in the resource thread observes the
+    /// registrations in exactly the order the script issued them: a fetch
+    /// issued before an element removal is bound to that element, while a
+    /// fetch issued after the removal is not.
+    WebBundle(CoreResourceThread, CoreResourceMsg),
     /// Stop the background thread.
     Exit,
 }
@@ -1197,6 +1299,12 @@ impl FetchThread {
                     // process the second call. This should be handled by [`DeferredFetchRecord::process`]
                     assert!(preexisting_fetch.is_none());
                 },
+                Ok(ToFetchThreadMessage::WebBundle(core_resource_thread, message)) => {
+                    if core_resource_thread.send(message).is_err() {
+                        // Same shutdown assumption as `StartFetch` above.
+                        break;
+                    }
+                },
                 Ok(ToFetchThreadMessage::FetchResponse(fetch_response_msg)) => {
                     let request_id = fetch_response_msg.request_id();
                     let fetch_finished =
@@ -1265,6 +1373,33 @@ impl FetchThread {
         }
     }
 
+    /// BAO PATCH (REQ-BRW-051): enqueue a web bundle registration message on
+    /// the fetch thread's FIFO, respawning the multiplexer if it has exited
+    /// (mirrors `fetch_async`'s re-arm handling).
+    fn send_web_bundle_message(
+        core_resource_thread: &CoreResourceThread,
+        message: CoreResourceMsg,
+    ) {
+        let mut message = ToFetchThreadMessage::WebBundle(
+            core_resource_thread.clone(),
+            message,
+        );
+        let mut fetch_thread = FETCH_THREAD.lock().unwrap();
+        loop {
+            let Some(handle) = fetch_thread.as_ref() else {
+                *fetch_thread = Some(FetchThread::spawn());
+                continue;
+            };
+            match handle.sender.send(message) {
+                Ok(()) => return,
+                Err(send_error) => {
+                    message = send_error.0;
+                    *fetch_thread = Some(FetchThread::spawn());
+                },
+            }
+        }
+    }
+
     /// If the `FetchThread` is running, send the exit message and wait for it to exit.
     ///
     /// BAO NOTE (e134): this clears the slot, so a subsequent `fetch_async`
@@ -1313,6 +1448,16 @@ pub fn fetch_async(
     callback: BoxedFetchCallback,
 ) {
     FetchThread::fetch_async(core_resource_thread, request, response_init, callback);
+}
+
+/// BAO PATCH (REQ-BRW-051): deliver a web bundle registration message through
+/// the fetch thread's FIFO, so it is ordered with the fetches this script
+/// thread issues (see [`ToFetchThreadMessage::WebBundle`]).
+pub fn send_web_bundle_message(
+    core_resource_thread: &CoreResourceThread,
+    message: CoreResourceMsg,
+) {
+    FetchThread::send_web_bundle_message(core_resource_thread, message);
 }
 
 /// Instruct the resource thread to cancel an existing request. Does nothing if the

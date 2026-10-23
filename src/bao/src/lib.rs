@@ -8,6 +8,13 @@
 //! or Node API. Runtime knobs (e.g. [`StealthProfile`], permissions) select
 //! behaviour without changing the link set.
 //!
+//! One packaging feature exists: `media-gstreamer` opts the media backend from
+//! the pure-Rust default (deployable on a pristine Linux, honestly-degraded
+//! `canPlayType("")`/`isTypeSupported(false)`) into the GStreamer backend,
+//! which hard-links the gstreamer 1.18+ system libraries — the artifact must
+//! then ship the `.so` files (see `scripts/package/desktop-linux.sh`) or
+//! declare the system dependency.
+//!
 //! ## Quick start
 //!
 //! ```no_run

@@ -23,7 +23,7 @@ use servo_config::pref;
 use servo_constellation_traits::{
     DOMMessage, Job, JobError, JobResult, JobResultValue, JobType, SWManagerSenders, ScopeThings,
     ServiceWorkerAlgorithm, ServiceWorkerAlgorithmResult, ServiceWorkerManagerFactory,
-    ServiceWorkerMsg, ServiceWorkerRegistrationInfo,
+    ServiceWorkerManagerMsg, ServiceWorkerMsg, ServiceWorkerRegistrationInfo, ServiceWorkerState,
 };
 use servo_url::{ImmutableOrigin, ServoUrl};
 
@@ -48,6 +48,9 @@ pub(crate) struct ServiceWorker {
     pub(crate) script_url: ServoUrl,
     /// A sender to the running service worker scope.
     pub(crate) sender: Sender<ServiceWorkerScriptMsg>,
+    /// <https://w3c.github.io/ServiceWorker/#dfn-state>
+    /// Ported from upstream servo 270fe198f (#48749).
+    pub(crate) state: ServiceWorkerState,
 }
 
 impl ServiceWorker {
@@ -60,6 +63,7 @@ impl ServiceWorker {
             id,
             script_url,
             sender,
+            state: ServiceWorkerState::Parsed,
         }
     }
 
@@ -243,6 +247,9 @@ pub struct ServiceWorkerManager {
     next_client: usize,
     // own sender to send messages here
     own_sender: GenericSender<ServiceWorkerMsg>,
+    /// Sender of messages to the constellation.
+    /// Ported from upstream servo 270fe198f (#48749).
+    constellation_sender: GenericSender<ServiceWorkerManagerMsg>,
     // receiver to receive messages from constellation
     own_port: RoutedReceiver<ServiceWorkerMsg>,
     // to receive resource messages
@@ -268,6 +275,7 @@ struct ManagerClient {
 impl ServiceWorkerManager {
     fn new(
         own_sender: GenericSender<ServiceWorkerMsg>,
+        constellation_sender: GenericSender<ServiceWorkerManagerMsg>,
         from_constellation_receiver: RoutedReceiver<ServiceWorkerMsg>,
         resource_port: RoutedReceiver<CustomResponseMediator>,
         font_context: Arc<FontContext>,
@@ -280,10 +288,24 @@ impl ServiceWorkerManager {
             clients: Vec::new(),
             next_client: 0,
             own_sender,
+            constellation_sender,
             own_port: from_constellation_receiver,
             resource_receiver: resource_port,
             font_context,
         }
+    }
+
+    /// <https://w3c.github.io/ServiceWorker/#update-worker-state>
+    /// Ported from upstream servo 270fe198f (#48749): set the manager-side
+    /// state and broadcast it to the constellation (per-pipeline DOM tasks).
+    fn update_worker_state(&self, worker: &mut ServiceWorker, state: ServiceWorkerState) {
+        broadcast_worker_state(
+            &self.constellation_sender,
+            worker.id,
+            worker.script_url.origin(),
+            state.clone(),
+        );
+        worker.state = state;
     }
 
     pub(crate) fn get_matching_scope(&self, load_url: &ServoUrl) -> Option<ServoUrl> {
@@ -498,24 +520,48 @@ impl ServiceWorkerManager {
                     self.handle_client_gone(client_url, client_pipeline);
                 },
             },
-            // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): relay the
-            // worker-thread-evidenced "script evaluated + activate dispatched"
-            // report to the registering client as Update Worker State →
-            // "activated". Reuses the algorithm-result channel (same as
-            // MessageFromWorker); the client's pending job-promise queue is
-            // not touched.
+            // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04; REQ-BRW-051
+            // merge with upstream 270fe198f): the worker thread reports its
+            // script evaluated and the activate event dispatched — Update
+            // Worker State → "activated". Only the registration's ACTIVE
+            // worker can be activated: a waiting worker also evaluates its
+            // script in this build, but it never went through Try Activate
+            // (spec: the activate event is dispatched during activation), so
+            // its observable state stays "installed". The transition is
+            // broadcast to every pipeline of the script origin AND relayed on
+            // the registering client's FIFO callback channel (the vendor
+            // three-hop relay, kept as the delivery path for documents whose
+            // pipeline URL origin does not compare equal, e.g. inherited-origin
+            // about:srcdoc/blank documents; the DOM side dedupes the
+            // statechange).
             ServiceWorkerMsg::WorkerEvaluated { worker_id } => {
-                let owning_registration = self.registrations.values().find(|registration| {
-                    registration
-                        .get_newest_worker()
-                        .is_some_and(|worker| worker.id == worker_id)
-                });
-                if let Some(registration) = owning_registration {
-                    let _ = registration
-                        .client
-                        .send(ServiceWorkerAlgorithmResult::WorkerActivated { worker_id });
-                } else {
-                    warn!("No registration found for evaluated service worker.");
+                let mut activated: Option<(ServiceWorkerId, ImmutableOrigin)> = None;
+                let mut relay_client = None;
+                for registration in self.registrations.values_mut() {
+                    if let Some(worker) = registration.active_worker.as_mut()
+                        && worker.id == worker_id
+                    {
+                        worker.state = ServiceWorkerState::Activated;
+                        activated = Some((worker.id, worker.script_url.origin()));
+                        relay_client = Some(registration.client.clone());
+                        break;
+                    }
+                }
+                match (activated, relay_client) {
+                    (Some((worker_id, origin)), Some(client)) => {
+                        broadcast_worker_state(
+                            &self.constellation_sender,
+                            worker_id,
+                            origin,
+                            ServiceWorkerState::Activated,
+                        );
+                        let _ = client
+                            .send(ServiceWorkerAlgorithmResult::WorkerActivated { worker_id });
+                    },
+                    _ => {
+                        // Still "installed" (waiting worker) — not activated.
+                        debug!("Evaluated service worker is not the active worker: {worker_id:?}.");
+                    },
                 }
             },
             ServiceWorkerMsg::Exit => return false,
@@ -526,7 +572,7 @@ impl ServiceWorkerManager {
     /// <https://w3c.github.io/ServiceWorker/#unregister>
     fn handle_unregister_job(&mut self, job: Job) {
         // Step 1: Let registration be the result of running Get Registration given job’s storage key and job’s scope url.
-        if self.registrations.remove(&job.scope_url).is_none() {
+        let Some(registration) = self.registrations.remove(&job.scope_url) else {
             // Step 2: If registration is null, then:
             // Step 2.1: Invoke Resolve Job Promise with job and false.
             if job
@@ -558,7 +604,35 @@ impl ServiceWorkerManager {
         }
 
         // Step 5: Invoke Try Clear Registration with registration.
-        // TODO: Try Clear Registration.
+        // <https://w3c.github.io/ServiceWorker/#try-clear-registration>
+        // REQ-BRW-051 merge: every worker the cleared registration still holds
+        // becomes "redundant" (the third Update Worker State call site the
+        // upstream port left unimplemented). Sent after the resolve, matching
+        // the spec's step order; the registration is dropped below, which
+        // terminates and joins the worker thread.
+        for worker in [
+            registration.installing_worker.as_ref(),
+            registration.waiting_worker.as_ref(),
+            registration.active_worker.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            broadcast_worker_state(
+                &self.constellation_sender,
+                worker.id,
+                worker.script_url.origin(),
+                ServiceWorkerState::Redundant,
+            );
+        }
+        // The rest of Try Clear Registration (uninstalling flag, registration
+        // map sweep) has no storage backend in this build.
+        // Not implemented: the remainder of Try Clear Registration (clearing
+        // the uninstalling flag and sweeping the registration map) is not
+        // applied in this build — upstream tracks it as unimplemented because
+        // there is no storage backend; dropping the registration below is the
+        // only teardown that runs.
+        drop(registration);
 
         // Step 6: Invoke Finish Job with job.
         // TODO: Finish Job.
@@ -901,43 +975,90 @@ impl ServiceWorkerManager {
     }
 
     /// <https://www.w3.org/TR/service-workers/#install>
-    fn install(&mut self, job: Job, new_worker: ServiceWorker) {
-        let Some(registration) = self.registrations.get_mut(&job.scope_url) else {
-            error!("Registration should exist when installing a worker.");
-            return;
-        };
+    ///
+    /// REQ-BRW-051 merge: upstream 270fe198f's Update Worker State calls
+    /// ("installing"/"installed") are interleaved with the vendor lifecycle
+    /// wave (Try Activate, resolve-after-activation, UpdateFound-after-resolve)
+    /// without disturbing either invariant:
+    /// * "installing" is broadcast first (spec Step 5);
+    /// * the waiting→active transition still happens BEFORE the Resolve Job
+    ///   Promise so the resolved registration carries `active_worker` (the
+    ///   container's controller assignment depends on it);
+    /// * "installed" and "activating" are broadcast AFTER the resolve. The
+    ///   registering client materializes its DOM ServiceWorker objects inside
+    ///   the resolve task; a broadcast for a not-yet-materialized object is
+    ///   dropped by the spec's object-map miss (Update Worker State Step 4.2).
+    ///   The in-process resolve callback queues its task synchronously on this
+    ///   manager thread, so these two broadcasts are observed after the
+    ///   objects exist and in spec order (installed → activating → activated,
+    ///   the last one on the worker-thread-evidenced WorkerEvaluated relay).
+    fn install(&mut self, job: Job, mut new_worker: ServiceWorker) {
+        // Step 5: Run the Update Worker State algorithm passing registration’s
+        // installing worker and "installing" as the arguments.
+        self.update_worker_state(&mut new_worker, ServiceWorkerState::Installing);
 
-        // Step 4: Run the Update Registration State algorithm passing registration, "installing" and worker as the arguments.
-        registration.update_registration_state(
-            RegistrationUpdateTarget::Installing,
-            Some(new_worker.clone()),
-        );
+        // Set by Try Activate below; the DOM broadcast follows the resolve.
+        // Note: no "redundant" broadcast for a previous installing-slot
+        // occupant — spec Step 18 (clear the installing slot) is not applied
+        // in this build (upstream tracks it as unimplemented; see the Step 18
+        // note below), so that slot may still hold the worker that is now
+        // the ACTIVE worker (it is not being replaced; only its stale slot
+        // copy is).
+        let mut activating_worker_id = None;
 
-        // Step 17: Run the Update Registration State algorithm passing registration,
-        // "waiting" and registration’s installing worker as the arguments.
-        registration.update_registration_state(RegistrationUpdateTarget::Waiting, Some(new_worker));
-
-        // Step 18: Run the Update Registration State algorithm passing registration, "installing" and null as the arguments.
-        // TODO: registration.update_registration_state(RegistrationUpdateTarget::Installing, None);
-        // Note: commenting out for now, because it causes errors in tests,
-        // probably because we are still lacking functionality elsewhere.
-
-        // BAO PATCH (REQ-BRW-004 C19, user ruling 2026-09-09): the spec's
-        // "Try Activate" step (install finishes by activating the waiting
-        // worker when the registration has no active worker —
-        // <https://w3c.github.io/ServiceWorkers/#activation-algorithm>: set
-        // the active worker to the waiting worker and clear waiting). Upstream
-        // never passes `RegistrationUpdateTarget::Active` anywhere, so
-        // `active_worker` stays null forever and `handle_message_from_resource`
-        // answers every fetch mediation with pass-through — a service worker
-        // could never intercept anything. An existing active worker keeps
-        // control (the waiting worker stays waiting, browser update
-        // semantics).
-        if registration.active_worker.is_none()
-            && let Some(waiting) = registration.waiting_worker.clone()
+        // Step 4 / Step 17 / Try Activate, in one registration borrow.
         {
-            registration.update_registration_state(RegistrationUpdateTarget::Active, Some(waiting));
-            registration.update_registration_state(RegistrationUpdateTarget::Waiting, None);
+            let Some(registration) = self.registrations.get_mut(&job.scope_url) else {
+                error!("Registration should exist when installing a worker.");
+                return;
+            };
+
+            // Step 4: Run the Update Registration State algorithm passing registration, "installing" and worker as the arguments.
+            registration.update_registration_state(
+                RegistrationUpdateTarget::Installing,
+                Some(new_worker.clone()),
+            );
+
+            // Step 17: Run the Update Registration State algorithm passing registration,
+            // "waiting" and registration’s installing worker as the arguments.
+            registration.update_registration_state(
+                RegistrationUpdateTarget::Waiting,
+                Some(new_worker.clone()),
+            );
+
+            // Step 18: Run the Update Registration State algorithm passing registration, "installing" and null as the arguments.
+            // Not implemented: the call
+            // `registration.update_registration_state(RegistrationUpdateTarget::Installing, None)`
+            // is left out of this build — it causes errors in tests, probably
+            // because required functionality is still lacking elsewhere — so
+            // the installing slot is not cleared here (see the installing-slot
+            // note above).
+
+            // BAO PATCH (REQ-BRW-004 C19, user ruling 2026-09-09): the spec's
+            // "Try Activate" step (install finishes by activating the waiting
+            // worker when the registration has no active worker —
+            // <https://w3c.github.io/ServiceWorkers/#activation-algorithm>: set
+            // the active worker to the waiting worker and clear waiting). Upstream
+            // never passes `RegistrationUpdateTarget::Active` anywhere, so
+            // `active_worker` stays null forever and `handle_message_from_resource`
+            // answers every fetch mediation with pass-through — a service worker
+            // could never intercept anything. An existing active worker keeps
+            // control (the waiting worker stays waiting, browser update
+            // semantics).
+            //
+            // REQ-BRW-051 merge: the spec's Try Activate Step 2 (Update Worker
+            // State → "activating") is applied to the manager-side worker here;
+            // the DOM broadcast is deferred until after the resolve below.
+            if registration.active_worker.is_none()
+                && let Some(mut waiting) = registration.waiting_worker.take()
+            {
+                waiting.state = ServiceWorkerState::Activating;
+                activating_worker_id = Some(waiting.id);
+                registration.update_registration_state(
+                    RegistrationUpdateTarget::Active,
+                    Some(waiting),
+                );
+            }
         }
 
         // Step 7: Invoke Resolve Job Promise with job and registration.
@@ -951,46 +1072,72 @@ impl ServiceWorkerManager {
         // here to assign `navigator.serviceWorker.controller` in the same
         // task that settles the register() promise.
         let client = job.client.clone();
-        if client
-            .send(ServiceWorkerAlgorithmResult::Job(
-                JobResult::ResolvePromise(JobResultValue::Register(
-                    ServiceWorkerRegistrationInfo {
-                        scope_url: job.scope_url.clone(),
-                        storage_key: job.storage_key.clone(),
-                        script_url: job.script_url.clone(),
-                        id: registration.id,
-                        installing_worker: registration
-                            .installing_worker
-                            .as_ref()
-                            .map(|worker| worker.id),
-                        waiting_worker: registration
-                            .waiting_worker
-                            .as_ref()
-                            .map(|worker| worker.id),
-                        active_worker: registration.active_worker.as_ref().map(|worker| worker.id),
-                        client_url: registration.client_url.clone(),
-                        // BAO PATCH (REQ-BRW-004 e70): the Register job answer carries no
-                        // client set; consumers ignore it (matchAll is the set consumer).
-                        client_urls: Vec::new(),
-                    },
-                )),
-            ))
-            .is_err()
         {
-            warn!("Failed to send resolve job promise result to script.");
+            let Some(registration) = self.registrations.get_mut(&job.scope_url) else {
+                error!("Registration should exist when installing a worker.");
+                return;
+            };
+            if client
+                .send(ServiceWorkerAlgorithmResult::Job(
+                    JobResult::ResolvePromise(JobResultValue::Register(
+                        ServiceWorkerRegistrationInfo {
+                            scope_url: job.scope_url.clone(),
+                            storage_key: job.storage_key.clone(),
+                            script_url: job.script_url.clone(),
+                            id: registration.id,
+                            installing_worker: registration
+                                .installing_worker
+                                .as_ref()
+                                .map(|worker| worker.id),
+                            waiting_worker: registration
+                                .waiting_worker
+                                .as_ref()
+                                .map(|worker| worker.id),
+                            active_worker: registration
+                                .active_worker
+                                .as_ref()
+                                .map(|worker| worker.id),
+                            client_url: registration.client_url.clone(),
+                            // BAO PATCH (REQ-BRW-004 e70): the Register job answer carries no
+                            // client set; consumers ignore it (matchAll is the set consumer).
+                            client_urls: Vec::new(),
+                        },
+                    )),
+                ))
+                .is_err()
+            {
+                warn!("Failed to send resolve job promise result to script.");
+            }
+
+            // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): Update
+            // Registration State set the installing worker above (null → worker);
+            // the spec queues an "updatefound" event on the registration's
+            // ServiceWorkerRegistration objects at that point. Sent AFTER the
+            // resolve so the registering page's promise handler — which attaches
+            // its updatefound listener (wait_for_update in the WPT SW test
+            // helpers) — runs in the resolve task's microtasks first; the two
+            // callback deliveries are FIFO, so the event lands in a later task.
+            let _ = client.send(ServiceWorkerAlgorithmResult::UpdateFound {
+                registration_id: registration.id,
+            });
         }
 
-        // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): Update
-        // Registration State set the installing worker above (null → worker);
-        // the spec queues an "updatefound" event on the registration's
-        // ServiceWorkerRegistration objects at that point. Sent AFTER the
-        // resolve so the registering page's promise handler — which attaches
-        // its updatefound listener (wait_for_update in the WPT SW test
-        // helpers) — runs in the resolve task's microtasks first; the two
-        // callback deliveries are FIFO, so the event lands in a later task.
-        let _ = client.send(ServiceWorkerAlgorithmResult::UpdateFound {
-            registration_id: registration.id,
-        });
+        // Step 19: Run the Update Worker State algorithm passing registration’s
+        // waiting worker and "installed" as the arguments. Sent after the
+        // resolve (see the method comment for the object-materialization
+        // ordering).
+        self.update_worker_state(&mut new_worker, ServiceWorkerState::Installed);
+
+        // Try Activate Step 2 continuation: broadcast the "activating"
+        // transition of the worker promoted above.
+        if let Some(worker_id) = activating_worker_id {
+            broadcast_worker_state(
+                &self.constellation_sender,
+                worker_id,
+                new_worker.script_url.origin(),
+                ServiceWorkerState::Activating,
+            );
+        }
 
         // Step 21: Wait for all the tasks queued by Update Worker State invoked in this algorithm to have executed.
         // TODO: queue tasks above and wait for them to execute.
@@ -1044,6 +1191,33 @@ impl ServiceWorkerManager {
             };
         // Step 17: Else, invoke Install algorithm with job, worker, and registration as its arguments.
         self.install(job, new_worker);
+    }
+}
+
+/// <https://w3c.github.io/ServiceWorker/#update-worker-state> Step 4:
+/// broadcast a worker state transition to the constellation, which queues a
+/// DOM-manipulation task on every pipeline of the worker's script origin.
+/// Ported from upstream servo 270fe198f (#48749).
+fn broadcast_worker_state(
+    constellation_sender: &GenericSender<ServiceWorkerManagerMsg>,
+    worker_id: ServiceWorkerId,
+    origin: ImmutableOrigin,
+    state: ServiceWorkerState,
+) {
+    // Step 1: Assert: state is not "parsed".
+    debug_assert!(
+        !matches!(state, ServiceWorkerState::Parsed),
+        "Update Worker State never broadcasts \"parsed\"."
+    );
+    if constellation_sender
+        .send(ServiceWorkerManagerMsg::UpdateWorkerState {
+            worker_id,
+            state,
+            origin,
+        })
+        .is_err()
+    {
+        error!("Failed to send UpdateWorkerState message to constellation.");
     }
 }
 
@@ -1123,6 +1297,7 @@ impl ServiceWorkerManagerFactory for ServiceWorkerManager {
         let (resource_chan, resource_port) = generic_channel::channel().unwrap();
 
         let SWManagerSenders {
+            constellation_sender,
             resource_threads,
             own_sender,
             receiver,
@@ -1143,8 +1318,14 @@ impl ServiceWorkerManagerFactory for ServiceWorkerManager {
         ));
 
         let swmanager_thread = move || {
-            ServiceWorkerManager::new(own_sender, from_constellation, resource_port, font_context)
-                .handle_message()
+            ServiceWorkerManager::new(
+                own_sender,
+                constellation_sender,
+                from_constellation,
+                resource_port,
+                font_context,
+            )
+            .handle_message()
         };
         if thread::Builder::new()
             .name("SvcWorkerManager".to_owned())

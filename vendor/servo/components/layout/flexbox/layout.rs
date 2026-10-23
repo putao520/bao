@@ -295,7 +295,8 @@ impl FlexLineItem<'_> {
         if style.get_box().position == Position::Relative {
             fragment.base.translate_rect(
                 relative_adjustement(style, containing_block)
-                    .to_physical_size(containing_block.style.writing_mode),
+                    .to_physical_translation(containing_block.style.writing_mode)
+                    .to_size(),
             );
         }
 
@@ -893,8 +894,9 @@ impl FlexContainer {
                     all_baselines.last = line_all_baselines.last;
                 }
 
-                let physical_line_position =
-                    flow_relative_line_position.to_physical_size(self.style.writing_mode);
+                let physical_line_position = flow_relative_line_position
+                    .to_physical_translation(self.style.writing_mode)
+                    .to_size();
                 for (fragment, _) in &mut final_line_layout.item_fragments {
                     fragment.base.translate_rect(physical_line_position);
                 }
@@ -1651,7 +1653,37 @@ impl InitialFlexLineLayout<'_> {
             let justify_content_style = flex_context.config.justify_content.primary();
 
             // Inital values from the style system
-            let mut resolved_justify_content = justify_content_style.value();
+            // BAO patch (upstream #48988, css-flexbox U2): `left`/`right` are physical values
+            // whose meaning depends on whether `justify-content`'s axis is parallel with the
+            // left↔right axis. Spec:
+            //   https://drafts.csswg.org/css-align/#valdef-justify-content-left
+            //   "If the property's axis is not parallel with either left↔right axis, this value
+            //    behaves as start."
+            // Only row-direction flex containers have a main axis parallel with left↔right,
+            // and there the keywords map to line-left/line-right (which flips in vertical
+            // writing modes). Without this the keywords leaked through as-is and resolved as
+            // unknown alignment, shifting every item by one free-space step.
+            let inline_axis_is_main_axis = flex_context.config.flex_axis == FlexAxis::Row;
+            let line_left_is_inline_start =
+                flex_context.config.writing_mode.line_left_is_inline_start();
+            let mut resolved_justify_content = match justify_content_style.value() {
+                AlignFlags::LEFT if inline_axis_is_main_axis => {
+                    if line_left_is_inline_start {
+                        AlignFlags::FLEX_START
+                    } else {
+                        AlignFlags::FLEX_END
+                    }
+                },
+                AlignFlags::RIGHT if inline_axis_is_main_axis => {
+                    if line_left_is_inline_start {
+                        AlignFlags::FLEX_END
+                    } else {
+                        AlignFlags::FLEX_START
+                    }
+                },
+                AlignFlags::LEFT | AlignFlags::RIGHT => AlignFlags::FLEX_START,
+                justify_content => justify_content,
+            };
             let mut is_safe = justify_content_style.flags() == AlignFlags::SAFE;
 
             // Fallback occurs in two cases:
@@ -1852,7 +1884,14 @@ impl FlexItem<'_> {
             {
                 SizeConstraint::Definite(used_main_size)
             } else {
-                SizeConstraint::default()
+                // BAO patch (upstream #48670, css-flexbox U2): an item whose main size is
+                // indefinite inside an indefinite-sized column flex container still carries the
+                // min/max constraints resolved from its own style (e.g. `min-height: 20px`).
+                // Dropping them (`SizeConstraint::default()`) made the item lay out at its
+                // intrinsic size and visibly drift from the reference.
+                // Spec: https://drafts.csswg.org/css-flexbox-1/#definite-sizes — only *sizing*
+                // is indefinite here, the min/max clamps stay in force.
+                SizeConstraint::MinMax(self.content_min_main_size, self.content_max_main_size)
             };
             (cross_size, main_size)
         };

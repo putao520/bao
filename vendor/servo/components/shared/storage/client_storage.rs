@@ -23,6 +23,27 @@ impl ClientStorageThreadHandle {
         ClientStorageThreadHandle { sender }
     }
 
+    /// BAO PATCH (REQ-BRW-051): convert a failed send on a closed
+    /// client-storage channel into an explicit error delivered through the
+    /// returned receiver, instead of unwrapping the send result and aborting
+    /// the calling thread. The panic signature was
+    /// `thread 'IndexedDBManager' panicked at ...client_storage.rs:71:35:
+    /// called Result::unwrap() on an Err value: Disconnected` — the IDB
+    /// manager outlives the ClientStorageThread during teardown, so requests
+    /// issued after the thread exits must degrade, not crash. Callers already
+    /// consume the receiver with an error arm ("Failed to communicate with
+    /// client storage."), which now receives this message.
+    fn failed_response<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(
+        error: String,
+    ) -> GenericReceiver<Result<T, String>> {
+        let (sender, receiver) = generic_channel::channel()
+            .expect("BAO: cannot report client-storage send failure: channel allocation failed");
+        let _ = sender.send(Err(error));
+        // Dropping the sender seals the channel after the queued error, so the
+        // receiver observes Err(message) first and disconnection afterwards.
+        receiver
+    }
+
     pub fn obtain_a_storage_bottle_map(
         &self,
         storage_type: StorageType,
@@ -38,7 +59,9 @@ impl ClientStorageThreadHandle {
             origin,
             sender,
         };
-        self.sender.send(message).unwrap();
+        if let Err(error) = self.sender.send(message) {
+            return Self::failed_response(format!("client storage thread is gone: {error:?}"));
+        }
         receiver
     }
 
@@ -53,7 +76,9 @@ impl ClientStorageThreadHandle {
             name,
             sender,
         };
-        self.sender.send(message).unwrap();
+        if let Err(error) = self.sender.send(message) {
+            return Self::failed_response(format!("client storage thread is gone: {error:?}"));
+        }
         receiver
     }
 
@@ -68,7 +93,9 @@ impl ClientStorageThreadHandle {
             name,
             sender,
         };
-        self.sender.send(message).unwrap();
+        if let Err(error) = self.sender.send(message) {
+            return Self::failed_response(format!("client storage thread is gone: {error:?}"));
+        }
         receiver
     }
 

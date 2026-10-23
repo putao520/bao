@@ -76,6 +76,24 @@ pub(crate) struct BlockLevelLayoutInfo {
     pub block_margins_collapsed_with_children: CollapsedBlockMargins,
 }
 
+/// A solid rule painted inside a box fragment.
+///
+/// BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): MathML draws rules
+/// that are not expressible as a CSS background or border of the element they
+/// belong to — the fraction bar of an `mfrac` sits at the math axis, between the
+/// numerator and the denominator, both of which are children of the `mfrac`
+/// box. The rule is therefore carried as paint data on an anonymous fragment
+/// and consumed by the display list builder.
+#[derive(Clone, Debug, MallocSizeOf)]
+pub(crate) struct MathRule {
+    /// The rule's rectangle, relative to the fragment's content box origin.
+    #[ignore_malloc_size_of = "plain value type"]
+    pub rect: PhysicalRect<Au>,
+    /// The rule's color.
+    #[ignore_malloc_size_of = "plain value type"]
+    pub color: style::color::AbsoluteColor,
+}
+
 #[derive(Clone, Default, MallocSizeOf)]
 pub(crate) struct BoxFragmentRareData {
     /// The resolved box insets if this box is `position: sticky`. These are calculated
@@ -93,6 +111,12 @@ pub(crate) struct BoxFragmentRareData {
     /// If the associated [`BoxFragment`] establishes a spatial node via CSS this holds the
     /// [`ScrollTreeNodeId`] for the generated node set during stacking context tree construction.
     pub generated_scroll_tree_node_id: Option<ScrollTreeNodeId>,
+
+    /// Solid rules painted inside this fragment, relative to its content box
+    /// origin. Used by MathML layout for the fraction bar.
+    ///
+    /// BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21).
+    pub(crate) math_rules: Vec<MathRule>,
 }
 
 impl BoxFragmentRareData {
@@ -106,6 +130,7 @@ impl BoxFragmentRareData {
                     specific_layout_info: Some(info),
                     generated_clip_id: None,
                     generated_scroll_tree_node_id: None,
+                    math_rules: Vec::new(),
                 })))
             })
             .unwrap_or_default()
@@ -266,6 +291,26 @@ impl BoxFragment {
             rare_data.generated_scroll_tree_node_id = None;
             rare_data.resolved_sticky_insets = None;
         }
+    }
+
+    /// Attach the solid rules painted inside this fragment.
+    ///
+    /// BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21).
+    pub(crate) fn set_math_rules(&self, rules: Vec<MathRule>) {
+        if rules.is_empty() {
+            return;
+        }
+        self.ensure_rare_data().math_rules = rules;
+    }
+
+    /// The solid rules painted inside this fragment.
+    ///
+    /// BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21).
+    pub(crate) fn math_rules(&self) -> Vec<MathRule> {
+        let Some(rare_data) = self.rare_data.get() else {
+            return Vec::new();
+        };
+        rare_data.borrow().math_rules.clone()
     }
 
     pub(crate) fn resolved_sticky_insets(

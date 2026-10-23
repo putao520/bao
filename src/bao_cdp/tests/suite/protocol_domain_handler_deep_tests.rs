@@ -236,11 +236,12 @@ fn test_page_get_frame_tree() {
 
 #[test]
 fn test_page_get_navigation_history() {
-    // servo exposes no session-history enumeration — explicit -32000.
+    // REQ-CDP-010 golden-oracle parity: the history journal is bridge-backed;
+    // without a bridge the command is the transport-class -32603.
     let resp = dispatch(r#"{"id":14,"method":"Page.getNavigationHistory"}"#);
     let err = resp.error.expect("history enumeration must fail loudly");
-    assert_eq!(err.code, ERR_NOT_SUPPORTED);
-    assert!(err.message.contains("not supported"));
+    assert_eq!(err.code, ERR_INTERNAL_ERROR);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]

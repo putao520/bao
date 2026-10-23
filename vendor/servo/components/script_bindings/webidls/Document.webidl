@@ -244,3 +244,23 @@ partial interface Document {
   [Throws]
   static Document parseHTML(DOMString html, optional SetHTMLOptions options = {});
 };
+
+// https://drafts.csswg.org/css-view-transitions-2/#additions-to-document-api
+//
+// BAO PATCH (REQ-BRW-051 C2): self-built same-document View Transitions.
+//
+// `callbackOptions` is specced as
+// `optional (ViewTransitionUpdateCallback or StartViewTransitionOptions)
+// callbackOptions = {}`. That union has a *callback function* member, and no
+// such union exists anywhere in this tree's WebIDL corpus, so the codegen
+// conversion path for it is unverified. The argument is therefore taken as
+// `any` and the union is resolved manually in `Document::StartViewTransition`
+// (callable => update callback; object => `StartViewTransitionOptions`
+// dictionary; undefined/null => empty options), which is exactly the WebIDL
+// union conversion order. `[Throws]` is kept so that invalid values can fail
+// with the TypeError the union conversion would raise.
+partial interface Document {
+  [Throws]
+  ViewTransition startViewTransition(optional any callbackOptions);
+  readonly attribute ViewTransition? activeViewTransition;
+};

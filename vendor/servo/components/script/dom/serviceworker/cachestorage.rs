@@ -11,16 +11,20 @@ use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_bindings::root::DomRoot;
 use servo_base::generic_channel::{GenericCallback, GenericSend};
 use servo_url::ImmutableOrigin;
-use storage_traits::cache_storage::{CacheStorageThreadMessage, CacheStorageThreadResponse};
+use storage_traits::cache_storage::{
+    CacheStorageQueryOptions, CacheStorageThreadMessage, CacheStorageThreadResponse,
+};
 use storage_traits::client_storage::{StorageIdentifier, StorageProxyMap, StorageType};
 
 use crate::dom::bindings::codegen::Bindings::CacheStorageBinding::CacheStorageMethods;
+use crate::dom::bindings::codegen::Bindings::RequestBinding::RequestInfo;
+use crate::dom::bindings::codegen::GenericBindings::CacheStorageBinding::MultiCacheQueryOptions;
 use crate::dom::bindings::error::Error;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::serviceworker::cache::Cache;
+use crate::dom::serviceworker::cache::{Cache, cache_request_from_info, response_from_cache};
 use crate::dom::{Promise, RootedPromise, TracedPromise};
 
 /// <https://w3c.github.io/ServiceWorker/#cachestorage>
@@ -185,9 +189,64 @@ impl CacheStorage {
                 };
                 promise.resolve_native(cx, &deleted);
             },
+            // <https://w3c.github.io/ServiceWorker/#cache-storage-keys>
+            CacheStorageThreadResponse::StorageKeysResult(result) => {
+                let Some(promise) = self
+                    .pending_promises
+                    .borrow_mut()
+                    .pop_front()
+                    .map(|promise| promise.root(cx))
+                else {
+                    debug_assert!(false, "No pending promise for StorageKeysResult response.");
+                    return;
+                };
+                match result {
+                    Ok(keys) => {
+                        let keys: Vec<DOMString> = keys.into_iter().map(DOMString::from).collect();
+                        promise.resolve_native(cx, &keys);
+                    },
+                    Err(error) => promise.reject_error(cx, Error::Operation(Some(error))),
+                }
+            },
+            // <https://w3c.github.io/ServiceWorker/#cache-storage-match>
+            CacheStorageThreadResponse::StorageMatchResult(result) => {
+                let Some(promise) = self
+                    .pending_promises
+                    .borrow_mut()
+                    .pop_front()
+                    .map(|promise| promise.root(cx))
+                else {
+                    debug_assert!(false, "No pending promise for StorageMatchResult response.");
+                    return;
+                };
+                match result {
+                    Ok(Some(response)) => match response_from_cache(cx, &self.global(), response) {
+                        Ok(response) => promise.resolve_native(cx, &response),
+                        Err(error) => promise.reject_error(cx, error),
+                    },
+                    Ok(None) => promise.resolve_native(cx, &()),
+                    Err(error) => promise.reject_error(cx, Error::Operation(Some(error))),
+                }
+            },
             CacheStorageThreadResponse::KeysResult(_) => debug_assert!(
                 false,
                 "Unexpected KeysResult response in CacheStorage handle_response."
+            ),
+            CacheStorageThreadResponse::MatchResult(_) => debug_assert!(
+                false,
+                "Unexpected MatchResult response in CacheStorage handle_response."
+            ),
+            CacheStorageThreadResponse::MatchAllResult(_) => debug_assert!(
+                false,
+                "Unexpected MatchAllResult response in CacheStorage handle_response."
+            ),
+            CacheStorageThreadResponse::PutResult(_) => debug_assert!(
+                false,
+                "Unexpected PutResult response in CacheStorage handle_response."
+            ),
+            CacheStorageThreadResponse::DeleteEntriesResult(_) => debug_assert!(
+                false,
+                "Unexpected DeleteEntriesResult response in CacheStorage handle_response."
             ),
         }
     }
@@ -222,6 +281,13 @@ fn relevant_name_to_cache_map(
         )));
     };
     Ok(proxy_map)
+}
+
+/// The generated trait passes no `cx` to `match`/`keys`; acquire the script
+/// thread's context locally (same shape as `ImageDecoder::thread_cx`).
+#[allow(unsafe_code)]
+fn thread_cx() -> JSContext {
+    unsafe { JSContext::get_from_thread() }.expect("no active JS context")
 }
 
 impl CacheStorageMethods<crate::DomTypeHolder> for CacheStorage {
@@ -352,6 +418,78 @@ impl CacheStorageMethods<crate::DomTypeHolder> for CacheStorage {
             .push_back(promise.to_traced());
 
         // Step 4: Return cacheJobPromise.
+        promise
+    }
+
+    /// <https://w3c.github.io/ServiceWorker/#cache-storage-match>
+    fn Match(&self, request: RequestInfo, options: &MultiCacheQueryOptions) -> RootedPromise {
+        let cx = &mut thread_cx();
+        let global = self.global();
+        let promise = Promise::new(cx, &global);
+        let request = match cache_request_from_info(cx, &global, request) {
+            Ok(request) => request,
+            Err(error) => {
+                promise.reject_error(cx, error);
+                return promise;
+            },
+        };
+        let options = CacheStorageQueryOptions {
+            ignore_search: options.parent.ignoreSearch,
+            ignore_method: options.parent.ignoreMethod,
+            ignore_vary: options.parent.ignoreVary,
+            cache_name: options.cacheName.as_ref().map(|name| name.to_string()),
+        };
+        // `Cache.match` performs this check; a non-GET query with
+        // ignoreMethod=false resolves to undefined.
+        if request.method != "GET" && !options.ignore_method {
+            promise.resolve_native(cx, &());
+            return promise;
+        }
+        let callback = self.get_or_setup_callback();
+        let origin = global.origin().immutable().clone();
+        if global
+            .storage_threads()
+            .send(CacheStorageThreadMessage::StorageMatch {
+                request,
+                options,
+                callback,
+                origin,
+            })
+            .is_err()
+        {
+            promise.reject_error(
+                cx,
+                Error::Operation(Some("Could not run the parallel steps.".to_string())),
+            );
+            return promise;
+        }
+        self.pending_promises
+            .borrow_mut()
+            .push_back(promise.to_traced());
+        promise
+    }
+
+    /// <https://w3c.github.io/ServiceWorker/#cache-storage-keys>
+    fn Keys(&self) -> RootedPromise {
+        let cx = &mut thread_cx();
+        let global = self.global();
+        let promise = Promise::new(cx, &global);
+        let callback = self.get_or_setup_callback();
+        let origin = global.origin().immutable().clone();
+        if global
+            .storage_threads()
+            .send(CacheStorageThreadMessage::StorageKeys { callback, origin })
+            .is_err()
+        {
+            promise.reject_error(
+                cx,
+                Error::Operation(Some("Could not run the parallel steps.".to_string())),
+            );
+            return promise;
+        }
+        self.pending_promises
+            .borrow_mut()
+            .push_back(promise.to_traced());
         promise
     }
 }

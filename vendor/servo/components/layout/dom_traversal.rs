@@ -20,7 +20,7 @@ use style::values::specified::Quotes;
 use crate::context::LayoutContext;
 use crate::dom::{BoxSlot, LayoutBox, NodeExt};
 use crate::flow::inline::SharedInlineStyles;
-use crate::lists::generate_counter_representation;
+use crate::counter;
 use crate::quotes::quotes_for_lang;
 use crate::replaced::ReplacedContents;
 use crate::style_ext::{Display, DisplayGeneratingBox, DisplayInside, DisplayOutside};
@@ -199,11 +199,48 @@ fn traverse_element<'dom>(
         },
         Display::GeneratingBox(display) => {
             let contents = Contents::for_element(element, context);
-            let display = display.used_value_for_contents(&contents, &info);
+            let display = mathml_display(display, element)
+                .unwrap_or_else(|| display.used_value_for_contents(&contents, &info));
             let box_slot = element.box_slot();
             handler.handle_element(&info, display, contents, box_slot);
         },
     }
+}
+
+/// The display generating box of a MathML element.
+///
+/// BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): MathML Core styles
+/// MathML elements with `display: inline math` / `display: block math`, but this
+/// stylo snapshot has no `math` inside value (the `math` generic font family and
+/// the `font-size: math` keyword are gecko-only). Layout therefore forces the
+/// MathML inside type for elements in the MathML namespace, keeping the outer
+/// display type from CSS so that `math[display=block]`-style author rules and
+/// floats/absolutely positioned math still blockify correctly.
+///
+/// Only the outermost MathML element is reached by box tree construction: the
+/// children of a MathML element are built by
+/// [`crate::flow::mathml::MathMlContainer::construct`], which is what keeps
+/// nested MathML from being box-generated twice.
+fn mathml_display(
+    display: DisplayGeneratingBox,
+    element: ServoLayoutNode<'_>,
+) -> Option<DisplayGeneratingBox> {
+    if !element
+        .as_element()
+        .is_some_and(|element| element.is_mathml_element())
+    {
+        return None;
+    }
+    let outside = match display {
+        DisplayGeneratingBox::OutsideInside { outside, .. } => outside,
+        // A MathML element with a layout-internal `display` value: MathML Core
+        // has no such display types, so treat it as inline-level.
+        DisplayGeneratingBox::LayoutInternal(_) => DisplayOutside::Inline,
+    };
+    Some(DisplayGeneratingBox::OutsideInside {
+        outside,
+        inside: DisplayInside::Math,
+    })
 }
 
 fn traverse_eager_pseudo_element<'dom>(
@@ -390,11 +427,30 @@ pub(crate) fn generate_pseudo_element_content(
                             };
                             maybe_quote.map(PseudoElementContentItem::Text)
                         },
-                        ContentItem::Counter(_, style) | ContentItem::Counters(_, _, style) => {
-                            // TODO: Add support for counters, this assumes a value of 0.
-                            Some(PseudoElementContentItem::Text(
-                                generate_counter_representation(style).to_string(),
-                            ))
+                        ContentItem::Counter(name, style) => {
+                            // <https://drafts.csswg.org/css-lists/#counter-functions>
+                            let value = crate::lists::counter_value(
+                                &name.0,
+                                pseudo_element_info.node,
+                                &context.style_context,
+                            );
+                            counter::representation(style, value).map(PseudoElementContentItem::Text)
+                        },
+                        ContentItem::Counters(name, separator, style) => {
+                            let values = crate::lists::counter_chain(
+                                &name.0,
+                                pseudo_element_info.node,
+                                &context.style_context,
+                            );
+                            let texts: Vec<String> = values
+                                .into_iter()
+                                .filter_map(|value| counter::representation(style, value))
+                                .collect();
+                            if texts.is_empty() {
+                                None
+                            } else {
+                                Some(PseudoElementContentItem::Text(texts.join(separator)))
+                            }
                         },
                         ContentItem::NoOpenQuote | ContentItem::NoCloseQuote => None,
                     }

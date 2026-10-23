@@ -113,6 +113,14 @@ static USER_AGENT_CSS: &[u8] = include_bytes!("./stylesheets/user-agent.css");
 /// A CSS file to style the user agent stylesheet in HTML documents.
 static HTML_MODE_CSS: &[u8] = include_bytes!("./stylesheets/html-mode.css");
 
+/// The MathML Core user agent stylesheet.
+///
+/// BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): MathML elements have
+/// no user agent styles at all in this Servo snapshot, so the MathML namespace
+/// rules of MathML Core §2.1 are supplied by this sheet (see the file itself
+/// for the rules that are not expressible in this stylo build).
+static MATHML_CSS: &[u8] = include_bytes!("./stylesheets/mathml.css");
+
 /// A CSS file to style the Servo browser.
 static SERVO_CSS: &[u8] = include_bytes!("./stylesheets/servo.css");
 
@@ -1316,7 +1324,18 @@ impl LayoutThread {
 
             if !token.should_traverse() {
                 layout_context.style_context.stylist.rule_tree().maybe_gc();
-                return Default::default();
+                // [BAO patch] The web font set difference was computed by
+                // `prepare_stylist_for_reflow` above, which already mutated the
+                // font context's `known_font_face_rules`. Returning an empty
+                // difference here would desynchronize it from `document.fonts`
+                // (the additions would never be materialized as `FontFace`
+                // objects), so a later removal of one of those rules would panic
+                // in `notify_font_face_rules_removed`. Preserve the difference.
+                return (
+                    ReflowPhasesRun::empty(),
+                    IFrameSizes::default(),
+                    stylist_update.changed_web_fonts,
+                );
             }
 
             dirty_root = driver::traverse_dom(&recalc_style_traversal, token, rayon_pool).as_node();
@@ -1786,6 +1805,8 @@ fn get_ua_stylesheets(shared_lock: &SharedRwLock) -> Rc<UserAgentStylesheets> {
                         "presentational-hints.css",
                         PRESENTATIONAL_HINTS_CSS,
                     ),
+                    // BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21).
+                    parse_ua_stylesheet(shared_lock, "mathml.css", MATHML_CSS),
                 ];
 
                 let html_mode_stylesheet =

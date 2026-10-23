@@ -80,15 +80,15 @@ pub(crate) fn add_noto_fallback_families(
 
     if let Some(block) = options.character.block() {
         match block {
-            UnicodeBlock::HalfwidthandFullwidthForms |
-            UnicodeBlock::EnclosedIdeographicSupplement => add_chinese_families(families),
+            UnicodeBlock::HalfwidthandFullwidthForms
+            | UnicodeBlock::EnclosedIdeographicSupplement => add_chinese_families(families),
             UnicodeBlock::Adlam => families.push("Noto Sans Adlam"),
             UnicodeBlock::Ahom => families.push("Noto Serif Ahom"),
             UnicodeBlock::AnatolianHieroglyphs => families.push("Noto Sans AnatoHiero"),
-            UnicodeBlock::Arabic |
-            UnicodeBlock::ArabicExtendedA |
-            UnicodeBlock::ArabicPresentationFormsA |
-            UnicodeBlock::ArabicPresentationFormsB => {
+            UnicodeBlock::Arabic
+            | UnicodeBlock::ArabicExtendedA
+            | UnicodeBlock::ArabicPresentationFormsA
+            | UnicodeBlock::ArabicPresentationFormsB => {
                 families.push("Noto Sans Arabic");
                 families.push("Noto Naskh Arabic");
             },
@@ -122,16 +122,16 @@ pub(crate) fn add_noto_fallback_families(
             },
             UnicodeBlock::CypriotSyllabary => families.push("Noto Sans Cypriot"),
             UnicodeBlock::Deseret => families.push("Noto Sans Deseret"),
-            UnicodeBlock::Devanagari |
-            UnicodeBlock::DevanagariExtended |
-            UnicodeBlock::CommonIndicNumberForms => families.push("Noto Sans Devanagari"),
+            UnicodeBlock::Devanagari
+            | UnicodeBlock::DevanagariExtended
+            | UnicodeBlock::CommonIndicNumberForms => families.push("Noto Sans Devanagari"),
             UnicodeBlock::Duployan => families.push("Noto Sans Duployan"),
             UnicodeBlock::EgyptianHieroglyphs => families.push("Noto Sans Egyptian Hieroglyphs"),
             UnicodeBlock::Elbasan => families.push("Noto Sans Elbasan"),
-            UnicodeBlock::Ethiopic |
-            UnicodeBlock::EthiopicExtended |
-            UnicodeBlock::EthiopicExtendedA |
-            UnicodeBlock::EthiopicSupplement => families.push("Noto Sans Ethiopic"),
+            UnicodeBlock::Ethiopic
+            | UnicodeBlock::EthiopicExtended
+            | UnicodeBlock::EthiopicExtendedA
+            | UnicodeBlock::EthiopicSupplement => families.push("Noto Sans Ethiopic"),
             UnicodeBlock::Georgian | UnicodeBlock::GeorgianSupplement => {
                 families.push("Noto Sans Georgian")
             },
@@ -142,11 +142,11 @@ pub(crate) fn add_noto_fallback_families(
             UnicodeBlock::Grantha => families.push("Noto Sans Grantha"),
             UnicodeBlock::Gujarati => families.push("Noto Sans Gujarati"),
             UnicodeBlock::Gurmukhi => families.push("Noto Sans Gurmukhi"),
-            UnicodeBlock::HangulCompatibilityJamo |
-            UnicodeBlock::HangulJamo |
-            UnicodeBlock::HangulJamoExtendedA |
-            UnicodeBlock::HangulJamoExtendedB |
-            UnicodeBlock::HangulSyllables => {
+            UnicodeBlock::HangulCompatibilityJamo
+            | UnicodeBlock::HangulJamo
+            | UnicodeBlock::HangulJamoExtendedA
+            | UnicodeBlock::HangulJamoExtendedB
+            | UnicodeBlock::HangulSyllables => {
                 families.push("Noto Sans KR");
                 families.push("Noto Sans CJK KR");
             },
@@ -154,9 +154,9 @@ pub(crate) fn add_noto_fallback_families(
             UnicodeBlock::Hanunoo => families.push("Noto Sans Hanunoo"),
             UnicodeBlock::Hatran => families.push("Noto Sans Hatran"),
             UnicodeBlock::Hebrew => families.push("Noto Sans Hebrew"),
-            UnicodeBlock::Hiragana |
-            UnicodeBlock::Katakana |
-            UnicodeBlock::KatakanaPhoneticExtensions => {
+            UnicodeBlock::Hiragana
+            | UnicodeBlock::Katakana
+            | UnicodeBlock::KatakanaPhoneticExtensions => {
                 families.push("Noto Sans JP");
                 families.push("Noto Sans CJK JP");
             },
@@ -203,9 +203,9 @@ pub(crate) fn add_noto_fallback_families(
             UnicodeBlock::Mro => families.push("Noto Sans Mro"),
             UnicodeBlock::Multani => families.push("Noto Sans Multani"),
             UnicodeBlock::MusicalSymbols => families.push("Noto Music"),
-            UnicodeBlock::Myanmar |
-            UnicodeBlock::MyanmarExtendedA |
-            UnicodeBlock::MyanmarExtendedB => families.push("Noto Sans Myanmar"),
+            UnicodeBlock::Myanmar
+            | UnicodeBlock::MyanmarExtendedA
+            | UnicodeBlock::MyanmarExtendedB => families.push("Noto Sans Myanmar"),
             UnicodeBlock::NKo => families.push("Noto Sans NKo"),
             UnicodeBlock::Nabataean => families.push("Noto Sans Nabataean"),
             UnicodeBlock::NewTaiLue => families.push("Noto Sans New Tai Lue"),
@@ -250,9 +250,9 @@ pub(crate) fn add_noto_fallback_families(
             UnicodeBlock::TaiViet => families.push("Noto Sans Tai Viet"),
             UnicodeBlock::Takri => families.push("Noto Sans Takri"),
             UnicodeBlock::Tamil => families.push("Noto Sans Tamil"),
-            UnicodeBlock::Tangut |
-            UnicodeBlock::TangutComponents |
-            UnicodeBlock::IdeographicSymbolsandPunctuation => families.push("Noto Serif Tangut"),
+            UnicodeBlock::Tangut
+            | UnicodeBlock::TangutComponents
+            | UnicodeBlock::IdeographicSymbolsandPunctuation => families.push("Noto Serif Tangut"),
             UnicodeBlock::Telugu => families.push("Noto Sans Telugu"),
             UnicodeBlock::Thaana => {
                 families.push("Noto Sans Thaana");
@@ -262,8 +262,8 @@ pub(crate) fn add_noto_fallback_families(
             UnicodeBlock::Tifinagh => families.push("Noto Sans Tifinagh"),
             UnicodeBlock::Tirhuta => families.push("Noto Sans Tirhuta"),
             UnicodeBlock::Ugaritic => families.push("Noto Sans Ugaritic"),
-            UnicodeBlock::UnifiedCanadianAboriginalSyllabics |
-            UnicodeBlock::UnifiedCanadianAboriginalSyllabicsExtended => {
+            UnicodeBlock::UnifiedCanadianAboriginalSyllabics
+            | UnicodeBlock::UnifiedCanadianAboriginalSyllabicsExtended => {
                 families.push("Noto Sans Canadian Aboriginal")
             },
             UnicodeBlock::Vai => families.push("Noto Sans Vai"),

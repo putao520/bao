@@ -2376,13 +2376,17 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         }
         impl CollectionFilter for WindowNamedGetter {
             fn filter(&self, elem: &Element, _root: &Node) -> bool {
+                // BAO PATCH (REQ-BRW-051 C2, 2026-10-21): a matching `id`
+                // matches in any namespace, so the id check has to happen
+                // before the HTML-only type match below. MathML elements with an
+                // `id` are part of the collection returned for a duplicate name.
+                if elem.get_id().as_ref() == Some(&self.name) {
+                    return true;
+                }
                 let type_ = match elem.upcast::<Node>().type_id() {
                     NodeTypeId::Element(ElementTypeId::HTMLElement(type_)) => type_,
                     _ => return false,
                 };
-                if elem.get_id().as_ref() == Some(&self.name) {
-                    return true;
-                }
                 match type_ {
                     HTMLElementTypeId::HTMLEmbedElement |
                     HTMLElementTypeId::HTMLFormElement |
@@ -3763,6 +3767,8 @@ impl Window {
 
         let document = self.Document();
         let fonts = document.Fonts(cx);
+        // DIAG-TEMP: record the diff and the set size at consumption time.
+        fonts.diag_log_diff(&changed_web_fonts);
         if !changed_web_fonts.removed_font_faces.is_empty() {
             fonts.notify_font_face_rules_removed(&changed_web_fonts.removed_font_faces);
         }
@@ -4290,8 +4296,18 @@ fn is_named_element_with_name_attribute(elem: &Element) -> bool {
     )
 }
 
-fn is_named_element_with_id_attribute(elem: &Element) -> bool {
-    elem.is_html_element() || elem.is_svg_element()
+fn is_named_element_with_id_attribute(_elem: &Element) -> bool {
+    // <https://html.spec.whatwg.org/multipage/#dom-window-nameditem>
+    //
+    // > the value of the id content attribute for all elements that have a
+    // > non-empty id content attribute
+    //
+    // BAO PATCH (REQ-BRW-051 C2, 2026-10-21): every element participates,
+    // whatever its namespace. Restricting this to HTML and SVG elements hid
+    // MathML elements from named access on the `Window` object, which the
+    // MathML tests of the WPT suite (and web content in general) rely on; the
+    // `id` map already only holds elements that have that id.
+    true
 }
 
 #[expect(unsafe_code)]

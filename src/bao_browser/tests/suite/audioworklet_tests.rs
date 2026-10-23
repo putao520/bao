@@ -482,6 +482,10 @@ fn audioworklet_surface_addmodule_and_scope_live() {
     let page = runtime
         .create_page(&PageConfig {
             url: Some(origin.clone()),
+            // 显式 stealth-free:采样级断言(d[i] === 0.25 f32-exact / 非零
+            // 计数)与 audio 噪声钩子不相容;默认身份(裁决 2026-10-21)会给
+            // 默认页装 getChannelData 噪声,故本域显式退出。
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("gated live test: create_page must succeed");
@@ -568,6 +572,10 @@ fn audioworklet_module_fetch_destination_via_sw_live() {
     let page = runtime
         .create_page(&PageConfig {
             url: Some(origin.clone()),
+            // 显式 stealth-free:采样级断言(d[i] === 0.25 f32-exact / 非零
+            // 计数)与 audio 噪声钩子不相容;默认身份(裁决 2026-10-21)会给
+            // 默认页装 getChannelData 噪声,故本域显式退出。
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("gated live test: create_page must succeed");
@@ -654,6 +662,10 @@ fn audioworklet_node_constructs_live() {
     let page = runtime
         .create_page(&PageConfig {
             url: Some(origin.clone()),
+            // 显式 stealth-free:采样级断言(d[i] === 0.25 f32-exact / 非零
+            // 计数)与 audio 噪声钩子不相容;默认身份(裁决 2026-10-21)会给
+            // 默认页装 getChannelData 噪声,故本域显式退出。
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("gated live test: create_page must succeed");
@@ -726,6 +738,10 @@ fn spawn_wired_page(
     let page = runtime
         .create_page(&PageConfig {
             url: Some(origin.clone()),
+            // 显式 stealth-free:采样级断言(d[i] === 0.25 f32-exact / 非零
+            // 计数)与 audio 噪声钩子不相容;默认身份(裁决 2026-10-21)会给
+            // 默认页装 getChannelData 噪声,故本域显式退出。
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("gated live test: create_page must succeed");

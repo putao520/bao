@@ -943,6 +943,15 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
                 default = f"{union_native_type(type)}::Boolean({boolean})"
             elif tag in numericTags:
                 default = f"{union_native_type(type)}::{defaultValue.type.name}({defaultValue.value})"
+            elif tag in [IDLType.Tags.float, IDLType.Tags.double]:
+                # BAO PATCH (REQ-BRW-051 C2, 2026-10-21): restricted float/double
+                # default values on union-typed arguments (e.g. CSS Typed OM
+                # `optional CSSColorPercent alpha = 1` where CSSColorPercent is
+                # a union whose numeric arm is a restricted double). The
+                # non-union numeric path (:1397 family) already wraps these in
+                # Finite::; mirror that here so union args accept the same
+                # default-value grammar.
+                default = f"{union_native_type(type)}::{defaultValue.type.name}(Finite::wrap({defaultValue.value}))"
             elif tag is IDLType.Tags.usvstring:
                 if defaultValue.value == "":
                     default = f'{union_native_type(type)}::USVString(USVString::new())'
@@ -1194,11 +1203,20 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
     if type.isEnum():
         assert not isEnforceRange and not isClamp
 
-        if type.nullable():
-            raise TypeError("We don't support nullable enumerated arguments "
-                            "yet")
+        # BAO PATCH (fork addition; upstream servo raises
+        # "We don't support nullable enumerated arguments yet" here):
+        # nullable enumerated types (`EnumType?`) are a spec contract for
+        # WebCodecs (VideoColorSpace.primaries/transfer/matrix,
+        # AudioData.format, VideoFrame.format), so they must convert to
+        # `Option<Enum>` instead of being rejected. The generic
+        # `impl<T: FromJSValConvertible> FromJSValConvertible for Option<T>`
+        # (vendor/mozjs/mozjs/src/conversions.rs) maps null/undefined to
+        # `None` and delegates every other value to the enum conversion
+        # emitted below, so invalid string values still reach
+        # `handleInvalidEnumValueCode` (throw / failureCode). Replay this hunk
+        # when absorbing servo upstream changes to this function.
         # pyrefly: ignore  # missing-attribute
-        enum = type.inner.identifier.name
+        enum = type.unroll().inner.identifier.name
         if invalidEnumValueFatal:
             handleInvalidEnumValueCode = failureCode or f"throw_type_error(cx, error.as_ref()); {exceptionCode}"
         else:
@@ -1206,13 +1224,23 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
 
         template = fromJSValTemplate("()", handleInvalidEnumValueCode, exceptionCode)
 
+        declType = CGGeneric(enum)
+        if type.nullable():
+            declType = CGWrapper(declType, pre="Option<", post=">")
+
         if defaultValue is not None:
-            assert defaultValue.type.tag() == IDLType.Tags.domstring
-            default = f"{enum}::{getEnumValueName(defaultValue.value)}"
+            if isinstance(defaultValue, IDLNullValue):
+                assert type.nullable()
+                default = "None"
+            else:
+                assert defaultValue.type.tag() == IDLType.Tags.domstring
+                default = f"{enum}::{getEnumValueName(defaultValue.value)}"
+                if type.nullable():
+                    default = f"Some({default})"
         else:
             default = None
 
-        return handleOptional(template, CGGeneric(enum), default)
+        return handleOptional(template, declType, default)
 
     if type.isCallback():
         assert not isEnforceRange and not isClamp
@@ -4694,7 +4722,13 @@ class CGMethodPromiseWrapper(CGAbstractExternMethod):
             let cx = &mut cx;
             return exception_to_promise(cx, (*args).rval());
             """,
-            methodName=self.method.identifier.name,
+            # BAO patch (REQ-BRW-051, rust-keyword promise-wrapper): the
+            # wrapped method's extern fn is emitted with the `name_` Rust
+            # keyword escape (makeMemberName), so the wrapper must call the
+            # escaped name too — a bare keyword like `match::<D>(...)` does
+            # not parse (CacheBinding gen proof: `fn match_` at :143 vs bare
+            # `match::<D>` call at :199 pre-fix).
+            methodName=CGDictionary.makeMemberName(self.method.identifier.name),
             args=", ".join(arg.name for arg in self.args),
         ))
 
@@ -5397,7 +5431,13 @@ def getEnumValueName(value: str) -> str:
         raise SyntaxError('"_empty" is not an IDL enum value we support yet')
     if value == "":
         return "_empty"
-    return MakeNativeName(value)
+    native = MakeNativeName(value)
+    # A few IDL enum values (for example `"self"`) turn into Rust keywords
+    # after native-name casing. Escape them the same way member names are
+    # escaped so that the generated enum compiles.
+    if native in RUST_KEYWORDS or native == "Self":
+        native = f"{native}_"
+    return native
 
 
 class CGEnum(CGThing):
@@ -7797,6 +7837,18 @@ impl{self.generic} Clone for {self.makeClassName(self.dictionary)}{self.genericS
             if member.optional and not member.defaultValue:
                 insertion = CGIfWrapper(f"let Some(ref {name}) = self.{name}",
                                         varInsert(name, member.identifier.name))
+            elif (member.optional and member.defaultValue is not None
+                    and member.type.nullable()):
+                # BAO PATCH (REQ-BRW-051 C2, 2026-10-21): optional nullable
+                # member WITH a default (e.g. `ViewTransitionUpdateCallback?
+                # update = null`) serializes natively as Option<TracedCallback<T>>;
+                # `Option::to_jsval` requires TracedCallback: ToJSValConvertible
+                # (unsatisfied — the impl lives on the inner callback container,
+                # reached via Deref after unwrapping, as the optional-without-
+                # default branch above already does). Mirror that branch:
+                # emit the property only when Some, absent == default null.
+                insertion = CGIfWrapper(f"let Some(ref {name}) = self.{name}",
+                                        varInsert(name, member.identifier.name))
             else:
                 insertion = CGGeneric(f"let {name} = &self.{name};\n"
                                       f"{varInsert(name, member.identifier.name).define()}")
@@ -8018,7 +8070,7 @@ class CGRegisterProxyHandlersMethod(CGAbstractMethod):
         body = [CGGeneric("unsafe {")]
         body += [
             CGGeneric(f"proxy_handlers::{desc.name}.store(\n"
-                      f"    GenericBindings::{toBindingModuleFile(desc.name)}::{toBindingNamespace(desc.name)}"
+                      f"    GenericBindings::{toBindingModuleFileFromDescriptor(desc)}::{toBindingNamespace(desc.name)}"
                       "::DefineProxyHandler::<D>() as *mut _,\n"
                       "    std::sync::atomic::Ordering::Release,\n"
                       ");")

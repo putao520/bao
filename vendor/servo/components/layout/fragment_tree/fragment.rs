@@ -130,6 +130,34 @@ pub(crate) struct ImageFragment {
     /// Whether or not this image is selected.
     #[conditional_malloc_size_of]
     pub selected: Arc<AtomicBool>,
+    /// Shaped WebVTT cue text painted on top of the image, positioned within
+    /// the fragment rect. Only the video replaced content produces these
+    /// (BAO patch, fork-maintained, 2026-10-20 — replayed after the e99
+    /// snapshot swap, REQ-BRW-051 / REQ-BRW-047).
+    pub cue_overlays: Vec<CueTextOverlay>,
+}
+
+/// One shaped, positioned WebVTT cue text line painted on top of a video
+/// image fragment, with the presentation resolved from the `::cue` cascade
+/// (BAO patch, fork-maintained, 2026-10-20, REQ-BRW-051).
+#[derive(MallocSizeOf)]
+pub(crate) struct CueTextOverlay {
+    #[conditional_malloc_size_of]
+    pub glyphs: Vec<Arc<ShapedTextSlice>>,
+    #[ignore_malloc_size_of = "copy-type webrender key"]
+    pub font_key: FontInstanceKey,
+    #[conditional_malloc_size_of]
+    pub font_metrics: Arc<FontMetrics>,
+    /// Baseline origin of this text line, relative to the fragment rect
+    /// origin.
+    pub baseline_origin: PhysicalPoint<Au>,
+    /// Text color resolved from the `::cue` cascade.
+    #[ignore_malloc_size_of = "style color is a plain value"]
+    pub color: style::color::AbsoluteColor,
+    /// Per-line background resolved from the `::cue` cascade, painted behind
+    /// the line's em box (the WebVTT cue background box).
+    #[ignore_malloc_size_of = "style color is a plain value"]
+    pub background: style::color::AbsoluteColor,
 }
 
 #[derive(MallocSizeOf)]
@@ -167,10 +195,10 @@ impl Fragment {
             Fragment::Positioning(positioning_fragment) => {
                 positioning_fragment.set_containing_block(containing_block)
             },
-            Fragment::AbsoluteOrFixedPositionedPlaceholder(..) |
-            Fragment::Text(..) |
-            Fragment::Image(..) |
-            Fragment::IFrame(..) => {},
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(..)
+            | Fragment::Text(..)
+            | Fragment::Image(..)
+            | Fragment::IFrame(..) => {},
         }
     }
 
@@ -234,10 +262,10 @@ impl Fragment {
                 fragment.with_style().scrollable_overflow_for_parent()
             },
             Fragment::Positioning(fragment) => fragment.scrollable_overflow_for_parent(),
-            Fragment::AbsoluteOrFixedPositionedPlaceholder(_) |
-            Fragment::Text(..) |
-            Fragment::Image(..) |
-            Fragment::IFrame(..) => self.base().map(|base| base.rect()).unwrap_or_default(),
+            Fragment::Text(fragment) => fragment.scrollable_overflow_for_parent(),
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(_)
+            | Fragment::Image(..)
+            | Fragment::IFrame(..) => self.base().map(|base| base.rect()).unwrap_or_default(),
         }
     }
 
@@ -303,10 +331,10 @@ impl Fragment {
                     containing_block_computation,
                 ))
             },
-            Fragment::Text(_) |
-            Fragment::AbsoluteOrFixedPositionedPlaceholder(_) |
-            Fragment::Image(_) |
-            Fragment::IFrame(_) => None,
+            Fragment::Text(_)
+            | Fragment::AbsoluteOrFixedPositionedPlaceholder(_)
+            | Fragment::Image(_)
+            | Fragment::IFrame(_) => None,
         }
     }
 
@@ -558,6 +586,22 @@ impl TextFragment {
         }
 
         Some(current_character)
+    }
+
+    fn scrollable_overflow_for_parent(&self) -> PhysicalRect<Au> {
+        let mut rect = self.base.rect();
+        let mut hanging_advance = Au::zero();
+        for slice in self.glyphs.iter().rev() {
+            hanging_advance += slice.hangable_advance();
+            if slice.has_non_hangable_non_removable_content() {
+                break;
+            }
+        }
+
+        // TODO: This is not correct for vertical and right-to-left writing modes.
+        rect.size.width -= hanging_advance;
+
+        rect
     }
 }
 

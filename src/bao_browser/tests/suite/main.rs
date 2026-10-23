@@ -155,6 +155,7 @@ mod fetch_interception_live_tests;
 mod overlay_conformance_tests;
 mod page_api_conformance_tests;
 mod pump_event_driven_wake_tests;
+mod view_transition_tests;
 
 
 // Higher-tier soft-link providers are dev-deps nothing else `use`s in this

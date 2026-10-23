@@ -489,6 +489,13 @@ pub(crate) fn navigate(
         };
         let Some(initiator_window) = ScriptThread::find_window(initiator_pipeline_id) else {
             warn!("Can't find global for navigation initiator");
+            // BAO PATCH (REQ-BRW-051): this attempt can never mature, so close
+            // the WebDriver load-status attempt opened at step 17. Without a
+            // terminal edge, an Element Click / Navigate To wait that latched
+            // `NavigationStart` blocks until the page-load timeout.
+            if let Some(sender) = window.webdriver_load_status_sender() {
+                let _ = sender.send(WebDriverLoadStatus::NavigationStop);
+            }
             return;
         };
 
@@ -512,6 +519,17 @@ pub(crate) fn navigate(
                 let window_proxy = target_window.window_proxy();
                 if window_proxy.parent().is_some() {
                     window_proxy.stop_delaying_load_events_mode();
+                }
+                // BAO PATCH (REQ-BRW-051): a javascript: URL whose evaluation
+                // does not produce a document is not a navigation ("navigate
+                // to a javascript: URL" returns when newDocument is null), so
+                // no document load event will ever follow the
+                // `NavigationStart` emitted at step 17. Terminate the WebDriver
+                // load-status attempt here; otherwise `wait for navigation to
+                // complete` blocks until the page-load timeout (w10a Element
+                // Click wedge).
+                if let Some(sender) = target_window.webdriver_load_status_sender() {
+                    let _ = sender.send(WebDriverLoadStatus::NavigationStop);
                 }
             }
         });

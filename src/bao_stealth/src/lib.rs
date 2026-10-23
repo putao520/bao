@@ -1,7 +1,23 @@
 #![allow(dead_code, unused_imports)]
 // REQ-STL-007: Stealth engine integration and CDP stealth  @trace REQ-STL-001 [entity:TlsProfile] [entity:StealthProfile]
+//
+// ── from_seed 随机指纹模型(用户裁决 2026-10-21)────────────────────────────
+//
+// 反指纹 = 随机指纹,非固定预设:一个 u64 种子(`StealthProfile::from_seed`)
+// 确定性派生一整套档内连贯的指纹 — 同种子跨重载/会话逐字段复现(登录态不破),
+// 异种子互不可关联(域分离子种子构造性单射)。强联动维度(UA ⇔ platform ⇔
+// userAgentData ⇔ WebGL renderer ⇔ screen)钉进平台档位桶(`derive_tables`:
+// Windows/macOS/Linux,档内 GPU/屏幕/UA-CH 按子种子确定性选型),TLS/H2 只从
+// 树内真实抓取形态池选型 — 逐字段随机会造出地球不存在的组合,反成指纹。
+// 默认身份 = 进程级单例 `StealthProfile::default_identity()`(每次启动随机一次,
+// 无显式配置的 page 全共享 —— 同启动内指纹稳定、禁 per-page 各自随机);显式
+// browser context 以 `from_random_seed()` 派生该 context 的共享身份(解析链见
+// page_pool.rs 注释锚;显式 stealth-free 退出面 = `PageConfig::stealth_disabled`)。
+// firefox_default()/chrome_default() 保留为显式选择面。
 mod behavior;
 mod canvas;
+mod derive;
+mod derive_tables;
 pub mod engine_props;
 pub mod hooks;
 mod http2;

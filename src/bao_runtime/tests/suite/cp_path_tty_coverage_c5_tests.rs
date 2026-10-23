@@ -391,17 +391,29 @@ fn c5_path_errors_matchesglob_shape_body() {
         check("err_format_noargs", function() {{ return msgOf(function() {{ p.format(); }}).indexOf("pathObject") >= 0; }});
         check("err_format_nonobject", function() {{ return msgOf(function() {{ p.format(42); }}).indexOf("pathObject") >= 0; }});
 
-        // ── win32-face error arms (posix_str_fn macro message) ──
-        check("err_w32_join_null", function() {{ return msgOf(function() {{ p.win32.join(null); }}).indexOf("invalid argument") >= 0; }});
-        check("err_w32_normalize_null", function() {{ return msgOf(function() {{ p.win32.normalize(null); }}).indexOf("invalid argument") >= 0; }});
+        // ── win32-face error arms ──
+        // node v24.19.0 oracle (2026-10-23, local binary): win32 join(null)
+        // / normalize(null) throw TypeError ERR_INVALID_ARG_TYPE
+        // "The \"path\" argument must be of type string. Received null" —
+        // the same validateString shape as the host face (the old
+        // "invalid argument" pin matches no node version ≥ v10).
+        check("err_w32_join_null", function() {{ return msgOf(function() {{ p.win32.join(null); }}).indexOf("must be of type string") >= 0; }});
+        check("err_w32_normalize_null", function() {{ return msgOf(function() {{ p.win32.normalize(null); }}).indexOf("must be of type string") >= 0; }});
 
-        // ── non-throwing absence arms: isAbsolute / toNamespacedPath ──
-        check("err_isabs_noargs_false", function() {{ return p.isAbsolute() === false; }});
-        check("err_isabs_null_false", function() {{ return p.isAbsolute(null) === false; }});
-        check("err_isabs_num_false", function() {{ return p.isAbsolute(5) === false; }});
-        check("err_w32_isabs_noargs_false", function() {{ return p.win32.isAbsolute() === false; }});
+        // ── isAbsolute / toNamespacedPath arg faces ──
+        // node v24.19.0 oracle (2026-10-23): isAbsolute validates its
+        // argument — isAbsolute() / (null) / (5) (and win32.isAbsolute())
+        // all THROW TypeError ERR_INVALID_ARG_TYPE ("The \"path\" argument
+        // must be of type string. Received undefined/null/type number (5)");
+        // they never return false for non-strings. toNamespacedPath is the
+        // opposite face: non-string args return the VALUE VERBATIM (null →
+        // null, missing → undefined).
+        check("err_isabs_noargs_throws", function() {{ return msgOf(function() {{ p.isAbsolute(); }}).indexOf("must be of type string") >= 0; }});
+        check("err_isabs_null_throws", function() {{ return msgOf(function() {{ p.isAbsolute(null); }}).indexOf("must be of type string") >= 0; }});
+        check("err_isabs_num_throws", function() {{ return msgOf(function() {{ p.isAbsolute(5); }}).indexOf("must be of type string") >= 0; }});
+        check("err_w32_isabs_noargs_throws", function() {{ return msgOf(function() {{ p.win32.isAbsolute(); }}).indexOf("must be of type string") >= 0; }});
         check("err_tnp_noargs_undef", function() {{ return p.toNamespacedPath() === undefined; }});
-        check("err_tnp_null_undef", function() {{ return p.toNamespacedPath(null) === undefined; }});
+        check("err_tnp_null_passthrough", function() {{ return p.toNamespacedPath(null) === null; }});
         check("err_w32_tnp_noargs_undef", function() {{ return p.win32.toNamespacedPath() === undefined; }});
 
         // ── child_process missing-command / missing-arg arms live in §5; here:

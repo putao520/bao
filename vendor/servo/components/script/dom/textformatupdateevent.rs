@@ -16,7 +16,6 @@ use stylo_atoms::Atom;
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
 use crate::dom::bindings::codegen::Bindings::TextFormatUpdateBinding::TextFormatUpdateEventInit;
 use crate::dom::bindings::codegen::Bindings::TextFormatUpdateBinding::TextFormatUpdateEventMethods;
-use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};

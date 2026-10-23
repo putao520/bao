@@ -1213,10 +1213,19 @@ pub enum RubyPosition {
     AlternateUnder,
     Over,
     Under,
+    InterCharacter,
 }
 
 impl Parse for RubyPosition {
     fn parse(_context: &ParserContext, input: &mut Parser) -> Result<RubyPosition, ParseError> {
+        // `inter-character` is a standalone keyword and cannot be combined
+        // with alternate/over/under.
+        if input
+            .try_parse(|i| i.expect_ident_matching("inter-character"))
+            .is_ok()
+        {
+            return Ok(RubyPosition::InterCharacter);
+        }
         // Parse alternate before
         let alternate = input
             .try_parse(|i| i.expect_ident_matching("alternate"))
@@ -1254,13 +1263,14 @@ impl ToCss for RubyPosition {
             RubyPosition::AlternateUnder => "alternate under",
             RubyPosition::Over => "over",
             RubyPosition::Under => "under",
+            RubyPosition::InterCharacter => "inter-character",
         })
     }
 }
 
 impl SpecifiedValueInfo for RubyPosition {
     fn collect_completion_keywords(f: KeywordsCollectFn) {
-        f(&["alternate", "over", "under"])
+        f(&["alternate", "inter-character", "over", "under"])
     }
 }
 
@@ -1641,6 +1651,66 @@ pub enum RubyAlign {
     Start,
     Center,
     SpaceBetween,
+}
+
+/// https://drafts.csswg.org/css-ruby/#ruby-merge-property
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+/// `RubyMerge` values for the CSS `ruby-merge` property (CSS Ruby Layout;
+/// fork un-gated for servo, REQ-BRW-051).
+#[repr(u8)]
+pub enum RubyMerge {
+    Separate,
+    Merge,
+    Auto,
+}
+
+/// https://drafts.csswg.org/css-ruby/#ruby-overhang-property
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+/// `RubyOverhang` values for the CSS `ruby-overhang` property (CSS Ruby
+/// Layout; fork un-gated for servo, REQ-BRW-051).
+#[repr(u8)]
+pub enum RubyOverhang {
+    Auto,
+    #[parse(aliases = "none")]
+    Spaces,
 }
 
 /// https://drafts.csswg.org/css-writing-modes-3/#text-combine-upright

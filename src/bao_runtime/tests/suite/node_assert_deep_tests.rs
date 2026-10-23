@@ -152,7 +152,9 @@ fn test_node_assert_deep() {
         check("require_node_assert", function() { return typeof require('node:assert') === 'object' || typeof require('node:assert') === 'function'; });
 
         // === 17. assert.strict ===
-        check("assert_strict_type", function() { return typeof assert.strict === 'object' || typeof assert.strict === 'undefined'; });
+        // node v24.19.0 oracle (2026-10-23): typeof assert.strict === 'function'
+        // (the callable strict alias).
+        check("assert_strict_type", function() { return typeof assert.strict === 'object' || typeof assert.strict === 'function'; });
         check("assert_strict_equal", function() {
             if (typeof assert.strict === 'undefined') return true;
             return typeof assert.strict.strictEqual === 'function';

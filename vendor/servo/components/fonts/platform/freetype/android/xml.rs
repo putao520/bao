@@ -36,9 +36,9 @@ pub(super) fn parse(bytes: &[u8]) -> XmlResult<Vec<Node>> {
                     nodes = parent_nodes;
                 }
             },
-            XmlEvent::CData(characters) |
-            XmlEvent::Characters(characters) |
-            XmlEvent::Whitespace(characters) => {
+            XmlEvent::CData(characters)
+            | XmlEvent::Characters(characters)
+            | XmlEvent::Whitespace(characters) => {
                 if let Some(Node::Text(text)) = nodes.last_mut() {
                     text.push_str(&characters)
                 } else {
@@ -46,10 +46,10 @@ pub(super) fn parse(bytes: &[u8]) -> XmlResult<Vec<Node>> {
                 }
             },
             XmlEvent::EndDocument => break,
-            XmlEvent::Doctype { .. } |
-            XmlEvent::StartDocument { .. } |
-            XmlEvent::ProcessingInstruction { .. } |
-            XmlEvent::Comment(..) => {},
+            XmlEvent::Doctype { .. }
+            | XmlEvent::StartDocument { .. }
+            | XmlEvent::ProcessingInstruction { .. }
+            | XmlEvent::Comment(..) => {},
         }
     }
 

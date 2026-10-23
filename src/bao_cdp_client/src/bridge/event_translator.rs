@@ -234,6 +234,27 @@ pub enum ServoEvent {
         data_length: u64,
         encoded_data_length: u64,
     },
+    /// `Runtime.addBinding` 安装的绑定函数被页面调用(REQ-CDP-010)。
+    ///
+    /// → `Runtime.bindingCalled`
+    ///
+    /// `name` 是绑定名;`payload` 是绑定函数首参(字符串化载荷)。
+    /// @trace REQ-CDP-010 [event:RuntimeBinding]
+    BindingCalled {
+        target_id: String,
+        name: String,
+        payload: String,
+    },
+    /// 页面 DOMContentLoaded 观测点(REQ-CDP-010)。
+    ///
+    /// → `Page.domContentEventFired`
+    ///
+    /// 由 `Page.enable` 安装的 new-document 监听器经 `__BAO_CDPEVT__`
+    /// 载体回报;时点为真实 DOMContentLoaded 派发,不伪造。
+    /// @trace REQ-CDP-010 [event:DomContentEvent]
+    DomContentLoaded {
+        target_id: String,
+    },
 
     // ── DomMutation 类(REQ-BAO-API-003.4) — 2 个子事件
     /// DOM 属性变更。
@@ -368,6 +389,8 @@ impl ServoEvent {
             | ServoEvent::NetworkLoadingFinish { target_id, .. }
             | ServoEvent::NetworkLoadingFail { target_id, .. }
             | ServoEvent::NetworkDataReceived { target_id, .. }
+            | ServoEvent::BindingCalled { target_id, .. }
+            | ServoEvent::DomContentLoaded { target_id, .. }
             | ServoEvent::DomAttributeModified { target_id, .. }
             | ServoEvent::DomCharacterDataModified { target_id, .. }
             | ServoEvent::ScriptParsed { target_id, .. }
@@ -610,6 +633,39 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
                     "timestamp": current_timestamp_s(),
                     "dataLength": data_length,
                     "encodedDataLength": encoded_data_length,
+                }),
+                session_id: Some(target_id),
+            }]
+        }
+
+        // ────────────────────────────────────────────────────────────────
+        // §3.9 REQ-CDP-010 marker events → Runtime.bindingCalled /
+        //      Page.domContentEventFired
+        // ────────────────────────────────────────────────────────────────
+        // @trace REQ-CDP-010 [event:RuntimeBinding]
+        ServoEvent::BindingCalled {
+            target_id,
+            name,
+            payload,
+        } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            vec![CdpEvent {
+                method: "Runtime.bindingCalled".into(),
+                // Chrome 形:{name, payload, executionContextId} — payload 是
+                // 字符串化首参;executionContextId 以 0 表示主世界(bao 单世界)。
+                params: json!({
+                    "name": name,
+                    "payload": payload,
+                    "executionContextId": 0,
+                }),
+                session_id: Some(target_id),
+            }]
+        }
+        // @trace REQ-CDP-010 [event:DomContentEvent]
+        ServoEvent::DomContentLoaded { target_id } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            vec![CdpEvent {
+                method: "Page.domContentEventFired".into(),
+                params: json!({
+                    "timestamp": current_timestamp_s(),
                 }),
                 session_id: Some(target_id),
             }]

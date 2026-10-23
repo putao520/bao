@@ -31,6 +31,7 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::readablestream::PipeTo;
+use crate::dom::websocketstream::WebSocketStream;
 use crate::fetch::fetch::{DeferredFetchRecordId, FetchContext};
 use crate::realms::enter_auto_realm;
 
@@ -54,6 +55,10 @@ pub(crate) enum AbortAlgorithm {
     ),
     /// <https://fetch.spec.whatwg.org/#dom-window-fetchlater>
     FetchLater(#[no_trace] DeferredFetchRecordId),
+    /// <https://github.com/ricea/websocketstream-explainer>
+    /// The `AbortSignal` passed to the `WebSocketStream` constructor: aborting
+    /// during the handshake rejects `opened`/`closed` with an `AbortError`.
+    WebSocketStream(Trusted<WebSocketStream>),
 }
 
 #[derive(Clone, JSTraceable, MallocSizeOf)]
@@ -209,6 +214,12 @@ impl AbortSignal {
                     removable_listener.listener.as_deref(),
                     &removable_listener.options,
                 );
+            },
+            AbortAlgorithm::WebSocketStream(stream) => {
+                // Aborting during the handshake rejects `opened`/`closed`
+                // with an AbortError; afterwards it has no effect.
+                let stream = stream.root();
+                stream.handle_abort_signal(cx, global);
             },
         }
     }

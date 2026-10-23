@@ -8,6 +8,11 @@ pub mod async_runtime;
 pub mod connector;
 pub mod cookie;
 pub mod cookie_storage;
+// BAO PATCH (REQ-BRW-051): Device Bound Session Credentials — session store,
+// SFV parsing, proof JWT keys, and the registration/refresh exchange drivers.
+// The dbsc files existed as orphans before this declaration (E1 of the DBSC
+// audit: nothing under `dbsc/` compiled or ran its tests until here).
+pub mod dbsc;
 mod decoder;
 mod devtools;
 mod disk_cache;
@@ -25,6 +30,9 @@ pub mod resource_thread;
 pub mod subresource_integrity;
 #[cfg(feature = "test-util")]
 pub mod test_util;
+// BAO PATCH (REQ-BRW-051): process-wide `<script type=webbundle>` registration
+// registry consulted by the fetch pipeline (see `webbundle` module docs).
+mod webbundle;
 mod websocket_loader;
 
 /// An implementation of the [Fetch specification](https://fetch.spec.whatwg.org/)

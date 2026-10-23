@@ -40,6 +40,9 @@ interface mixin GlobalEventHandlers {
            attribute EventHandler onclick;
            attribute EventHandler onclose;
            attribute EventHandler oncommand;
+           // https://drafts.csswg.org/css-contain/#content-visibility (Bao fork
+           // self-build, REQ-BRW-051; upstream has no oncontentvisibilityautostatechange)
+           attribute EventHandler oncontentvisibilityautostatechange;
            attribute EventHandler oncontextlost;
            attribute EventHandler oncontextmenu;
            attribute EventHandler oncontextrestored;

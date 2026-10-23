@@ -26,7 +26,8 @@ use thin_vec::ThinVec;
 
 pub use crate::values::specified::text::{
     HyphenateCharacter, Hyphens, LineBreak, MozControlCharacterVisibility, OverflowWrap, RubyAlign,
-    RubyPosition, TextAlignLast, TextAutospace, TextBoxEdge, TextBoxTrim, TextCombineUpright,
+    RubyMerge, RubyOverhang, RubyPosition, TextAlignLast, TextAutospace, TextBoxEdge, TextBoxTrim,
+    TextCombineUpright,
     TextDecorationLine, TextDecorationSkipInk, TextDecorationStyle, TextEmphasisPosition,
     TextJustify, TextOverflow, TextRendering, TextSecurity, TextSizeAdjust, TextTransform,
     TextUnderlinePosition, TextWrapMode, TextWrapStyle, UnicodeBidi, WhiteSpaceCollapse, WordBreak,

@@ -47,8 +47,8 @@ where
             let mut family: *mut FcChar8 = ptr::null_mut();
             let mut format: *mut FcChar8 = ptr::null_mut();
             let mut v: c_int = 0;
-            if FcPatternGetString(*font, FC_FONTFORMAT.as_ptr() as *mut c_char, v, &mut format) !=
-                FcResultMatch
+            if FcPatternGetString(*font, FC_FONTFORMAT.as_ptr() as *mut c_char, v, &mut format)
+                != FcResultMatch
             {
                 continue;
             }
@@ -59,8 +59,8 @@ where
                 continue;
             }
 
-            while FcPatternGetString(*font, FC_FAMILY.as_ptr() as *mut c_char, v, &mut family) ==
-                FcResultMatch
+            while FcPatternGetString(*font, FC_FAMILY.as_ptr() as *mut c_char, v, &mut family)
+                == FcResultMatch
             {
                 let family_name = match CStr::from_ptr(family as *const c_char).to_str() {
                     Ok(family_name) => family_name,
@@ -198,11 +198,11 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
             {
                 families.push("WenQuanYi Micro Hei");
             },
-            UnicodeBlock::HalfwidthandFullwidthForms |
-            UnicodeBlock::EnclosedIdeographicSupplement => families.push("WenQuanYi Micro Hei"),
-            UnicodeBlock::Hiragana |
-            UnicodeBlock::Katakana |
-            UnicodeBlock::KatakanaPhoneticExtensions => {
+            UnicodeBlock::HalfwidthandFullwidthForms
+            | UnicodeBlock::EnclosedIdeographicSupplement => families.push("WenQuanYi Micro Hei"),
+            UnicodeBlock::Hiragana
+            | UnicodeBlock::Katakana
+            | UnicodeBlock::KatakanaPhoneticExtensions => {
                 families.push("TakaoPGothic");
             },
             _ => {},

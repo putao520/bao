@@ -1514,12 +1514,14 @@ fn test_page_get_frame_tree_no_bridge_explicit_error() {
 
 #[test]
 fn test_page_get_navigation_history_not_supported() {
-    // New contract (6983871b): servo WebView exposes no session-history
-    // enumeration — explicit -32000, never a fabricated single-entry history.
+    // REQ-CDP-010 golden-oracle parity: the session-history journal lives
+    // browser-side and is read through the bridge. No bridge = no history
+    // source — explicit transport-class -32603, never a fabricated
+    // single-entry history.
     let resp = dispatch("Page.getNavigationHistory", None);
     let err = resp.error.expect("history enumeration must fail loudly");
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("not supported"));
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
     assert!(resp.result.is_none());
 }
 

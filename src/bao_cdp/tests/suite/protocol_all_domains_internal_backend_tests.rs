@@ -364,12 +364,14 @@ fn test_page_get_frame_tree() {
 
 #[test]
 fn test_page_get_navigation_history() {
-    // servo exposes no session-history enumeration — -32000, never a
-    // fabricated currentIndex/entries payload.
+    // REQ-CDP-010 golden-oracle parity: the real session-history journal is
+    // served through the servo bridge (BaoWebViewState::navigation_journal) —
+    // without one there is no history source, so this is the transport-class
+    // -32603, never a fabricated currentIndex/entries payload.
     let resp = handle("Page.getNavigationHistory");
     let e = resp.error.expect("history enumeration must fail loudly");
-    assert_eq!(e.code, -32000);
-    assert!(e.message.contains("not supported"));
+    assert_eq!(e.code, -32603);
+    assert!(e.message.contains("no servo bridge"));
 }
 
 #[test]

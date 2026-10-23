@@ -18,16 +18,19 @@ use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use style_traits::CSSPixel;
 
 use crate::dom::bindings::callback::ExceptionHandling;
+use crate::dom::bindings::codegen::Bindings::PerformanceScriptTimingBinding::ScriptInvokerType;
 use crate::dom::bindings::codegen::Bindings::ResizeObserverBinding::{
     ResizeObserverBoxOptions, ResizeObserverCallback, ResizeObserverMethods, ResizeObserverOptions,
 };
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::inheritance::Castable;
+use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::document::RenderingUpdateReason;
 use crate::dom::domrectreadonly::DOMRectReadOnly;
 use crate::dom::element::Element;
 use crate::dom::node::{Node, NodeTraits};
+use crate::dom::performance::long_animation_frame_recorder;
 use crate::dom::resizeobserverentry::ResizeObserverEntry;
 use crate::dom::resizeobserversize::{ResizeObserverSize, ResizeObserverSizeImpl};
 use crate::dom::window::Window;
@@ -153,6 +156,14 @@ impl ResizeObserver {
         }
 
         // Step 2.4 Invoke observer.[[callback]] with entries.
+        let _long_animation_frame_guard = self.global().downcast::<Window>().map(|window| {
+            long_animation_frame_recorder::note_rendering_work(window.pipeline_id());
+            long_animation_frame_recorder::begin_script_entry(
+                &window,
+                ScriptInvokerType::User_callback,
+                "ResizeObserverCallback".to_owned(),
+            )
+        });
         let _ = self
             .callback
             .Call_(cx, self, entries, self, ExceptionHandling::Report);
@@ -359,8 +370,8 @@ impl ResizeObservation {
             return true;
         };
         let box_size = calculate_box_size(target, &self.observed_box);
-        box_size.width() != last_reported_size.inline_size() ||
-            box_size.height() != last_reported_size.block_size()
+        box_size.width() != last_reported_size.inline_size()
+            || box_size.height() != last_reported_size.block_size()
     }
 }
 

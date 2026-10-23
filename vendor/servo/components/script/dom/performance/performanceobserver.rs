@@ -17,11 +17,14 @@ use crate::dom::bindings::callback::ExceptionHandling;
 use crate::dom::bindings::codegen::Bindings::PerformanceObserverBinding::{
     PerformanceObserverCallback, PerformanceObserverInit, PerformanceObserverMethods,
 };
+use crate::dom::bindings::codegen::Bindings::PerformanceScriptTimingBinding::ScriptInvokerType;
 use crate::dom::bindings::error::{Error, Fallible};
+use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::console::Console;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::window::Window;
 
 #[derive(Clone, Copy, JSTraceable, MallocSizeOf, PartialEq)]
 enum ObserverType {
@@ -80,6 +83,13 @@ impl PerformanceObserver {
             .map(|entry| entry.as_rooted())
             .collect();
         let observer_entry_list = PerformanceObserverEntryList::new(cx, &self.global(), entries);
+        let _long_animation_frame_guard = self.global().downcast::<Window>().map(|window| {
+            super::long_animation_frame_recorder::begin_script_entry(
+                &window,
+                ScriptInvokerType::User_callback,
+                "PerformanceObserverCallback".to_owned(),
+            )
+        });
         // using self both as thisArg and as the second formal argument
         let _ = self.callback.Call_(
             cx,

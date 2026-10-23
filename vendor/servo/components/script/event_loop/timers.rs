@@ -30,6 +30,7 @@ use timers::{BoxedTimerCallback, TimerEventRequest};
 
 use crate::dom::bindings::callback::ExceptionHandling::Report;
 use crate::dom::bindings::codegen::Bindings::FunctionBinding::Function;
+use crate::dom::bindings::codegen::Bindings::PerformanceScriptTimingBinding::ScriptInvokerType;
 use crate::dom::bindings::codegen::UnionTypes::TrustedScriptOrString;
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::inheritance::Castable;
@@ -41,6 +42,7 @@ use crate::dom::document::RefreshRedirectDue;
 use crate::dom::eventsource::EventSourceTimeoutCallback;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::globalscope::script_execution::RethrowErrors;
+use crate::dom::performance::long_animation_frame_recorder;
 use crate::dom::script_execution::ScriptOptions;
 #[cfg(feature = "testbinding")]
 use crate::dom::testbinding::TestBindingCallback;
@@ -962,6 +964,21 @@ fn invoke_js_timer(
     // step 9.2 can be ignored, because we proactively prevent execution
     // of this task when its scheduled execution is canceled.
 
+    // Long animation frames attribute timer callbacks to their timer entry
+    // point. Only Window realms produce long animation frames.
+    let _long_animation_frame_guard = global.downcast::<Window>().map(|window| {
+        let invoker = if data.is_interval == IsInterval::Interval {
+            "TimerHandler:setInterval"
+        } else {
+            "TimerHandler:setTimeout"
+        };
+        long_animation_frame_recorder::begin_script_entry(
+            &window,
+            ScriptInvokerType::User_callback,
+            invoker.to_owned(),
+        )
+    });
+
     // prep for step ? in nested set_timeout_or_interval calls
     timers.nesting_level.set(data.nesting_level);
 
@@ -1015,8 +1032,8 @@ fn invoke_js_timer(
     //
     // Since we choose proactively prevent execution (see 4.1 above), we must only
     // reschedule repeating timers when they were not canceled as part of step 4.2.
-    if data.is_interval == IsInterval::Interval &&
-        timers.active_timers.borrow().contains_key(&data.handle)
+    if data.is_interval == IsInterval::Interval
+        && timers.active_timers.borrow().contains_key(&data.handle)
     {
         timers.initialize_and_schedule(global, callback, data);
     }

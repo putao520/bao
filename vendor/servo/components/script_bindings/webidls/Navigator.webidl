@@ -77,6 +77,12 @@ partial interface Navigator {
   [SecureContext, SameObject, Pref="dom_async_clipboard_enabled"] readonly attribute Clipboard clipboard;
 };
 
+// BAO PATCH (REQ-BRW-051): Device Bound Session Credentials query face.
+// https://wicg.github.io/device-bound-session-connections/ (2026-09-08 ED)
+partial interface Navigator {
+  [SecureContext, SameObject, Pref="dom_dbsc_enabled"] readonly attribute DeviceBoundSession deviceBoundSession;
+};
+
 // https://w3c.github.io/beacon/#sendbeacon-method
 partial interface Navigator {
   [Throws] boolean sendBeacon(USVString url, optional BodyInit? data = null);

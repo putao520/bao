@@ -72,6 +72,43 @@ pub struct PagePool {
     /// disposal closes member pages through this pool and every attribution
     /// query rides the bridge drain path (same thread, `RefCell` discipline).
     browser_contexts: RefCell<crate::browser_context::BrowserContextRegistry>,
+    /// Runtime-level explicit stealth choice (`BaoConfig::stealth_profile`,
+    /// e.g. CLI `bao browser --stealth` → firefox preset). Sits one step
+    /// ABOVE the process-wide random default identity in the resolution chain
+    /// (see `create_page`); `None` = no runtime-level choice. User ruling
+    /// 2026-10-21: explicit choice wins over the random default, and the
+    /// default is the random identity — never a fixed preset.
+    default_stealth_profile: Option<bao_stealth::StealthProfile>,
+}
+
+/// 单页隐身身份解析链(纯函数,创建页时调用;可单测)。
+///
+/// 优先级(用户裁决 2026-10-21「默认 = 随机身份」;前者优先):
+///   ① 显式 profile(含 firefox/chrome_default 预设)
+///   ② 显式 stealth-free(`disabled`)→ `None`(无 stealth 链;keyed 注册表写
+///      显式 None 条目)
+///   ③ 显式 browser context 的派生身份(同 context 共享)
+///   ④ 运行期级 `BaoConfig::stealth_profile`(CLI `--stealth` 等显式选择)
+///   ⑤ 进程级默认身份单例(每次启动随机一次;进程内全部无显式配置的 page
+///      共享 —— 禁 per-page 各自随机)
+fn resolve_stealth_identity(
+    explicit: Option<&bao_stealth::StealthProfile>,
+    disabled: bool,
+    context_profile: Option<&bao_stealth::StealthProfile>,
+    runtime_default: Option<&bao_stealth::StealthProfile>,
+) -> Option<bao_stealth::StealthProfile> {
+    if let Some(profile) = explicit {
+        return Some(profile.clone());
+    }
+    if disabled {
+        return None;
+    }
+    Some(
+        context_profile
+            .or(runtime_default)
+            .cloned()
+            .unwrap_or_else(|| bao_stealth::StealthProfile::default_identity().clone()),
+    )
 }
 
 impl PagePool {
@@ -95,6 +132,7 @@ impl PagePool {
             pending_closes: RefCell::new(Vec::new()),
             self_weak: RefCell::new(std::rc::Weak::new()),
             browser_contexts: RefCell::new(crate::browser_context::BrowserContextRegistry::new()),
+            default_stealth_profile: config.stealth_profile.clone(),
         }
     }
 
@@ -132,6 +170,41 @@ impl PagePool {
                 )));
             }
         }
+
+        // ── 随机身份默认挂载(用户裁决 2026-10-21:默认 = 随机身份)──────────
+        // 解析链(前者优先):
+        //   ① 显式 PageConfig.stealth_profile(含 firefox/chrome_default 预设,
+        //      显式选择面不变)
+        //   ② 显式 stealth_disabled = true → stealth-free 退出面(尊重显式 None;
+        //      keyed 注册表写显式 None 条目,R53-A 语义零变化)
+        //   ③ 显式 browser_context_id → 该 context 创建时 from_random_seed()
+        //      派生的共享身份(同 context 所有 page 同一套指纹)
+        //   ④ 运行期级 BaoConfig.stealth_profile(CLI --stealth 等显式选择)
+        //   ⑤ 进程级默认身份单例 StealthProfile::default_identity()
+        //      (每次进程启动随机一次;进程内全部无显式配置的 page 共享 ——
+        //      同启动内指纹稳定,登录态/重载不破;禁 per-page 各自随机)
+        // 派生后的 profile 走既有注入路径(inject_all_with_profile +
+        // per-WebViewId keyed 注册表),零新安装机制;popup 经 opener 继承同此身份。
+        let mut config = config.clone();
+        // ①② 已定则不必查 context(省一次 profile clone)。
+        let context_profile = if config.stealth_profile.is_none() && !config.stealth_disabled {
+            match config.browser_context_id.as_deref() {
+                Some(ctx) => { // @evidence .spec/06-CDP-SERVER.html:1371
+                    let contexts = self.browser_contexts.borrow();
+                    contexts.stealth_profile_of_context(ctx).cloned()
+                }
+                None => None, // @evidence .spec/06-CDP-SERVER.html:1371
+            }
+        } else {
+            None
+        };
+        let resolved = resolve_stealth_identity(
+            config.stealth_profile.as_ref(),
+            config.stealth_disabled,
+            context_profile.as_ref(),
+            self.default_stealth_profile.as_ref(),
+        );
+        config.stealth_profile = resolved;
 
         // REQ-CDS-009 C6: resolve the context's resource partition now — the
         // WebView must carry it at build time (the attribution registers
@@ -182,7 +255,7 @@ impl PagePool {
                 &pool_weak,
                 Rc::clone(&self.servo),
                 Rc::clone(&self.servo_delegate),
-                config,
+                &config,
                 self.default_viewport,
                 id,
                 partition,
@@ -332,6 +405,8 @@ impl PagePool {
         stealth_profile: Option<bao_stealth::StealthProfile>,
         permission: Option<Permission>,
         browser_context_id: Option<String>,
+        // The opener's pool id (REQ-CDP-010 TargetInfo.canAccessOpener face).
+        opener_page_id: Option<usize>,
     ) -> Option<PageHandle> {
         let total = self.active_pages.borrow().len() + self.idle_pages.borrow().len();
         if total >= self.max_total {
@@ -409,6 +484,11 @@ impl PagePool {
             }
         }
 
+        // REQ-CDP-010: stamp the real opener relationship the CDP TargetInfo
+        // face projects as `canAccessOpener` (popups only; embedder-created
+        // pages keep `None`). Written before publication so no reader can
+        // observe the popup without its opener binding.
+        page.webview_state().borrow_mut().opener_page_id = opener_page_id;
         self.active_pages.borrow_mut().insert(id, page.clone());
         // REQ-CDS-009: popups are auxiliaries of their opener — same context
         // attribution (the delegate resolves the opener's context alongside
@@ -757,7 +837,10 @@ impl PagePool {
     /// Target.createBrowserContext — mint an explicit context id bound to a
     /// fresh in-process resource partition (REQ-CDS-009 C6): its own cookie
     /// jar / HTTP cache on the servo net side and its own webstorage /
-    /// IndexedDB / CacheStorage group on the storage side.
+    /// IndexedDB / CacheStorage group on the storage side. 随机身份默认挂载
+    /// (用户裁决 2026-10-21):context 创建时同时派生其随机指纹身份
+    /// (`StealthProfile::from_random_seed()`,registry 持有;成员 page 共享,
+    /// 解析点见 create_page 注释锚)。
     pub fn create_browser_context(&self) -> String {
         let partition = self.servo.create_context_partition();
         self.browser_contexts.borrow_mut().create_context(partition)
@@ -825,6 +908,66 @@ impl PagePool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 隐身身份解析链(用户裁决 2026-10-21「默认 = 随机身份」)─────────────
+    // 纯函数单元测试:①显式 > ②显式退出 > ③context > ④运行期默认 > ⑤进程默认
+    // 身份单例,逐级断言语义。
+
+    fn probe_profile(tag: &str) -> bao_stealth::StealthProfile {
+        let mut profile = bao_stealth::StealthProfile::from_seed(42);
+        profile.navigator.user_agent = format!("probe-{tag}");
+        profile
+    }
+
+    #[test]
+    fn stealth_resolution_explicit_profile_wins_over_everything() {
+        let explicit = probe_profile("explicit");
+        let context = probe_profile("context");
+        let runtime = probe_profile("runtime");
+        let got = resolve_stealth_identity(Some(&explicit), true, Some(&context), Some(&runtime))
+            .expect("显式 profile 必须生效(即使 stealth_disabled=true)");
+        assert_eq!(got.navigator.user_agent, "probe-explicit");
+    }
+
+    #[test]
+    fn stealth_resolution_explicit_disable_yields_stealth_free() {
+        let context = probe_profile("context");
+        let runtime = probe_profile("runtime");
+        assert!(
+            resolve_stealth_identity(None, true, Some(&context), Some(&runtime)).is_none(),
+            "显式 stealth-free 退出面必须压过 context/runtime 默认"
+        );
+    }
+
+    #[test]
+    fn stealth_resolution_context_beats_runtime_default() {
+        let context = probe_profile("context");
+        let runtime = probe_profile("runtime");
+        let got = resolve_stealth_identity(None, false, Some(&context), Some(&runtime))
+            .expect("context 身份必须生效");
+        assert_eq!(got.navigator.user_agent, "probe-context");
+    }
+
+    #[test]
+    fn stealth_resolution_runtime_default_beats_process_default() {
+        let runtime = probe_profile("runtime");
+        let got = resolve_stealth_identity(None, false, None, Some(&runtime))
+            .expect("运行期默认必须生效");
+        assert_eq!(got.navigator.user_agent, "probe-runtime");
+    }
+
+    #[test]
+    fn stealth_resolution_falls_back_to_process_default_identity() {
+        let got = resolve_stealth_identity(None, false, None, None)
+            .expect("皆无 → 进程级默认身份(不是 stealth-free)");
+        let shared = bao_stealth::StealthProfile::default_identity();
+        assert_eq!(
+            got.canvas.seed(),
+            shared.canvas.seed(),
+            "默认页必须共享进程级默认身份单例(禁 per-page 各自随机)"
+        );
+        assert_eq!(got.navigator.user_agent, shared.navigator.user_agent);
+    }
 
     #[test]
     fn pool_stats_construction() {

@@ -13,7 +13,7 @@ use js::rust::{HandleObject, HandleValue};
 use net_traits::http_status::HttpStatus;
 use script_bindings::cell::DomRefCell;
 use script_bindings::cformat;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
+use script_bindings::reflector::{Reflector, reflect_dom_object, reflect_dom_object_with_proto};
 use script_bindings::str::DOMString;
 use servo_url::ServoUrl;
 use url::Position;
@@ -514,6 +514,49 @@ impl Response {
 
     pub(crate) fn set_redirected(&self, is_redirected: bool) {
         self.redirected.set(is_redirected);
+    }
+
+    /// Create a `Response` object from internal response data.
+    ///
+    /// This backs the Cache API (`Cache.match`/`Cache.matchAll`), which stores
+    /// response data in the storage thread and reconstructs a `Response` per
+    /// query. The header list is exposed with an "immutable" guard, as required
+    /// by the Cache API algorithms.
+    pub(crate) fn new_from_parts(
+        cx: &mut js::context::JSContext,
+        global: &GlobalScope,
+        status: HttpStatus,
+        headers: HyperHeaders,
+        response_type: DOMResponseType,
+        url: Option<ServoUrl>,
+        body: Vec<u8>,
+    ) -> Fallible<DomRoot<Response>> {
+        // Opaque, opaque-redirect and network-error responses have a null body.
+        let has_body = !matches!(
+            response_type,
+            DOMResponseType::Error | DOMResponseType::Opaque | DOMResponseType::Opaqueredirect
+        );
+        let body_stream = if has_body {
+            Some(ReadableStream::new_from_bytes_with_byte_reading_support(
+                cx, global, body,
+            )?)
+        } else {
+            None
+        };
+        let response = reflect_dom_object(
+            cx,
+            Box::new(Response::new_inherited(body_stream.as_deref())),
+            global,
+        );
+        // This response is not network-backed; only script may read the body.
+        response.fetch_body_stream.set(None);
+        *response.status.borrow_mut() = status;
+        *response.response_type.borrow_mut() = response_type;
+        *response.url.borrow_mut() = url.clone();
+        *response.url_list.borrow_mut() = url.into_iter().collect();
+        response.Headers(cx).set_headers(headers);
+        response.Headers(cx).set_guard(Guard::Immutable);
+        Ok(response)
     }
 
     fn set_response_members_by_type(

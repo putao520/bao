@@ -1,0 +1,81 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+/* MathML Core user agent stylesheet.
+ *
+ * BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): fork-maintained.
+ * Source: <https://w3c.github.io/mathml-core/#mathml-core-user-agent-stylesheet>
+ *
+ * This sheet only carries the MathML Core user agent rules that the layout
+ * engine of this fork can honour. The rules that need style machinery which is
+ * gecko-only in this stylo snapshot are handled elsewhere or registered as
+ * gaps:
+ *
+ *   * `display: inline math` / `display: block math`: there is no `math`
+ *     inside value in servo, so the MathML formatting context is forced by
+ *     `layout::dom_traversal::mathml_display` instead.
+ *   * `font-family: math`: the `math` generic family is gecko-only; math
+ *     documents must name a math font (or let the UA default font apply).
+ *   * `font-size: math` together with `math-depth`: the `math-depth` longhand
+ *     is behind the `layout.unimplemented` pref and the `font-size: math`
+ *     keyword is gecko-only, so the script scaling of §3.1.3 is applied as a
+ *     percentage on the script children below (`scriptPercentScaleDown` =
+ *     71%, `scriptScriptPercentScaleDown` = 50.41%). The percentage compounds
+ *     with nesting exactly like `math-depth` does.
+ *   * `mtd { padding: 0.5ex 0.4em }` is applied by the table layout code, so
+ *     that cells keep their padding even though they are laid out by the MathML
+ *     formatting context rather than by CSS tables.
+ */
+
+@namespace url(http://www.w3.org/1998/Math/MathML);
+
+/* <https://w3c.github.io/mathml-core/#the-top-level-math-element> */
+math {
+  display: inline;
+  /* Not expressible in this stylo snapshot; see the note above. */
+  /* font-family: math; */
+  /* font-size: math; */
+  /* math-style: compact; */
+  /* math-depth: 0; */
+  text-indent: 0;
+  letter-spacing: normal;
+  line-height: normal;
+  word-spacing: normal;
+  font-style: normal;
+  font-weight: normal;
+}
+
+math[display="block" i] {
+  display: block;
+}
+
+math[display="inline" i] {
+  display: inline;
+}
+
+/* <https://w3c.github.io/mathml-core/#identifier-mi> */
+mi {
+  text-transform: math-auto;
+}
+
+/* <https://w3c.github.io/mathml-core/#script-and-limit-schemata> and
+ * <https://w3c.github.io/mathml-core/#fractions-mfrac>: everything but the base
+ * of a script schema, and both children of a fraction, are one script level
+ * deeper. */
+mfrac > *,
+msub > :nth-child(n + 2),
+msup > :nth-child(n + 2),
+msubsup > :nth-child(n + 2),
+munder > :nth-child(n + 2),
+mover > :nth-child(n + 2),
+munderover > :nth-child(n + 2),
+mmultiscripts > :nth-child(n + 2) {
+  font-size: 71%;
+}
+
+/* <https://w3c.github.io/mathml-core/#the-radical-element-mroot>: the index of
+ * a root is two script levels deeper. */
+mroot > :nth-child(n + 2) {
+  font-size: 50.41%;
+}

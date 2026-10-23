@@ -132,6 +132,15 @@ pub trait LayoutElement<'dom>: Copy + Debug + Send + Sync {
     /// Note that, like `Self::is_body_element_of_html_element_root`, this accesses the parent.
     /// As in that case, since this is an immutable borrow, we do not violate thread safety.
     fn is_root(&self) -> bool;
+
+    /// Returns whether this element is in the MathML namespace.
+    ///
+    /// BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): layout has to
+    /// recognize MathML elements in order to give them a MathML formatting
+    /// context, because this stylo snapshot has no `display: math` inside
+    /// value. Compare `LayoutElement::is_html_element_in_html_document`, which
+    /// is the equivalent predicate for the HTML namespace.
+    fn is_mathml_element(&self) -> bool;
 }
 
 /// An element that can be passed to `stylo` and `selectors` that allows accessing the

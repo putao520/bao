@@ -57,7 +57,19 @@ gamepad = [
 jitspew = ["script/jitspew"]
 js_backtrace = ["script/js_backtrace"]
 js_jit = ["script/js_jit"]
-media-gstreamer = ["servo-media-gstreamer", "gstreamer"]
+# Bao fork self-build (REQ-BRW-051): also turns on the GStreamer video decode
+# backend of the WebCodecs component (via script's `webcodecs-gstreamer`
+# chain), keeping Windows builds gst-free while `servo/webcodecs` alone stays
+# pure-Rust (control plane + PCM + image backends).
+media-gstreamer = [
+    "servo-media-gstreamer",
+    "gstreamer",
+    "script/webcodecs-gstreamer",
+]
+# Bao fork self-build (REQ-BRW-051): forwards to script's WebCodecs DOM face +
+# the `bao-servo-webcodecs` decode plane. Pure Rust — safe on every platform;
+# the gst video backend rides on `media-gstreamer` instead.
+webcodecs = ["script/webcodecs"]
 
 # Allows multiprocess and ipc mode. If enabled this still needs the correct preference flags to use multi process mode.
 multiprocess = ["servo-base/multiprocess", "servo-constellation/multiprocess"]

@@ -91,9 +91,9 @@ fn remove_redundant_cache_files() {
             // A cache file with a mismatching prefix is obsolete.
             if filename
                 .as_bytes()
-                .ends_with(CACHE_FILENAME_SUFFIX.as_bytes()) &&
-                filename.as_bytes() != expected_cache_filename.as_bytes() &&
-                let Err(e) = fs::remove_file(entry.path())
+                .ends_with(CACHE_FILENAME_SUFFIX.as_bytes())
+                && filename.as_bytes() != expected_cache_filename.as_bytes()
+                && let Err(e) = fs::remove_file(entry.path())
             {
                 error!(
                     "Obsolete font cache file found; but failed to remove it: {:?}",

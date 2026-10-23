@@ -142,7 +142,7 @@ pub fn eval_number(ctx: &mut JsContext, source: &str) -> f64 {
 // ---------------------------------------------------------------------------
 
 use std::cell::Cell;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mozjs::rooted;
 
@@ -231,6 +231,84 @@ pub fn drive_event_loop_drain(ctx: &mut JsContext, max_iters: usize) {
         }
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// No-progress tripwire window for [`pump_until`]: an unchanged poll value
+/// for this long while the loop is still ticking ⇒ `PumpStuck` panic.
+pub const PUMP_STALL: Duration = Duration::from_secs(2);
+
+/// Unified settle-pump for cross-thread async contracts (fetch ConcurrentTask
+/// delivery, timers, promise reactions): each tick drives all three
+/// actuators — realm-aware timer drain (fires due timers), MiniEventLoop
+/// `tick_without_idle` (dispatches queued ConcurrentTasks onto the JS
+/// thread), `RunJobs` (settles reactions) — then polls `poll_js` through the
+/// caller's eval binding. The tick body is the `drive_event_loop_drain`
+/// idiom verbatim (c17/abort_signal_timeout inline-pump lineage) with the
+/// settle sleep kept at 2ms.
+///
+/// Exits early the moment `settled(poll)` is true (the inline-pump "marker
+/// left PENDING" semantics); returns the last poll value on `timeout` expiry
+/// (caller asserts on it). No-progress tripwire: if the polled value is
+/// unchanged for [`PUMP_STALL`] of wall clock while the loop is still
+/// ticking and not yet settled, the consumption side is stalled (producer
+/// dead / delivery chain broken) — panic `PumpStuck` immediately, so a
+/// stalled settle surfaces as a diagnostic FAIL naming the poll expression
+/// and the frozen value, not a silent hang.
+///
+/// Known limitation (honest boundary): the tripwire only observes *between*
+/// ticks. If a single tick call itself parks at the syscall level
+/// (mutex/condvar/futex), the loop never returns to the tripwire check and
+/// this function cannot fire — that full-park shape needs an outer backstop
+/// (nextest slow-timeout / harness watchdog), not this tripwire.
+// @trace REQ-ENG-010
+pub fn pump_until(
+    ctx: &mut JsContext,
+    poll_js: &str,
+    timeout: Duration,
+    eval: fn(&mut JsContext, &str) -> String,
+    settled: fn(&str) -> bool,
+) -> String {
+    let cx_raw = ctx.raw_cx();
+    let deadline = Instant::now() + timeout;
+    let mut last_poll = String::new();
+    let mut last_change = Instant::now();
+    let mut final_poll = String::new();
+    while Instant::now() < deadline {
+        {
+            let mut cxm = ctx.cx();
+            let global = bao_engine::context::thread_realm_global();
+            if let Some(g) = global {
+                rooted!(&in(cxm) let g_root = g);
+                let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
+                let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+                bun_runtime::timers::drain_and_check(realm_cx);
+            } else {
+                bun_runtime::timers::drain_and_check(&mut cxm);
+            }
+        }
+        bun_runtime::timers::with_event_loop(|loop_| {
+            loop_.tick_without_idle(std::ptr::null_mut());
+        });
+        unsafe {
+            mozjs_sys::jsapi::js::RunJobs(cx_raw);
+        }
+        std::thread::sleep(Duration::from_millis(2));
+        final_poll = eval(ctx, poll_js);
+        if settled(&final_poll) {
+            break;
+        }
+        if final_poll != last_poll {
+            last_poll = final_poll.clone();
+            last_change = Instant::now();
+        } else if last_change.elapsed() >= PUMP_STALL {
+            panic!(
+                "PumpStuck: poll value {:?} unchanged for {:?} while pumping \
+                 (poll_js={}) — consumption stalled or producer starved",
+                final_poll, PUMP_STALL, poll_js
+            );
+        }
+    }
+    final_poll
 }
 
 /// wait_until core: `iters` probe rounds; each round arms [`HOOK_BUDGET`]

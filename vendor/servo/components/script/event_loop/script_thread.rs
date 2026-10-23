@@ -79,6 +79,7 @@ use profile_traits::time::ProfilerCategory;
 use profile_traits::time_profile;
 use rustc_hash::{FxHashMap, FxHashSet};
 use script_bindings::cell::DomRefCell;
+use script_bindings::reflector::reflect_dom_object;
 // BAO PATCH (BCE-20260910-004): servo's own "prepare to run script" wrapper,
 // used by `bao_run_in_script_settings` for embedder-side JS dispatches.
 use script_bindings::settings_stack::run_a_script;
@@ -90,7 +91,8 @@ use servo_arc::Arc as ServoArc;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::{
-    BrowsingContextId, HistoryStateId, PipelineId, PipelineNamespace, ScriptEventLoopId, WebViewId,
+    BrowsingContextId, HistoryStateId, PipelineId, PipelineNamespace, ScriptEventLoopId,
+    ServiceWorkerId, WebViewId,
 };
 use servo_base::threadboost::{BoostAffinity, ThreadPriority};
 use servo_base::{Epoch, generic_channel};
@@ -101,7 +103,7 @@ use servo_config::{pref, prefs};
 use servo_constellation_traits::{
     HistoryTraversalSource, LoadData, LoadOrigin, NavigationHistoryBehavior, PaintMetricEvent,
     RemoteFocusOperation, ScreenshotReadinessResponse, ScriptToConstellationChan,
-    ScriptToConstellationMessage, ScrollStateUpdate, ServiceWorkerAlgorithm,
+    ScriptToConstellationMessage, ScrollStateUpdate, ServiceWorkerAlgorithm, ServiceWorkerState,
     SessionHistoryTraversalRequest, StructuredSerializedData, TargetSnapshotParams,
     TraversalDirection, WindowSizeType,
 };
@@ -128,6 +130,7 @@ use crate::dom::bindings::conversions::{
     ConversionResult, FromJSValConvertible, StringificationBehavior,
 };
 use crate::dom::bindings::inheritance::Castable;
+use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::csp::{CspReporting, GlobalCspReporting, Violation};
@@ -141,6 +144,9 @@ use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmliframeelement::{HTMLIFrameElement, IframeContext, ProcessingMode};
 use crate::dom::node::{Node, NodeTraits};
+use crate::dom::performance::long_animation_frame_recorder;
+use crate::dom::performance::performanceentry::{EntryType, PerformanceEntry};
+use crate::dom::performance::performancelonganimationframetiming::PerformanceLongAnimationFrameTiming;
 use crate::dom::script_execution::{RethrowErrors, ScriptOptions};
 use crate::dom::servoparser::{ParserContext, ServoParser};
 use crate::dom::types::DebuggerGlobalScope;
@@ -1842,13 +1848,17 @@ impl ScriptThread {
             // Remove from docs any Document object doc for which any of the following are true:
             if
             // doc is render-blocked;
-            document.is_render_blocked()
+            document.is_render_blocked() ||
             // doc's visibility state is "hidden";
             // TODO: Currently, this would mean that the script thread does nothing, since
             // documents aren't currently correctly set to the visible state when navigating
 
             // doc's rendering is suppressed for view transitions; or
-            // TODO
+            // BAO PATCH (REQ-BRW-051 C2): implemented via the document slot. The
+            // suppression window opens after the old state is captured and closes
+            // when the transition is activated or skipped, which is exactly when
+            // the spec wants the document to stop producing frames.
+            document.rendering_suppression_for_view_transitions()
 
             // doc's node navigable doesn't currently have a rendering opportunity.
             //
@@ -1856,6 +1866,13 @@ impl ScriptThread {
             {
                 continue;
             }
+
+            // The rendering update of this document is part of the long
+            // animation frame that started with the task that caused it.
+            long_animation_frame_recorder::begin_render(
+                *pipeline_id,
+                CrossProcessInstant::now(),
+            );
 
             // Clear this as early as possible so that any callbacks that
             // trigger new reasons for updating the rendering don't get lost.
@@ -1867,7 +1884,17 @@ impl ScriptThread {
 
             // TODO: Should this be broken and to match the specification more closely? For instance see
             // https://html.spec.whatwg.org/multipage/#flush-autofocus-candidates.
+            //
+            // Input event dispatch is modelled as a task by the Long Animation
+            // Frames specification, even though the event loop performs it as
+            // part of the rendering update.
+            let input_event_start = CrossProcessInstant::now();
             self.process_pending_input_events(cx, *pipeline_id);
+            long_animation_frame_recorder::record_task(
+                *pipeline_id,
+                input_event_start,
+                CrossProcessInstant::now(),
+            );
 
             // > 8. For each doc of docs, run the resize steps for doc. [CSSOMVIEW]
             let resized = document.window().run_the_resize_steps(cx);
@@ -1937,8 +1964,11 @@ impl ScriptThread {
             // > focus changed during ongoing navigation to false.
             document.focus_handler().perform_focus_fixup_rule(cx);
 
-            // TODO: Perform pending transition operations from
-            // https://drafts.csswg.org/css-view-transitions/#perform-pending-transition-operations.
+            // https://drafts.csswg.org/css-view-transitions-1/#perform-pending-transition-operations-algorithm
+            // BAO PATCH (REQ-BRW-051 C2): "perform pending transition
+            // operations" — setup on `pending-capture`, per-frame work on
+            // `animating`.
+            document.perform_pending_view_transition_operations(cx);
 
             // > 19. For each doc of docs, run the update intersection observations steps for doc,
             // > passing in the relative high resolution time given now and
@@ -1959,7 +1989,20 @@ impl ScriptThread {
 
             // > Step 22: For each doc of docs, update the rendering or user interface of
             // > doc and its node navigable to reflect the current state.
-            if document.update_the_rendering(cx).0.needs_frame() {
+            long_animation_frame_recorder::set_style_and_layout_start(
+                *pipeline_id,
+                CrossProcessInstant::now(),
+            );
+            let style_and_layout_start = CrossProcessInstant::now();
+            let (phases, _statistics) = document.update_the_rendering(cx);
+            let style_and_layout_end = CrossProcessInstant::now();
+            long_animation_frame_recorder::end_render(
+                *pipeline_id,
+                time::Duration::ZERO,
+                style_and_layout_end - style_and_layout_start,
+                !phases.is_empty(),
+            );
+            if phases.needs_frame() {
                 painters_generating_frames.insert(document.webview_id().into());
             }
 
@@ -1977,6 +2020,94 @@ impl ScriptThread {
         // should be run in a task and a microtask checkpoint is always done when running tasks.
         self.perform_a_microtask_checkpoint(cx);
         should_generate_frame
+    }
+
+    /// Close the long animation frame of every document that is no longer
+    /// waiting for a rendering update and materialize the resulting
+    /// performance entries.
+    fn finish_long_animation_frames(&self, cx: &mut js::context::JSContext) {
+        let now = CrossProcessInstant::now();
+        let documents: Vec<(PipelineId, DomRoot<Document>)> =
+            self.documents.borrow().iter().collect();
+
+        for (pipeline_id, document) in documents {
+            if !long_animation_frame_recorder::has_open_frame(pipeline_id) {
+                continue;
+            }
+
+            // Do not report frames for documents that were navigated away
+            // from while the frame was being measured.
+            if !document.is_fully_active() {
+                long_animation_frame_recorder::take_frame(pipeline_id, now);
+                continue;
+            }
+
+            // A frame stays open while the rendering update that it caused is
+            // still pending. Once that update has run (or if nothing is
+            // pending), the frame is complete.
+            let rendered = long_animation_frame_recorder::frame_rendered(pipeline_id);
+            let pending_rendering_update = !rendered &&
+                !document.window().throttled() &&
+                (document.needs_rendering_update(cx.no_gc()) ||
+                    document.has_active_request_animation_frame_callbacks() ||
+                    document.animation_manager().running_animation_count() != 0);
+            if pending_rendering_update {
+                continue;
+            }
+
+            let Some(frame) = long_animation_frame_recorder::take_frame(pipeline_id, now) else {
+                continue;
+            };
+            self.queue_long_animation_frame_entries(cx, &document, pipeline_id, frame);
+        }
+
+        // Drop frames of pipelines that left this event loop mid-frame.
+        let live_pipeline_ids: Vec<PipelineId> =
+            self.documents.borrow().iter().map(|(id, _)| id).collect();
+        long_animation_frame_recorder::retain_pipelines(&live_pipeline_ids);
+    }
+
+    /// Queue the `longtask` and `long-animation-frame` entries produced by a
+    /// finished frame.
+    fn queue_long_animation_frame_entries(
+        &self,
+        cx: &mut js::context::JSContext,
+        document: &Document,
+        pipeline_id: PipelineId,
+        frame: long_animation_frame_recorder::FinishedFrameTiming,
+    ) {
+        let performance = document.window().Performance(cx);
+
+        for (start, duration) in frame.tasks.iter() {
+            if *duration <= long_animation_frame_recorder::LONG_FRAME_THRESHOLD {
+                continue;
+            }
+            let longtask = PerformanceEntry::new_inherited(
+                DOMString::from("self"),
+                EntryType::LongTask,
+                Some(*start),
+                *duration,
+            );
+            let longtask = reflect_dom_object::<crate::DomTypeHolder, _, _>(
+                cx,
+                Box::new(longtask),
+                document.window(),
+            );
+            performance.queue_entry(&longtask);
+        }
+
+        if frame.end - frame.start <= long_animation_frame_recorder::LONG_FRAME_THRESHOLD {
+            return;
+        }
+
+        let entry = PerformanceLongAnimationFrameTiming::new(
+            cx,
+            document.window().upcast::<GlobalScope>(),
+            pipeline_id,
+            frame,
+            document.paint_timing_info(),
+        );
+        performance.queue_entry(entry.upcast::<PerformanceEntry>());
     }
 
     /// Schedule a rendering update ("update the rendering"), if necessary. This
@@ -2209,6 +2340,10 @@ impl ScriptThread {
                 )
             );
 
+            if let Some(pipeline_id) = pipeline_id {
+                long_animation_frame_recorder::begin_task(pipeline_id, CrossProcessInstant::now());
+            }
+
             let global = pipeline_id.and_then(|id| self.documents.borrow().find_global(id));
             match global {
                 None => {
@@ -2220,6 +2355,10 @@ impl ScriptThread {
                     handle_message!(cx);
                 },
             };
+
+            if let Some(pipeline_id) = pipeline_id {
+                long_animation_frame_recorder::end_task(pipeline_id, CrossProcessInstant::now());
+            }
         }
 
         for (_, doc) in self.documents.borrow().iter() {
@@ -2234,6 +2373,10 @@ impl ScriptThread {
 
         self.maybe_fulfill_font_ready_promises(cx);
         self.maybe_resolve_pending_screenshot_readiness_requests(cx);
+
+        // Close any long animation frames that are no longer waiting for a
+        // rendering update and materialize their performance entries.
+        self.finish_long_animation_frames(cx);
 
         // This must happen last to detect if any change above makes a rendering update necessary.
         self.maybe_schedule_rendering_opportunity_after_ipc_message(
@@ -2451,12 +2594,46 @@ impl ScriptThread {
         value
     }
 
+    /// <https://w3c.github.io/ServiceWorker/#update-state-algorithm>
+    /// Ported from upstream servo 270fe198f (#48749): queue the state update on
+    /// the document's DOM manipulation task source, per spec step 4.
+    fn handle_update_service_worker_state(
+        &self,
+        pipeline_id: PipelineId,
+        state: ServiceWorkerState,
+        worker_id: ServiceWorkerId,
+    ) {
+        let Some(global) = self.documents.borrow().find_global(pipeline_id) else {
+            warn!("Received update sw worker state for unknown pipeline: {pipeline_id:?}");
+            return;
+        };
+
+        let trusted_global = Trusted::new(&*global);
+
+        // Step 4: For each settingsObject of settingsObjects queue a task on settingsObject’s
+        // responsible event loop in the DOM manipulation task source to run the following steps.
+        let task = task!(update_sw_state: move |cx| {
+            trusted_global.root().update_service_worker_state(cx, state, worker_id);
+        });
+        global
+            .task_manager()
+            .dom_manipulation_task_source()
+            .queue(task);
+    }
+
     fn handle_msg_from_constellation(
         &self,
         msg: ScriptThreadMessage,
         cx: &mut js::context::JSContext,
     ) {
         match msg {
+            ScriptThreadMessage::UpdateServiceWorkerState {
+                pipeline_id,
+                state,
+                worker_id,
+            } => {
+                self.handle_update_service_worker_state(pipeline_id, state, worker_id);
+            },
             ScriptThreadMessage::StopDelayingLoadEventsMode(pipeline_id) => {
                 self.handle_stop_delaying_load_events_mode(pipeline_id)
             },
@@ -4087,6 +4264,7 @@ impl ScriptThread {
     /// Handles a request to exit the script thread and shut down layout.
     fn handle_exit_script_thread_msg(&self, cx: &mut js::context::JSContext) {
         debug!("Exiting script thread.");
+        long_animation_frame_recorder::clear();
 
         let mut webview_and_pipeline_ids = Vec::new();
         webview_and_pipeline_ids.extend(

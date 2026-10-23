@@ -22,6 +22,7 @@ use crate::dom::messageport::MessagePort;
 use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::stream::defaultteeunderlyingsource::DefaultTeeUnderlyingSource;
 use crate::dom::stream::transformstream::TransformStream;
+use crate::dom::websocketstream::WebSocketStream;
 
 /// A variation of [UnderlyingSourceType] used for storing state within UnderlyingContainer.
 /// All variants have identical meanings to [UnderlyingSourceType].
@@ -36,6 +37,10 @@ enum UnderlyingSource {
     Transfer(Dom<MessagePort>),
     Transform(Dom<TransformStream>, TracedPromise),
     TeeByte(Dom<ByteTeeUnderlyingSource>),
+    /// The readable half of a `WebSocketStream`: messages are pushed from the
+    /// network loop, and the pull algorithm is a read credit that applies
+    /// backpressure to the socket.
+    WebSocket(Dom<WebSocketStream>),
 }
 
 impl UnderlyingSource {
@@ -61,6 +66,9 @@ impl From<UnderlyingSourceType<'_>> for UnderlyingSource {
             },
             UnderlyingSourceType::TeeByte(source) => {
                 UnderlyingSource::TeeByte(Dom::from_ref(source))
+            },
+            UnderlyingSourceType::WebSocket(stream) => {
+                UnderlyingSource::WebSocket(Dom::from_ref(stream))
             },
         }
     }
@@ -91,6 +99,8 @@ pub(crate) enum UnderlyingSourceType<'a> {
     Transform(&'a TransformStream, &'a RootedPromise),
     /// Tee Byte
     TeeByte(&'a ByteTeeUnderlyingSource),
+    /// The readable half of a `WebSocketStream` (REQ-BRW-051).
+    WebSocket(&'a WebSocketStream),
 }
 
 impl UnderlyingSourceType<'_> {
@@ -101,7 +111,8 @@ impl UnderlyingSourceType<'_> {
             UnderlyingSourceType::Memory(_) |
                 UnderlyingSourceType::Blob(_) |
                 UnderlyingSourceType::FetchResponse |
-                UnderlyingSourceType::Transfer(_)
+                UnderlyingSourceType::Transfer(_) |
+                UnderlyingSourceType::WebSocket(_)
         )
     }
 }
@@ -200,6 +211,12 @@ impl UnderlyingSourceContainer {
                 // Call the cancel algorithm for the appropriate branch.
                 tee_underlyin_source.cancel_algorithm(cx, reason)
             },
+            UnderlyingSource::WebSocket(stream) => {
+                // Canceling the readable half starts the closing handshake.
+                // A `WebSocketError` reason supplies the close code/reason;
+                // anything else produces an empty Close frame.
+                Some(Ok(stream.perform_abort_or_cancel(cx, reason)))
+            },
             _ => None,
         }
     }
@@ -248,6 +265,13 @@ impl UnderlyingSourceContainer {
             UnderlyingSource::Transform(stream, _) => {
                 // Return ! TransformStreamDefaultSourcePullAlgorithm(stream).
                 Some(stream.transform_stream_default_source_pull(cx, &self.global()))
+            },
+            UnderlyingSource::WebSocket(stream) => {
+                // Grant the network loop one read credit. Only pulls (real
+                // consumer demand) let the socket be read, which is what
+                // applies backpressure to received messages.
+                stream.request_read();
+                Some(Ok(Promise::new_resolved(cx, &self.global(), ())))
             },
             _ => None,
         }

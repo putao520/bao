@@ -4,12 +4,12 @@
 
 #![cfg_attr(crown, allow(crown::jscontext_first_arg))]
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::default::Default;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{Arc as StdArc, LazyLock};
@@ -57,7 +57,7 @@ use profile_traits::time::TimerMetadataFrameType;
 use regex::bytes::Regex;
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use script_bindings::callback::{RootedCallback, ThisReflector};
-use script_bindings::cell::{DomRefCell, Ref, RefMut};
+use script_bindings::cell::DomRefCell;
 use script_bindings::interfaces::DocumentHelpers;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use script_bindings::trace::CustomTraceable;
@@ -212,6 +212,9 @@ use crate::dom::touchlist::TouchList;
 use crate::dom::trustedtypes::trustedhtml::TrustedHTML;
 use crate::dom::types::{HTMLCanvasElement, VisibilityStateEntry};
 use crate::dom::uievent::UIEvent;
+use crate::dom::viewtransition::{
+    ViewTransition, ViewTransitionPhase, parse_start_view_transition_options,
+};
 use crate::dom::window::Window;
 use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollingBox};
 use crate::dom::windowproxy::WindowProxy;
@@ -289,8 +292,8 @@ impl RefreshRedirectDue {
         // automatic features browsing context flag set,
         // then navigate document's node navigable to urlRecord using document,
         // with historyHandling set to "replace".
-        if self.from_meta_element &&
-            window.Document().has_active_sandboxing_flag(
+        if self.from_meta_element
+            && window.Document().has_active_sandboxing_flag(
                 SandboxingFlagSet::SANDBOXED_AUTOMATIC_FEATURES_BROWSING_CONTEXT_FLAG,
             )
         {
@@ -369,6 +372,12 @@ bitflags! {
         /// one more rendering update possibility after this happens, so that any potential screenshot
         /// reflects the up-to-date contents.
         const FontReadyPromiseFulfilled = 1 << 2;
+        /// BAO PATCH (REQ-BRW-051): a view transition has pending operations
+        /// (`perform pending transition operations` — the capture/update-callback
+        /// half of the state machine, or a `waitUntil()` promise reaching zero).
+        /// This is the signal that asks for the next rendering opportunity, which
+        /// is where the spec runs those steps.
+        const ViewTransitionPendingOperations = 1 << 3;
     }
 }
 
@@ -518,6 +527,12 @@ pub(crate) struct Document {
     /// <https://html.spec.whatwg.org/multipage/#map-of-preloaded-resources>
     #[no_trace]
     preloaded_resources: DomRefCell<PreloadedResources>,
+    /// BAO PATCH (REQ-BRW-051 C2): registered speculation rule sets and the
+    /// prefetch requests they have started. The state holds only plain Rust
+    /// data (URLs, tags, request ids), hence `no_trace`.
+    #[no_trace]
+    #[ignore_malloc_size_of = "speculation rules state is small and self-contained"]
+    speculation_rules: DomRefCell<crate::dom::speculation::SpeculationRulesState>,
     /// <https://html.spec.whatwg.org/multipage/#ignore-destructive-writes-counter>
     ignore_destructive_writes_counter: Cell<u32>,
     /// <https://html.spec.whatwg.org/multipage/#ignore-opens-during-unload-counter>
@@ -551,6 +566,18 @@ pub(crate) struct Document {
     salvageable: Cell<bool>,
     /// Whether the document was aborted with an active parser
     active_parser_was_aborted: Cell<bool>,
+    /// Whether the window `load` event of this document is suppressed because its load
+    /// was aborted (window.stop()/navigation abort).
+    ///
+    /// An aborted document still completes its load lifecycle — readiness moves to
+    /// "complete" and the enclosing navigable is released via LoadComplete — but the
+    /// window `load` event is never fired, neither by `abort` itself nor later by the
+    /// end-of-loading machinery once any remaining blocking loads drain.
+    ///
+    /// Chromium oracle: `Document::CancelParsing` sets readyState to kComplete and
+    /// `load_event_progress_ = kLoadEventCompleted`, which suppresses the load event
+    /// forever while the document keeps observable "complete" readiness.
+    load_event_suppressed: Cell<bool>,
     /// Whether the unload event has already been fired.
     fired_unload: Cell<bool>,
     /// List of responsive images
@@ -742,6 +769,14 @@ pub(crate) struct Document {
     #[no_trace]
     image_cache: StdArc<dyn ImageCache>,
 
+    /// BAO PATCH (REQ-BRW-051): `<script type=webbundle>` loaders and the
+    /// orphan hand-off slot. The session owns refcounted loaders (not GC
+    /// objects); `Document::destroy` deactivates it and clears the net-side
+    /// registrations.
+    #[ignore_malloc_size_of = "the web bundle session owns refcounted loaders"]
+    #[no_trace]
+    web_bundle_session: DomRefCell<crate::dom::webbundle::WebBundleSession>,
+
     /// <https://html.spec.whatwg.org/multipage/#doc-history>
     history: MutNullableDom<History>,
 
@@ -775,6 +810,22 @@ pub(crate) struct Document {
     /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-module-map>
     #[ignore_malloc_size_of = "mozjs"]
     module_map: DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>>,
+
+    /// BAO PATCH (REQ-BRW-051 C2): the document's active view transition.
+    /// <https://drafts.csswg.org/css-view-transitions-1/#document-active-view-transition>
+    /// > A Document has an active view transition, which is a ViewTransition
+    /// > or null. Initially null.
+    active_view_transition: MutNullableDom<ViewTransition>,
+
+    /// <https://drafts.csswg.org/css-view-transitions-1/#document-rendering-suppression-for-view-transitions>
+    /// > A Document has rendering suppression for view transitions, which is a
+    /// > boolean. Initially false.
+    rendering_suppression_for_view_transitions: Cell<bool>,
+
+    /// <https://drafts.csswg.org/css-view-transitions-1/#document-update-callback-queue>
+    /// > A Document has an update callback queue, which is a list of
+    /// > ViewTransitions, initially empty.
+    update_callback_queue: DomRefCell<Vec<Dom<ViewTransition>>>,
 }
 
 impl Document {
@@ -794,6 +845,105 @@ impl Document {
 
     pub(crate) fn task_manager(&self) -> Rc<TaskManager> {
         self.task_manager.clone()
+    }
+
+    // BAO PATCH (REQ-BRW-051 C2): CSS View Transitions, document-side slots and
+    // algorithms. The transition object and its phase machine live in
+    // `dom::viewtransition`; this file owns the per-document state the spec
+    // attaches to `Document`.
+
+    /// <https://drafts.csswg.org/css-view-transitions-1/#document-active-view-transition>
+    pub(crate) fn active_view_transition(&self) -> Option<DomRoot<ViewTransition>> {
+        self.active_view_transition.get()
+    }
+
+    /// Set the document's active view transition.
+    pub(crate) fn set_active_view_transition(&self, transition: Option<&ViewTransition>) {
+        self.active_view_transition.set(transition);
+    }
+
+    /// Clear the document's active view transition if it is `transition`.
+    ///
+    /// Step 5 of "skip the view transition" is conditional on document
+    /// identity, so a transition that is not (or no longer) the active one
+    /// leaves the slot alone.
+    pub(crate) fn clear_active_view_transition(&self, transition: &ViewTransition) {
+        let is_active = self
+            .active_view_transition
+            .get()
+            .is_some_and(|active| Dom::from_ref(&*active) == Dom::from_ref(transition));
+        if is_active {
+            // "Clear view transition" also stops showing the view transition
+            // tree and removes the dynamic stylesheet rules; both live on the
+            // layout side of the registered capture seam (see
+            // `layout::view_transition`).
+            self.active_view_transition.clear();
+        }
+    }
+
+    /// <https://drafts.csswg.org/css-view-transitions-1/#document-rendering-suppression-for-view-transitions>
+    pub(crate) fn rendering_suppression_for_view_transitions(&self) -> bool {
+        self.rendering_suppression_for_view_transitions.get()
+    }
+
+    pub(crate) fn set_rendering_suppression_for_view_transitions(&self, value: bool) {
+        self.rendering_suppression_for_view_transitions.set(value);
+    }
+
+    /// <https://drafts.csswg.org/css-view-transitions-1/#document-update-callback-queue>
+    pub(crate) fn push_view_transition_update_callback(&self, transition: &ViewTransition) {
+        self.update_callback_queue
+            .borrow_mut()
+            .push(Dom::from_ref(transition));
+    }
+
+    /// <https://drafts.csswg.org/css-view-transitions-1/#flush-the-update-callback-queue>
+    pub(crate) fn flush_view_transition_update_callback_queue(&self, cx: &mut JSContext) {
+        // Take the queue first: an update callback may itself start a
+        // transition, which enqueues into the now-empty queue and is flushed by
+        // that transition's own queued task.
+        let queue = std::mem::take(&mut *self.update_callback_queue.borrow_mut());
+        for transition in queue {
+            transition.call_update_callback(cx);
+        }
+    }
+
+    /// <https://drafts.csswg.org/css-view-transitions-1/#perform-pending-transition-operations-algorithm>
+    ///
+    /// Invoked from "update the rendering" (see
+    /// `ScriptThread::update_the_rendering`).
+    pub(crate) fn perform_pending_view_transition_operations(&self, cx: &mut JSContext) {
+        let Some(transition) = self.active_view_transition.get() else {
+            return;
+        };
+        match transition.phase() {
+            ViewTransitionPhase::PendingCapture => transition.setup_view_transition(cx),
+            ViewTransitionPhase::Animating => transition.handle_transition_frame(cx),
+            ViewTransitionPhase::UpdateCallbackCalled | ViewTransitionPhase::Done => {},
+        }
+    }
+
+    /// <https://drafts.csswg.org/css-view-transitions-1/#page-visibility-change-steps>
+    pub(crate) fn run_view_transition_page_visibility_change_steps(&self) {
+        let document = Trusted::new(self);
+        // Queue a global task on the DOM manipulation task source.
+        self.task_manager().dom_manipulation_task_source().queue(
+            task!(view_transition_page_visibility_change: move |cx| {
+                let document = document.root();
+                if document.visibility_state.get() != DocumentVisibilityState::Hidden {
+                    return;
+                }
+                let Some(transition) = document.active_view_transition.get() else {
+                    return;
+                };
+                transition.skip_from_document(
+                    cx,
+                    Error::InvalidState(Some(
+                        "the document became hidden during a view transition".to_owned(),
+                    )),
+                );
+            }),
+        );
     }
 
     pub(crate) fn timers(&self) -> &OneshotTimers {
@@ -1037,6 +1187,19 @@ impl Document {
         self.window.webview_id()
     }
 
+    /// BAO PATCH (REQ-BRW-051): the document's web bundle session (loaders and
+    /// the orphan hand-off slot used by `<script type=webbundle>`).
+    pub(crate) fn web_bundle_session(&self) -> Ref<'_, crate::dom::webbundle::WebBundleSession> {
+        self.web_bundle_session.borrow()
+    }
+
+    /// BAO PATCH (REQ-BRW-051): mutable access to the web bundle session.
+    pub(crate) fn web_bundle_session_mut(
+        &self,
+    ) -> RefMut<'_, crate::dom::webbundle::WebBundleSession> {
+        self.web_bundle_session.borrow_mut()
+    }
+
     #[inline]
     pub(crate) fn window(&self) -> &Window {
         &self.window
@@ -1078,8 +1241,8 @@ impl Document {
         // > A Document d is said to be fully active when d is the active document of a
         // > navigable navigable, and either navigable is a top-level traversable or
         // > navigable's container document is fully active.
-        self.is_active() &&
-            (self.window.is_top_level() || self.activity.get() == DocumentActivity::FullyActive)
+        self.is_active()
+            && (self.window.is_top_level() || self.activity.get() == DocumentActivity::FullyActive)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#nav-document>
@@ -1089,9 +1252,9 @@ impl Document {
         // The first two checks stand in for when the document is not the active session history
         // entry's document, as when that happens they will be false. The session history entry
         // is not really implemented in script in the same way the specification says.
-        self.browsing_context().is_some() &&
-            !self.window_detached() &&
-            self.activity.get() != DocumentActivity::Inactive
+        self.browsing_context().is_some()
+            && !self.window_detached()
+            && self.activity.get() != DocumentActivity::Inactive
     }
 
     #[inline]
@@ -1216,6 +1379,10 @@ impl Document {
 
     pub(crate) fn set_url(&self, url: ServoUrl) {
         *self.url.borrow_mut() = url;
+        // BAO PATCH (REQ-BRW-051 C2): the document URL is the base for
+        // relative `href_matches` patterns and the same-document check, so a
+        // URL change (e.g. `history.pushState`) re-evaluates document rules.
+        crate::dom::speculation::document_maybe_changed(self);
     }
 
     pub(crate) fn about_base_url(&self) -> Option<ServoUrl> {
@@ -1240,8 +1407,8 @@ impl Document {
 
         // Step 2: If document's URL matches about:blank and document's about base URL is
         // non-null, then return document's about base URL.
-        if document_url.matches_about_blank() &&
-            let Some(about_base_url) = self.about_base_url()
+        if document_url.matches_about_blank()
+            && let Some(about_base_url) = self.about_base_url()
         {
             return about_base_url;
         }
@@ -1281,8 +1448,8 @@ impl Document {
         // FIXME: This should check the dirty bit on the document,
         // not the document element. Needs some layout changes to make
         // that workable.
-        if let Some(root) = self.get_document_element_unrooted(no_gc) &&
-            root.has_dirty_descendants()
+        if let Some(root) = self.get_document_element_unrooted(no_gc)
+            && root.has_dirty_descendants()
         {
             condition.insert(RestyleReason::DOMChanged);
         }
@@ -1362,6 +1529,26 @@ impl Document {
         // targeted like in Gecko.
         // See https://searchfox.org/firefox-main/rev/7d438b99e58d16388e4327f2460d14ad4c8be075/layout/style/RestyleManager.cpp#245.
         node.dirty(no_gc, NodeDamage::ContentOrHeritage);
+
+        // BAO PATCH (REQ-BRW-051 C2): document rules must be re-evaluated
+        // when links are inserted, removed or moved. This is a cheap no-op
+        // unless a document rule set is registered.
+        crate::dom::speculation::document_maybe_changed(self);
+    }
+
+    /// BAO PATCH (REQ-BRW-051 C2): the document's speculation rules state.
+    pub(crate) fn speculation_rules(
+        &self,
+    ) -> script_bindings::cell::Ref<'_, crate::dom::speculation::SpeculationRulesState> {
+        self.speculation_rules.borrow()
+    }
+
+    /// BAO PATCH (REQ-BRW-051 C2): mutable access to the speculation rules
+    /// state.
+    pub(crate) fn speculation_rules_mut(
+        &self,
+    ) -> script_bindings::cell::RefMut<'_, crate::dom::speculation::SpeculationRulesState> {
+        self.speculation_rules.borrow_mut()
     }
 
     /// Remove any existing association between the provided id and any elements in this document.
@@ -1567,8 +1754,7 @@ impl Document {
                 EmbedderMsg::NotifyLoadStatusChanged(webview_id, LoadStatus::Started),
             );
             self.send_chrome_notification_message_to_embedder(EmbedderMsg::Status(
-                webview_id,
-                None,
+                webview_id, None,
             ));
         }
 
@@ -2239,8 +2425,8 @@ impl Document {
         // to fire an event named hashchange at document's relevant global object, using HashChangeEvent,
         // with the oldURL attribute initialized to the serialization of oldURL
         // and the newURL attribute initialized to the serialization of entry's URL.
-        if old_url.as_url()[Position::BeforeFragment..] !=
-            new_url.as_url()[Position::BeforeFragment..]
+        if old_url.as_url()[Position::BeforeFragment..]
+            != new_url.as_url()[Position::BeforeFragment..]
         {
             let window = Trusted::new(self.owner_window().deref());
             let old_url = old_url.to_string();
@@ -2541,11 +2727,16 @@ impl Document {
         //
         // At least time seconds have elapsed since document's completely loaded time,
         // adjusted to take into account user or user agent preferences.
-        if let Some(DeclarativeRefresh::PendingLoad {
-            url,
-            time,
-            from_meta_element,
-        }) = &*self.declarative_refresh.borrow()
+        //
+        // An aborted document does not schedule the refresh: its load lifecycle completed
+        // only to release enclosing load blockers (Chromium `CancelParsing` cancels the
+        // http refresh scheduler alongside suppressing the load event).
+        if !self.load_event_suppressed.get()
+            && let Some(DeclarativeRefresh::PendingLoad {
+                url,
+                time,
+                from_meta_element,
+            }) = &*self.declarative_refresh.borrow()
         {
             self.window.as_global_scope().schedule_callback(
                 OneshotTimerCallback::RefreshRedirectDue(RefreshRedirectDue {
@@ -2588,6 +2779,14 @@ impl Document {
 
                 // Step 9.2. If the Document object's browsing context is null, then abort these steps.
                 if document.browsing_context().is_none() {
+                    return;
+                }
+
+                // An aborted document (window.stop()/navigation abort) never fires the
+                // window `load`/`pageshow` events; `abort()` already completed its load
+                // lifecycle with the events suppressed (Chromium:
+                // load_event_progress_ = kLoadEventCompleted).
+                if document.load_event_suppressed.get() {
                     return;
                 }
 
@@ -2879,8 +3078,8 @@ impl Document {
 
     /// Step 7 of <https://html.spec.whatwg.org/multipage/#the-end>
     fn wait_until_asap_scripts_have_executed(&self) {
-        if self.current_the_end_loading_phase.get() !=
-            TheEndLoadingPhase::ProcessingAsSoonAsPossibleScripts
+        if self.current_the_end_loading_phase.get()
+            != TheEndLoadingPhase::ProcessingAsSoonAsPossibleScripts
         {
             return;
         }
@@ -2913,8 +3112,8 @@ impl Document {
 
     /// Step 8 of <https://html.spec.whatwg.org/multipage/#the-end>
     pub(crate) fn wait_until_load_blockers_have_resolved(&self, cx: &mut JSContext) {
-        if self.current_the_end_loading_phase.get() !=
-            TheEndLoadingPhase::WaitingForLoadEventBlockers
+        if self.current_the_end_loading_phase.get()
+            != TheEndLoadingPhase::WaitingForLoadEventBlockers
         {
             return;
         }
@@ -2927,8 +3126,8 @@ impl Document {
                 .navigation_timing
                 .top_level_dom_complete
                 .get()
-                .is_none() &&
-                loader.is_only_blocked_by_iframes()
+                .is_none()
+                && loader.is_only_blocked_by_iframes()
             {
                 update_with_current_instant(&self.navigation_timing.top_level_dom_complete);
             }
@@ -2987,6 +3186,11 @@ impl Document {
         let exited_window = self.window();
         // Step 2. Abort document.
         self.abort(cx);
+
+        // BAO PATCH (REQ-BRW-051): drop this document's web bundle session and
+        // every net-side registration. Requests that were waiting for a bundle
+        // fail instead of outliving the document (fail closed).
+        crate::dom::webbundle::destroy_document_session(self);
         // Step 3. Set document's salvageable state to false.
         self.salvageable.set(false);
         // Step 4. Let ports be the list of MessagePorts whose relevant
@@ -3080,6 +3284,40 @@ impl Document {
             parser.abort(cx);
             // Step 4.3. Make document unsalvageable given document and "parser-aborted".
             self.salvageable.set(false);
+        }
+
+        // Bao (REQ-BRW-051 family L — load event starvation): an aborted document still
+        // completes its load lifecycle, but never fires the window `load` event.
+        //
+        // Spec surface: HTML "abort a parser" drives readiness interactive → "complete"
+        // without running "the end", so no `load` is fired for the mid-parse case; for an
+        // already-parsed document there is no parser left, and `inhibit_events` above used
+        // to latch the loader forever — readiness stuck at "interactive" and every
+        // enclosing document's `Subframe` load blocker never released (WPT
+        // abort-document-load zero-subtest CRASH: window load never fires, wptrunner
+        // never completes).
+        //
+        // Chromium oracle (this test's reference engines): `Document::CancelParsing` —
+        // `SetReadyState(kComplete)` + `load_event_progress_ = kLoadEventCompleted` — then
+        // `FrameLoader::StopAllLoaders` → `DidFinishNavigation` → parent `CheckCompleted`.
+        // I.e. readiness becomes "complete" (readystatechange fires), the load event is
+        // suppressed forever, and the parent learns the frame is done.
+        //
+        // `completely_finish_loading` notifies the constellation (`LoadComplete`), which
+        // runs the iframe load event steps in the parent and releases its `Subframe`
+        // blocker — servo's equivalent of the parent re-check in Blink.
+        self.load_event_suppressed.set(true);
+        if self.current_the_end_loading_phase.get() != TheEndLoadingPhase::Done {
+            if self.ReadyState() != DocumentReadyState::Complete {
+                // Fires readystatechange; also notifies the embedder of load completion.
+                self.update_the_current_document_readiness(cx, DocumentReadyState::Complete);
+            }
+            // The remaining load/script work was discarded above; the end-of-loading
+            // phase machine must not later complete this document again (which would
+            // fight the suppression).
+            self.current_the_end_loading_phase
+                .set(TheEndLoadingPhase::Done);
+            self.completely_finish_loading();
         }
     }
 
@@ -3311,10 +3549,10 @@ impl Document {
         if !self.is_fully_active() {
             return false;
         }
-        if !self.window().layout_blocked() &&
-            (!self.restyle_reason(no_gc).is_empty() ||
-                self.window().layout().needs_new_display_list() ||
-                self.window().layout().needs_accessibility_update())
+        if !self.window().layout_blocked()
+            && (!self.restyle_reason(no_gc).is_empty()
+                || self.window().layout().needs_new_display_list()
+                || self.window().layout().needs_accessibility_update())
         {
             return true;
         }
@@ -3824,8 +4062,8 @@ impl Document {
             _ => {
                 // Step 9.1: If document's unload counter is greater than 0 or
                 // document's ignore-destructive-writes counter is greater than 0, then return.
-                if self.is_prompting_or_unloading() ||
-                    self.ignore_destructive_writes_counter.get() > 0
+                if self.is_prompting_or_unloading()
+                    || self.ignore_destructive_writes_counter.get() > 0
                 {
                     return Ok(());
                 }
@@ -4214,6 +4452,7 @@ impl Document {
             target_element: MutNullableDom::new(None),
             policy_container: DomRefCell::new(PolicyContainer::default()),
             preloaded_resources: Default::default(),
+            speculation_rules: DomRefCell::new(Default::default()),
             ignore_destructive_writes_counter: Default::default(),
             ignore_opens_during_unload_counter: Default::default(),
             spurious_animation_frames: Cell::new(0),
@@ -4226,6 +4465,7 @@ impl Document {
             page_showing: Cell::new(false),
             salvageable: Cell::new(true),
             active_parser_was_aborted: Cell::new(false),
+            load_event_suppressed: Cell::new(false),
             fired_unload: Cell::new(false),
             responsive_images: Default::default(),
             navigation_timing: Default::default(),
@@ -4289,6 +4529,7 @@ impl Document {
                 None,
             )),
             image_cache,
+            web_bundle_session: DomRefCell::new(crate::dom::webbundle::WebBundleSession::new()),
             history: Default::default(),
             theme: Default::default(),
             theme_override: Default::default(),
@@ -4296,6 +4537,10 @@ impl Document {
             window_detached: Default::default(),
             live_ranges: Default::default(),
             module_map: Default::default(),
+            // BAO PATCH (REQ-BRW-051 C2): view transition document slots.
+            active_view_transition: MutNullableDom::new(None),
+            rendering_suppression_for_view_transitions: Cell::new(false),
+            update_callback_queue: DomRefCell::new(Vec::new()),
         }
     }
 
@@ -4311,8 +4556,8 @@ impl Document {
     pub(crate) fn insecure_requests_policy(&self) -> InsecureRequestsPolicy {
         if let Some(csp_list) = self.get_csp_list().as_ref() {
             for policy in &csp_list.0 {
-                if policy.contains_a_directive_whose_name_is("upgrade-insecure-requests") &&
-                    policy.disposition == PolicyDisposition::Enforce
+                if policy.contains_a_directive_whose_name_is("upgrade-insecure-requests")
+                    && policy.disposition == PolicyDisposition::Enforce
                 {
                     return InsecureRequestsPolicy::Upgrade;
                 }
@@ -4764,8 +5009,8 @@ impl Document {
             entry.hint.insert(RestyleHint::RESTYLE_STYLE_ATTRIBUTE);
         }
 
-        if vtable_for(el.upcast()).attribute_affects_presentational_hints(attr) ||
-            el.check_style_on_self_or_eager_pseudos(|style| {
+        if vtable_for(el.upcast()).attribute_affects_presentational_hints(attr)
+            || el.check_style_on_self_or_eager_pseudos(|style| {
                 if let Some(ref attribute_references) = style.attribute_references {
                     return attribute_references.contains_key(attr.local_name());
                 }
@@ -5282,7 +5527,9 @@ impl Document {
         // TODO ScreenOrientation hasn't implemented yet
 
         // Step 5 Run the view transition page visibility change steps with document.
-        // TODO ViewTransition hasn't implemented yet
+        // BAO PATCH (REQ-BRW-051 C2): implemented — a hidden document skips its
+        // active view transition with an `InvalidStateError`.
+        self.run_view_transition_page_visibility_change_steps();
 
         // Step 6 Run any page visibility change steps which may be defined in other specifications, with visibility
         // state and document. Any other specs' visibility steps will go here.
@@ -5322,8 +5569,8 @@ impl Document {
     }
 
     pub(crate) fn has_trustworthy_ancestor_or_current_origin(&self) -> bool {
-        self.has_trustworthy_ancestor_origin.get() ||
-            self.origin().immutable().is_potentially_trustworthy()
+        self.has_trustworthy_ancestor_origin.get()
+            || self.origin().immutable().is_potentially_trustworthy()
     }
 
     pub(crate) fn highlight_dom_node(&self, node: Option<&Node>) {
@@ -5673,6 +5920,57 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     /// <https://html.spec.whatwg.org/multipage/#dom-document-activeelement>
     fn GetActiveElement(&self) -> Option<DomRoot<Element>> {
         self.document_or_shadow_root.active_element(self.upcast())
+    }
+
+    /// <https://drafts.csswg.org/css-view-transitions-1/#ViewTransition-prepare>
+    ///
+    /// BAO PATCH (REQ-BRW-051 C2): `callbackOptions` is typed `any` in the
+    /// WebIDL and resolved to the spec's
+    /// `(ViewTransitionUpdateCallback or StartViewTransitionOptions)` union in
+    /// `parse_start_view_transition_options` — see the note in `Document.webidl`.
+    fn StartViewTransition(
+        &self,
+        cx: &mut CurrentRealm,
+        callback_options: HandleValue,
+    ) -> Fallible<DomRoot<ViewTransition>> {
+        let cx = cx.deref_mut();
+        let (update_callback, types) = parse_start_view_transition_options(cx, callback_options)?;
+
+        // Step: if the document's visibility state is "hidden", skip the
+        // transition with an InvalidStateError and return it. The object is
+        // still created (and returned) so that the caller always holds a
+        // ViewTransition.
+        let transition = ViewTransition::new(cx, self, update_callback, types);
+        if self.visibility_state.get() == DocumentVisibilityState::Hidden {
+            transition.skip_from_document(
+                cx,
+                Error::InvalidState(Some(
+                    "cannot start a view transition on a hidden document".to_owned(),
+                )),
+            );
+            return Ok(transition);
+        }
+
+        // Step: if a transition is already active, skip it with an AbortError
+        // (in the current realm).
+        if let Some(active) = self.active_view_transition.get() {
+            active.skip_from_document(cx, Error::Abort(None));
+        }
+
+        // Step: set the document's active view transition.
+        self.set_active_view_transition(Some(&transition));
+
+        // The transition process continues in "setup view transition", which
+        // the spec runs from "update the rendering" — ask for a rendering
+        // opportunity so that it actually happens.
+        self.add_rendering_update_reason(RenderingUpdateReason::ViewTransitionPendingOperations);
+
+        Ok(transition)
+    }
+
+    /// <https://drafts.csswg.org/css-view-transitions-2/#dom-document-activeviewtransition>
+    fn GetActiveViewTransition(&self) -> Option<DomRoot<ViewTransition>> {
+        self.active_view_transition()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-documentorshadowroot-customelementregistry>
@@ -6297,7 +6595,11 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     /// > The designMode getter steps are to return "on" if this's design mode
     /// > is enabled, or "off" otherwise.
     fn DesignMode(&self) -> DOMString {
-        DOMString::from(if self.design_mode_enabled() { "on" } else { "off" })
+        DOMString::from(if self.design_mode_enabled() {
+            "on"
+        } else {
+            "off"
+        })
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-document-designmode>
@@ -6468,8 +6770,8 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
 
         let node = new_body.upcast::<Node>();
         match node.type_id() {
-            NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLBodyElement)) |
-            NodeTypeId::Element(ElementTypeId::HTMLElement(
+            NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLBodyElement))
+            | NodeTypeId::Element(ElementTypeId::HTMLElement(
                 HTMLElementTypeId::HTMLFrameSetElement,
             )) => {},
             _ => {
@@ -6540,8 +6842,8 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     fn Links(&self, cx: &mut JSContext) -> DomRoot<HTMLCollection> {
         self.links.or_init(|| {
             HTMLCollection::new_with_filter_fn(cx, &self.window, self.upcast(), |element, _| {
-                (element.is::<HTMLAnchorElement>() || element.is::<HTMLAreaElement>()) &&
-                    element.has_attribute(&local_name!("href"))
+                (element.is::<HTMLAnchorElement>() || element.is::<HTMLAreaElement>())
+                    && element.has_attribute(&local_name!("href"))
             })
         })
     }
@@ -6775,6 +7077,12 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         }
         impl CollectionFilter for DocumentNamedGetter {
             fn filter(&self, elem: &Element, _root: &Node) -> bool {
+                // BAO PATCH (REQ-BRW-051 C2, 2026-10-21): a matching `id`
+                // matches in any namespace, so the id check has to happen before
+                // the HTML-only type match below.
+                if elem.get_id().as_ref() == Some(&self.name) {
+                    return true;
+                }
                 let type_ = match elem.upcast::<Node>().type_id() {
                     NodeTypeId::Element(ElementTypeId::HTMLElement(type_)) => type_,
                     _ => return false,
@@ -6783,10 +7091,9 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
                     HTMLElementTypeId::HTMLFormElement | HTMLElementTypeId::HTMLIFrameElement => {
                         elem.get_name().as_ref() == Some(&self.name)
                     },
-                    HTMLElementTypeId::HTMLImageElement => elem.get_name().is_some_and(|name| {
-                        name == *self.name ||
-                            !name.is_empty() && elem.get_id().as_ref() == Some(&self.name)
-                    }),
+                    HTMLElementTypeId::HTMLImageElement => {
+                        elem.get_name().as_ref() == Some(&self.name)
+                    },
                     // TODO handle <embed> and <object>; these depend on whether the element is
                     // “exposed”, a concept that doesn’t fully make sense until embed/object
                     // behaviour is actually implemented
@@ -7361,6 +7668,17 @@ impl AnimationFrameCallback {
                 devtools_sender.send(msg).unwrap();
             },
             AnimationFrameCallback::FrameRequestCallback { ref callback } => {
+                // Long animation frames attribute requestAnimationFrame
+                // callbacks to the `FrameRequestCallback` entry point.
+                let _long_animation_frame_guard =
+                    crate::dom::performance::long_animation_frame_recorder::begin_script_entry(
+                        document.window(),
+                        crate::dom::bindings::codegen::Bindings::PerformanceScriptTimingBinding::ScriptInvokerType::User_callback,
+                        "FrameRequestCallback".to_owned(),
+                    );
+                crate::dom::performance::long_animation_frame_recorder::note_rendering_work(
+                    document.window().pipeline_id(),
+                );
                 // TODO(jdm): The spec says that any exceptions should be suppressed:
                 // https://github.com/servo/servo/issues/6928
                 let _ = callback.Call__(cx, Finite::wrap(now), ExceptionHandling::Report);
@@ -7448,9 +7766,9 @@ fn is_named_element_with_name_attribute(elem: &Element) -> bool {
         _ => return false,
     };
     match type_ {
-        HTMLElementTypeId::HTMLFormElement |
-        HTMLElementTypeId::HTMLIFrameElement |
-        HTMLElementTypeId::HTMLImageElement => true,
+        HTMLElementTypeId::HTMLFormElement
+        | HTMLElementTypeId::HTMLIFrameElement
+        | HTMLElementTypeId::HTMLImageElement => true,
         // TODO handle <embed> and <object>; these depend on whether the element is
         // “exposed”, a concept that doesn’t fully make sense until embed/object
         // behaviour is actually implemented
@@ -7458,11 +7776,17 @@ fn is_named_element_with_name_attribute(elem: &Element) -> bool {
     }
 }
 
-fn is_named_element_with_id_attribute(elem: &Element) -> bool {
-    // TODO handle <embed> and <object>; these depend on whether the element is
-    // “exposed”, a concept that doesn’t fully make sense until embed/object
-    // behaviour is actually implemented
-    elem.is::<HTMLImageElement>() && elem.get_name().is_some_and(|name| !name.is_empty())
+fn is_named_element_with_id_attribute(_elem: &Element) -> bool {
+    // <https://html.spec.whatwg.org/multipage/#dom-document-nameditem-filter>
+    //
+    // > an element is a named element with the name `name` if ... it has a
+    // > non-empty id content attribute whose value is `name`
+    //
+    // BAO PATCH (REQ-BRW-051 C2, 2026-10-21): every element participates,
+    // whatever its namespace. This used to require an HTML image element with a
+    // non-empty `name`, which dropped MathML and SVG elements from named access
+    // on the `Document`; the id map already only holds elements with that id.
+    true
 }
 
 impl DocumentHelpers for Document {

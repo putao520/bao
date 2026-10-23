@@ -23,6 +23,7 @@ use crate::fragment_tree::{FragmentFlags, FragmentTree};
 use crate::geom::{LogicalVec2, PhysicalSize};
 use crate::positioned::{AbsolutelyPositionedBox, PositioningContext};
 use crate::style_ext::Display;
+use crate::writing_mode::containing_block_size_for_child;
 use crate::{DefiniteContainingBlock, PropagatedBoxTreeData};
 
 #[derive(MallocSizeOf)]
@@ -103,9 +104,9 @@ impl BoxTree {
 
         root_box.borrow_mut().with_base_mut(|base| {
             let root_overflow = AxesOverflow::from(&*base.style);
-            if root_overflow.x == Overflow::Visible &&
-                root_overflow.y == Overflow::Visible &&
-                let Some(body_overflow) = propagate_from_body()
+            if root_overflow.x == Overflow::Visible
+                && root_overflow.y == Overflow::Visible
+                && let Some(body_overflow) = propagate_from_body()
             {
                 return body_overflow;
             }
@@ -175,22 +176,33 @@ impl BoxTree {
         layout_context: &LayoutContext,
         viewport: UntypedSize2D<Au>,
     ) -> FragmentTree {
-        let style = layout_context
+        let default_style = layout_context
             .style_context
             .stylist
             .device()
             .default_computed_values_arc();
 
-        // FIXME: use the document’s mode:
+        // The principal writing mode of the document is that of the root element:
         // https://drafts.csswg.org/css-writing-modes/#principal-flow
+        //
+        // The initial containing block is always a physical rectangle (the
+        // viewport), so the block-level root box and absolutely positioned boxes
+        // whose containing block is the initial containing block lay out in that
+        // principal writing mode.
+        let root_style = self
+            .root
+            .contents
+            .style(layout_context)
+            .unwrap_or_else(|| default_style.clone());
+        let principal_writing_mode = root_style.writing_mode;
         let physical_containing_block: Rect<Au, CSSPixel> =
             PhysicalSize::from_untyped(viewport).into();
         let initial_containing_block = DefiniteContainingBlock {
-            size: LogicalVec2 {
-                inline: physical_containing_block.size.width,
-                block: physical_containing_block.size.height,
-            },
-            style,
+            size: LogicalVec2::from_physical_size(
+                &physical_containing_block.size,
+                principal_writing_mode,
+            ),
+            style: &root_style,
         };
 
         let mut positioning_context = PositioningContext::default();

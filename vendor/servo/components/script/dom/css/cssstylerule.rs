@@ -18,6 +18,7 @@ use style::stylesheets::{CssRuleType, CssRules, Origin, StyleRule, StylesheetInD
 use super::cssrule::SpecificCSSRule;
 use super::cssstyledeclaration::{CSSModificationAccess, CSSStyleDeclaration, CSSStyleOwner};
 use super::cssstylesheet::CSSStyleSheet;
+use super::stylepropertymap::StylePropertyMap;
 use crate::dom::bindings::codegen::Bindings::CSSStyleRuleBinding::CSSStyleRuleMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::DomGlobal;
@@ -34,6 +35,10 @@ pub(crate) struct CSSStyleRule {
     #[no_trace]
     style_rule: RefCell<Arc<Locked<StyleRule>>>,
     style_declaration: MutNullableDom<CSSStyleDeclaration>,
+    /// <https://drafts.css-houdini.org/css-typed-om-1/#dom-cssstylerule-stylemap>
+    ///
+    /// Bao fork self-build (REQ-BRW-051 C2): lazy `styleMap`.
+    style_map: MutNullableDom<StylePropertyMap>,
 }
 
 impl CSSStyleRule {
@@ -46,6 +51,7 @@ impl CSSStyleRule {
             css_grouping_rule: CSSGroupingRule::new_inherited(parent_rule, parent_stylesheet),
             style_rule: RefCell::new(stylerule),
             style_declaration: Default::default(),
+            style_map: Default::default(),
         }
     }
 
@@ -135,6 +141,17 @@ impl CSSStyleRuleMethods<crate::DomTypeHolder> for CSSStyleRule {
                 None,
                 CSSModificationAccess::ReadWrite,
             )
+        })
+    }
+
+    /// <https://drafts.css-houdini.org/css-typed-om-1/#dom-cssstylerule-stylemap>
+    ///
+    /// Bao fork self-build (REQ-BRW-051 C2): a mutable `StylePropertyMap`
+    /// backed by the rule's style declaration.
+    fn StyleMap(&self, cx: &mut JSContext) -> DomRoot<StylePropertyMap> {
+        self.style_map.or_init(|| {
+            let declaration = self.Style(cx);
+            StylePropertyMap::new(cx, &self.global(), declaration)
         })
     }
 

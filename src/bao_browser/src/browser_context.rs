@@ -17,11 +17,13 @@
 use std::collections::HashMap;
 
 use bao_cdp::servo_bridge::DEFAULT_BROWSER_CONTEXT_ID;
+use bao_stealth::StealthProfile;
 use servo::ContextPartitionId;
 
 /// One explicit browser context. Chrome keeps a disposeOnDetach flag on the
 /// wire; bao serves browser-level sessions only, so detach-driven disposal
-/// has no trigger face and the entry stays a bare identity.
+/// has no trigger face and the entry stays a bare identity plus the stealth
+/// identity below.
 #[derive(Debug)]
 struct BrowserContextEntry {
     id: String,
@@ -30,6 +32,13 @@ struct BrowserContextEntry {
     /// IndexedDB / CacheStorage group (storage side). Minted at context
     /// creation via `Servo::create_context_partition`.
     partition: ContextPartitionId,
+    /// 随机身份默认挂载(用户裁决 2026-10-21「反指纹 = 随机指纹」):context
+    /// 创建时以 OS 熵种子经 `StealthProfile::from_random_seed()` 派生一整套
+    /// 指纹,本 context 的所有 page 共享(同 context 会话/登录态连贯),异
+    /// context 互不可关联。派生后的 profile 走既有注入路径(runtime_bridge
+    /// per-WebViewId keyed 注册表),零新安装机制。显式传 profile 的 page 仍
+    /// 优先(见 page_pool::create_page 注释锚)。
+    stealth_profile: StealthProfile,
 }
 
 /// In-process browser context registry: explicit-context identities plus the
@@ -49,7 +58,9 @@ impl BrowserContextRegistry {
     }
 
     /// Mint a unique explicit context id (`bao-context-<n>`) bound to the
-    /// partition created for it. The implicit default id can never collide
+    /// partition created for it, and derive its random stealth identity
+    /// (`StealthProfile::from_random_seed()` — the 随机身份默认挂载点, user
+    /// ruling 2026-10-21). The implicit default id can never collide
     /// (different prefix, never minted here).
     pub fn create_context(&mut self, partition: ContextPartitionId) -> String {
         self.next_id += 1;
@@ -59,9 +70,18 @@ impl BrowserContextRegistry {
             BrowserContextEntry {
                 id: id.clone(),
                 partition,
+                stealth_profile: StealthProfile::from_random_seed(),
             },
         );
         id
+    }
+
+    /// The stealth identity a context owns (derived at creation, shared by
+    /// every member page). `None` for the implicit default context and
+    /// unknown ids — default-context pages keep the explicit stealth-free
+    /// `None` semantics (page_pool.rs 注释锚).
+    pub fn stealth_profile_of_context(&self, id: &str) -> Option<&StealthProfile> {
+        self.contexts.get(id).map(|entry| &entry.stealth_profile)
     }
 
     /// The partition a context owns. `None` for the implicit default (pages
@@ -135,6 +155,48 @@ impl BrowserContextRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 随机身份默认挂载(用户裁决 2026-10-21「反指纹 = 随机指纹」)──────
+    // 每个显式 context 创建时从 OS 熵派生一整套随机指纹;两次创建互不可关联;
+    // 同 context 身份共享;未知 id 无默认身份(fail-closed)。
+
+    #[test]
+    fn context_default_identity_is_random_per_context() {
+        let mut reg = BrowserContextRegistry::new();
+        let a = reg.create_context(ContextPartitionId::new());
+        let b = reg.create_context(ContextPartitionId::new());
+        let pa = reg
+            .stealth_profile_of_context(&a)
+            .expect("context 必须携带派生身份");
+        let pb = reg
+            .stealth_profile_of_context(&b)
+            .expect("context 必须携带派生身份");
+        assert_ne!(
+            pa.canvas.seed(),
+            pb.canvas.seed(),
+            "异 context 身份必须互不可关联(OS 熵碰撞 ~2^-64)"
+        );
+        assert!(pa.canvas.seed() > 0);
+        // 档内连贯形随派生管线自带:UA 必为 Chrome 形。
+        assert!(pa.navigator.user_agent.contains("Chrome"));
+    }
+
+    #[test]
+    fn context_identity_is_shared_and_unknown_id_is_none() {
+        let mut reg = BrowserContextRegistry::new();
+        let a = reg.create_context(ContextPartitionId::new());
+        let pa = reg.stealth_profile_of_context(&a).unwrap();
+        let pa2 = reg.stealth_profile_of_context(&a).unwrap();
+        assert_eq!(
+            pa.canvas.seed(),
+            pa2.canvas.seed(),
+            "同 context 重复读取必须同一身份(共享语义)"
+        );
+        assert!(
+            reg.stealth_profile_of_context("bao-context-404").is_none(),
+            "未知 id 无默认身份(fail-closed)"
+        );
+    }
 
     // @trace TEST-CDS-009 [req:REQ-CDS-009] [criterion:1] [level:unit]
     #[test]

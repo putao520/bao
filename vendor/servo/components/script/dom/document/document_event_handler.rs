@@ -762,6 +762,15 @@ impl DocumentEventHandler {
                     input_event,
                 );
             }
+
+            // BAO PATCH (REQ-BRW-051 C2): hovering a link can start `eager`
+            // and `moderate` speculation candidates.
+            crate::dom::speculation::handle_link_interaction(
+                cx,
+                &self.window.Document(),
+                &new_target,
+                crate::dom::speculation::LinkInteraction::Hover,
+            );
         }
 
         // Send mousemove event to topmost target, unless it's an iframe, in which case
@@ -1021,6 +1030,16 @@ impl DocumentEventHandler {
             MouseButtonAction::Down => {
                 self.last_mouse_button_down_point
                     .set(Some(hit_test_result.point_in_frame));
+
+                // BAO PATCH (REQ-BRW-051 C2): pressing a link starts every
+                // remaining speculation candidate for it (`conservative`
+                // included).
+                crate::dom::speculation::handle_link_interaction(
+                    cx,
+                    &document,
+                    &element,
+                    crate::dom::speculation::LinkInteraction::PointerDown,
+                );
 
                 // Step 6. Dispatch pointerdown event.
                 let pointer_event_name = if self.mouse_button_state.get().is_empty() {

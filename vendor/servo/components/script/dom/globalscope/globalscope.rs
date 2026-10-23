@@ -36,17 +36,22 @@ use js::rust::{
     HandleValue, MutableHandleValue, ParentRuntime, get_object_class, transform_str_to_source_text,
 };
 use js::{JSCLASS_IS_DOMJSCLASS, JSCLASS_IS_GLOBAL};
+use malloc_size_of::MallocSizeOfOps;
 use net_traits::blob_url_store::BlobBuf;
 use net_traits::filemanager_thread::{
     FileManagerResult, FileManagerThreadMsg, ReadFileProgress, RelativePos,
 };
-use net_traits::image_cache::ImageCache;
+use net_traits::image_cache::{
+    Image, ImageCache, ImageCacheResponseCallback, ImageCacheResult, ImageLoadListener,
+    PendingImageId, VectorImageId,
+};
 use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{
-    InsecureRequestsPolicy, Origin as RequestOrigin, Referrer, RequestBuilder, RequestClient,
-    ServiceWorkersMode,
+    CorsSettings, InsecureRequestsPolicy, Origin as RequestOrigin, Referrer, RequestBuilder,
+    RequestClient, ServiceWorkersMode,
 };
-use net_traits::{CoreResourceThread, ReferrerPolicy, ResourceThreads};
+use net_traits::{CoreResourceThread, FetchResponseMsg, ReferrerPolicy, ResourceThreads};
+use pixels::RasterImage;
 use profile_traits::{
     generic_callback as profile_generic_callback, generic_channel as profile_generic_channel,
     mem as profile_mem, time as profile_time,
@@ -66,13 +71,15 @@ use servo_config::pref;
 use servo_constellation_traits::{
     BlobData, BlobImpl, BroadcastChannelMsg, ConstellationInterest, FileBlob, MessagePortImpl,
     PortMessageTask, ScriptToConstellationChan, ScriptToConstellationMessage,
-    ScriptToConstellationSender,
+    ScriptToConstellationSender, ServiceWorkerState,
 };
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use storage_traits::StorageThreads;
 use strum::VariantArray;
 use timers::{TimerEventRequest, TimerId};
 use uuid::Uuid;
+use webrender_api::ImageKey;
+use webrender_api::units::DeviceIntSize;
 #[cfg(feature = "webgpu")]
 use webgpu_traits::{DeviceLostReason, WebGPUDevice};
 
@@ -340,6 +347,103 @@ pub(crate) struct GlobalScope {
     fetch_group: RefCell<FetchGroup>,
 }
 
+/// BAO PATCH (REQ-BRW-051): the degraded [`ImageCache`] returned for global
+/// scopes that are spawned without a per-pipeline image cache. Today that is
+/// exactly the `ServiceWorkerGlobalScope` realm: the cache is created by the
+/// `ScriptThread` that owns a `Document`
+/// (`script_thread.rs`, `image_cache_factory.create(...)`), and SW threads are
+/// spawned directly by the `ServiceWorkerManager` without one.
+///
+/// Every method below implements the correct semantics of an *empty,
+/// non-loading* cache rather than a placeholder: image requests report
+/// [`ImageCacheResult::FailedToLoadOrDecode`] (callers already treat that as
+/// "no image available" — SW notifications display without icons), nothing is
+/// ever cached, and no rasterization or listeners can ever complete, so
+/// listener registration is explicitly dropped with a warning instead of
+/// leaking a pending request that would never be answered.
+///
+/// cfg contract: `ImageCache::number_of_rasterize_tasks` exists only when
+/// `net_traits/test-util` is enabled, which only the crate-local dev-dep
+/// graphs enable (`net`, `servo`, `webvtt` dev-dependencies). No bao build
+/// graph enables it for `script`; if one ever does, this impl must gain the
+/// method under a matching gate.
+struct UnavailableImageCache;
+
+impl ImageCache for UnavailableImageCache {
+    fn memory_reports(&self, _prefix: &str, _ops: &mut MallocSizeOfOps) -> Vec<profile_mem::Report> {
+        Vec::new()
+    }
+
+    fn get_image_key(&self) -> Option<ImageKey> {
+        None
+    }
+
+    fn get_image(
+        &self,
+        _url: ServoUrl,
+        _origin: ImmutableOrigin,
+        _cors_setting: Option<CorsSettings>,
+    ) -> Option<Image> {
+        None
+    }
+
+    fn get_cached_image_status(
+        &self,
+        _url: ServoUrl,
+        _origin: ImmutableOrigin,
+        _cors_setting: Option<CorsSettings>,
+    ) -> ImageCacheResult {
+        ImageCacheResult::FailedToLoadOrDecode
+    }
+
+    fn rasterize_vector_image(
+        &self,
+        _image_id: VectorImageId,
+        _size: DeviceIntSize,
+        _svg_id: Option<Uuid>,
+    ) -> Option<RasterImage> {
+        None
+    }
+
+    fn add_rasterization_complete_listener(
+        &self,
+        _pipeline_id: PipelineId,
+        _image_id: VectorImageId,
+        _size: DeviceIntSize,
+        _callback: ImageCacheResponseCallback,
+    ) {
+        // No rasterization can complete in a cache-less realm; dropping the
+        // callback would leave the requester waiting forever, so say so.
+        warn!("Vector image rasterization is unavailable: this global scope has no image cache.");
+    }
+
+    fn evict_rasterized_image(&self, _svg_id: &Uuid) {}
+
+    fn evict_completed_image(
+        &self,
+        _url: &ServoUrl,
+        _origin: &ImmutableOrigin,
+        _cors_setting: &Option<CorsSettings>,
+    ) {
+    }
+
+    fn get_broken_image_icon(&self) -> Option<Arc<RasterImage>> {
+        None
+    }
+
+    fn add_listener(&self, _listener: ImageLoadListener) {
+        // This cache never hands out pending image ids, so no listener can
+        // legitimately be registered against it.
+        warn!("Image load listener registered on a global scope without an image cache.");
+    }
+
+    fn notify_pending_response(&self, _id: PendingImageId, _action: FetchResponseMsg) {}
+
+    fn dispatch_fill_key_cache_with_batch_of_keys(&self, _image_keys: Vec<ImageKey>) {}
+
+    fn clear(&self) {}
+}
+
 impl GlobalScope {
     /// <https://storage.spec.whatwg.org/#obtain-a-storage-key-for-non-storage-purposes>
     pub(crate) fn obtain_storage_key_for_non_storage_purposes(&self) -> ImmutableOrigin {
@@ -585,6 +689,31 @@ impl GlobalScope {
             .borrow()
             .get(&worker_id)
             .map(|worker| DomRoot::from_ref(&**worker))
+    }
+
+    /// <https://w3c.github.io/ServiceWorker/#update-state-algorithm>
+    /// Ported from upstream servo 270fe198f (#48749): look the DOM worker up in
+    /// this settings object's service worker object map, set its state and fire
+    /// "statechange". REQ-BRW-051 merge: the vendor WorkerActivated relay may
+    /// also deliver "activated" for the registering client, so the statechange
+    /// fires only on an actual state change (the spec transition is observable
+    /// exactly once regardless of which channel lands first).
+    pub(crate) fn update_service_worker_state(
+        &self,
+        cx: &mut js::context::JSContext,
+        state: ServiceWorkerState,
+        worker_id: ServiceWorkerId,
+    ) {
+        // Step 4.2: If objectMap[worker] does not exist, then abort these steps.
+        let Some(worker) = self.get_serviceworker_by_id(worker_id) else {
+            return;
+        };
+
+        // Step 4.4: Set workerObj’s state to state.
+        // Step 4.5: Fire an event named statechange at workerObj.
+        if worker.set_state(state) {
+            worker.upcast().fire_event(cx, atom!("statechange"));
+        }
     }
 
     /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): look up a
@@ -2316,7 +2445,27 @@ impl GlobalScope {
         if let Some(worker) = self.downcast::<PaintWorkletGlobalScope>() {
             return worker.image_cache();
         }
-        unreachable!();
+        // BAO PATCH (REQ-BRW-051): degrade explicitly instead of aborting the
+        // process. The former bare `unreachable!()` here was reachable on the
+        // ServiceWorkerGlobalScope thread: SW realms are spawned without an
+        // image cache (the per-pipeline cache is created by the owning
+        // ScriptThread), and SW-side Notification icon loading
+        // (serviceworker/notification.rs) resolves it through this accessor.
+        // Panic signature in the raw WPT log: `thread
+        // 'SW:<origin>/<script>' panicked at globalscope.rs:2319:9: internal
+        // error: entered unreachable code`. Upstream servo HEAD (29b280def)
+        // carries the same unreachable — fixed in place per fork policy. The
+        // proper fix is plumbing `ImageCacheFactory` through SWManagerSenders →
+        // ServiceWorkerManager → ServiceWorkerGlobalScope (multi-component
+        // contract, registered as follow-up); until then every image request
+        // in a cache-less realm reports `FailedToLoadOrDecode`, which callers
+        // already treat as "no image available" (notifications display
+        // without icons instead of killing the worker thread).
+        error!(
+            "No image cache for global scope at {} (ServiceWorker realm); image loading is degraded.",
+            self.get_url()
+        );
+        Arc::new(UnavailableImageCache)
     }
 
     /// Schedule a [`TimerEventRequest`] on this [`GlobalScope`]'s [`timers::TimerScheduler`].
@@ -2912,6 +3061,11 @@ impl GlobalScope {
             || {
                 EntryType::VARIANTS
                     .iter()
+                    // `script` is the internal entry type of the
+                    // `PerformanceScriptTiming` objects reported by
+                    // `long-animation-frame` entries; it is not observable on
+                    // its own.
+                    .filter(|entry_type| **entry_type != EntryType::Script)
                     .map(|t| DOMString::from(t.as_str()))
                     .collect()
             },

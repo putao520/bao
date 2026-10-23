@@ -59,21 +59,34 @@ impl HTMLOptionsCollection {
     fn add_new_elements(&self, cx: &mut JSContext, count: u32) -> ErrorResult {
         let root = self.upcast().root_node();
         let document = root.owner_document();
+        let select = root
+            .downcast::<HTMLSelectElement>()
+            .expect("HTMLOptionsCollection not rooted on a HTMLSelectElement");
 
-        for _ in 0..count {
-            let element = Element::create(
-                cx,
-                QualName::new(None, ns!(html), local_name!("option")),
-                None,
-                &document,
-                ElementCreator::ScriptCreated,
-                CustomElementCreationMode::Asynchronous,
-                None,
-            );
-            let node = element.upcast::<Node>();
-            root.AppendChild(cx, node)?;
-        }
-        Ok(())
+        // The n appends are a single script-observable operation (the `length`
+        // setter or an indexed setter). The per-insert hook work — the
+        // selectedness setting algorithm and the UA shadow tree refresh — is
+        // deferred to a single catch-up against the final tree (see
+        // `HTMLSelectElement::begin_batched_list_update`); keeping it inside
+        // the loop made this O(n²) and wedged the main thread for
+        // `options.length = 100000`.
+        select.begin_batched_list_update();
+        let result = (0..count)
+            .try_for_each(|_| {
+                let element = Element::create(
+                    cx,
+                    QualName::new(None, ns!(html), local_name!("option")),
+                    None,
+                    &document,
+                    ElementCreator::ScriptCreated,
+                    CustomElementCreationMode::Asynchronous,
+                    None,
+                );
+                let node = element.upcast::<Node>();
+                root.AppendChild(cx, node).map(|_| ())
+            });
+        select.end_batched_list_update(cx);
+        result
     }
 }
 
@@ -167,9 +180,18 @@ impl HTMLOptionsCollectionMethods<crate::DomTypeHolder> for HTMLOptionsCollectio
             Ordering::Less => {
                 // Step 3.1. Let n be current − value.
                 // Step 3.2 Remove the last n nodes in the collection from their parent nodes.
+                let root = self.upcast().root_node();
+                let select = root
+                    .downcast::<HTMLSelectElement>()
+                    .expect("HTMLOptionsCollection not rooted on a HTMLSelectElement");
+                // Same batching rationale as add_new_elements: the removals are
+                // one script-observable operation, so the per-removal catch-ups
+                // run once against the final tree.
+                select.begin_batched_list_update();
                 for index in (length..current).rev() {
                     self.Remove(cx, index as i32)
                 }
+                select.end_batched_list_update(cx);
             },
             _ => {},
         }

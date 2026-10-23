@@ -29,7 +29,10 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use devtools_traits::DevtoolsControlMsg;
 use embedder_traits::{AuthenticationResponse, EmbedderMsg, EmbedderProxy, GenericEmbedderProxy};
 use net::async_runtime::spawn_blocking_task;
-use net::connector::{CACertificates, create_http_client, create_tls_config};
+// BAO (rustls excision, 2026-10-21): `create_http_client`/`create_tls_config`
+// dropped with the dead rustls HTTP client (`HttpState.client` removed); the
+// test `HttpState` literal no longer constructs one.
+use net::connector::CACertificates;
 use net::embedder::NetToEmbedderMsg;
 use net::fetch::cors_cache::CorsCache;
 use net::fetch::methods::{self, FetchContext};
@@ -107,6 +110,9 @@ fn receive_credential_prompt_msgs(
 }
 
 fn create_http_state(fc: Option<GenericEmbedderProxy<NetToEmbedderMsg>>) -> HttpState {
+    // Provider install for the test TLS *server* (`test_util::make_ssl_server`,
+    // rustls `ServerConfig`); the client side of every fetch rides the bun
+    // BoringSSL bridge (BAO rustls excision, 2026-10-21).
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let override_manager = net::connector::CertificateErrorOverrideManager::new();
@@ -116,11 +122,6 @@ fn create_http_state(fc: Option<GenericEmbedderProxy<NetToEmbedderMsg>>) -> Http
         auth_cache: RwLock::new(net::resource_thread::AuthCache::default()),
         history_states: RwLock::new(FxHashMap::default()),
         http_cache: net::http_cache::HttpCache::new(net::http_cache::HttpCacheAssignment::Public),
-        client: create_http_client(create_tls_config(
-            net::connector::CACertificates::Default,
-            false, /* ignore_certificate_errors */
-            override_manager.clone(),
-        )),
         override_manager,
         embedder_proxy: fc.unwrap_or_else(|| create_generic_embedder_proxy()),
     }

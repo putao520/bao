@@ -173,6 +173,27 @@ impl NodeRuntime {
         self.ctx.eval(source, filename)
     }
 
+    /// Re-apply the current per-file globals (`__filename`/`__dirname`) onto
+    /// the persistent realm global. The realm's one-shot setup bakes them in
+    /// at creation; every file entry evaluated after that (library
+    /// embedding, second `bao test` file, harness pre-evals) must refresh
+    /// them or the CJS wrapper tail's free `__filename` dies with
+    /// `__filename is not defined` (REQ-ENG-048/REQ-ENG-007).
+    // @trace REQ-ENG-007
+    fn refresh_file_globals_on_realm(&mut self) -> ::std::result::Result<(), JsError> {
+        let global_ptr = self.ensure_realm()?;
+        let mut cx = self.ctx.cx();
+        rooted!(&in(cx) let global = global_ptr);
+        // Enter the realm before the define: JS_NewStringCopyZ inside the
+        // helper allocates in the CURRENT compartment, and the persistent
+        // realm is not the cx's ambient one between evals (same contract as
+        // `dispatch_exit_in_realm` below).
+        let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+        crate::globals::refresh_file_globals_on_global(realm_cx, global.handle());
+        ::std::result::Result::Ok(())
+    }
+
     /// Ensure this context's persistent realm exists (realm-per-context,
     /// ECMA-262/Node semantics: one realm per agent for its whole lifetime).
     ///
@@ -323,6 +344,11 @@ impl NodeRuntime {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         globals::install_file_globals(&mut self.ctx, &filename_str, &dirname_str);
+        // The realm may already exist (created by an earlier eval on this
+        // runtime) — its baked-in __filename/__dirname would be the previous
+        // file's (or none). Refresh before any entry dispatch (REQ-ENG-048:
+        // the CJS wrapper tail resolves them as free globals).
+        self.refresh_file_globals_on_realm()?;
 
         let is_module = if path.ends_with(".mjs") || path.ends_with(".mts") {
             true
@@ -402,6 +428,11 @@ impl NodeRuntime {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         globals::install_file_globals(&mut self.ctx, &filename_str, &dirname_str);
+        // Same realm-refresh contract as prepare_file_execution: this path
+        // re-reads the file itself (the `bao test` entry), and the CJS branch
+        // below evaluates the wrapper tail whose free `__filename`/`__dirname`
+        // must be THIS file's values even when the realm predates the call.
+        self.refresh_file_globals_on_realm()?;
 
         let is_module = path.ends_with(".mjs")
             || path.ends_with(".mts")
@@ -416,7 +447,14 @@ impl NodeRuntime {
             || source.trim_start().starts_with("import ");
 
         if is_module {
-            let hook = self.ctx.post_eval_hook();
+            // @trace REQ-ENG-048 — process 'exit' ordering (node oracle
+            // 2026-10-20: exit listeners fire AFTER the suites have run, never
+            // before). The run-mode hook (`post_eval_drain_then_exit`)
+            // dispatches 'exit' the moment the event loop drains — in the
+            // module path that pre-pump loop runs BEFORE `after_eval`, so the
+            // former wiring fired 'exit' before a single test body executed.
+            // The test path swaps in a drain-only hook here and dispatches
+            // 'exit' itself, after the report, inside the same realm.
             let mut cx = self.ctx.cx();
             // Realm-per-context: run the test module in the same persistent
             // realm as every script eval on this context.
@@ -426,9 +464,16 @@ impl NodeRuntime {
                 &mut cx,
                 &source,
                 path,
-                hook,
+                Some(post_eval_drain_only),
                 global.handle(),
-                |realm_cx| unsafe { crate::bun_test::run_bun_tests_report(realm_cx.raw_cx()) },
+                |realm_cx| {
+                    let report =
+                        unsafe { crate::bun_test::run_bun_tests_report(realm_cx.raw_cx()) };
+                    // 'exit' listeners fire after the suites (node ordering) —
+                    // dispatch inside the still-entered realm.
+                    unsafe { crate::bun_api::dispatch_exit_handlers(realm_cx.raw_cx()) };
+                    report
+                },
             )
         } else {
             // Non-module (CJS/plain-script) file: run as a script in the
@@ -440,9 +485,34 @@ impl NodeRuntime {
             // wrapper (REQ-ENG-048 interning root-fix) so entry-level
             // declarations are function-local, same as require()-loaded
             // modules.
-            self.eval(&wrap_cjs_entry_source(&source), path)?;
-            ::std::result::Result::Ok(self.run_registered_tests())
+            // @trace REQ-ENG-048 — same process-'exit' ordering swap as the
+            // module branch: drain-only hook during evaluation, 'exit'
+            // dispatch after the suites.
+            let prev_hook = self.ctx.post_eval_hook();
+            self.ctx.set_post_eval_hook(post_eval_drain_only);
+            let eval_result = self.eval(&wrap_cjs_entry_source(&source), path);
+            if let Some(prev) = prev_hook {
+                self.ctx.set_post_eval_hook(prev);
+            }
+            eval_result?;
+            let report = self.run_registered_tests();
+            self.dispatch_exit_in_realm();
+            ::std::result::Result::Ok(report)
         }
+    }
+
+    /// Dispatch process 'exit' listeners inside the persistent realm — the
+    /// `bao test` post-suites ordering point (node: 'exit' fires after the
+    /// test bodies, not when the module-level event loop first drains).
+    fn dispatch_exit_in_realm(&mut self) {
+        let Ok(global_ptr) = self.ensure_realm() else {
+            return;
+        };
+        let mut cx = self.ctx.cx();
+        rooted!(&in(cx) let global = global_ptr);
+        let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+        unsafe { crate::bun_api::dispatch_exit_handlers(realm_cx.raw_cx()) };
     }
 
     /// Drive the bun:test suites registered in this context's persistent
@@ -467,6 +537,14 @@ impl NodeRuntime {
         let realm_cx: &mut mozjs::context::JSContext = &mut realm;
         unsafe { crate::bun_test::run_bun_tests_report(realm_cx.raw_cx()) }
     }
+}
+
+/// `bao test` pre-suite pump hook: drain the event loop exactly like
+/// `bun_api::post_eval_drain_then_exit`, but WITHOUT dispatching process
+/// 'exit' — the test path dispatches 'exit' after the suites have run
+/// (node oracle 2026-10-20: exit listeners observe the completed test run).
+fn post_eval_drain_only(cx: &mut mozjs::context::JSContext) -> bool {
+    crate::timers::drain_and_check(cx)
 }
 
 /// Wrap a plain-script entry file's source in Node's official CommonJS

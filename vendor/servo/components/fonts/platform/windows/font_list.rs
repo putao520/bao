@@ -65,9 +65,9 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
         0 => {
             if let Some(block) = options.character.block() {
                 match block {
-                    UnicodeBlock::CyrillicSupplement |
-                    UnicodeBlock::Armenian |
-                    UnicodeBlock::Hebrew => {
+                    UnicodeBlock::CyrillicSupplement
+                    | UnicodeBlock::Armenian
+                    | UnicodeBlock::Hebrew => {
                         families.push("Estrangelo Edessa");
                         families.push("Cambria");
                     },
@@ -94,19 +94,19 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
                         families.push("Aparajita");
                     },
 
-                    UnicodeBlock::Gurmukhi |
-                    UnicodeBlock::Gujarati |
-                    UnicodeBlock::Oriya |
-                    UnicodeBlock::Tamil |
-                    UnicodeBlock::Telugu |
-                    UnicodeBlock::Kannada |
-                    UnicodeBlock::Malayalam |
-                    UnicodeBlock::Sinhala |
-                    UnicodeBlock::Lepcha |
-                    UnicodeBlock::OlChiki |
-                    UnicodeBlock::CyrillicExtendedC |
-                    UnicodeBlock::SundaneseSupplement |
-                    UnicodeBlock::VedicExtensions => {
+                    UnicodeBlock::Gurmukhi
+                    | UnicodeBlock::Gujarati
+                    | UnicodeBlock::Oriya
+                    | UnicodeBlock::Tamil
+                    | UnicodeBlock::Telugu
+                    | UnicodeBlock::Kannada
+                    | UnicodeBlock::Malayalam
+                    | UnicodeBlock::Sinhala
+                    | UnicodeBlock::Lepcha
+                    | UnicodeBlock::OlChiki
+                    | UnicodeBlock::CyrillicExtendedC
+                    | UnicodeBlock::SundaneseSupplement
+                    | UnicodeBlock::VedicExtensions => {
                         families.push("Nirmala UI");
                     },
 
@@ -118,24 +118,24 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
                         families.push("Lao UI");
                     },
 
-                    UnicodeBlock::Myanmar |
-                    UnicodeBlock::MyanmarExtendedA |
-                    UnicodeBlock::MyanmarExtendedB => {
+                    UnicodeBlock::Myanmar
+                    | UnicodeBlock::MyanmarExtendedA
+                    | UnicodeBlock::MyanmarExtendedB => {
                         families.push("Myanmar Text");
                     },
 
-                    UnicodeBlock::HangulJamo |
-                    UnicodeBlock::HangulJamoExtendedA |
-                    UnicodeBlock::HangulSyllables |
-                    UnicodeBlock::HangulJamoExtendedB |
-                    UnicodeBlock::HangulCompatibilityJamo => {
+                    UnicodeBlock::HangulJamo
+                    | UnicodeBlock::HangulJamoExtendedA
+                    | UnicodeBlock::HangulSyllables
+                    | UnicodeBlock::HangulJamoExtendedB
+                    | UnicodeBlock::HangulCompatibilityJamo => {
                         families.push("Malgun Gothic");
                     },
 
-                    UnicodeBlock::Ethiopic |
-                    UnicodeBlock::EthiopicSupplement |
-                    UnicodeBlock::EthiopicExtended |
-                    UnicodeBlock::EthiopicExtendedA => {
+                    UnicodeBlock::Ethiopic
+                    | UnicodeBlock::EthiopicSupplement
+                    | UnicodeBlock::EthiopicExtended
+                    | UnicodeBlock::EthiopicExtendedA => {
                         families.push("Nyala");
                     },
 
@@ -143,8 +143,8 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
                         families.push("Plantagenet Cherokee");
                     },
 
-                    UnicodeBlock::UnifiedCanadianAboriginalSyllabics |
-                    UnicodeBlock::UnifiedCanadianAboriginalSyllabicsExtended => {
+                    UnicodeBlock::UnifiedCanadianAboriginalSyllabics
+                    | UnicodeBlock::UnifiedCanadianAboriginalSyllabicsExtended => {
                         families.push("Euphemia");
                         families.push("Segoe UI");
                     },
@@ -166,38 +166,38 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
                         families.push("Microsoft New Tai Lue");
                     },
 
-                    UnicodeBlock::Buginese |
-                    UnicodeBlock::TaiTham |
-                    UnicodeBlock::CombiningDiacriticalMarksExtended => {
+                    UnicodeBlock::Buginese
+                    | UnicodeBlock::TaiTham
+                    | UnicodeBlock::CombiningDiacriticalMarksExtended => {
                         families.push("Leelawadee UI");
                     },
 
-                    UnicodeBlock::GeneralPunctuation |
-                    UnicodeBlock::SuperscriptsandSubscripts |
-                    UnicodeBlock::CurrencySymbols |
-                    UnicodeBlock::CombiningDiacriticalMarksforSymbols |
-                    UnicodeBlock::LetterlikeSymbols |
-                    UnicodeBlock::NumberForms |
-                    UnicodeBlock::Arrows |
-                    UnicodeBlock::MathematicalOperators |
-                    UnicodeBlock::MiscellaneousTechnical |
-                    UnicodeBlock::ControlPictures |
-                    UnicodeBlock::OpticalCharacterRecognition |
-                    UnicodeBlock::EnclosedAlphanumerics |
-                    UnicodeBlock::BoxDrawing |
-                    UnicodeBlock::BlockElements |
-                    UnicodeBlock::GeometricShapes |
-                    UnicodeBlock::MiscellaneousSymbols |
-                    UnicodeBlock::Dingbats |
-                    UnicodeBlock::MiscellaneousMathematicalSymbolsA |
-                    UnicodeBlock::SupplementalArrowsA |
-                    UnicodeBlock::SupplementalArrowsB |
-                    UnicodeBlock::MiscellaneousMathematicalSymbolsB |
-                    UnicodeBlock::SupplementalMathematicalOperators |
-                    UnicodeBlock::MiscellaneousSymbolsandArrows |
-                    UnicodeBlock::Glagolitic |
-                    UnicodeBlock::LatinExtendedC |
-                    UnicodeBlock::Coptic => {
+                    UnicodeBlock::GeneralPunctuation
+                    | UnicodeBlock::SuperscriptsandSubscripts
+                    | UnicodeBlock::CurrencySymbols
+                    | UnicodeBlock::CombiningDiacriticalMarksforSymbols
+                    | UnicodeBlock::LetterlikeSymbols
+                    | UnicodeBlock::NumberForms
+                    | UnicodeBlock::Arrows
+                    | UnicodeBlock::MathematicalOperators
+                    | UnicodeBlock::MiscellaneousTechnical
+                    | UnicodeBlock::ControlPictures
+                    | UnicodeBlock::OpticalCharacterRecognition
+                    | UnicodeBlock::EnclosedAlphanumerics
+                    | UnicodeBlock::BoxDrawing
+                    | UnicodeBlock::BlockElements
+                    | UnicodeBlock::GeometricShapes
+                    | UnicodeBlock::MiscellaneousSymbols
+                    | UnicodeBlock::Dingbats
+                    | UnicodeBlock::MiscellaneousMathematicalSymbolsA
+                    | UnicodeBlock::SupplementalArrowsA
+                    | UnicodeBlock::SupplementalArrowsB
+                    | UnicodeBlock::MiscellaneousMathematicalSymbolsB
+                    | UnicodeBlock::SupplementalMathematicalOperators
+                    | UnicodeBlock::MiscellaneousSymbolsandArrows
+                    | UnicodeBlock::Glagolitic
+                    | UnicodeBlock::LatinExtendedC
+                    | UnicodeBlock::Coptic => {
                         families.push("Segoe UI");
                         families.push("Segoe UI Symbol");
                         families.push("Cambria");
@@ -206,13 +206,13 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
                         families.push("Ebrima");
                     },
 
-                    UnicodeBlock::GeorgianSupplement |
-                    UnicodeBlock::Tifinagh |
-                    UnicodeBlock::CyrillicExtendedA |
-                    UnicodeBlock::SupplementalPunctuation |
-                    UnicodeBlock::CJKRadicalsSupplement |
-                    UnicodeBlock::KangxiRadicals |
-                    UnicodeBlock::IdeographicDescriptionCharacters => {
+                    UnicodeBlock::GeorgianSupplement
+                    | UnicodeBlock::Tifinagh
+                    | UnicodeBlock::CyrillicExtendedA
+                    | UnicodeBlock::SupplementalPunctuation
+                    | UnicodeBlock::CJKRadicalsSupplement
+                    | UnicodeBlock::KangxiRadicals
+                    | UnicodeBlock::IdeographicDescriptionCharacters => {
                         families.push("Segoe UI");
                         families.push("Segoe UI Symbol");
                         families.push("Meiryo");
@@ -222,15 +222,15 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
                         families.push("Segoe UI Symbol");
                     },
 
-                    UnicodeBlock::CJKSymbolsandPunctuation |
-                    UnicodeBlock::Hiragana |
-                    UnicodeBlock::Katakana |
-                    UnicodeBlock::Bopomofo |
-                    UnicodeBlock::Kanbun |
-                    UnicodeBlock::BopomofoExtended |
-                    UnicodeBlock::CJKStrokes |
-                    UnicodeBlock::KatakanaPhoneticExtensions |
-                    UnicodeBlock::CJKUnifiedIdeographs => {
+                    UnicodeBlock::CJKSymbolsandPunctuation
+                    | UnicodeBlock::Hiragana
+                    | UnicodeBlock::Katakana
+                    | UnicodeBlock::Bopomofo
+                    | UnicodeBlock::Kanbun
+                    | UnicodeBlock::BopomofoExtended
+                    | UnicodeBlock::CJKStrokes
+                    | UnicodeBlock::KatakanaPhoneticExtensions
+                    | UnicodeBlock::CJKUnifiedIdeographs => {
                         families.push("Microsoft YaHei");
                         families.push("Yu Gothic");
                     },
@@ -248,21 +248,21 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
                         families.push("Segoe UI");
                     },
 
-                    UnicodeBlock::Vai |
-                    UnicodeBlock::CyrillicExtendedB |
-                    UnicodeBlock::Bamum |
-                    UnicodeBlock::ModifierToneLetters |
-                    UnicodeBlock::LatinExtendedD => {
+                    UnicodeBlock::Vai
+                    | UnicodeBlock::CyrillicExtendedB
+                    | UnicodeBlock::Bamum
+                    | UnicodeBlock::ModifierToneLetters
+                    | UnicodeBlock::LatinExtendedD => {
                         families.push("Ebrima");
                         families.push("Segoe UI");
                         families.push("Cambria Math");
                     },
 
-                    UnicodeBlock::SylotiNagri |
-                    UnicodeBlock::CommonIndicNumberForms |
-                    UnicodeBlock::Phagspa |
-                    UnicodeBlock::Saurashtra |
-                    UnicodeBlock::DevanagariExtended => {
+                    UnicodeBlock::SylotiNagri
+                    | UnicodeBlock::CommonIndicNumberForms
+                    | UnicodeBlock::Phagspa
+                    | UnicodeBlock::Saurashtra
+                    | UnicodeBlock::DevanagariExtended => {
                         families.push("Microsoft PhagsPa");
                         families.push("Nirmala UI");
                     },
@@ -279,19 +279,19 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
                         families.push("Sylfaen");
                     },
 
-                    UnicodeBlock::ArabicPresentationFormsA |
-                    UnicodeBlock::ArabicPresentationFormsB => {
+                    UnicodeBlock::ArabicPresentationFormsA
+                    | UnicodeBlock::ArabicPresentationFormsB => {
                         families.push("Traditional Arabic");
                         families.push("Arabic Typesetting");
                     },
 
-                    UnicodeBlock::VariationSelectors |
-                    UnicodeBlock::VerticalForms |
-                    UnicodeBlock::CombiningHalfMarks |
-                    UnicodeBlock::CJKCompatibilityForms |
-                    UnicodeBlock::SmallFormVariants |
-                    UnicodeBlock::HalfwidthandFullwidthForms |
-                    UnicodeBlock::Specials => {
+                    UnicodeBlock::VariationSelectors
+                    | UnicodeBlock::VerticalForms
+                    | UnicodeBlock::CombiningHalfMarks
+                    | UnicodeBlock::CJKCompatibilityForms
+                    | UnicodeBlock::SmallFormVariants
+                    | UnicodeBlock::HalfwidthandFullwidthForms
+                    | UnicodeBlock::Specials => {
                         families.push("Microsoft JhengHei");
                     },
 

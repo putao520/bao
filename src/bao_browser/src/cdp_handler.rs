@@ -2,8 +2,8 @@
 // Runs on the main thread during the event loop to process CDP commands.
 
 use bao_cdp::servo_bridge::{
-    main_frame_id_for_target, BridgeCommand, BridgeError, BridgeErrorKind, BridgeResponse,
-    FetchPattern, FetchResolveAction,
+    BridgeCommand, BridgeError, BridgeErrorKind, BridgeResponse, FetchPattern, FetchResolveAction,
+    main_frame_id_for_target,
 };
 use bao_cdp_client::bridge::ServoEvent;
 use base64::Engine;
@@ -17,17 +17,17 @@ use std::str::FromStr;
 
 use crate::config::PageConfig;
 use crate::delegate::{
-    send_servo_event, FetchResolveOutcome, ServiceWorkerHandle, ServiceWorkerRegistrationId,
-    ServiceWorkerRegistrationState,
+    FetchResolveOutcome, ServiceWorkerHandle, ServiceWorkerRegistrationId,
+    ServiceWorkerRegistrationState, send_servo_event,
 };
 use crate::error::BrowserError;
 use crate::overlay::{
-    draw_highlight, BoxQuads, HighlightColor, HighlightSpec, HighlightState, OverlayNodeRef,
-    OverlayQuad,
+    BoxQuads, HighlightColor, HighlightSpec, HighlightState, OverlayNodeRef, OverlayQuad,
+    draw_highlight,
 };
 use crate::page::PageHandle;
 use crate::page_pool::PagePool;
-use crate::screenshot::{encode_image, ScreenshotFormat};
+use crate::screenshot::{ScreenshotFormat, encode_image};
 
 /// Process a single bridge command by dispatching to the appropriate page in the pool.
 pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeResponse {
@@ -102,6 +102,33 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         // removeScriptToEvaluateOnNewDocument identifier is Chrome's
         // ServerError class ("Script not found", -32000) — domain-owned, so
         // it rides the classified funnel like Fetch.resolve's UnknownId.
+        // Runtime.evaluate / Runtime.getProperties join the same funnel:
+        // evaluate's serialization failures ("Object reference chain is too
+        // long", -32000) and getProperties' unresolvable objectId ("Could
+        // not find object with given id", -32000) are Chrome's ServerError
+        // class, while transport failures stay -32603.
+        BridgeCommand::EvaluateJs {
+            target_id,
+            expression,
+            return_by_value,
+        } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            return BridgeResponse {
+                result: with_page_classified(pool, &target_id, |page| {
+                    cmd_evaluate(page, &expression, return_by_value)
+                }),
+            };
+        }
+        BridgeCommand::RuntimeGetProperties {
+            target_id,
+            object_id,
+            own_properties,
+        } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            return BridgeResponse {
+                result: with_page_classified(pool, &target_id, |page| {
+                    cmd_runtime_get_properties(page, &object_id, own_properties)
+                }),
+            };
+        }
         BridgeCommand::RemoveScriptToEvaluateOnNewDocument {
             target_id,
             identifier,
@@ -133,6 +160,25 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         _ => {}
     }
     let result = match cmd {
+        // Runtime.evaluate / Runtime.getProperties are handled by the
+        // early-return classified funnel above (BridgeError class routing);
+        // reaching here means that funnel did not take them, so route them
+        // through the same handlers on the plain-string face for parity.
+        BridgeCommand::EvaluateJs {
+            target_id,
+            expression,
+            return_by_value,
+        } => with_page(pool, &target_id, |page| { // @evidence .spec/10-REQUIREMENTS.html:2324
+            cmd_evaluate(page, &expression, return_by_value).map_err(|e| e.to_string())
+        }),
+        BridgeCommand::RuntimeGetProperties {
+            target_id,
+            object_id,
+            own_properties,
+        } => with_page(pool, &target_id, |page| { // @evidence .spec/10-REQUIREMENTS.html:2324
+            cmd_runtime_get_properties(page, &object_id, own_properties)
+                .map_err(|e| e.to_string())
+        }),
         // Multi-target management commands — operate on the pool, not a specific page
         BridgeCommand::CreateTarget { url } => cmd_create_target(pool, &url, None),
         BridgeCommand::ListTargets => cmd_list_targets(pool),
@@ -158,13 +204,6 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::Navigate { target_id, url } => {
             with_page(pool, &target_id, |page| cmd_navigate(page, &url))
         }
-        BridgeCommand::EvaluateJs {
-            target_id,
-            expression,
-            return_by_value,
-        } => with_page(pool, &target_id, |page| {
-            cmd_evaluate(page, &expression, return_by_value)
-        }),
         BridgeCommand::TakeScreenshot {
             target_id,
             format,
@@ -172,6 +211,38 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         } => with_page(pool, &target_id, |page| cmd_screenshot(page, &format)),
         BridgeCommand::GetTitle { target_id } => with_page(pool, &target_id, cmd_get_title),
         BridgeCommand::GetUrl { target_id } => with_page(pool, &target_id, cmd_get_url),
+        // REQ-CDP-010: the per-load loader identity getFrameTree consumes —
+        // the same registry row the navigate response reports.
+        BridgeCommand::GetLoaderId { target_id } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            with_page(pool, &target_id, |page| {
+                Ok(serde_json::json!(page.webview_state().borrow().loader_id.clone()))
+            })
+        }
+        // REQ-CDP-010: the CDP session-history journal (getNavigationHistory
+        // face) — real observed entries, never a fabricated list.
+        BridgeCommand::GetNavigationHistory { target_id } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            with_page(pool, &target_id, cmd_get_navigation_history)
+        }
+        // REQ-CDP-010: Runtime.addBinding / removeBinding — real page-global
+        // bindings with bindingCalled delivery through the marker carrier.
+        BridgeCommand::RuntimeAddBinding { target_id, name } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            with_page(pool, &target_id, |page| cmd_add_binding(page, &name))
+        }
+        BridgeCommand::RuntimeRemoveBinding { target_id, name } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            with_page(pool, &target_id, |page| cmd_remove_binding(page, &name))
+        }
+        // REQ-CDP-010: the opener relationship (TargetInfo.canAccessOpener).
+        BridgeCommand::GetTargetOpenerAccess { target_id } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            with_page(pool, &target_id, |page| {
+                Ok(serde_json::json!(
+                    page.webview_state().borrow().opener_page_id.is_some()
+                ))
+            })
+        }
+        // REQ-CDP-010: Page.enable arms the DOMContentLoaded observability.
+        BridgeCommand::InstallDomContentHook { target_id } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            with_page(pool, &target_id, cmd_install_dom_content_hook)
+        }
         BridgeCommand::GetDocument { target_id } => with_page(pool, &target_id, cmd_get_document),
         BridgeCommand::QuerySelector {
             target_id,
@@ -188,11 +259,11 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         }
         BridgeCommand::SetAttributeValue {
             target_id,
-            node_id: _,
+            node_id,
             name,
             value,
         } => with_page(pool, &target_id, |page| {
-            cmd_set_attribute(page, &name, &value)
+            cmd_set_attribute(page, node_id, &name, &value)
         }),
         BridgeCommand::DispatchMouseEvent {
             target_id,
@@ -418,7 +489,10 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             expression,
             frame_actor_id: _,
         } => with_page(pool, &target_id, |page| {
-            cmd_evaluate(page, &expression, true)
+            // `with_page` reports failures as plain strings (its
+            // `Result<Value, String>` contract); `cmd_evaluate` returns the
+            // richer `BridgeError`. The devtools face only needs the message.
+            cmd_evaluate(page, &expression, true).map_err(|e| e.to_string())
         }),
         BridgeCommand::DebuggerGetPossibleBreakpoints {
             target_id,
@@ -493,13 +567,6 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         }
 
         // ── Runtime domain commands — JS evaluate for object inspection and function calls ──
-        BridgeCommand::RuntimeGetProperties {
-            target_id,
-            object_id,
-            own_properties,
-        } => with_page(pool, &target_id, |page| {
-            cmd_runtime_get_properties(page, &object_id, own_properties)
-        }),
         BridgeCommand::RuntimeCallFunctionOn {
             target_id,
             object_id,
@@ -778,6 +845,10 @@ fn cmd_list_targets(pool: &PagePool) -> Result<Value, String> {
                 "title": page.page_title().unwrap_or_default(),
                 "url": page.current_url().unwrap_or_else(|| "about:blank".into()),
                 "browserContextId": pool.page_context_id(id),
+                // REQ-CDP-010: the real opener relationship (TargetInfo
+                // canAccessOpener projection) — true exactly for popups
+                // adopted through window.open.
+                "canAccessOpener": page.webview_state().borrow().opener_page_id.is_some(),
             }));
         }
     }
@@ -1004,19 +1075,6 @@ fn to_browser_error(e: BrowserError) -> String {
     format!("{e}")
 }
 
-/// Monotonic id source for CDP loaderId / script identifiers.
-///
-/// Chrome semantics: frameId is stable across navigations (the per-target
-/// main-frame id from `main_frame_id_for_target` — the same value every
-/// frame event for that target carries), loaderId is fresh per load. A
-/// monotonic counter yields genuinely unique, non-repeating ids — never a
-/// hardcoded constant.
-fn next_cdp_id(prefix: &str) -> String {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("{prefix}-{n:016x}")
-}
-
 fn cmd_navigate(page: &PageHandle, url: &str) -> Result<Value, String> {
     page.navigate(url).map_err(to_browser_error)?;
     // Highlight lifecycle (REQ-CDP-007-C6, design §3.1): the navigation entry
@@ -1024,12 +1082,18 @@ fn cmd_navigate(page: &PageHandle, url: &str) -> Result<Value, String> {
     // change). Cleared after the entry is accepted so a failed navigation
     // keeps the slot.
     clear_page_highlight(page);
+    // REQ-CDP-010 per-load loader registry: the navigation entry re-minted
+    // the row (page.rs seam, same as the generation gate). Report THAT id —
+    // the same value Page.getFrameTree now carries — instead of the former
+    // per-command mint that nothing stored (Chrome 155 oracle: navigate's
+    // loaderId equals the frame's loaderId for the same load).
+    let loader_id = page.webview_state().borrow().loader_id.clone();
     Ok(serde_json::json!({
         // Same frame identity the event stream reports (REQ-CDP-004, derived
         // per target) — never the PageId, which lives in the targetId
         // namespace.
         "frameId": main_frame_id_for_target(&page.id().to_string()),
-        "loaderId": next_cdp_id("loader"),
+        "loaderId": loader_id,
     }))
 }
 
@@ -1038,12 +1102,126 @@ fn cmd_navigate(page: &PageHandle, url: &str) -> Result<Value, String> {
 /// reported as a CDP exceptionDetails (0-origin line/column + stackTrace
 /// parsed off Error.stack) instead of collapsing into a generic -32603
 /// bridge error that buries the diagnostics in its message text.
+///
+/// The value face follows Chrome's measured by-value serialization (Chrome
+/// 155 oracle), NOT raw `JSON.stringify` semantics (which silently turns
+/// undefined/function/Symbol into null, Date into a string and throws on
+/// BigInt):
+///
+/// | JS value | Chrome by-value face (measured) |
+/// |---|---|
+/// | null | `{type:"object",subtype:"null",value:null}` |
+/// | undefined | `{type:"undefined"}` (no value key) |
+/// | number | `{type:"number",value,description}`; NaN/±Infinity/-0 → `unserializableValue` |
+/// | bigint | `{type:"bigint",unserializableValue:"123n",description}` |
+/// | string/boolean | `{type,value}` |
+/// | function | `{type:"function",value:{}}` |
+/// | object | `{type:"object",value:<own-enumerable deep value>}` (Error/Date/Map/Set/RegExp → `{}`, nested undefined/function dropped, nested NaN/Infinity → null) |
+/// | symbol (top-level or nested) | protocol error -32000 "Object couldn't be returned by value" |
+/// | cyclic / nested bigint | protocol error -32000 "Object reference chain is too long" |
+///
+/// Serialization failures are transported as `__baoByvalErr` markers the
+/// Rust side lifts to the Chrome error code (never as a page exception —
+/// Chrome reports them at the command level).
+/// @trace REQ-CDP-010 [req:REQ-CDP-010]
 fn evaluate_by_value_envelope_js(expr_json: &str) -> String {
     format!(
         r#"(function() {{
+                // Chrome's own-enumerable deep value. Arrays keep their shape
+                // (holes/undefined become null via JSON.stringify); objects
+                // take own enumerable string properties only; nested
+                // undefined/functions are dropped like JSON.stringify. A
+                // cycle (or an exotic value the reconstruction cannot carry)
+                // throws and is mapped to the protocol-level serialization
+                // error below.
+                function deepValue(v, seen) {{
+                    if (v === null || typeof v !== 'object') {{
+                        // Unserializable TYPES keep Chrome's distinct
+                        // message ("Object couldn't be returned by value");
+                        // values reconstructable by JSON semantics pass
+                        // through (top-level NaN/±Infinity/-0 were handled
+                        // above; nested ones stringify to null/0 exactly
+                        // like Chrome, measured).
+                        if (typeof v === 'bigint' || typeof v === 'symbol') {{
+                            throw {{ __baoUnserializable: true }};
+                        }}
+                        return v;
+                    }}
+                    if (seen.indexOf(v) !== -1) throw {{ __baoCyclic: true }};
+                    seen.push(v);
+                    try {{
+                        if (Array.isArray(v)) {{
+                            var arr = [];
+                            for (var i = 0; i < v.length; i++) {{
+                                var e = v[i];
+                                if (e === undefined || typeof e === 'function') arr.push(null);
+                                else arr.push(deepValue(e, seen));
+                            }}
+                            return arr;
+                        }}
+                        var o = {{}};
+                        var keys = Object.keys(v);
+                        for (var k = 0; k < keys.length; k++) {{
+                            var val = v[keys[k]];
+                            if (val === undefined || typeof val === 'function') continue;
+                            o[keys[k]] = deepValue(val, seen);
+                        }}
+                        return o;
+                    }} finally {{
+                        seen.pop();
+                    }}
+                }}
                 try {{
                     var r = eval({expr_json});
-                    return JSON.stringify({{ result: {{ value: r === undefined ? null : r, undefined_result: r === undefined }}, exceptionDetails: null }});
+                    var t = typeof r;
+                    if (r === undefined) {{
+                        return JSON.stringify({{ result: {{ type: 'undefined' }}, exceptionDetails: null }});
+                    }}
+                    if (t === 'symbol') {{
+                        // Chrome: the value cannot leave the realm by value.
+                        return JSON.stringify({{ __baoByvalErr: "Object couldn't be returned by value" }});
+                    }}
+                    if (r === null) {{
+                        return JSON.stringify({{ result: {{ type: 'object', subtype: 'null', value: null }}, exceptionDetails: null }});
+                    }}
+                    if (t === 'number') {{
+                        var us = null;
+                        if (r !== r) us = 'NaN';
+                        else if (r === Infinity) us = 'Infinity';
+                        else if (r === -Infinity) us = '-Infinity';
+                        else if (r === 0 && 1 / r < 0) us = '-0';
+                        var numFace = us
+                            ? {{ type: 'number', unserializableValue: us, description: us }}
+                            : {{ type: 'number', value: r, description: String(r) }};
+                        return JSON.stringify({{ result: numFace, exceptionDetails: null }});
+                    }}
+                    if (t === 'bigint') {{
+                        var bd = String(r) + 'n';
+                        return JSON.stringify({{ result: {{ type: 'bigint', unserializableValue: bd, description: bd }}, exceptionDetails: null }});
+                    }}
+                    if (t === 'string' || t === 'boolean') {{
+                        return JSON.stringify({{ result: {{ type: t, value: r }}, exceptionDetails: null }});
+                    }}
+                    if (t === 'function') {{
+                        // Chrome by-value: the function face has no fields.
+                        return JSON.stringify({{ result: {{ type: 'function', value: {{}} }}, exceptionDetails: null }});
+                    }}
+                    // Object: own-enumerable deep value (Date/Error/Map/Set/
+                    // RegExp all have no own enumerable data → {{}}).
+                    var deep;
+                    try {{
+                        deep = deepValue(r, []);
+                        return JSON.stringify({{ result: {{ type: 'object', value: deep }}, exceptionDetails: null }});
+                    }} catch (ser) {{
+                        // Chrome's two serialization error classes (measured):
+                        // unserializable types vs cyclic/too-long chains —
+                        // both are protocol-level (-32000), never a page
+                        // exception.
+                        if (ser && ser.__baoUnserializable) {{
+                            return JSON.stringify({{ __baoByvalErr: "Object couldn't be returned by value" }});
+                        }}
+                        return JSON.stringify({{ __baoByvalErr: 'Object reference chain is too long' }});
+                    }}
                 }} catch (e) {{
                     var frames = [];
                     if (e && e.stack) {{
@@ -1064,58 +1242,49 @@ fn evaluate_by_value_envelope_js(expr_json: &str) -> String {
                     // REQ-CDP-010 golden-oracle parity: Chrome's top-level
                     // `result` for a thrown Error is the Error RemoteObject
                     // itself — type object / subtype error / className /
-                    // description — the former undefined-typed face
-                    // swallowed the exception object. The exception value is
-                    // not JSON-serializable (message/stack captured instead,
-                    // matching Chrome's `description` text); the registry
-                    // objectId would need a cross-call handle table and is
-                    // honestly absent (clients classify on className here).
-                    return JSON.stringify({{
-                        result: {{
-                            type: 'object',
-                            subtype: 'error',
-                            className: (e && e.name) || 'Error',
-                            description: String(e),
-                        }},
-                        exceptionDetails: {{
-                            exceptionId: 0,
-                            text: 'Uncaught',
-                            lineNumber: first.lineNumber,
-                            columnNumber: first.columnNumber,
-                            exception: {{
+                    // description — and it carries a REAL objectId (the
+                    // by-value failure is transported on the RemoteObject's
+                    // `description`, never by JSON-roundtripping the
+                    // exception). Here the exception is wrapped into the
+                    // page-realm registry so the objectId is cross-call
+                    // reachable: getProperties / callFunctionOn / releaseObject
+                    // all resolve it (the client reachability face Chrome
+                    // provides; verified against the Chrome 155 oracle).
+                    var reg = (typeof window.__bao_cdp !== 'undefined') ? window.__bao_cdp : null;
+                    var exObj = (reg && e !== null && (typeof e === 'object' || typeof e === 'function'))
+                        ? reg.wrap(e, false, '')
+                        : null;
+                    // A thrown primitive is reported BY VALUE (its real
+                    // RemoteObject — string/number/…, no objectId), matching
+                    // Chrome (oracle: throw "plain-string" → result.type
+                    // "string" carrying the value). Without the registry
+                    // (frozen-window edge — the prelude could not install)
+                    // the legacy classifiable face is reported honestly
+                    // without an objectId.
+                    var primFace = (exObj === null)
+                        ? (reg
+                            ? reg.wrap(e, false, '')
+                            : {{
                                 type: 'object',
                                 subtype: 'error',
                                 className: (e && e.name) || 'Error',
                                 description: String(e),
-                            }},
-                            stackTrace: {{ callFrames: frames }},
-                        }},
-                    }});
+                            }})
+                        : null;
+                    var face = exObj || primFace;
+                    var excDetails = {{
+                        exceptionId: 0,
+                        text: 'Uncaught',
+                        lineNumber: first.lineNumber,
+                        columnNumber: first.columnNumber,
+                        stackTrace: {{ callFrames: frames }},
+                    }};
+                    if (exObj) excDetails.exception = exObj;
+                    else if (primFace) excDetails.exception = primFace;
+                    return JSON.stringify({{ result: face, exceptionDetails: excDetails }});
                 }}
             }})()"#,
     )
-}
-
-/// Normalize the by-value envelope result face: consume the internal
-/// `undefined_result` marker (try arm), map the carried value to its CDP
-/// `type`; the catch arm's result is already the Error RemoteObject face
-/// (type object / subtype error / className / description — REQ-CDP-010
-/// golden-oracle parity) and passes through untouched.
-fn normalize_by_value_envelope(mut envelope: Value) -> Value {
-    let marker = envelope
-        .get("result")
-        .and_then(|r| r.get("undefined_result"))
-        .and_then(|v| v.as_bool());
-    if let Some(undefined_result) = marker {
-        let value = envelope["result"]["value"].take();
-        let (value_type, value) = if undefined_result {
-            ("undefined".to_string(), Value::Null)
-        } else {
-            (json_type(&value).to_string(), value)
-        };
-        envelope["result"] = serde_json::json!({ "type": value_type, "value": value });
-    }
-    envelope
 }
 
 /// returnByValue=false handle-wrapper JS: wraps the evaluation result via
@@ -1144,31 +1313,52 @@ fn cmd_evaluate(
     page: &PageHandle,
     expression: &str,
     return_by_value: bool,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     // Web-scope evaluation (REQ-SEC-002/003): CDP Runtime.evaluate is the
     // page's DevTools console — it must run in the Page Realm WITHOUT Node
     // API injection. (The privileged evaluate_js face is bao-internal only
     // and additionally does not survive navigation.)
     if return_by_value {
+        // The by-value exception face carries registry objectIds (the
+        // cross-call handle table Chrome exposes and clients drive through
+        // getProperties/callFunctionOn/releaseObject), so the registry must
+        // exist before the envelope runs. Best-effort install: a page that
+        // cannot host the page-visible registry (frozen window) keeps the
+        // honest pre-registry face — the envelope guards on its presence.
+        let _ = page.evaluate_js_web(CDP_REGISTRY_PRELUDE);
         let expr_json = serde_json::to_string(expression).unwrap_or_default();
         let js = evaluate_by_value_envelope_js(&expr_json);
-        let out = page.evaluate_js_web(&js).map_err(to_browser_error)?;
+        let out = page
+            .evaluate_js_web(&js)
+            .map_err(|e| BridgeError::no_bridge(to_browser_error(e)))?;
         let envelope: Value = serde_json::from_str(&out).map_err(|e| {
-            format!("Runtime.evaluate: envelope unparseable: {e} (got: {out:.200})")
+            BridgeError::no_bridge(format!(
+                "Runtime.evaluate: envelope unparseable: {e} (got: {out:.200})"
+            ))
         })?;
-        Ok(normalize_by_value_envelope(envelope))
+        // Serialization failures carry Chrome's command-level class
+        // (-32000, e.g. "Object reference chain is too long") — never a
+        // fabricated page exception.
+        if let Some(reason) = envelope.get("__baoByvalErr").and_then(|v| v.as_str()) {
+            return Err(BridgeError::domain(reason.to_string()));
+        }
+        Ok(envelope)
     } else {
         // returnByValue=false: hand back a full RemoteObject with a
         // registry-pinned objectId. This is the Playwright evaluateHandle
         // path — the utilityScript handle is minted here and then driven via
         // Runtime.callFunctionOn (objectId roundtrip).
         page.evaluate_js_web(CDP_REGISTRY_PRELUDE)
-            .map_err(to_browser_error)?;
+            .map_err(|e| BridgeError::no_bridge(to_browser_error(e)))?;
         let expr_json = serde_json::to_string(expression).unwrap_or_default();
         let js = evaluate_handle_wrapper_js(&expr_json);
-        let out = page.evaluate_js_web(&js).map_err(to_browser_error)?;
+        let out = page
+            .evaluate_js_web(&js)
+            .map_err(|e| BridgeError::no_bridge(to_browser_error(e)))?;
         serde_json::from_str(&out).map_err(|e| {
-            format!("Runtime.evaluate: handle wrapper unparseable: {e} (got: {out:.200})")
+            BridgeError::no_bridge(format!(
+                "Runtime.evaluate: handle wrapper unparseable: {e} (got: {out:.200})"
+            ))
         })
     }
 }
@@ -1314,7 +1504,9 @@ fn parse_overlay_quad(v: &Value, layer: &str) -> Result<OverlayQuad, String> {
             .and_then(|n| n.as_f64())
             .map(|n| n as f32)
             .ok_or_else(|| {
-                format!("Overlay: malformed box-model geometry ({layer}.{name} missing or not a number)")
+                format!(
+                    "Overlay: malformed box-model geometry ({layer}.{name} missing or not a number)"
+                )
             })
     };
     Ok(OverlayQuad {
@@ -1503,15 +1695,19 @@ fn cmd_get_document(page: &PageHandle) -> Result<Value, String> {
         })()
     "#;
     let doc_str = page.evaluate_js(js).map_err(to_browser_error)?;
-    let mut doc_val: Value = serde_json::from_str(&doc_str).unwrap_or_else(|_| serde_json::json!({}));
+    let mut doc_val: Value =
+        serde_json::from_str(&doc_str).unwrap_or_else(|_| serde_json::json!({}));
     // Chrome-shape metadata (REQ-CDP-010 golden-oracle parity): the root node's
     // documentURL/baseURL/compatibilityMode/xmlVersion — read from the live
     // document, never placeholders. `document.charset` is the HTML standard's
     // alias of characterSet; about:blank's empty body yields the empty string
     // exactly like Chrome.
     if let Some(obj) = doc_val.as_object_mut() {
-        obj.entry("documentURL")
-            .or_insert_with(|| page.current_url().unwrap_or_else(|| "about:blank".into()).into());
+        obj.entry("documentURL").or_insert_with(|| {
+            page.current_url()
+                .unwrap_or_else(|| "about:blank".into())
+                .into()
+        });
         obj.entry("baseURL").or_insert_with(|| {
             let url = page.current_url().unwrap_or_else(|| "about:blank".into());
             let base = page
@@ -1624,14 +1820,43 @@ return JSON.stringify({{ __bao_err: "node has no outerHTML (only Element and Doc
     Ok(value)
 }
 
-fn cmd_set_attribute(page: &PageHandle, name: &str, value: &str) -> Result<Value, String> {
-    let js = format!(
-        "(function() {{ document.querySelector('[data-cdp]')?.setAttribute({}, {}); }})()",
-        serde_json::to_string(name).unwrap_or_default(),
-        serde_json::to_string(value).unwrap_or_default(),
-    );
-    let _ = page.evaluate_js(&js).map_err(to_browser_error)?;
+/// DOM.setAttributeValue — write the attribute on the ADDRESSED node.
+///
+/// Chrome semantics (REQ-CDP-010 golden-oracle parity): the `nodeId` is the
+/// canonical positional identity this face mints elsewhere; an unknown id is
+/// "No node with given id found" (-32000 class) and a non-element node is
+/// "Node is not an Element" (measured message). The former implementation
+/// ignored the addressed id entirely and wrote to a `[data-cdp]` fixture
+/// slot — a silent wrong-target mutation behind a success response (real
+/// BCE finding: the oracle's document-node call returned `{}` here while
+/// Chrome returned the element-class error).
+fn cmd_set_attribute(
+    page: &PageHandle,
+    node_id: i64,
+    name: &str,
+    value: &str,
+) -> Result<Value, String> {
+    let js = cmd_set_attribute_body(node_id, name, value);
+    let result = page.evaluate_js_web(&js).map_err(to_browser_error)?;
+    let value = parse_js_result(&result)?;
+    reject_page_error(&value)?;
     Ok(serde_json::json!({}))
+}
+
+/// JS body of [`cmd_set_attribute`] (pure construction — unit-testable).
+fn cmd_set_attribute_body(node_id: i64, name: &str, value: &str) -> String {
+    format!(
+        r#"(function() {{
+{OVERLAY_RESOLVE_JS}var el = __baoResolve({node_id});
+if (!el) return JSON.stringify({{ __bao_err: "No node with given id found" }});
+if (el.nodeType !== 1) return JSON.stringify({{ __bao_err: "Node is not an Element" }});
+el.setAttribute({name}, {attribute_value});
+return JSON.stringify({{ ok: true }});
+}})()"#,
+        node_id = node_id,
+        name = serde_json::to_string(name).unwrap_or_default(),
+        attribute_value = serde_json::to_string(value).unwrap_or_default(),
+    )
 }
 
 /// Input.dispatchMouseEvent — real servo input delivery.
@@ -1659,7 +1884,7 @@ fn cmd_mouse_event(
         other => {
             return Err(format!(
                 "Input.dispatchMouseEvent: unsupported type '{other}' (servo carries pressed/released/moved)"
-            ))
+            ));
         }
     }
     Ok(serde_json::json!({}))
@@ -1691,7 +1916,7 @@ fn cmd_key_event(
         other => {
             return Err(format!(
                 "Input.dispatchKeyEvent: unsupported type '{other}' (CDP carries keyDown/rawKeyDown/keyUp/char)"
-            ))
+            ));
         }
     };
     let key = cdp_key(key, text);
@@ -1910,10 +2135,11 @@ fn cmd_reload(page: &PageHandle) -> Result<Value, String> {
     // Highlight lifecycle (REQ-CDP-007-C6): same navigation-entry
     // invalidation as cmd_navigate.
     clear_page_highlight(page);
-    Ok(serde_json::json!({
-        "frameId": main_frame_id_for_target(&page.id().to_string()),
-        "loaderId": next_cdp_id("loader"),
-    }))
+    // Chrome 155 oracle (measured): Page.reload's response is the empty
+    // object — no frameId, no loaderId. The reload's new load identity is
+    // observable through Page.getFrameTree (the per-load registry row was
+    // re-minted at the same navigation seam).
+    Ok(serde_json::json!({}))
 }
 
 /// Page.goBack — real servo session-history traversal (WebView::go_back).
@@ -1944,6 +2170,201 @@ fn cmd_go_forward(page: &PageHandle) -> Result<Value, String> {
     }))
 }
 
+/// Page.getNavigationHistory — the browser-side session-history journal
+/// (REQ-CDP-010).
+///
+/// Chrome's measured shape: `{currentIndex, entries: [{id, title,
+/// transitionType, url, userTypedURL}]}`; the journal records exactly what
+/// the embedder observed (initial `about:blank` entry with transitionType
+/// "auto_toplevel", embedder navigations "typed", script-initiated
+/// cross-document navigations "other", same-document changes updating the
+/// current entry in place, reload adding no entry).
+fn cmd_get_navigation_history(page: &PageHandle) -> Result<Value, String> {
+    let state = page.webview_state();
+    let st = state.borrow();
+    let entries: Vec<Value> = st
+        .navigation_journal
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "id": entry.id,
+                "title": entry.title,
+                "transitionType": entry.transition_type,
+                "url": entry.url,
+                "userTypedURL": entry.user_typed_url,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "currentIndex": st.navigation_current,
+        "entries": entries,
+    }))
+}
+
+/// Marker prefix of the page-realm → embedder CDP event carrier
+/// (REQ-CDP-010; the parser lives in `delegate::parse_cdp_marker_event`).
+const CDP_EVT_MARKER: &str = crate::delegate::CDP_EVT_MARKER;
+
+/// The JS definition of one `Runtime.addBinding` binding function.
+///
+/// The function stringifies its first argument (Chrome's payload semantics)
+/// and reports the call through the `__BAO_CDPEVT__` console carrier; the
+/// embedder delegate lifts the carrier to `ServoEvent::BindingCalled` →
+/// `Runtime.bindingCalled`. Best-effort inner try/catch: a hostile page
+/// overriding `console.log` breaks only the delivery of that call — never
+/// the page. `configurable: true` lets `Runtime.removeBinding` delete it.
+fn binding_definition_js(name: &str) -> String {
+    let name_json = serde_json::to_string(name).unwrap_or_default();
+    format!(
+        r#"(function() {{
+    try {{
+        Object.defineProperty(window, {name_json}, {{
+            configurable: true,
+            enumerable: true,
+            writable: true,
+            value: function() {{
+                try {{
+                    console.log('{marker}' + JSON.stringify({{
+                        kind: 'bindingCalled',
+                        name: {name_json},
+                        payload: String(arguments.length > 0 ? arguments[0] : '')
+                    }}));
+                }} catch (e) {{}}
+            }}
+        }});
+    }} catch (e) {{}}
+}})()"#,
+        name_json = name_json,
+        marker = CDP_EVT_MARKER,
+    )
+}
+
+/// The internal new-document script installing every current binding on a
+/// fresh document (registered through the vendor embedder-new-document
+/// registry, so bindings survive navigations exactly like Chrome's
+/// "applies to all execution contexts, including those created later").
+fn bindings_new_document_script(names: &[String]) -> String {
+    let mut src = String::from("(function() {\n");
+    for name in names {
+        src.push_str(&binding_definition_js(name));
+        src.push_str(";\n");
+    }
+    src.push_str("})();");
+    src
+}
+
+/// Re-register the internal new-document script for the current binding set
+/// (replace semantics: the old script id is unregistered first; an empty set
+/// leaves no script registered).
+fn sync_bindings_new_document_script(page: &PageHandle) -> Result<(), String> {
+    let (names, old) = {
+        let st = page.webview_state();
+        let st = st.borrow();
+        (st.cdp_bindings.clone(), st.cdp_bindings_script_id)
+    };
+    if let Some(id) = old {
+        let _ = page.remove_script_to_evaluate_on_new_document(id);
+    }
+    let new_id = if names.is_empty() {
+        None
+    } else {
+        Some(
+            page.add_script_to_evaluate_on_new_document(&bindings_new_document_script(&names))
+                .map_err(to_browser_error)?,
+        )
+    };
+    page.webview_state().borrow_mut().cdp_bindings_script_id = new_id;
+    Ok(())
+}
+
+/// Runtime.addBinding — install the binding on the current document and on
+/// every future document (REQ-CDP-010).
+fn cmd_add_binding(page: &PageHandle, name: &str) -> Result<Value, String> {
+    {
+        let state = page.webview_state();
+        {
+            let mut st = state.borrow_mut();
+            if !st.cdp_bindings.iter().any(|n| n == name) {
+                st.cdp_bindings.push(name.to_string());
+            }
+        }
+    }
+    // Immediate install on the live document. A not-yet-ready pipeline is
+    // expected for a page without a document: the new-document script below
+    // is the durable half, so this is logged, never fatal (and never silent).
+    if let Err(e) = page.evaluate_js_web(&binding_definition_js(name)) {
+        log::warn!(
+            "[cdp] Runtime.addBinding: immediate install of '{name}' failed \
+             (future documents still get it via the new-document script): {e}"
+        );
+    }
+    sync_bindings_new_document_script(page)?;
+    Ok(serde_json::json!({}))
+}
+
+/// Runtime.removeBinding — delete the global, drop the name, re-sync the
+/// new-document script (REQ-CDP-010).
+fn cmd_remove_binding(page: &PageHandle, name: &str) -> Result<Value, String> {
+    {
+        let state = page.webview_state();
+        let mut st = state.borrow_mut();
+        st.cdp_bindings.retain(|n| n != name);
+    }
+    let name_json = serde_json::to_string(name).unwrap_or_default();
+    let js =
+        format!(r#"(function() {{ try {{ delete window[{name_json}]; }} catch (e) {{}} }})()"#);
+    if let Err(e) = page.evaluate_js_web(&js) {
+        log::warn!(
+            "[cdp] Runtime.removeBinding: deleting '{name}' on the live document failed \
+             (future documents no longer install it): {e}"
+        );
+    }
+    sync_bindings_new_document_script(page)?;
+    Ok(serde_json::json!({}))
+}
+
+/// The internal new-document script arming `Page.domContentEventFired`
+/// (REQ-CDP-010): a real DOMContentLoaded listener reporting through the
+/// same marker carrier. The event fires from the page's own DOM event, so
+/// the reported time is the actual dispatch, never a synthesized tick.
+fn dom_content_hook_source() -> String {
+    format!(
+        r#"(function() {{
+    try {{
+        document.addEventListener('DOMContentLoaded', function() {{
+            try {{ console.log('{marker}' + JSON.stringify({{ kind: 'domContentLoaded' }})); }} catch (e) {{}}
+        }}, true);
+    }} catch (e) {{}}
+}})();"#,
+        marker = CDP_EVT_MARKER,
+    )
+}
+
+/// Page.enable side effect: arm the DOMContentLoaded observability on this
+/// page (current document + every future document). Idempotent per page.
+fn cmd_install_dom_content_hook(page: &PageHandle) -> Result<Value, String> {
+    if page
+        .webview_state()
+        .borrow()
+        .dom_content_hook_script_id
+        .is_some()
+    {
+        return Ok(serde_json::json!({}));
+    }
+    let src = dom_content_hook_source();
+    if let Err(e) = page.evaluate_js_web(&src) {
+        log::warn!(
+            "[cdp] Page.enable: DOMContentLoaded listener install failed on the live \
+             document (future documents still get it): {e}"
+        );
+    }
+    let id = page
+        .add_script_to_evaluate_on_new_document(&src)
+        .map_err(to_browser_error)?;
+    page.webview_state().borrow_mut().dom_content_hook_script_id = Some(id);
+    Ok(serde_json::json!({}))
+}
+
 /// HeapProfiler.collectGarbage / Memory.forciblyPurgeJavaScriptMemory —
 /// triggers a real full GC on the page's script thread.
 ///
@@ -1962,9 +2383,7 @@ fn cmd_go_forward(page: &PageHandle) -> Result<Value, String> {
 /// valid carrier.
 fn cmd_collect_garbage(page: &PageHandle) -> Result<Value, String> {
     let carrier_js = "(function() { if (typeof Bun === 'undefined' || typeof Bun.gc !== 'function') return 'missing'; Bun.gc(true); return 'done'; })()";
-    let out = page
-        .evaluate_js(carrier_js)
-        .map_err(to_browser_error)?;
+    let out = page.evaluate_js(carrier_js).map_err(to_browser_error)?;
     if out.trim() != "done" {
         return Err(
             "HeapProfiler.collectGarbage: no GC carrier on this page's realm (Bun.gc unavailable; navigator.servo is gated to privileged pages)"
@@ -2775,6 +3194,26 @@ const CDP_REGISTRY_PRELUDE: &str = r#"(function() {
     return oid;
   }
   function get(oid) { return (oid in objs) ? objs[oid].v : undefined; }
+  // Chrome's RemoteObject.description for an Error is its stack text
+  // ("Error: boom\n    at <anonymous>:1:7" — Chrome 155 oracle, measured).
+  // The engine stack frames are re-rendered in Chrome's `at fn:line:col`
+  // shape (SpiderMonkey reports `fn@loc:line:col`); no frames parsed -> the
+  // plain string form.
+  function errDescription(v) {
+    var head;
+    try { head = String(v); } catch (e1) { head = 'Error'; }
+    var st = '';
+    try { if (v && v.stack) st = String(v.stack); } catch (e2) { st = ''; }
+    if (!st) return head;
+    var out = head;
+    var lines = st.split('\n');
+    var n = 0;
+    for (var i = 0; i < lines.length && n < 32; i++) {
+      var m = lines[i].match(/^(.*?)@(?:.*?:)?(\d+):(\d+)$/);
+      if (m) { out += '\n    at ' + (m[1] || '<anonymous>') + ':' + m[2] + ':' + m[3]; n++; }
+    }
+    return out;
+  }
   function release(oid) { delete objs[oid]; }
   function releaseGroup(g) { for (var k in objs) { if (objs[k].g === g) delete objs[k]; } }
   function wrap(v, byValue, group) {
@@ -2816,7 +3255,7 @@ const CDP_REGISTRY_PRELUDE: &str = r#"(function() {
         if (sub === 'array') desc = 'Array(' + v.length + ')';
         else if (sub === 'date') desc = String(v);
         else if (sub === 'regexp') desc = String(v);
-        else if (sub === 'error') desc = ((v.constructor && v.constructor.name) ? (v.constructor.name + ': ') : '') + (v.message || '');
+        else if (sub === 'error') desc = errDescription(v);
         else if (sub === 'node') { try { desc = v.nodeName.toLowerCase() + (v.id ? '#' + v.id : ''); } catch (e2) { desc = String(v.nodeName); } }
         else { try { desc = String(v); } catch (e2) { desc = 'Object'; } }
         var cn = 'Object';
@@ -2876,7 +3315,10 @@ fn runtime_get_properties_js(obj_ref: &str, own: bool) -> String {
         r#"(function() {{
             try {{
                 var obj = {obj_ref};
-                if (obj === null || obj === undefined) return JSON.stringify({{ "result": [] }});
+                // Chrome 155 oracle (measured): an objectId that does not
+                // resolve — released, or minted in another document — is a
+                // command-level -32000, never a silent empty property list.
+                if (obj === null || obj === undefined) return JSON.stringify({{ "__baoMissing": "Could not find object with given id" }});
                 var names;
                 if ({own}) {{
                     names = Object.getOwnPropertyNames(obj);
@@ -2905,7 +3347,9 @@ fn runtime_get_properties_js(obj_ref: &str, own: bool) -> String {
                 }}
                 return JSON.stringify({{ "result": result }});
             }} catch (e) {{
-                return JSON.stringify({{ "result": [] }});
+                // Same fail-closed class: enumeration failure is a command
+                // error, not an empty success.
+                return JSON.stringify({{ "__baoError": String(e) }});
             }}
         }})()"#,
     )
@@ -2915,14 +3359,25 @@ fn cmd_runtime_get_properties(
     page: &PageHandle,
     object_id: &str,
     own_properties: Option<bool>,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     page.evaluate_js_web(CDP_REGISTRY_PRELUDE)
-        .map_err(to_browser_error)?;
+        .map_err(|e| BridgeError::no_bridge(to_browser_error(e)))?;
     let obj_ref = resolve_object_by_id(object_id);
     let own = own_properties.unwrap_or(true);
     let js = runtime_get_properties_js(&obj_ref, own);
-    let result = page.evaluate_js_web(&js).map_err(to_browser_error)?;
-    parse_js_result(&result)
+    let result = page
+        .evaluate_js_web(&js)
+        .map_err(|e| BridgeError::no_bridge(to_browser_error(e)))?;
+    let value = parse_js_result(&result).map_err(BridgeError::no_bridge)?;
+    if let Some(reason) = value.get("__baoMissing").and_then(|v| v.as_str()) {
+        return Err(BridgeError::domain(reason.to_string()));
+    }
+    if let Some(reason) = value.get("__baoError").and_then(|v| v.as_str()) {
+        return Err(BridgeError::domain(format!(
+            "Runtime.getProperties: {reason}"
+        )));
+    }
+    Ok(value)
 }
 
 /// Materialize one CDP CallArgument as a JS expression: `{value}` (JSON
@@ -3512,7 +3967,7 @@ fn ok_empty() -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use crate::delegate::{ServiceWorkerHandle, ServiceWorkerRegistrationState};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     #[test]
     fn json_type_null_returns_undefined() {
@@ -3714,24 +4169,14 @@ mod tests {
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
 
     #[test]
-    fn next_cdp_id_is_unique_and_prefixed() {
-        // loaderId/script identifiers are generated from a monotonic counter —
-        // never the hardcoded "0"/"1" constants (Chrome semantics: fresh id
-        // per load / per added script).
-        let a = super::next_cdp_id("loader");
-        let b = super::next_cdp_id("loader");
-        assert!(a.starts_with("loader-"), "id must carry its prefix: {a}");
-        assert_ne!(a, b, "ids must be unique per call");
-        let s = super::next_cdp_id("script");
-        assert!(s.starts_with("script-"), "id must carry its prefix: {s}");
-    }
-
-    #[test]
     fn cmd_navigate_uses_event_stream_frame_and_generated_loader() {
         // REQ-CDP-004 (v7 path B): frameId is the per-target main-frame id —
         // `main_frame_id_for_target(page id)`, the same value every frame
         // event for that target carries — never the bare PageId (targetId
-        // namespace). loaderId is generated per load.
+        // namespace). REQ-CDP-010: loaderId is the PER-LOAD registry row
+        // (`BaoWebViewState::loader_id`, re-minted at the navigation seam in
+        // page.rs) — the navigate response reads that row instead of minting
+        // a per-command value nothing else can see.
         let source = include_str!("cdp_handler.rs");
         assert!(
             source.contains("main_frame_id_for_target(&page.id().to_string())"),
@@ -3746,12 +4191,52 @@ mod tests {
             "no PageId-as-frameId may remain (PageId is the targetId namespace)"
         );
         assert!(
-            source.contains("\"loaderId\": next_cdp_id(\"loader\")"),
-            "cmd_navigate/cmd_reload must generate a fresh loaderId per load"
+            source.contains("let loader_id = page.webview_state().borrow().loader_id.clone();"),
+            "cmd_navigate must report the per-load registry row getFrameTree consumes"
         );
         assert!(
             !source.contains("\"loaderId\": \"0\""),
             "no canned loaderId \"0\" may remain"
+        );
+    }
+
+    #[test]
+    fn cmd_reload_response_matches_chrome_empty_object() {
+        // REQ-CDP-010 golden-oracle parity (Chrome 155, measured):
+        // Page.reload's response is `{}` — the reload's new load identity is
+        // observable through getFrameTree (the registry row re-mints at the
+        // same navigation seam), never through this response.
+        let source = include_str!("cdp_handler.rs");
+        let start = source.find("fn cmd_reload(").expect("cmd_reload present");
+        let body = &source[start..start + 900];
+        assert!(
+            body.contains("Ok(serde_json::json!({}))"),
+            "Page.reload must return the empty object (Chrome oracle)"
+        );
+        assert!(
+            !body.contains("\"loaderId\""),
+            "Page.reload must not carry loaderId (Chrome oracle: empty response)"
+        );
+    }
+
+    #[test]
+    fn by_value_envelope_carries_registry_object_id_on_throw() {
+        // REQ-CDP-010 stop-report ②: the by-value exception face must carry a
+        // REAL cross-call objectId (registry wrap), a thrown primitive must
+        // stay a value face, and serialization failures ride the
+        // command-level marker (Rust maps them to Chrome's -32000).
+        let js = super::evaluate_by_value_envelope_js("\"1\"");
+        assert!(
+            js.contains("reg.wrap(e, false, '')"),
+            "thrown objects must be wrapped into the shared object registry"
+        );
+        assert!(
+            js.contains("__baoByvalErr"),
+            "serialization failures must be transported as command-level markers"
+        );
+        assert!(
+            js.contains("Object.keys(v)"),
+            "object by-value faces use Chrome's own-enumerable deep value"
         );
     }
 
@@ -3934,16 +4419,19 @@ mod tests {
 
     #[test]
     fn cmd_set_attribute_js_construction() {
-        let name = "class";
-        let value = "active";
-        let js = format!(
-            "(function() {{ document.querySelector('[data-cdp]')?.setAttribute({}, {}); }})()",
-            serde_json::to_string(name).unwrap_or_default(),
-            serde_json::to_string(value).unwrap_or_default(),
-        );
-        assert!(js.contains("setAttribute"));
+        // REQ-CDP-010 golden-oracle parity: the write body addresses the
+        // canonical node id and guards the element class — the former
+        // '[data-cdp]' fixture-slot form silently wrote the wrong element.
+        let js = super::cmd_set_attribute_body(7, "class", "active");
+        assert!(js.contains("__baoResolve(7)"), "{js}");
+        assert!(js.contains("el.nodeType !== 1"), "{js}");
+        assert!(js.contains("el.setAttribute"));
         assert!(js.contains("\"class\""));
         assert!(js.contains("\"active\""));
+        assert!(
+            !js.contains("data-cdp"),
+            "the retired fixture-slot carrier must not survive: {js}"
+        );
     }
 
     #[test]

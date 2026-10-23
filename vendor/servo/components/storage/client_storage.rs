@@ -8,6 +8,8 @@ use std::{fs, thread};
 
 use log::warn;
 use rusqlite::{Connection, OptionalExtension, Transaction};
+
+use crate::shared::DB_PRAGMAS;
 use servo_base::generic_channel::{self, GenericReceiver, GenericSender};
 use servo_base::id::{BrowsingContextId, WebViewId};
 use servo_url::ImmutableOrigin;
@@ -61,6 +63,32 @@ impl SqliteEngine {
     fn new(base_dir: PathBuf) -> rusqlite::Result<Self> {
         let db_path = base_dir.join("reg.sqlite");
         let connection = Connection::open(db_path)?;
+        // BAO PATCH (REQ-BRW-7, idb-journal-storm): the client-storage
+        // registry writes (one per database open/delete) run on the
+        // ClientStorageThread, which script threads block on synchronously
+        // while obtaining bottle maps. Apply the shared per-connection
+        // pragmas here too so those commits do not force one ext4 journal
+        // commit each (`synchronous = FULL` default). In-memory engines
+        // ignore `synchronous`, so the shared engine constructor is safe.
+        for stmt in DB_PRAGMAS {
+            // BAO PATCH (REQ-BRW-051, P-1 fail-closed): a pragma that fails to
+            // apply must propagate — an unapplied `synchronous = NORMAL` leaves
+            // every subsequent registry commit at SQLite's default
+            // `synchronous = FULL`, silently reintroducing the per-commit ext4
+            // journal storm this constructor was patched to prevent, so the
+            // failure IS the bug and `new` returns `Err` instead of handing
+            // out a connection of unknown durability. The carrier is
+            // `execute_batch` rather than `execute(..)?` for a verified
+            // reason: SQLite set-form pragmas echo the applied value as a
+            // result row (`PRAGMA journal_size_limit = 67108864` returns the
+            // row `(67108864,)`), and rusqlite's `execute` reports any row as
+            // `Error::ExecuteReturnedResults` — a plain `?` there would fail
+            // every registry open on a perfectly supported pragma.
+            // `execute_batch` steps to completion and is row-tolerant by
+            // contract, so real failures (unknown pragma, IO, locked db)
+            // still propagate via `?`.
+            connection.execute_batch(stmt)?;
+        }
         Self::init(&connection)?;
         Ok(SqliteEngine {
             connection,

@@ -5,10 +5,13 @@
 mod engines;
 
 use std::borrow::ToOwned;
+use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use log::{debug, error, warn};
 use malloc_size_of::MallocSizeOf;
@@ -25,9 +28,10 @@ use servo_base::threadpool::ThreadPool;
 use servo_url::origin::ImmutableOrigin;
 use storage_traits::client_storage::StorageProxyMap;
 use storage_traits::indexeddb::{
-    AsyncOperation, BackendError, BackendResult, ConnectionMsg, CreateObjectResult, DatabaseInfo,
-    DbResult, IndexedDBIndex, IndexedDBObjectStore, IndexedDBThreadMsg, IndexedDBTxnMode, KeyPath,
-    SyncOperation, TxnCompleteMsg,
+    AsyncOperation, AsyncReadOnlyOperation, AsyncReadWriteOperation, AsyncSchemaOperation,
+    BackendError, BackendResult, ConnectionMsg, CreateObjectResult, DatabaseInfo, DbResult,
+    IndexedDBIndex, IndexedDBKeyRange, IndexedDBKeyType, IndexedDBObjectStore, IndexedDBRecord,
+    IndexedDBThreadMsg, IndexedDBTxnMode, KeyPath, PutItemResult, SyncOperation, TxnCompleteMsg,
 };
 use uuid::Uuid;
 
@@ -37,6 +41,40 @@ use crate::shared::is_sqlite_disk_full_error;
 pub trait IndexedDBThreadFactory {
     fn new(mem_profiler_chan: MemProfilerChan, reporter_name: String) -> Self;
 }
+
+// BAO PATCH (REQ-BRW-051, idb-upgrade-shadow-write-buffer): an upgrade
+// transaction's record writes are buffered on the manager thread (the shadow
+// write buffer below) instead of being applied to the engine as they arrive.
+// Commit lands the whole buffer as one engine batch before the connection is
+// handed back to script; abort discards the buffer with zero engine IO — the
+// writes never reached the engine, so dropping them IS the rollback. Reads
+// inside the upgrade are answered from the merged view (engine records with
+// the buffered writes applied), so script observes its own writes.
+//
+// Honest boundaries (registered by design):
+// - `deleteObjectStore` + recreate of a pre-existing store inside the upgrade
+//   resets that store's records on abort: the engine-side delete is real and
+//   the shadow buffer only knows post-recreate writes, so the pre-delete
+//   records cannot be restored. Record-level restore for that shape needs
+//   engine-level transactionality (E-idb-tx domain).
+// - A flush that partially landed before failing cannot be un-landed (the
+//   engine has no transaction support); the commit path reverts schema and
+//   version and reports `DatabaseError` instead of a green upgrade.
+/// Hard cap for one upgrade transaction's shadow write buffer. A pathological
+/// `upgradeneeded` handler can otherwise buffer an unbounded number of writes
+/// on the manager thread before commit; exceeding the cap fails the offending
+/// request with `QuotaExceededError` (zero partial buffering) instead of
+/// ballooning manager-thread memory.
+const UPGRADE_BUFFER_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Upper bound for the manager's blocking wait on one engine round trip (a
+/// merged read, a presence query, or the commit flush). The engine thread
+/// delivers one result per request; if it panics mid-batch the remaining
+/// callbacks never fire, and an unbounded wait would wedge the
+/// single-threaded [`IndexedDBManager`] forever (the failure shape from the
+/// servo drop-spin wedges). 30s is generous next to typical engine batches;
+/// exceeding it is a loud degraded round trip, never a hang.
+const ENGINE_BATCH_WAIT: Duration = Duration::from_secs(30);
 
 impl IndexedDBThreadFactory for GenericSender<IndexedDBThreadMsg> {
     fn new(
@@ -112,6 +150,14 @@ struct IndexedDBEnvironment<E: KvsEngine> {
     handled_pending: FxHashMap<u64, HashSet<u64>>,
     pending_commit_callbacks: FxHashMap<u64, Vec<GenericCallback<TxnCompleteMsg>>>,
     pending_abort_callbacks: FxHashMap<u64, Vec<GenericCallback<TxnCompleteMsg>>>,
+    /// BAO PATCH (REQ-BRW-051, idb-upgrade-shadow-write-buffer): the
+    /// shadow write buffer of the currently-running upgrade transaction,
+    /// keyed by its serial number (at most one upgrade transaction runs at a
+    /// time). Entries are created by `register_transaction` for
+    /// `Versionchange` transactions and removed by commit
+    /// (`commit_upgrade_buffer`) or abort (`discard_upgrade_buffer`) — and as
+    /// a leak safety net by `finish_transaction` / `abort_transaction`.
+    pending_upgrade_writes: FxHashMap<u64, UpgradeWriteBuffer>,
 }
 
 impl<E: KvsEngine> IndexedDBEnvironment<E> {
@@ -135,6 +181,7 @@ impl<E: KvsEngine> IndexedDBEnvironment<E> {
             handled_pending: FxHashMap::default(),
             pending_commit_callbacks: FxHashMap::default(),
             pending_abort_callbacks: FxHashMap::default(),
+            pending_upgrade_writes: FxHashMap::default(),
         }
     }
 
@@ -176,8 +223,17 @@ impl<E: KvsEngine> IndexedDBEnvironment<E> {
             .entry(txn)
             .or_insert_with(|| KvsTransaction {
                 requests: VecDeque::new(),
-                mode,
+                mode: mode.clone(),
             });
+        // BAO PATCH (REQ-BRW-051, idb-upgrade-shadow-write-buffer): an
+        // upgrade transaction's record writes are buffered instead of being
+        // applied immediately; create its shadow write buffer here so every
+        // intercepted request finds one.
+        if mode == IndexedDBTxnMode::Versionchange {
+            self.pending_upgrade_writes
+                .entry(txn)
+                .or_default();
+        }
     }
 
     fn scopes_overlap(a: &TxnInfo, b: &TxnInfo) -> bool {
@@ -253,6 +309,20 @@ impl<E: KvsEngine> IndexedDBEnvironment<E> {
         mode: IndexedDBTxnMode,
         operation: AsyncOperation,
     ) {
+        // BAO PATCH (REQ-BRW-051, idb-upgrade-shadow-write-buffer): an
+        // upgrade transaction's record requests never reach the engine queue
+        // directly — writes land in the shadow write buffer, reads are
+        // answered from the merged view, and schema operations pass through
+        // unchanged.
+        let operation = if self.txn_is_upgrade(serial_number) {
+            match self.queue_upgrade_operation(store_name, serial_number, operation) {
+                Some(operation) => operation,
+                // The shadow write buffer answered or absorbed the request.
+                None => return,
+            }
+        } else {
+            operation
+        };
         let mut enqueue_mode = None;
         match self.transactions.entry(serial_number) {
             Entry::Occupied(mut entry) => {
@@ -287,6 +357,844 @@ impl<E: KvsEngine> IndexedDBEnvironment<E> {
         if let Some(mode) = enqueue_mode {
             self.enqueue_txn(serial_number, &mode);
         }
+    }
+
+    fn txn_is_upgrade(&self, txn: u64) -> bool {
+        // The upgrade transaction is the only `Versionchange` transaction, and
+        // its `TxnInfo` entry is registered before any request can be queued
+        // against it, so `txn_info` is the authoritative interception source.
+        self.txn_info
+            .get(&txn)
+            .is_some_and(|info| info.mode == IndexedDBTxnMode::Versionchange)
+    }
+
+    /// Routes one queued operation through the upgrade shadow write buffer.
+    ///
+    /// Returns `Some(operation)` when the operation must continue through the
+    /// normal engine queue (schema pass-through, or a read no buffered write
+    /// touches); `None` when the buffer path handled it (answered or
+    /// buffered).
+    fn queue_upgrade_operation(
+        &mut self,
+        store_name: &str,
+        txn: u64,
+        operation: AsyncOperation,
+    ) -> Option<AsyncOperation> {
+        match operation {
+            AsyncOperation::Schema(schema) => {
+                match &schema {
+                    // A store created during the upgrade is empty in the
+                    // engine until commit (its schema write has not landed
+                    // yet when subsequent requests are intercepted), so
+                    // presence checks and merged reads must not query the
+                    // engine for it. With `autoIncrement` it also starts a key
+                    // generator at 1.
+                    AsyncSchemaOperation::CreateObjectStore { auto_increment, .. } => {
+                        let buffer = self.pending_upgrade_writes.entry(txn).or_default();
+                        buffer.engine_empty_stores.insert(store_name.to_string());
+                        if *auto_increment {
+                            let store_writes =
+                                buffer.stores.entry(store_name.to_string()).or_default();
+                            // https://w3c.github.io/IndexedDB/#key-generator-construct
+                            // The initial value of a key generator’s current
+                            // number is 1, set when the associated object
+                            // store is created.
+                            if store_writes.generator_current.is_none() {
+                                store_writes.generator_current = Some(1);
+                            }
+                        }
+                    },
+                    // A `deleteObjectStore` inside the upgrade deletes the
+                    // engine rows for real; buffered shadow writes for the
+                    // deleted store would target a missing store at commit
+                    // and fail the flush, so drop them with the store.
+                    AsyncSchemaOperation::DeleteObjectStore { .. } => {
+                        let buffer = self.pending_upgrade_writes.entry(txn).or_default();
+                        buffer.engine_empty_stores.remove(store_name);
+                        if let Some(store_writes) = buffer.stores.remove(store_name) {
+                            buffer.bytes = buffer.bytes.saturating_sub(store_writes.bytes);
+                        }
+                    },
+                    _ => {},
+                }
+                Some(AsyncOperation::Schema(schema))
+            },
+            AsyncOperation::ReadWrite(write) => {
+                self.buffer_upgrade_write(txn, store_name, write);
+                None
+            },
+            AsyncOperation::ReadOnly(read) => {
+                match self.answer_upgrade_read(txn, store_name, read) {
+                    Some(read) => Some(AsyncOperation::ReadOnly(read)),
+                    None => None,
+                }
+            },
+        }
+    }
+
+    fn buffer_upgrade_write(
+        &mut self,
+        txn: u64,
+        store_name: &str,
+        operation: AsyncReadWriteOperation,
+    ) {
+        match operation {
+            AsyncReadWriteOperation::PutItem {
+                callback,
+                key,
+                value,
+                should_overwrite,
+                key_generator_current_number,
+            } => {
+                self.buffer_upgrade_put(
+                    txn,
+                    store_name,
+                    callback,
+                    key,
+                    value,
+                    should_overwrite,
+                    key_generator_current_number,
+                );
+            },
+            AsyncReadWriteOperation::RemoveItem {
+                callback,
+                key_range,
+            } => {
+                self.buffer_upgrade_delete(txn, store_name, callback, key_range);
+            },
+            AsyncReadWriteOperation::Clear(callback) => {
+                self.buffer_upgrade_clear(txn, store_name, callback);
+            },
+        }
+    }
+
+    fn buffer_upgrade_put(
+        &mut self,
+        txn: u64,
+        store_name: &str,
+        callback: GenericCallback<BackendResult<PutItemResult>>,
+        key: Option<IndexedDBKeyType>,
+        value: Vec<u8>,
+        should_overwrite: bool,
+        key_generator_current_number: Option<i64>,
+    ) {
+        // The generator advance an explicit-key put carries is replayed
+        // verbatim (script computes it — idbobjectstore.rs
+        // `possibly_update_the_key_generator` — and the engine's `put_item`
+        // applies it on success). A keyless put mints from the buffered key
+        // generator instead, mirroring the engine's keyless-put arm
+        // (engines/sqlite.rs:628-656) including its error parity.
+        let (effective_key, key_generator_current_number) = match key {
+            Some(key) => (key, key_generator_current_number),
+            None => match self.next_upgrade_generator_key(txn, store_name) {
+                Ok((key, next)) => (key, Some(next)),
+                Err(error) => {
+                    let _ = callback.send(Err(error));
+                    return;
+                },
+            },
+        };
+
+        // `add` must not overwrite: consult the shadow view first, then the
+        // engine for keys no buffered write touches. A failed add changes no
+        // state, so nothing is buffered.
+        if !should_overwrite {
+            match self.upgrade_key_is_present(txn, store_name, &effective_key) {
+                Ok(true) => {
+                    let _ = callback.send(Ok(PutItemResult::CannotOverwrite));
+                    return;
+                },
+                Ok(false) => {},
+                Err(error) => {
+                    let _ = callback.send(Err(error));
+                    return;
+                },
+            }
+        }
+
+        let put_bytes = pending_key_bytes(&effective_key) + value.len() as u64;
+
+        // Quota gate BEFORE any buffer mutation: zero partial buffering.
+        let over_limit = {
+            let buffer = self.pending_upgrade_writes.entry(txn).or_default();
+            buffer.bytes.saturating_add(put_bytes) > UPGRADE_BUFFER_MAX_BYTES
+        };
+        if over_limit {
+            let _ = callback.send(Err(BackendError::QuotaExceeded));
+            return;
+        }
+
+        let previous_store_bytes = self
+            .pending_upgrade_writes
+            .get(&txn)
+            .and_then(|buffer| buffer.stores.get(store_name))
+            .map(|store_writes| store_writes.bytes)
+            .unwrap_or(0);
+        let new_store_bytes = {
+            let store_writes = self.upgrade_buffer_store_entry(txn, store_name);
+            let mut new_store_bytes = store_writes.bytes;
+            let mut replaced = false;
+            // A later put of the same key overwrites the earlier buffered put
+            // in place. The scan stops at a Delete/Clear: below it, an older
+            // put of this key is no longer visible, so the new write must be
+            // appended instead.
+            if should_overwrite {
+                for write_slot in store_writes.ops.iter_mut().rev() {
+                    match write_slot {
+                        PendingWrite::Put {
+                            key: put_key,
+                            value: put_value,
+                            ..
+                        } if *put_key == effective_key => {
+                            new_store_bytes = new_store_bytes
+                                .saturating_sub(pending_key_bytes(put_key) + put_value.len() as u64)
+                                .saturating_add(put_bytes);
+                            *put_value = value.clone();
+                            replaced = true;
+                            break;
+                        },
+                        PendingWrite::Delete { .. } | PendingWrite::Clear => break,
+                        PendingWrite::Put { .. } => {},
+                    }
+                }
+            }
+            if !replaced {
+                store_writes.ops.push(PendingWrite::Put {
+                    key: effective_key.clone(),
+                    value,
+                    key_generator_current_number,
+                });
+                new_store_bytes = new_store_bytes.saturating_add(put_bytes);
+            }
+            // An explicit-key put carrying a generator advance moves the
+            // buffered generator exactly like the engine's `put_item` would
+            // have when the op landed.
+            if let Some(next) = key_generator_current_number {
+                store_writes.generator_current = Some(next);
+            }
+            store_writes.bytes = new_store_bytes;
+            new_store_bytes
+        };
+        let buffer = self
+            .pending_upgrade_writes
+            .get_mut(&txn)
+            .expect("buffer entry exists after the store entry was created");
+        buffer.bytes = buffer
+            .bytes
+            .saturating_sub(previous_store_bytes)
+            .saturating_add(new_store_bytes);
+        let _ = callback.send(Ok(PutItemResult::Key(effective_key)));
+    }
+
+    fn buffer_upgrade_delete(
+        &mut self,
+        txn: u64,
+        store_name: &str,
+        callback: GenericCallback<BackendResult<()>>,
+        key_range: IndexedDBKeyRange,
+    ) {
+        let write = PendingWrite::Delete { key_range };
+        let write_bytes = pending_write_bytes(&write);
+
+        // Quota gate BEFORE any buffer mutation: zero partial buffering.
+        let over_limit = {
+            let buffer = self.pending_upgrade_writes.entry(txn).or_default();
+            buffer.bytes.saturating_add(write_bytes) > UPGRADE_BUFFER_MAX_BYTES
+        };
+        if over_limit {
+            let _ = callback.send(Err(BackendError::QuotaExceeded));
+            return;
+        }
+
+        let store_writes = self.upgrade_buffer_store_entry(txn, store_name);
+        store_writes.bytes = store_writes.bytes.saturating_add(write_bytes);
+        store_writes.ops.push(write);
+        let buffer = self
+            .pending_upgrade_writes
+            .get_mut(&txn)
+            .expect("buffer entry exists after the store entry was created");
+        buffer.bytes = buffer.bytes.saturating_add(write_bytes);
+        let _ = callback.send(Ok(()));
+    }
+
+    fn buffer_upgrade_clear(
+        &mut self,
+        txn: u64,
+        store_name: &str,
+        callback: GenericCallback<BackendResult<()>>,
+    ) {
+        // Collapse: the Clear subsumes every write buffered for this store so
+        // far. The key generator survives the collapse — spec `clear()` only
+        // removes the records, it does not reset the key generator.
+        let cleared_store_bytes = {
+            let store_writes = self.upgrade_buffer_store_entry(txn, store_name);
+            let cleared = store_writes.bytes;
+            store_writes.ops.clear();
+            store_writes.ops.push(PendingWrite::Clear);
+            store_writes.bytes = 0;
+            cleared
+        };
+        let buffer = self
+            .pending_upgrade_writes
+            .get_mut(&txn)
+            .expect("buffer entry exists after the store entry was created");
+        buffer.bytes = buffer.bytes.saturating_sub(cleared_store_bytes);
+        let _ = callback.send(Ok(()));
+    }
+
+    /// Returns the buffered entry of `store_name`, creating it with the
+    /// store's key generator state resolved when fresh. Once an entry exists,
+    /// its `generator_current` is authoritative (`None` there = the store has
+    /// no key generator): keyless puts, explicit-put advances and commit all
+    /// read and move the same buffered value, mirroring what the engine would
+    /// have applied per-op.
+    fn upgrade_buffer_store_entry(
+        &mut self,
+        txn: u64,
+        store_name: &str,
+    ) -> &mut PendingStoreWrites {
+        let needs_resolution = !self
+            .pending_upgrade_writes
+            .get(&txn)
+            .is_some_and(|buffer| buffer.stores.contains_key(store_name));
+        let resolved = if needs_resolution {
+            let store_known_engine_empty = self
+                .pending_upgrade_writes
+                .get(&txn)
+                .is_some_and(|buffer| buffer.engine_empty_stores.contains(store_name));
+            if store_known_engine_empty {
+                // Created during this upgrade without a key generator (the
+                // auto-increment seeding in the CreateObjectStore pass-through
+                // already made a resolved entry): never query the engine for a
+                // store whose schema write has not landed yet.
+                None
+            } else {
+                self.key_generator_current_number(store_name)
+            }
+        } else {
+            None
+        };
+        let buffer = self.pending_upgrade_writes.entry(txn).or_default();
+        let entry = buffer.stores.entry(store_name.to_string()).or_default();
+        if needs_resolution {
+            entry.generator_current = resolved;
+        }
+        entry
+    }
+
+    /// Resolves the key and the generator advance a keyless `put` must use
+    /// inside an upgrade transaction. Error parity matches the engine's
+    /// keyless-put arm (engines/sqlite.rs:628-656).
+    fn next_upgrade_generator_key(
+        &mut self,
+        txn: u64,
+        store_name: &str,
+    ) -> BackendResult<(IndexedDBKeyType, i64)> {
+        let generator_current = self
+            .upgrade_buffer_store_entry(txn, store_name)
+            .generator_current;
+        let Some(current) = generator_current else {
+            return Err(BackendError::DbErr(
+                "Missing key for PutItem request".to_string(),
+            ));
+        };
+        let Some(next) = current.checked_add(1) else {
+            return Err(BackendError::DbErr("Key generator overflow".to_string()));
+        };
+        let entry = self.upgrade_buffer_store_entry(txn, store_name);
+        entry.generator_current = Some(next);
+        Ok((IndexedDBKeyType::Number(current as f64), next))
+    }
+
+    /// Buffered visibility of one key in an upgrade transaction's shadow
+    /// writes. The scan walks the buffered ops backwards: the newest op that
+    /// mentions the key decides, and ops below a Delete/Clear never matter.
+    fn upgrade_lookup_key(
+        &self,
+        txn: u64,
+        store_name: &str,
+        key: &IndexedDBKeyType,
+    ) -> BufferedKeyLookup {
+        let Some(buffer) = self.pending_upgrade_writes.get(&txn) else {
+            return BufferedKeyLookup::NotBuffered;
+        };
+        let Some(store_writes) = buffer.stores.get(store_name) else {
+            return BufferedKeyLookup::NotBuffered;
+        };
+        for write in store_writes.ops.iter().rev() {
+            match write {
+                PendingWrite::Put {
+                    key: put_key,
+                    value,
+                    ..
+                } if put_key == key => return BufferedKeyLookup::Value(value.clone()),
+                PendingWrite::Delete { key_range } if key_range.contains(key) => {
+                    return BufferedKeyLookup::Missing;
+                },
+                PendingWrite::Clear => return BufferedKeyLookup::Missing,
+                PendingWrite::Put { .. } | PendingWrite::Delete { .. } => {},
+            }
+        }
+        BufferedKeyLookup::NotBuffered
+    }
+
+    /// Whether `key` is visible in `store_name` under the upgrade's shadow
+    /// writes — used by `add`'s must-not-overwrite gate.
+    fn upgrade_key_is_present(
+        &self,
+        txn: u64,
+        store_name: &str,
+        key: &IndexedDBKeyType,
+    ) -> BackendResult<bool> {
+        match self.upgrade_lookup_key(txn, store_name, key) {
+            BufferedKeyLookup::Value(_) => Ok(true),
+            BufferedKeyLookup::Missing => Ok(false),
+            BufferedKeyLookup::NotBuffered => {
+                // O(1) engine-empty cache: a store created during this
+                // upgrade is empty in the engine until commit (its schema
+                // write may not even have landed yet), so the single-point
+                // engine query is skipped and a not-yet-materialized store
+                // cannot yield a spurious StoreNotFound.
+                let engine_store_known_empty = self
+                    .pending_upgrade_writes
+                    .get(&txn)
+                    .is_some_and(|buffer| buffer.engine_empty_stores.contains(store_name));
+                if engine_store_known_empty {
+                    return Ok(false);
+                }
+                self.engine_key_present(store_name, key)
+            },
+        }
+    }
+
+    /// Single-point engine presence query (bounded wait), used by `add`'s
+    /// presence gate when no buffered write touches the key.
+    fn engine_key_present(
+        &self,
+        store_name: &str,
+        key: &IndexedDBKeyType,
+    ) -> BackendResult<bool> {
+        let (result_sender, result_receiver) = mpsc::channel();
+        let callback = GenericCallback::new(
+            move |result: Result<BackendResult<Option<Vec<u8>>>, generic_channel::SendError>| {
+                let outcome = result.unwrap_or_else(|send_error| {
+                    Err(BackendError::DbErr(format!("{send_error:?}")))
+                });
+                let _ = result_sender.send(outcome);
+            },
+        )
+        .map_err(|send_error| BackendError::DbErr(format!("{send_error:?}")))?;
+        self.engine.process_transaction(
+            KvsTransaction {
+                mode: IndexedDBTxnMode::Readonly,
+                requests: VecDeque::from(vec![KvsOperation {
+                    store_name: store_name.to_string(),
+                    operation: AsyncOperation::ReadOnly(AsyncReadOnlyOperation::GetItem {
+                        callback,
+                        key_range: IndexedDBKeyRange::only(key.clone()),
+                    }),
+                }]),
+            },
+            Box::new(|| ()),
+        );
+        match result_receiver.recv_timeout(ENGINE_BATCH_WAIT) {
+            Ok(Ok(Some(_))) => Ok(true),
+            Ok(Ok(None)) => Ok(false),
+            Ok(Err(error)) => Err(error),
+            Err(wait_error) => Err(BackendError::DbErr(format!(
+                "engine presence query did not complete in time: {wait_error:?}"
+            ))),
+        }
+    }
+
+    /// Answers one read of the running upgrade transaction from the shadow
+    /// write buffer's merged view.
+    ///
+    /// Returns `Some(operation)` when the buffer has no answer for it (a
+    /// singleton read whose key no buffered write touches): the operation is
+    /// then served by the engine exactly as it would have been without the
+    /// buffer. Returns `None` when the callback was answered here.
+    fn answer_upgrade_read(
+        &self,
+        txn: u64,
+        store_name: &str,
+        operation: AsyncReadOnlyOperation,
+    ) -> Option<AsyncReadOnlyOperation> {
+        match operation {
+            AsyncReadOnlyOperation::GetItem { callback, key_range } => {
+                if let Some(key) = key_range.as_singleton() {
+                    match self.upgrade_lookup_key(txn, store_name, key) {
+                        BufferedKeyLookup::Value(value) => {
+                            let _ = callback.send(Ok(Some(value)));
+                            return None;
+                        },
+                        BufferedKeyLookup::Missing => {
+                            let _ = callback.send(Ok(None));
+                            return None;
+                        },
+                        // Nothing buffered touches this key: the engine's
+                        // view is authoritative.
+                        BufferedKeyLookup::NotBuffered => {
+                            return Some(AsyncReadOnlyOperation::GetItem {
+                                callback,
+                                key_range,
+                            });
+                        },
+                    }
+                }
+                match self.merged_upgrade_records(txn, store_name, &key_range) {
+                    Ok(records) => {
+                        let _ = callback.send(Ok(
+                            records.into_iter().next().map(|record| record.value)
+                        ));
+                    },
+                    Err(error) => {
+                        error!("Failed to read through the upgrade write buffer of object store \
+                                '{store_name}': {error}");
+                        let _ = callback.send(Err(error));
+                    },
+                }
+                None
+            },
+            AsyncReadOnlyOperation::GetKey { callback, key_range } => {
+                if let Some(key) = key_range.as_singleton() {
+                    match self.upgrade_lookup_key(txn, store_name, key) {
+                        BufferedKeyLookup::Value(_) => {
+                            let _ = callback.send(Ok(Some(key.clone())));
+                            return None;
+                        },
+                        BufferedKeyLookup::Missing => {
+                            let _ = callback.send(Ok(None));
+                            return None;
+                        },
+                        BufferedKeyLookup::NotBuffered => {
+                            return Some(AsyncReadOnlyOperation::GetKey {
+                                callback,
+                                key_range,
+                            });
+                        },
+                    }
+                }
+                match self.merged_upgrade_records(txn, store_name, &key_range) {
+                    Ok(records) => {
+                        let _ =
+                            callback.send(Ok(records.into_iter().next().map(|record| record.key)));
+                    },
+                    Err(error) => {
+                        error!("Failed to read through the upgrade write buffer of object store \
+                                '{store_name}': {error}");
+                        let _ = callback.send(Err(error));
+                    },
+                }
+                None
+            },
+            AsyncReadOnlyOperation::GetAllKeys {
+                callback,
+                key_range,
+                count,
+            } => {
+                let answer = self
+                    .merged_upgrade_records(txn, store_name, &key_range)
+                    .map(|mut records| {
+                        if let Some(count) = count {
+                            records.truncate(count as usize);
+                        }
+                        records.into_iter().map(|record| record.key).collect()
+                    });
+                if let Err(error) = &answer {
+                    error!("Failed to read through the upgrade write buffer of object store \
+                            '{store_name}': {error}");
+                }
+                let _ = callback.send(answer);
+                None
+            },
+            AsyncReadOnlyOperation::GetAllItems {
+                callback,
+                key_range,
+                count,
+            } => {
+                let answer = self
+                    .merged_upgrade_records(txn, store_name, &key_range)
+                    .map(|mut records| {
+                        if let Some(count) = count {
+                            records.truncate(count as usize);
+                        }
+                        records.into_iter().map(|record| record.value).collect()
+                    });
+                if let Err(error) = &answer {
+                    error!("Failed to read through the upgrade write buffer of object store \
+                            '{store_name}': {error}");
+                }
+                let _ = callback.send(answer);
+                None
+            },
+            AsyncReadOnlyOperation::Count {
+                callback,
+                key_range,
+            } => {
+                let answer = self
+                    .merged_upgrade_records(txn, store_name, &key_range)
+                    .map(|records| records.len() as u64);
+                if let Err(error) = &answer {
+                    error!("Failed to read through the upgrade write buffer of object store \
+                            '{store_name}': {error}");
+                }
+                let _ = callback.send(answer);
+                None
+            },
+            AsyncReadOnlyOperation::Iterate {
+                callback,
+                key_range,
+            } => {
+                let answer = self.merged_upgrade_records(txn, store_name, &key_range);
+                if let Err(error) = &answer {
+                    error!("Failed to read through the upgrade write buffer of object store \
+                            '{store_name}': {error}");
+                }
+                let _ = callback.send(answer);
+                None
+            },
+        }
+    }
+
+    /// The merged view of `store_name` under the upgrade transaction's shadow
+    /// writes: the engine's records with every buffered op applied in order.
+    ///
+    /// The engine read is skipped when it can contribute nothing (first
+    /// buffered op is a Clear — everything below it was subsumed — or the
+    /// store is known empty in the engine because the upgrade created it and
+    /// its schema write has not landed yet).
+    fn merged_upgrade_records(
+        &self,
+        txn: u64,
+        store_name: &str,
+        key_range: &IndexedDBKeyRange,
+    ) -> BackendResult<Vec<IndexedDBRecord>> {
+        let buffered = self
+            .pending_upgrade_writes
+            .get(&txn)
+            .and_then(|buffer| buffer.stores.get(store_name));
+        let engine_store_known_empty = self
+            .pending_upgrade_writes
+            .get(&txn)
+            .is_some_and(|buffer| buffer.engine_empty_stores.contains(store_name));
+        let read_engine = buffered
+            .map(|store_writes| !matches!(store_writes.ops.first(), Some(PendingWrite::Clear)))
+            .unwrap_or(true) &&
+            !engine_store_known_empty;
+
+        // The engine returns rows in insertion order, not key order; sort so
+        // the apply pass below can keep `records` sorted for `partition_point`.
+        let mut records = if read_engine {
+            let mut records = self.engine_iterate(store_name, key_range)?;
+            records.sort_by(|a, b| total_key_cmp(&a.key, &b.key));
+            records
+        } else {
+            Vec::new()
+        };
+        let Some(store_writes) = buffered else {
+            return Ok(records);
+        };
+        for write in &store_writes.ops {
+            match write {
+                PendingWrite::Clear => records.clear(),
+                PendingWrite::Delete {
+                    key_range: delete_range,
+                } => records.retain(|record| !delete_range.contains(&record.key)),
+                PendingWrite::Put { key, value, .. } => {
+                    if !key_range.contains(key) {
+                        // The read only observes records inside its range.
+                        continue;
+                    }
+                    let index = records.partition_point(|record| {
+                        total_key_cmp(&record.key, key) == Ordering::Less
+                    });
+                    match records.get_mut(index) {
+                        Some(record) if total_key_cmp(&record.key, key) == Ordering::Equal => {
+                            record.value = value.clone();
+                        },
+                        _ => records.insert(
+                            index,
+                            IndexedDBRecord {
+                                key: key.clone(),
+                                primary_key: key.clone(),
+                                value: value.clone(),
+                            },
+                        ),
+                    }
+                },
+            }
+        }
+        Ok(records)
+    }
+
+    /// Engine Iterate round trip (bounded wait), the data source of
+    /// [`Self::merged_upgrade_records`].
+    fn engine_iterate(
+        &self,
+        store_name: &str,
+        key_range: &IndexedDBKeyRange,
+    ) -> BackendResult<Vec<IndexedDBRecord>> {
+        let (result_sender, result_receiver) = mpsc::channel();
+        let callback = GenericCallback::new(
+            move |result: Result<
+                BackendResult<Vec<IndexedDBRecord>>,
+                generic_channel::SendError,
+            >| {
+                let outcome = result.unwrap_or_else(|send_error| {
+                    Err(BackendError::DbErr(format!("{send_error:?}")))
+                });
+                let _ = result_sender.send(outcome);
+            },
+        )
+        .map_err(|send_error| BackendError::DbErr(format!("{send_error:?}")))?;
+        self.engine.process_transaction(
+            KvsTransaction {
+                mode: IndexedDBTxnMode::Readonly,
+                requests: VecDeque::from(vec![KvsOperation {
+                    store_name: store_name.to_string(),
+                    operation: AsyncOperation::ReadOnly(AsyncReadOnlyOperation::Iterate {
+                        callback,
+                        key_range: key_range.clone(),
+                    }),
+                }]),
+            },
+            Box::new(|| ()),
+        );
+        match result_receiver.recv_timeout(ENGINE_BATCH_WAIT) {
+            Ok(Ok(records)) => Ok(records),
+            Ok(Err(error)) => Err(error),
+            Err(wait_error) => Err(BackendError::DbErr(format!(
+                "engine iterate did not complete in time: {wait_error:?}"
+            ))),
+        }
+    }
+
+    /// Lands one upgrade transaction's shadow write buffer in the engine as a
+    /// single Readwrite batch — the engine preserves in-batch FIFO order
+    /// (engines/sqlite.rs:584), which is the buffered ops' order, which is
+    /// script's request order (script/dom/indexeddb/idbtransaction.rs:552-676).
+    /// Keyless puts replay their buffered generator advance per-put.
+    ///
+    /// The buffer entry is removed up front so a failure can never leave
+    /// stale shadow state behind; the caller owns the fail-closed handling.
+    fn commit_upgrade_buffer(&mut self, txn: u64) -> DbResult<()> {
+        let Some(buffer) = self.pending_upgrade_writes.remove(&txn) else {
+            return Ok(());
+        };
+        if buffer.stores.is_empty() {
+            return Ok(());
+        }
+
+        let (result_sender, result_receiver) = mpsc::channel();
+        let mut requests = VecDeque::new();
+        for (store_name, store_writes) in &buffer.stores {
+            for write in &store_writes.ops {
+                let callback = upgrade_write_callback(store_name.clone(), result_sender.clone());
+                let operation = match write {
+                    PendingWrite::Clear => {
+                        AsyncOperation::ReadWrite(AsyncReadWriteOperation::Clear(callback))
+                    },
+                    PendingWrite::Put {
+                        key,
+                        value,
+                        key_generator_current_number,
+                    } => AsyncOperation::ReadWrite(AsyncReadWriteOperation::PutItem {
+                        callback: upgrade_put_item_callback(
+                            store_name.clone(),
+                            result_sender.clone(),
+                        ),
+                        key: Some(key.clone()),
+                        value: value.clone(),
+                        // Buffered writes were presence-checked at intercept
+                        // time and same-key overwrites collapsed in place, so
+                        // replay is put semantics.
+                        should_overwrite: true,
+                        key_generator_current_number: *key_generator_current_number,
+                    }),
+                    PendingWrite::Delete { key_range } => {
+                        AsyncOperation::ReadWrite(AsyncReadWriteOperation::RemoveItem {
+                            callback,
+                            key_range: key_range.clone(),
+                        })
+                    },
+                };
+                requests.push_back(KvsOperation {
+                    store_name: store_name.clone(),
+                    operation,
+                });
+            }
+        }
+        drop(result_sender);
+
+        let expected = requests.len();
+        if expected == 0 {
+            return Ok(());
+        }
+
+        self.engine.process_transaction(
+            KvsTransaction {
+                mode: IndexedDBTxnMode::Readwrite,
+                requests,
+            },
+            Box::new(|| ()),
+        );
+
+        let mut first_error: Option<String> = None;
+        for _ in 0..expected {
+            let (store_name, outcome) = match result_receiver.recv_timeout(ENGINE_BATCH_WAIT) {
+                Ok(outcome) => outcome,
+                Err(wait_error) => {
+                    return Err(format!(
+                        "shadow write buffer commit did not complete in time: {wait_error:?}"
+                    ));
+                },
+            };
+            if let Err(write_error) = outcome {
+                error!(
+                    "Failed to land the buffered write of object store '{store_name}' at upgrade \
+                     commit: {write_error}"
+                );
+                if first_error.is_none() {
+                    first_error = Some(write_error);
+                }
+            }
+        }
+
+        // Reconcile the buffered key generators: the buffered value is the
+        // desired post-commit current number. The batch's per-put advances
+        // already land most of it; the explicit set also covers stores whose
+        // surviving ops carry no advance (e.g. a same-key overwrite that
+        // replaced the minted put). Fail-closed like the batch.
+        for (store_name, store_writes) in &buffer.stores {
+            let Some(current) = store_writes.generator_current else {
+                continue;
+            };
+            if let Err(eng_error) =
+                self.engine.set_key_generator_current_number(store_name, current)
+            {
+                let error = format!(
+                    "failed to persist the key generator of object store '{store_name}' at \
+                     upgrade commit: {eng_error:?}"
+                );
+                error!("{error}");
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Drops one upgrade transaction's shadow write buffer. Abort is a
+    /// zero-IO rollback: the buffered writes never reached the engine, so
+    /// dropping them is the whole record-level rollback.
+    fn discard_upgrade_buffer(&mut self, txn: u64) {
+        self.pending_upgrade_writes.remove(&txn);
     }
 
     /// <https://w3c.github.io/IndexedDB/#transaction-scheduling>
@@ -511,6 +1419,10 @@ impl<E: KvsEngine> IndexedDBEnvironment<E> {
         }
         self.txn_info.remove(&txn);
         self.transactions.remove(&txn);
+        // BAO PATCH (REQ-BRW-051, idb-upgrade-shadow-write-buffer): leak
+        // safety net — an upgrade's buffer is normally consumed by
+        // `commit_upgrade_buffer` before its TransactionFinished arrives.
+        self.pending_upgrade_writes.remove(&txn);
         self.queued_readonly.retain(|queued| *queued != txn);
         self.queued_readwrite.retain(|queued| *queued != txn);
         self.queued_readonly_set.remove(&txn);
@@ -550,6 +1462,10 @@ impl<E: KvsEngine> IndexedDBEnvironment<E> {
         // Keep scheduling metadata until script reports TransactionFinished.
         // https://w3c.github.io/IndexedDB/#transaction-lifetime
         self.transactions.remove(&txn);
+        // BAO PATCH (REQ-BRW-051, idb-upgrade-shadow-write-buffer): an
+        // aborted upgrade's shadow writes are discarded — they never reached
+        // the engine, so dropping the buffer is the record-level rollback.
+        self.pending_upgrade_writes.remove(&txn);
         self.queued_readonly.retain(|queued| *queued != txn);
         self.queued_readwrite.retain(|queued| *queued != txn);
         self.queued_readonly_set.remove(&txn);
@@ -814,6 +1730,101 @@ fn backend_error_from_sqlite_error(err: RusqliteError) -> BackendError {
     }
 }
 
+/// Creates the per-request completion callback used by
+/// [`IndexedDBEnvironment::commit_upgrade_buffer`], reporting the store name
+/// with the outcome so a flush failure names the affected store.
+fn upgrade_put_item_callback(
+    store_name: String,
+    sender: mpsc::Sender<(String, Result<(), String>)>,
+) -> GenericCallback<BackendResult<PutItemResult>> {
+    let callback = GenericCallback::new(
+        move |result: Result<
+            BackendResult<PutItemResult>,
+            servo_base::generic_channel::SendError,
+        >| {
+            let outcome = match result {
+                // `CannotOverwrite` is unreachable here: replayed writes were
+                // presence-checked at intercept time and always set
+                // `should_overwrite: true`, so the engine cannot refuse.
+                Ok(Ok(PutItemResult::Key(_))) => Ok(()),
+                Ok(Ok(PutItemResult::CannotOverwrite)) => Err(
+                    "put replay unexpectedly refused (cannot-overwrite)".to_owned(),
+                ),
+                Ok(Err(backend_error)) => Err(backend_error.to_string()),
+                Err(send_error) => Err(format!("{send_error:?}")),
+            };
+            let _ = sender.send((store_name.clone(), outcome));
+        },
+    );
+    match callback {
+        Ok(callback) => callback,
+        Err(error) => panic!("Failed to create IndexedDB upgrade put callback: {error:?}"),
+    }
+}
+
+fn upgrade_write_callback(
+    store_name: String,
+    sender: mpsc::Sender<(String, Result<(), String>)>,
+) -> GenericCallback<BackendResult<()>> {
+    let callback = GenericCallback::new(
+        move |result: Result<BackendResult<()>, servo_base::generic_channel::SendError>| {
+            let outcome = match result {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(backend_error)) => Err(backend_error.to_string()),
+                Err(send_error) => Err(format!("{send_error:?}")),
+            };
+            let _ = sender.send((store_name.clone(), outcome));
+        },
+    );
+    match callback {
+        Ok(callback) => callback,
+        // Without a callback the engine's completion signal has nowhere to go
+        // and the manager would block on the result channel forever; fail loud
+        // instead of wedging the IndexedDB thread.
+        Err(error) => panic!("Failed to create IndexedDB upgrade write callback: {error:?}"),
+    }
+}
+
+/// Total order over IndexedDB keys for the merged view's sorted-record
+/// invariants. Keys cannot be NaN (`convert a value to a key` rejects NaN
+/// before a key exists — script/dom/indexeddb/key.rs:243), so `partial_cmp`
+/// returning `None` is unreachable; folding it to `Equal` merely keeps the
+/// comparator total for defensive robustness.
+fn total_key_cmp(a: &IndexedDBKeyType, b: &IndexedDBKeyType) -> Ordering {
+    a.partial_cmp(b).unwrap_or(Ordering::Equal)
+}
+
+/// Rough heap size of a buffered key. Only feeds the shadow buffer's byte
+/// budget, where an upper bound is enough and exactness is not a goal.
+fn pending_key_bytes(key: &IndexedDBKeyType) -> u64 {
+    match key {
+        IndexedDBKeyType::Number(_) | IndexedDBKeyType::Date(_) => 8,
+        IndexedDBKeyType::String(string) => string.len() as u64 * 2, // UTF-16 upper bound
+        IndexedDBKeyType::Binary(bytes) => bytes.len() as u64,
+        IndexedDBKeyType::Array(keys) => keys.iter().map(pending_key_bytes).sum(),
+    }
+}
+
+/// Rough heap size of one buffered write; see [`pending_key_bytes`].
+fn pending_write_bytes(write: &PendingWrite) -> u64 {
+    match write {
+        PendingWrite::Clear => 0,
+        PendingWrite::Put { key, value, .. } => pending_key_bytes(key) + value.len() as u64,
+        PendingWrite::Delete { key_range } => {
+            key_range
+                .lower
+                .as_ref()
+                .map(pending_key_bytes)
+                .unwrap_or(0) +
+                key_range
+                    .upper
+                    .as_ref()
+                    .map(pending_key_bytes)
+                    .unwrap_or(0)
+        },
+    }
+}
+
 /// <https://w3c.github.io/IndexedDB/#request-open-request>
 /// Used here to implement the
 /// <https://w3c.github.io/IndexedDB/#connection-queue>
@@ -953,7 +1964,12 @@ impl OpenRequest {
 
     /// Abort the open request,
     /// optionally returning a version to revert to.
-    fn abort(&self) -> Option<VersionUpgrade> {
+    ///
+    /// BAO PATCH (REQ-BRW-051, idb-upgrade-shadow-write-buffer): takes the
+    /// pending upgrade out (`&mut self`) instead of cloning it — the shadow
+    /// write buffer types held downstream made the clone a footgun, and the
+    /// aborted request is dead afterwards anyway.
+    fn abort(&mut self) -> Option<VersionUpgrade> {
         match self {
             OpenRequest::Open {
                 sender,
@@ -975,7 +1991,7 @@ impl OpenRequest {
                 {
                     error!("Failed to send ConnectionMsg::Connection to script.");
                 };
-                pending_upgrade.clone()
+                pending_upgrade.take()
             },
             OpenRequest::Delete {
                 sender,
@@ -994,7 +2010,67 @@ impl OpenRequest {
     }
 }
 
+// BAO PATCH (REQ-BRW-051, idb-upgrade-shadow-write-buffer): the shadow write
+// buffer types. An upgrade transaction's record writes accumulate here on the
+// manager thread; commit replays them into the engine as one batch, abort
+// drops them with zero IO.
+/// One buffered record write of a running upgrade transaction, in script's
+/// request order.
 #[derive(Clone, MallocSizeOf)]
+enum PendingWrite {
+    /// `clear()`: subsumes every write buffered before it for the store.
+    Clear,
+    Put {
+        key: IndexedDBKeyType,
+        value: Vec<u8>,
+        /// Buffered generator advance replayed per-put at commit (`Some` only
+        /// for keyless puts, mirroring the engine's `put_item` contract).
+        key_generator_current_number: Option<i64>,
+    },
+    /// `delete(...)`: every visible record inside the range stops existing.
+    Delete { key_range: IndexedDBKeyRange },
+}
+
+/// Buffered state of one object store inside a running upgrade transaction.
+#[derive(Default, MallocSizeOf)]
+struct PendingStoreWrites {
+    /// Buffered writes in script's request order.
+    ops: Vec<PendingWrite>,
+    /// Mirrors the store's key generator current number as the upgrade sees
+    /// it. `Some` is authoritative for keyless puts; `None` on a buffered
+    /// entry means the store has no key generator. It survives a buffered
+    /// `Clear` — spec `clear()` removes records only, it does not reset the
+    /// key generator. <https://w3c.github.io/IndexedDB/#key-generator-construct>
+    generator_current: Option<i64>,
+    /// Rough heap size of `ops`; see [`pending_write_bytes`].
+    bytes: u64,
+}
+
+/// The shadow write buffer of one running upgrade transaction.
+#[derive(Default, MallocSizeOf)]
+struct UpgradeWriteBuffer {
+    stores: BTreeMap<String, PendingStoreWrites>,
+    /// Stores this upgrade created (their schema write passes through to the
+    /// engine queue asynchronously, so they are empty engine-side until
+    /// commit and must not be queried there). Consumed by presence checks
+    /// and merged reads as an O(1) empty answer.
+    engine_empty_stores: BTreeSet<String>,
+    /// Rough total heap size of all buffered writes; see [`pending_write_bytes`].
+    bytes: u64,
+}
+
+/// Buffered visibility of one key under an upgrade transaction's shadow
+/// writes.
+enum BufferedKeyLookup {
+    /// A buffered put makes the key visible with this value.
+    Value(Vec<u8>),
+    /// A buffered delete/clear makes the key invisible.
+    Missing,
+    /// No buffered write touches the key; the engine state decides.
+    NotBuffered,
+}
+
+#[derive(MallocSizeOf)]
 struct VersionUpgrade {
     old: u64,
     new: u64,
@@ -1260,11 +2336,49 @@ impl IndexedDBManager {
                 pending_close: _,
                 pending_versionchange: _,
                 id,
-                proxy_map: _,
+                proxy_map,
             } = open_request
             else {
                 return;
             };
+
+            // BAO PATCH (REQ-BRW-051, idb-upgrade-shadow-write-buffer): the
+            // upgrade's record writes live in the shadow write buffer, so
+            // they must land in the engine before the connection is handed
+            // back to script. Fail-closed: a failed flush is reported as a
+            // database error (after a best-effort revert), never as a green
+            // upgrade.
+            let flush_result = match self.databases.get_mut(&key) {
+                Some(db) => db.commit_upgrade_buffer(txn),
+                None => {
+                    debug_assert!(false, "Db should have been opened.");
+                    Err(String::from("database vanished before the upgrade commit"))
+                },
+            };
+            if let Err(flush_error) = flush_result {
+                error!(
+                    "Failed to land the shadow write buffer of database '{}' at upgrade commit: \
+                     {flush_error}",
+                    key.name
+                );
+                self.revert_aborted_upgrade(&key, &pending_upgrade, &proxy_map);
+                if sender
+                    .send(ConnectionMsg::DatabaseError {
+                        id,
+                        name: db_name.clone(),
+                        error: BackendError::DbErr(format!(
+                            "upgrade transaction commit failed: {flush_error}"
+                        )),
+                    })
+                    .is_err()
+                {
+                    error!("Failed to send ConnectionMsg::DatabaseError to script.");
+                };
+                self.remove_connection(&key, &id);
+                self.advance_connection_queue(key);
+                return;
+            }
+
             let VersionUpgrade { new, .. } = pending_upgrade;
             let object_store_names = self
                 .databases
@@ -1429,6 +2543,13 @@ impl IndexedDBManager {
         // database was newly created.
         let res = db.restore_object_stores(&upgrade.object_stores);
         debug_assert!(res.is_ok(), "Restoring object stores should not fail.");
+
+        // BAO PATCH (REQ-BRW-051, idb-upgrade-shadow-write-buffer): the
+        // record-level rollback is a zero-IO buffer discard — the upgrade's
+        // writes never reached the engine, so dropping the shadow buffer is
+        // the whole rollback. (The `old == 0` branch above drops the whole
+        // database entry, buffer included.)
+        db.discard_upgrade_buffer(upgrade.transaction);
     }
 
     /// Aborting the current upgrade for an origin.
@@ -1448,7 +2569,7 @@ impl IndexedDBManager {
                     "There should be a connection queue for the aborted upgrade."
                 );
             };
-            let Some(open_request) = queue.pop_front() else {
+            let Some(mut open_request) = queue.pop_front() else {
                 return debug_assert!(false, "There should be an open request to upgrade.");
             };
             if open_request.get_id() != id {
@@ -1645,6 +2766,11 @@ impl IndexedDBManager {
 
         // Step 9: Set request’s processed flag to true.
         *processed = true;
+        // BAO PATCH (REQ-BRW-051, idb-upgrade-shadow-write-buffer): no
+        // pre-upgrade record snapshot is captured here anymore — the running
+        // upgrade's writes accumulate in its shadow write buffer
+        // (`pending_upgrade_writes`, created by `register_transaction`), and
+        // commit/abort resolve the buffer.
         let _ = pending_upgrade.insert(VersionUpgrade {
             old: old_version,
             new: new_version,
@@ -2492,13 +3618,21 @@ impl IndexedDBManager {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
+    use profile_traits::generic_callback::GenericCallback;
+    use serde::{Deserialize, Serialize};
     use servo_base::generic_channel;
     use servo_base::threadpool::ThreadPool;
     use servo_url::ImmutableOrigin;
-    use storage_traits::indexeddb::{IndexedDBTxnMode, KeyPath};
+    use storage_traits::indexeddb::{
+        AsyncOperation, AsyncReadOnlyOperation, AsyncReadWriteOperation, AsyncSchemaOperation,
+        BackendError, BackendResult, IndexedDBKeyRange, IndexedDBKeyType, IndexedDBRecord,
+        IndexedDBTxnMode, KeyPath, PutItemResult,
+    };
     use url::Host;
 
-    use super::{IndexedDBDescription, IndexedDBEnvironment};
+    use super::{IndexedDBDescription, IndexedDBEnvironment, UPGRADE_BUFFER_MAX_BYTES};
     use crate::indexeddb::engines::SqliteEngine;
 
     fn test_origin() -> ImmutableOrigin {
@@ -2573,5 +3707,442 @@ mod tests {
         env.abort_transaction(1);
 
         assert_eq!(env.key_generator_current_number("books"), Some(1));
+    }
+
+    /// Puts one record through the engine, blocking until the write landed.
+    /// Mirrors the write shape an upgrade transaction issues.
+    fn put_test_record(
+        env: &IndexedDBEnvironment<SqliteEngine>,
+        store_name: &str,
+        key: IndexedDBKeyType,
+        value: Vec<u8>,
+    ) {
+        use crate::indexeddb::engines::{KvsEngine, KvsOperation, KvsTransaction};
+        use std::collections::VecDeque;
+        use std::sync::mpsc;
+
+        let (result_sender, result_receiver) = mpsc::channel();
+        let callback = GenericCallback::new(move |result: Result<
+            BackendResult<PutItemResult>,
+            servo_base::generic_channel::SendError,
+        >| {
+            let _ = result_sender.send(result.map(|_| ()));
+        })
+        .unwrap();
+        env.engine.process_transaction(
+            KvsTransaction {
+                mode: IndexedDBTxnMode::Readwrite,
+                requests: VecDeque::from(vec![KvsOperation {
+                    store_name: store_name.to_string(),
+                    operation: AsyncOperation::ReadWrite(AsyncReadWriteOperation::PutItem {
+                        callback,
+                        key: Some(key),
+                        value,
+                        should_overwrite: true,
+                        key_generator_current_number: None,
+                    }),
+                }]),
+            },
+            Box::new(|| ()),
+        );
+        let outcome = result_receiver.recv().unwrap().unwrap();
+        assert!(outcome.is_ok(), "test put failed: {outcome:?}");
+    }
+
+    /// Creates an environment with one object store, plus its `TempDir` (which
+    /// must outlive the environment).
+    fn upgrade_test_env(
+        db_name: &str,
+        store_name: &str,
+        auto_increment: bool,
+    ) -> (tempfile::TempDir, IndexedDBEnvironment<SqliteEngine>) {
+        let base_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let description = IndexedDBDescription {
+            name: db_name.to_string(),
+            origin: test_origin(),
+        };
+        let engine = SqliteEngine::new(
+            base_dir.path().to_path_buf(),
+            true,
+            &description,
+            ThreadPool::global(),
+        )
+        .unwrap();
+        let (sender, _receiver) = generic_channel::channel().unwrap();
+        let mut env = IndexedDBEnvironment::new(engine, sender);
+        env.create_object_store(store_name, None, auto_increment)
+            .unwrap();
+        (base_dir, env)
+    }
+
+    /// Builds a `GenericCallback` that forwards the operation result into an
+    /// mpsc channel for in-test assertion (same shape as `put_test_record`).
+    fn collect_callback<R>(
+        sender: mpsc::Sender<BackendResult<R>>,
+    ) -> GenericCallback<BackendResult<R>>
+    where
+        R: for<'de> Deserialize<'de> + Serialize + Send + 'static,
+    {
+        GenericCallback::new(
+            move |result: Result<BackendResult<R>, servo_base::generic_channel::SendError>| {
+                let _ = sender.send(result.unwrap_or_else(|send_error| {
+                    Err(BackendError::DbErr(format!("{send_error:?}")))
+                }));
+            },
+        )
+        .unwrap()
+    }
+
+    /// Reads a store's records straight from the engine (bypassing the shadow
+    /// write buffer) so tests can assert committed engine state.
+    fn engine_records(
+        env: &IndexedDBEnvironment<SqliteEngine>,
+        store_name: &str,
+    ) -> Vec<IndexedDBRecord> {
+        use crate::indexeddb::engines::{KvsEngine, KvsOperation, KvsTransaction};
+        use std::collections::VecDeque;
+
+        let (result_sender, result_receiver) = mpsc::channel();
+        let callback = GenericCallback::new(
+            move |result: Result<
+                BackendResult<Vec<IndexedDBRecord>>,
+                servo_base::generic_channel::SendError,
+            >| {
+                let _ = result_sender.send(result.unwrap_or_else(|send_error| {
+                    Err(BackendError::DbErr(format!("{send_error:?}")))
+                }));
+            },
+        )
+        .unwrap();
+        env.engine.process_transaction(
+            KvsTransaction {
+                mode: IndexedDBTxnMode::Readonly,
+                requests: VecDeque::from(vec![KvsOperation {
+                    store_name: store_name.to_string(),
+                    operation: AsyncOperation::ReadOnly(AsyncReadOnlyOperation::Iterate {
+                        callback,
+                        key_range: IndexedDBKeyRange::default(),
+                    }),
+                }]),
+            },
+            Box::new(|| ()),
+        );
+        let mut records = result_receiver.recv().unwrap().unwrap();
+        records.sort_by(|a, b| a.key.partial_cmp(&b.key).unwrap());
+        records
+    }
+
+    // BAO PATCH (REQ-BRW-051, idb-upgrade-shadow-write-buffer) regression
+    // tests: every test drives the real `queue_operation` entry point and
+    // collects results over mpsc (same shape as `put_test_record`).
+
+    #[test]
+    fn test_upgrade_buffer_commit_lands_writes_in_engine() {
+        let (_base_dir, mut env) = upgrade_test_env("test_db", "books", false);
+        env.register_transaction(1, IndexedDBTxnMode::Versionchange, vec!["books".to_string()]);
+
+        let (put_sender, put_receiver) = mpsc::channel();
+        env.queue_operation(
+            "books",
+            1,
+            IndexedDBTxnMode::Versionchange,
+            AsyncOperation::ReadWrite(AsyncReadWriteOperation::PutItem {
+                callback: collect_callback(put_sender),
+                key: Some(IndexedDBKeyType::Number(10.0)),
+                value: b"buffered".to_vec(),
+                should_overwrite: true,
+                key_generator_current_number: None,
+            }),
+        );
+        assert_eq!(
+            put_receiver.recv().unwrap().unwrap(),
+            PutItemResult::Key(IndexedDBKeyType::Number(10.0))
+        );
+        // Not committed yet: the engine must not have the write.
+        assert!(engine_records(&env, "books").is_empty());
+
+        env.commit_upgrade_buffer(1).unwrap();
+
+        let records = engine_records(&env, "books");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].key, IndexedDBKeyType::Number(10.0));
+        assert_eq!(records[0].value, b"buffered".to_vec());
+    }
+
+    #[test]
+    fn test_upgrade_buffer_abort_discards_writes() {
+        let (_base_dir, mut env) = upgrade_test_env("test_db", "books", false);
+        env.register_transaction(1, IndexedDBTxnMode::Versionchange, vec!["books".to_string()]);
+
+        let (put_sender, put_receiver) = mpsc::channel();
+        env.queue_operation(
+            "books",
+            1,
+            IndexedDBTxnMode::Versionchange,
+            AsyncOperation::ReadWrite(AsyncReadWriteOperation::PutItem {
+                callback: collect_callback(put_sender),
+                key: Some(IndexedDBKeyType::Number(11.0)),
+                value: b"shadow".to_vec(),
+                should_overwrite: true,
+                key_generator_current_number: None,
+            }),
+        );
+        assert_eq!(
+            put_receiver.recv().unwrap().unwrap(),
+            PutItemResult::Key(IndexedDBKeyType::Number(11.0))
+        );
+
+        // Abort: zero-IO rollback, the write never reached the engine.
+        env.discard_upgrade_buffer(1);
+        env.discard_upgrade_buffer(1); // idempotent safety net
+
+        assert!(engine_records(&env, "books").is_empty());
+    }
+
+    #[test]
+    fn test_upgrade_buffer_same_key_put_overwrites_in_place() {
+        let (_base_dir, mut env) = upgrade_test_env("test_db", "books", false);
+        env.register_transaction(1, IndexedDBTxnMode::Versionchange, vec!["books".to_string()]);
+
+        for (name, value) in [("first", b"first".to_vec()), ("second", b"second".to_vec())] {
+            let (put_sender, put_receiver) = mpsc::channel();
+            env.queue_operation(
+                "books",
+                1,
+                IndexedDBTxnMode::Versionchange,
+                AsyncOperation::ReadWrite(AsyncReadWriteOperation::PutItem {
+                    callback: collect_callback(put_sender),
+                    key: Some(IndexedDBKeyType::Number(1.0)),
+                    value,
+                    should_overwrite: true,
+                    key_generator_current_number: None,
+                }),
+            );
+            assert_eq!(
+                put_receiver.recv().unwrap().unwrap(),
+                PutItemResult::Key(IndexedDBKeyType::Number(1.0)),
+                "{name} put must be acknowledged"
+            );
+        }
+
+        env.commit_upgrade_buffer(1).unwrap();
+
+        let records = engine_records(&env, "books");
+        assert_eq!(
+            records.len(),
+            1,
+            "same-key puts must collapse to one buffered write"
+        );
+        assert_eq!(records[0].value, b"second".to_vec());
+    }
+
+    #[test]
+    fn test_upgrade_buffer_clear_hides_engine_records_and_commits() {
+        let (_base_dir, mut env) = upgrade_test_env("test_db", "books", false);
+        put_test_record(
+            &env,
+            "books",
+            IndexedDBKeyType::Number(1.0),
+            b"joshua".to_vec(),
+        );
+        put_test_record(
+            &env,
+            "books",
+            IndexedDBKeyType::Number(2.0),
+            b"jonas".to_vec(),
+        );
+        env.register_transaction(1, IndexedDBTxnMode::Versionchange, vec!["books".to_string()]);
+
+        let (clear_sender, clear_receiver) = mpsc::channel();
+        env.queue_operation(
+            "books",
+            1,
+            IndexedDBTxnMode::Versionchange,
+            AsyncOperation::ReadWrite(AsyncReadWriteOperation::Clear(collect_callback(
+                clear_sender,
+            ))),
+        );
+        assert_eq!(clear_receiver.recv().unwrap().unwrap(), ());
+
+        // Read-own-write: the buffered Clear already hides the engine records.
+        let (read_sender, read_receiver) = mpsc::channel();
+        env.queue_operation(
+            "books",
+            1,
+            IndexedDBTxnMode::Versionchange,
+            AsyncOperation::ReadOnly(AsyncReadOnlyOperation::GetAllItems {
+                callback: collect_callback(read_sender),
+                key_range: IndexedDBKeyRange::default(),
+                count: None,
+            }),
+        );
+        assert_eq!(
+            read_receiver.recv().unwrap().unwrap(),
+            Vec::<Vec<u8>>::new()
+        );
+
+        env.commit_upgrade_buffer(1).unwrap();
+
+        assert!(engine_records(&env, "books").is_empty());
+    }
+
+    #[test]
+    fn test_upgrade_buffer_iterate_merges_range_reads() {
+        let (_base_dir, mut env) = upgrade_test_env("test_db", "books", false);
+        put_test_record(
+            &env,
+            "books",
+            IndexedDBKeyType::Number(1.0),
+            b"one".to_vec(),
+        );
+        put_test_record(
+            &env,
+            "books",
+            IndexedDBKeyType::Number(2.0),
+            b"two".to_vec(),
+        );
+        put_test_record(
+            &env,
+            "books",
+            IndexedDBKeyType::Number(3.0),
+            b"three".to_vec(),
+        );
+        env.register_transaction(1, IndexedDBTxnMode::Versionchange, vec!["books".to_string()]);
+
+        let (delete_sender, delete_receiver) = mpsc::channel();
+        env.queue_operation(
+            "books",
+            1,
+            IndexedDBTxnMode::Versionchange,
+            AsyncOperation::ReadWrite(AsyncReadWriteOperation::RemoveItem {
+                callback: collect_callback(delete_sender),
+                key_range: IndexedDBKeyRange::only(IndexedDBKeyType::Number(1.0)),
+            }),
+        );
+        assert_eq!(delete_receiver.recv().unwrap().unwrap(), ());
+        let (put_sender, put_receiver) = mpsc::channel();
+        env.queue_operation(
+            "books",
+            1,
+            IndexedDBTxnMode::Versionchange,
+            AsyncOperation::ReadWrite(AsyncReadWriteOperation::PutItem {
+                callback: collect_callback(put_sender),
+                key: Some(IndexedDBKeyType::Number(2.5)),
+                value: b"inserted".to_vec(),
+                should_overwrite: true,
+                key_generator_current_number: None,
+            }),
+        );
+        assert_eq!(
+            put_receiver.recv().unwrap().unwrap(),
+            PutItemResult::Key(IndexedDBKeyType::Number(2.5))
+        );
+
+        let (read_sender, read_receiver) = mpsc::channel();
+        env.queue_operation(
+            "books",
+            1,
+            IndexedDBTxnMode::Versionchange,
+            AsyncOperation::ReadOnly(AsyncReadOnlyOperation::Iterate {
+                callback: collect_callback(read_sender),
+                key_range: IndexedDBKeyRange::default(),
+            }),
+        );
+        let records = read_receiver.recv().unwrap().unwrap();
+        let keys: Vec<IndexedDBKeyType> = records.into_iter().map(|record| record.key).collect();
+        assert_eq!(
+            keys,
+            vec![
+                IndexedDBKeyType::Number(2.0),
+                IndexedDBKeyType::Number(2.5),
+                IndexedDBKeyType::Number(3.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_upgrade_buffer_keyless_put_mints_generator_keys() {
+        let (_base_dir, mut env) = upgrade_test_env("test_db", "auto", true);
+        env.register_transaction(1, IndexedDBTxnMode::Versionchange, vec!["auto".to_string()]);
+
+        // The real creation path: the schema op passes through queue_operation
+        // and registers the store as engine-empty with a generator at 1.
+        let (schema_sender, _schema_receiver) = mpsc::channel();
+        let schema_callback = GenericCallback::new(
+            move |result: Result<BackendError, servo_base::generic_channel::SendError>| {
+                let _ = schema_sender.send(result);
+            },
+        )
+        .unwrap();
+        env.queue_operation(
+            "auto",
+            1,
+            IndexedDBTxnMode::Versionchange,
+            AsyncOperation::Schema(AsyncSchemaOperation::CreateObjectStore {
+                callback: schema_callback,
+                key_path: None,
+                auto_increment: true,
+            }),
+        );
+
+        for (name, value) in [("one", b"one".to_vec()), ("two", b"two".to_vec())] {
+            let (put_sender, put_receiver) = mpsc::channel();
+            env.queue_operation(
+                "auto",
+                1,
+                IndexedDBTxnMode::Versionchange,
+                AsyncOperation::ReadWrite(AsyncReadWriteOperation::PutItem {
+                    callback: collect_callback(put_sender),
+                    key: None,
+                    value,
+                    should_overwrite: false,
+                    key_generator_current_number: None,
+                }),
+            );
+            let key = put_receiver.recv().unwrap().unwrap();
+            assert!(
+                matches!(key, PutItemResult::Key(IndexedDBKeyType::Number(_))),
+                "{name} keyless put must mint a generator key, got {key:?}"
+            );
+        }
+
+        env.commit_upgrade_buffer(1).unwrap();
+
+        let records = engine_records(&env, "auto");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].key, IndexedDBKeyType::Number(1.0));
+        assert_eq!(records[0].value, b"one".to_vec());
+        assert_eq!(records[1].key, IndexedDBKeyType::Number(2.0));
+        assert_eq!(records[1].value, b"two".to_vec());
+        assert_eq!(env.key_generator_current_number("auto"), Some(3));
+    }
+
+    #[test]
+    fn test_upgrade_buffer_quota_exceeded_fails_closed() {
+        let (_base_dir, mut env) = upgrade_test_env("test_db", "books", false);
+        env.register_transaction(1, IndexedDBTxnMode::Versionchange, vec!["books".to_string()]);
+
+        let (put_sender, put_receiver) = mpsc::channel();
+        env.queue_operation(
+            "books",
+            1,
+            IndexedDBTxnMode::Versionchange,
+            AsyncOperation::ReadWrite(AsyncReadWriteOperation::PutItem {
+                callback: collect_callback(put_sender),
+                key: Some(IndexedDBKeyType::Number(1.0)),
+                value: vec![0_u8; (UPGRADE_BUFFER_MAX_BYTES + 1) as usize],
+                should_overwrite: true,
+                key_generator_current_number: None,
+            }),
+        );
+        assert_eq!(
+            put_receiver.recv().unwrap().unwrap_err(),
+            BackendError::QuotaExceeded
+        );
+
+        // Zero partial buffering: nothing was buffered, nothing reaches the
+        // engine, and the buffer stays usable.
+        env.commit_upgrade_buffer(1).unwrap();
+        assert!(engine_records(&env, "books").is_empty());
     }
 }

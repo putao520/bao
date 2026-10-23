@@ -1,4 +1,11 @@
 // REQ-STL-004: Stealth runtime JS hook injection  @trace REQ-STL-004
+//
+// UA-CH(navigator.userAgentData)注入面:uach 子模块(2026-10-21)。`#[path]`
+// 挂接而非 lib.rs `mod uach;` —— uach.rs 是独立顶层文件,但其模块声明归 hooks
+// (注入块只能在 navigator IIFE 内展开,依赖 __bao_def/__nav_t 契约,见该文件
+// 头契约节),lib.rs 零触碰。
+#[path = "uach.rs"]
+mod uach;
 use crate::canvas::CanvasNoise;
 use crate::navigator::{NavigatorProfile, ScreenProfile};
 use crate::profile::{
@@ -210,6 +217,9 @@ impl StealthHooks {
             serde_json::to_string(&nav.languages).unwrap_or_else(|_| r#"["en-US","en"]"#.into());
         let extensions_json =
             serde_json::to_string(&webgl.extensions).unwrap_or_else(|_| "[]".into());
+        // UA-CH 块(fail-closed:非 Chrome 族 / 档位不可映射 / 跨面矛盾 → 空串,
+        // 即不注入 —— 真 Chrome 形态里「无 userAgentData」是可接受缺席)。
+        let uach_block = uach::build_uach_js(nav);
 
         format!(
             r#"(function() {{
@@ -262,6 +272,7 @@ impl StealthHooks {
   __bao_def(__nav_t, 'webdriver', {{ get: function() {{ return false; }}, enumerable: true, configurable: true }});
   }}
 
+{uach}
   if (__scr_t) {{
   __bao_def(__scr_t, 'width', {{ get: function() {{ return {sw}; }}, enumerable: true, configurable: true }});
   __bao_def(__scr_t, 'height', {{ get: function() {{ return {sh}; }}, enumerable: true, configurable: true }});
@@ -319,6 +330,7 @@ impl StealthHooks {
 }})();"#,
             ua = nav.user_agent,
             platform = nav.platform,
+            uach = uach_block,
             hwc = nav.hardware_concurrency,
             lang = nav.language,
             langs = languages_json,
@@ -864,7 +876,11 @@ impl StealthHooks {
             plugin_count = plugin_count,
             plugins = plugins_json,
             mime_types = mime_types_json,
-            chrome_section = if chrome_surface { Self::CHROME_SURFACE_JS.trim() } else { "" },
+            chrome_section = if chrome_surface {
+                Self::CHROME_SURFACE_JS.trim()
+            } else {
+                ""
+            },
         )
     }
 
@@ -2222,7 +2238,10 @@ mod tests {
             js.starts_with("(function() {") || js.starts_with("(function(){{"),
             "{label} JS must be an IIFE"
         );
-        assert!(js.ends_with("})();"), "{label} JS must end with IIFE closure");
+        assert!(
+            js.ends_with("})();"),
+            "{label} JS must end with IIFE closure"
+        );
     }
 
     #[test]
@@ -2383,7 +2402,12 @@ mod tests {
         }
         // app methods: non-constructible arrow carriers with the method
         // name (oracle: own [name, length], no prototype, `new` throws).
-        for method in ["getDetails", "getIsInstalled", "installState", "runningState"] {
+        for method in [
+            "getDetails",
+            "getIsInstalled",
+            "installState",
+            "runningState",
+        ] {
             assert!(
                 js.contains(&format!("'{}', false)", method)),
                 "app.{} must ride the non-constructible native carrier",
@@ -2612,8 +2636,15 @@ mod tests {
         );
         assert_eq!(
             r["appKeys"],
-            serde_json::json!(["isInstalled", "getDetails", "getIsInstalled", "installState",
-                               "runningState", "InstallState", "RunningState"]),
+            serde_json::json!([
+                "isInstalled",
+                "getDetails",
+                "getIsInstalled",
+                "installState",
+                "runningState",
+                "InstallState",
+                "RunningState"
+            ]),
             "app member set must stay the e135 shape"
         );
         // Values are still the e135 real-value derivations.

@@ -1200,7 +1200,10 @@ impl Servo {
             private_storage_threads.clone(),
         );
 
-        net::connector::prewarm_tls();
+        // BAO (rustls excision, 2026-10-21): `net::connector::prewarm_tls()`
+        // call dropped — it seeded the aws-lc-rs entropy of the dead rustls
+        // client that is now excised; BoringSSL (the only live TLS stack)
+        // needs no prewarm.
 
         #[cfg(feature = "multiprocess")]
         if opts::get().multiprocess {

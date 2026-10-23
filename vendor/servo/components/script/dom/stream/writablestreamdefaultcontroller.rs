@@ -30,7 +30,7 @@ use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::dom::readablestreamdefaultcontroller::{EnqueuedValue, QueueWithSizes, ValueWithSize};
 use crate::dom::stream::writablestream::WritableStream;
-use crate::dom::types::{AbortController, AbortSignal, TransformStream};
+use crate::dom::types::{AbortController, AbortSignal, TransformStream, WebSocketStream};
 use crate::realms::enter_auto_realm;
 
 impl js::gc::Rootable for CloseAlgorithmFulfillmentHandler {}
@@ -291,6 +291,9 @@ pub enum UnderlyingSinkType {
     },
     /// Algorithms supporting transform streams are implemented in Rust.
     Transform(Dom<TransformStream>, TracedPromise),
+    /// The writable half of a `WebSocketStream`: writes become WebSocket
+    /// messages, close starts the closing handshake.
+    WebSocket(Dom<WebSocketStream>),
 }
 
 impl UnderlyingSinkType {
@@ -425,6 +428,9 @@ impl WritableStreamDefaultController {
             UnderlyingSinkType::Transform(_, _) => {
                 return;
             },
+            UnderlyingSinkType::WebSocket(_) => {
+                return;
+            },
         }
 
         // Set controller.[[strategySizeAlgorithm]] to undefined.
@@ -548,6 +554,11 @@ impl WritableStreamDefaultController {
                 // Let startAlgorithm be an algorithm that returns startPromise.
                 Ok(start_promise.root(cx))
             },
+            UnderlyingSinkType::WebSocket(_) => {
+                // The connection is already being established by the
+                // WebSocketStream constructor.
+                Ok(Promise::new_resolved(cx, global, ()))
+            },
         }
     }
 
@@ -610,6 +621,12 @@ impl WritableStreamDefaultController {
                 stream
                     .transform_stream_default_sink_abort_algorithm(cx, global, reason)
                     .expect("Transform stream default sink abort algorithm should not fail.")
+            },
+            UnderlyingSinkType::WebSocket(stream) => {
+                // Aborting the writable half starts the closing handshake. A
+                // `WebSocketError` reason supplies the close code/reason;
+                // anything else produces an empty Close frame.
+                stream.perform_abort_or_cancel(cx, reason)
             },
         };
 
@@ -695,6 +712,11 @@ impl WritableStreamDefaultController {
                     .transform_stream_default_sink_write_algorithm(cx, global, chunk)
                     .expect("Transform stream default sink write algorithm should not fail.")
             },
+            UnderlyingSinkType::WebSocket(stream) => {
+                // Convert the chunk to a WebSocket message and resolve once
+                // the network loop has written it to the socket.
+                stream.perform_write(cx, global, chunk)
+            },
         }
     }
 
@@ -741,6 +763,11 @@ impl WritableStreamDefaultController {
                 stream
                     .transform_stream_default_sink_close_algorithm(cx, global)
                     .expect("Transform stream default sink close algorithm should not fail.")
+            },
+            UnderlyingSinkType::WebSocket(stream) => {
+                // Start the closing handshake; the returned promise resolves
+                // when the peer's Close frame completes it.
+                stream.perform_close(cx, global)
             },
         }
     }

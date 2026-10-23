@@ -14,6 +14,7 @@ use dom_struct::dom_struct;
 use encoding_rs::Encoding;
 use html5ever::{LocalName, Prefix, local_name};
 use js::context::JSContext;
+use js::jsval::UndefinedValue;
 use js::rust::HandleObject;
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::http_status::HttpStatus;
@@ -22,6 +23,7 @@ use net_traits::request::{
 };
 use net_traits::{FetchMetadata, Metadata, NetworkError, ResourceFetchTiming};
 use script_bindings::cell::DomRefCell;
+use script_bindings::cformat;
 use servo_base::id::WebViewId;
 use servo_url::ServoUrl;
 use style::attr::AttrValue;
@@ -32,10 +34,11 @@ use crate::dom::bindings::codegen::Bindings::DOMTokenListBinding::DOMTokenListMe
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLScriptElementBinding::HTMLScriptElementMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
+use crate::dom::bindings::codegen::Bindings::PerformanceScriptTimingBinding::ScriptInvokerType;
 use crate::dom::bindings::codegen::UnionTypes::{
     TrustedScriptOrString, TrustedScriptURLOrUSVString,
 };
-use crate::dom::bindings::error::Fallible;
+use crate::dom::bindings::error::{Error, ErrorToJsval, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
@@ -115,6 +118,19 @@ pub(crate) struct HTMLScriptElement {
 
     /// <https://html.spec.whatwg.org/multipage/#concept-script-result>
     result: DomRefCell<Option<Box<ScriptResult>>>,
+
+    /// BAO PATCH (REQ-BRW-051 C2): the key of this element's registered
+    /// speculation rule set, if it is a `<script type="speculationrules">`
+    /// element that parsed successfully. Used to unregister the rule set when
+    /// the element is removed from the document.
+    speculation_rules_key: Cell<Option<u64>>,
+
+    /// BAO PATCH (REQ-BRW-051): `<script type=webbundle>` registration state.
+    /// `Some` from processing until the element is removed from the document;
+    /// the loader it holds keeps the shared bundle fetch alive.
+    #[ignore_malloc_size_of = "the document's web bundle session owns the loader"]
+    #[no_trace]
+    web_bundle_state: DomRefCell<Option<crate::dom::webbundle::WebBundleElementState>>,
 }
 
 impl HTMLScriptElement {
@@ -138,6 +154,8 @@ impl HTMLScriptElement {
             blocking: Default::default(),
             marked_as_render_blocking: Default::default(),
             result: DomRefCell::new(None),
+            speculation_rules_key: Cell::new(None),
+            web_bundle_state: DomRefCell::new(None),
         }
     }
 
@@ -256,6 +274,11 @@ pub(crate) enum ScriptType {
     Classic,
     Module,
     ImportMap,
+    /// <https://html.spec.whatwg.org/multipage/#speculation-rules>
+    ///
+    /// BAO PATCH (REQ-BRW-051 C2): a `<script type="speculationrules">`
+    /// element defines a speculation rule set instead of executable script.
+    SpeculationRules,
 }
 
 pub(crate) type ScriptResult = Result<Script, ()>;
@@ -380,8 +403,8 @@ impl FetchResponseListener for ClassicContext {
 
         let global = elem.global();
 
-        if let Some(window) = global.downcast::<Window>() &&
-            let Some(script_source) = window.local_script_source()
+        if let Some(window) = global.downcast::<Window>()
+            && let Some(script_source) = window.local_script_source()
         {
             substitute_with_local_script(script_source, &mut source_text, &final_url);
         }
@@ -579,10 +602,10 @@ impl HTMLScriptElement {
         // > A script element el is implicitly potentially render-blocking if el's type is "classic",
         // > el is parser-inserted, and el does not have an async or defer attribute.
         self.get_script_type()
-            .is_some_and(|script_type| script_type == ScriptType::Classic) &&
-            self.parser_inserted.get() &&
-            !element.has_attribute(&local_name!("async")) &&
-            !element.has_attribute(&local_name!("defer"))
+            .is_some_and(|script_type| script_type == ScriptType::Classic)
+            && self.parser_inserted.get()
+            && !element.has_attribute(&local_name!("async"))
+            && !element.has_attribute(&local_name!("defer"))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#prepare-the-script-element>
@@ -622,6 +645,21 @@ impl HTMLScriptElement {
         }
         // Step 5a. Let source text be el’s script text value.
         let text: Cow<'_, str> = Cow::Owned(String::from(self.script_text.borrow().str()));
+
+        // BAO PATCH (REQ-BRW-051): `<script type=webbundle>` is a data block
+        // whose text content is a subresource-loading rule, not JavaScript.
+        // Processing starts here (both the parser and dynamic insertion reach
+        // `prepare`), before the empty-text/unparsed-type returns below. The
+        // element is marked started so a later `prepare` (a text mutation or a
+        // re-insertion) never processes the rule twice.
+        if self.is_web_bundle_element() {
+            if self.upcast::<Node>().is_connected() {
+                self.already_started.set(true);
+                crate::dom::webbundle::process_element(cx, self, &text);
+            }
+            return;
+        }
+
         // Step 6. If el has no src attribute, and source text is the empty string, then return.
         if text.is_empty() && !element.has_attribute(&local_name!("src")) {
             return;
@@ -675,8 +713,8 @@ impl HTMLScriptElement {
         let global = &doc.global();
 
         // Step 19. CSP.
-        if !element.has_attribute(&local_name!("src")) &&
-            global
+        if !element.has_attribute(&local_name!("src"))
+            && global
                 .get_csp_list()
                 .should_elements_inline_type_behavior_be_blocked(
                     cx,
@@ -691,6 +729,27 @@ impl HTMLScriptElement {
             return;
         }
 
+        // BAO PATCH (REQ-BRW-051 C2): a `speculationrules` script never runs
+        // as JavaScript. External rule sets are not supported by the HTML
+        // standard yet (they fire `error`); inline rule sets are parsed and
+        // registered with the document.
+        //
+        // <https://html.spec.whatwg.org/multipage/#prepare-the-script-element>
+        if script_type == ScriptType::SpeculationRules {
+            self.already_started.set(true);
+            self.preparation_time_document.set(Some(&doc));
+            // Mirror Step 13: undo the parser-inserted `force async` tweak.
+            if was_parser_inserted {
+                self.non_blocking.set(false);
+            }
+            if element.has_attribute(&local_name!("src")) {
+                self.queue_error_event();
+            } else {
+                self.prepare_speculation_rules(cx, &text, &doc);
+            }
+            return;
+        }
+
         // Step 20. If el has an event attribute and a for attribute, and el's type is "classic", then:
         if script_type == ScriptType::Classic {
             let for_attribute = element.get_attribute_string_value(&local_name!("for"));
@@ -702,8 +761,8 @@ impl HTMLScriptElement {
                 }
 
                 let event_value = event_attribute.trim_matches(HTML_SPACE_CHARACTERS);
-                if !event_value.eq_ignore_ascii_case("onload") &&
-                    !event_value.eq_ignore_ascii_case("onload()")
+                if !event_value.eq_ignore_ascii_case("onload")
+                    && !event_value.eq_ignore_ascii_case("onload()")
                 {
                     return;
                 }
@@ -856,6 +915,8 @@ impl HTMLScriptElement {
                     );
                 },
                 ScriptType::ImportMap => (),
+                // Handled above: speculation rules return before this switch.
+                ScriptType::SpeculationRules => {},
             }
         } else {
             // Step 32. If el does not have a src content attribute:
@@ -878,10 +939,11 @@ impl HTMLScriptElement {
                     );
                     let result = Ok(Script::Classic(script));
 
-                    if was_parser_inserted &&
-                        doc.get_current_parser()
-                            .is_some_and(|parser| parser.script_nesting_level() <= 1) &&
-                        doc.has_a_stylesheet_that_is_blocking_scripts()
+                    if was_parser_inserted
+                        && doc
+                            .get_current_parser()
+                            .is_some_and(|parser| parser.script_nesting_level() <= 1)
+                        && doc.has_a_stylesheet_that_is_blocking_scripts()
                     {
                         // Step 34.2: classic, has no src, was parser-inserted, is blocked on stylesheet.
                         doc.set_pending_parsing_blocking_script(self, Some(result));
@@ -896,8 +958,8 @@ impl HTMLScriptElement {
                     self.delay_load_event(&delayed_document, base_url.clone());
 
                     // Step 32.2.2.2 If el is potentially render-blocking, then:
-                    if self.potentially_render_blocking() &&
-                        doc.allows_adding_render_blocking_elements()
+                    if self.potentially_render_blocking()
+                        && doc.allows_adding_render_blocking_elements()
                     {
                         // Step 32.2.2.2.1 Block rendering on el.
                         self.marked_as_render_blocking.set(true);
@@ -947,6 +1009,8 @@ impl HTMLScriptElement {
                     self.execute(cx, Ok(script));
                     return;
                 },
+                // Handled above: speculation rules return before this switch.
+                ScriptType::SpeculationRules => {},
             }
         }
 
@@ -1001,6 +1065,19 @@ impl HTMLScriptElement {
 
         let document = self.owner_document();
 
+        // The script's base URL: the resolved `src` for external scripts and
+        // the document's URL for inline script blocks.
+        let script_url = self
+            .upcast::<Element>()
+            .get_attribute_string_value(&local_name!("src"))
+            .and_then(|src| document.base_url().join(&src).ok())
+            .map(|url| url.to_string())
+            .unwrap_or_else(|| document.url().to_string());
+        let script_url =
+            crate::dom::performance::long_animation_frame_recorder::normalize_script_url(
+                &script_url,
+            );
+
         match script {
             Script::Classic(script) => {
                 // Step 6."classic".1. Let oldCurrentScript be the value to which document's currentScript object was most recently set.
@@ -1015,6 +1092,12 @@ impl HTMLScriptElement {
                 }
 
                 // Step 6."classic".3. Run the classic script given by el's result.
+                let _long_animation_frame_guard =
+                    crate::dom::performance::long_animation_frame_recorder::begin_script_block(
+                        document.window(),
+                        ScriptInvokerType::Classic_script,
+                        script_url,
+                    );
                 _ = self.owner_global().run_a_classic_script(
                     cx,
                     script,
@@ -1030,6 +1113,12 @@ impl HTMLScriptElement {
                 document.set_current_script(None);
 
                 // Step 6."module".2. Run the module script given by el's result.
+                let _long_animation_frame_guard =
+                    crate::dom::performance::long_animation_frame_recorder::begin_script_block(
+                        document.window(),
+                        ScriptInvokerType::Module_script,
+                        script_url,
+                    );
                 self.owner_global()
                     .run_a_module_script(cx, module_tree, false);
             },
@@ -1051,11 +1140,71 @@ impl HTMLScriptElement {
         }
     }
 
+    /// BAO PATCH (REQ-BRW-051 C2): parse and register an inline speculation
+    /// rule set.
+    ///
+    /// On a top-level parse failure the element fires `error`, and then the
+    /// global reports a `TypeError` (that order is observable and asserted by
+    /// `speculation-rules/inline-speculation-rules-errors.html`).
+    fn prepare_speculation_rules(&self, cx: &mut JSContext, text: &str, document: &Document) {
+        match crate::dom::speculation::parse_inline_rule_set(document, text) {
+            Ok(rule_set) => {
+                let key = crate::dom::speculation::next_rule_set_key();
+                self.speculation_rules_key.set(Some(key));
+                crate::dom::speculation::register_rule_set(document, key, rule_set);
+            },
+            Err(message) => {
+                self.upcast::<EventTarget>().fire_event(cx, atom!("error"));
+                let global = document.global();
+                rooted!(&in(cx) let mut value = UndefinedValue());
+                Error::Type(cformat!("{}", message)).to_jsval(cx, &global, value.handle_mut());
+                global.report_an_exception(cx, value.handle());
+            },
+        }
+    }
+
     pub(crate) fn queue_error_event(&self) {
         self.owner_global()
             .task_manager()
             .dom_manipulation_task_source()
             .queue_simple_event(self.upcast(), atom!("error"));
+    }
+
+    /// BAO PATCH (REQ-BRW-051): whether this element's `type` selects web
+    /// bundle subresource loading (`<script type=webbundle>`).
+    fn is_web_bundle_element(&self) -> bool {
+        let element = self.upcast::<Element>();
+        element
+            .get_attribute_string_value(&local_name!("type"))
+            .is_some_and(|type_attribute| {
+                crate::dom::webbundle::is_web_bundle_type(&type_attribute)
+            })
+    }
+
+    /// BAO PATCH (REQ-BRW-051): store the element's web bundle registration.
+    pub(crate) fn set_web_bundle_state(
+        &self,
+        state: Option<crate::dom::webbundle::WebBundleElementState>,
+    ) {
+        *self.web_bundle_state.borrow_mut() = state;
+    }
+
+    /// BAO PATCH (REQ-BRW-051): take the element's web bundle registration
+    /// (element removal), leaving the element re-insertion-inert.
+    pub(crate) fn take_web_bundle_state(
+        &self,
+    ) -> Option<crate::dom::webbundle::WebBundleElementState> {
+        self.web_bundle_state.borrow_mut().take()
+    }
+
+    /// BAO PATCH (REQ-BRW-051): the net-side registration id of this element,
+    /// if it is a processed web bundle element. Used to drop the registration
+    /// when the bundle fails without discarding the script-side loader state.
+    pub(crate) fn web_bundle_element_id(&self) -> Option<u64> {
+        self.web_bundle_state
+            .borrow()
+            .as_ref()
+            .map(|state| state.element_id)
     }
 
     // <https://html.spec.whatwg.org/multipage/#prepare-a-script> Step 7.
@@ -1108,6 +1257,16 @@ impl HTMLScriptElement {
                     return Some(ScriptType::ImportMap);
                 }
 
+                // BAO PATCH (REQ-BRW-051 C2): the `speculationrules` keyword
+                // selects the speculation rule set processing path instead of
+                // script execution.
+                if ty
+                    .trim_matches(HTML_SPACE_CHARACTERS)
+                    .eq_ignore_ascii_case("speculationrules")
+                {
+                    return Some(ScriptType::SpeculationRules);
+                }
+
                 if SCRIPT_JS_MIMES.iter().any(|mime| {
                     ty.trim_matches(HTML_SPACE_CHARACTERS)
                         .eq_ignore_ascii_case(mime)
@@ -1153,15 +1312,15 @@ impl VirtualMethods for HTMLScriptElement {
             .unwrap()
             .attribute_mutated(cx, attr, mutation);
         if *attr.local_name() == local_name!("src") {
-            if let AttributeMutation::Set(_) = mutation &&
-                !self.parser_inserted.get() &&
-                self.upcast::<Node>().is_connected()
+            if let AttributeMutation::Set(_) = mutation
+                && !self.parser_inserted.get()
+                && self.upcast::<Node>().is_connected()
             {
                 self.prepare(cx, Some(IntroductionType::INJECTED_SCRIPT));
             }
-        } else if *attr.local_name() == local_name!("blocking") &&
-            !self.has_render_blocking_attribute() &&
-            self.marked_as_render_blocking.replace(false)
+        } else if *attr.local_name() == local_name!("blocking")
+            && !self.has_render_blocking_attribute()
+            && self.marked_as_render_blocking.replace(false)
         {
             let document = self.owner_document();
             document.decrement_render_blocking_element_count();
@@ -1224,6 +1383,27 @@ impl VirtualMethods for HTMLScriptElement {
             let document = self.owner_document();
             document.decrement_render_blocking_element_count();
         }
+
+        // BAO PATCH (REQ-BRW-051 C2): removing a speculation rules script
+        // element unregisters its rule set, cancels in-flight prefetches and
+        // resets `already started` so that re-insertion registers again
+        // (<https://html.spec.whatwg.org/multipage/#already-started>).
+        if let Some(key) = self.speculation_rules_key.take() {
+            crate::dom::speculation::unregister_rule_set(&self.owner_document(), key);
+            self.already_started.set(false);
+        }
+
+        // BAO PATCH (REQ-BRW-051): removing a `<script type=webbundle>` element
+        // drops its subresource registration and orphans its loader for a
+        // synchronous re-append. `already started` deliberately stays set:
+        // re-inserting *this* element must not register its rule again (WPT
+        // "'remove(), then append()' for the same element should reuse
+        // webbundle resources" — the registration stays gone while the bundle
+        // fetch is reused by a *new* element appended in the same task).
+        let has_web_bundle_state = self.web_bundle_state.borrow().is_some();
+        if has_web_bundle_state {
+            crate::dom::webbundle::element_removed(cx, self);
+        }
     }
 }
 
@@ -1260,8 +1440,9 @@ impl HTMLScriptElementMethods<crate::DomTypeHolder> for HTMLScriptElement {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-script-async>
     fn Async(&self) -> bool {
-        self.non_blocking.get() ||
-            self.upcast::<Element>()
+        self.non_blocking.get()
+            || self
+                .upcast::<Element>()
                 .has_attribute(&local_name!("async"))
     }
 
@@ -1405,7 +1586,20 @@ impl HTMLScriptElementMethods<crate::DomTypeHolder> for HTMLScriptElement {
     fn Supports(_window: &Window, type_: DOMString) -> bool {
         // The type argument has to exactly match these values,
         // we do not perform an ASCII case-insensitive match.
-        matches!(&*type_.str(), "classic" | "module" | "importmap")
+        //
+        // BAO PATCH (REQ-BRW-051 C2): `speculationrules` is supported (the
+        // prefetch subset). This is a feature-detection surface: it must stay
+        // in sync with what `prepare` actually implements.
+        //
+        // BAO PATCH (REQ-BRW-051): `webbundle` is the web bundle subresource
+        // loading data block. Chrome (155) reports `true` for it, so exposing
+        // it keeps feature detection aligned. The exact-match rule applies:
+        // `" webbundle"`, `"webbundle "` and `"WEBBUNDLE"` are false (WPT
+        // supports-webbundle.https.tentative.html).
+        matches!(
+            &*type_.str(),
+            "classic" | "module" | "importmap" | "speculationrules" | "webbundle"
+        )
     }
 }
 

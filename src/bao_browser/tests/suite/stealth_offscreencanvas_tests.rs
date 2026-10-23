@@ -77,12 +77,17 @@ fn unquote_bridge(mut s: String) -> String {
 
 /// Create a live BrowserRuntime + one page with the given stealth profile.
 /// Fails the test (not skip) once the gated environment has been established.
+///
+/// `None` = 显式 stealth-free 退出面(用户裁决 2026-10-21「默认 = 随机身份」
+/// 后,无 profile 的默认页携带进程级随机身份;本文件的 None 语义是「无
+/// stealth 链」对照组 —— e36 completion ③),故映射到 `stealth_disabled`。
 fn live_page(profile: Option<StealthProfile>) -> (BrowserRuntime, bao_browser::PageHandle) {
     let runtime = BrowserRuntime::new(BaoConfig::default())
         .expect("gated live test: BrowserRuntime::new must succeed");
     let page = runtime
         .create_page(&PageConfig {
             url: Some("about:blank".into()),
+            stealth_disabled: profile.is_none(),
             stealth_profile: profile,
             ..Default::default()
         })
@@ -656,7 +661,8 @@ fn c14_window_realm_webgl2_control_probe_works() {
 // dead-looped JS hook ↔ native override and surfaced as literal `undefined`
 // with getError()==NO_ERROR. The fix: single injection in
 // PagePool::create_page + install idempotency guard + profile-gated install
-// (stealth_profile: None ⇒ NO stealth chain at all).
+// (显式 stealth-free(`stealth_disabled: true`, 2026-10-21 裁决后的退出面)⇒
+// NO stealth chain at all).
 // Evidence: .claude/prompts/brw004-getparameter-evidence.md
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -831,9 +837,10 @@ fn e36_window_getparameter_intercepted_enums_still_profile_driven() {
     );
 }
 
-/// e36 completion ③(live): a stealth-free page (`stealth_profile: None`)
-/// carries NO stealth chain at all — no __originalGetParameter__ slot, no JS
-/// hook on getParameter, pure servo-native surfaces returning true values.
+/// e36 completion ③(live): a stealth-free page (显式退出面
+/// `stealth_disabled: true`,经 `live_page(None)` 映射) carries NO stealth
+/// chain at all — no __originalGetParameter__ slot, no JS hook on
+/// getParameter, pure servo-native surfaces returning true values.
 #[ignore = "需要 DISPLAY: servo WebRender GL-based(headless 亦需),scripts/local-smoke.sh:97 Xvfb :99 配方; 真跑: pgrep -x Xvfb || Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp & 后 DISPLAY=:99 cargo nextest run --run-ignored=all -p bao-browser"]
 #[test]
 fn e36_stealth_free_page_has_no_stealth_chain() {
@@ -875,15 +882,15 @@ fn e36_stealth_free_page_has_no_stealth_chain() {
     );
     assert!(
         r.contains("HASORIG=0|"),
-        "stealth_profile: None must NOT install __originalGetParameter__ (digest: {r})"
+        "stealth_disabled must NOT install __originalGetParameter__ (digest: {r})"
     );
     assert!(
         r.contains("|HOOKED=0|"),
-        "stealth_profile: None must NOT install the JS getParameter hook (digest: {r})"
+        "stealth_disabled must NOT install the JS getParameter hook (digest: {r})"
     );
     assert!(
         r.contains("|NATIVE=1|"),
-        "stealth_profile: None getParameter must be the servo native function (digest: {r})"
+        "stealth_disabled getParameter must be the servo native function (digest: {r})"
     );
     assert!(
         r.contains("|V1F02=WebGL 1.0|"),

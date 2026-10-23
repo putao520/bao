@@ -4,6 +4,7 @@
 
 use app_units::Au;
 use atomic_refcell::{AtomicRef, AtomicRefCell};
+use style::logical_geometry::Direction;
 use style::properties::ComputedValues;
 use style::values::computed::CSSPixelLength;
 use style::values::computed::length_percentage::CalcLengthPercentage;
@@ -27,10 +28,11 @@ use crate::geom::{LogicalVec2, PhysicalPoint, PhysicalRect, PhysicalSides, Physi
 use crate::layout_box_base::IndependentFormattingContextLayoutResult;
 use crate::positioned::{AbsolutelyPositionedBox, PositioningContext, PositioningContextLength};
 use crate::sizing::{
-    ComputeInlineContentSizes, ContentSizes, InlineContentSizesResult, LazySize, SizeConstraint,
+    ComputeInlineContentSizes, ContentSizes, InlineContentSizesResult, LazySize, Size,
+    SizeConstraint,
 };
-use crate::style_ext::LayoutStyle;
-use crate::{ConstraintSpace, ContainingBlock, ContainingBlockSize};
+use crate::style_ext::{ContentBoxSizesAndPBM, LayoutStyle};
+use crate::{ConstraintSpace, ContainingBlock, ContainingBlockSize, IndefiniteContainingBlock};
 
 const DUMMY_NODE_ID: taffy::NodeId = taffy::NodeId::new(u64::MAX);
 
@@ -146,13 +148,35 @@ impl taffy::LayoutPartialTree for TaffyContainerContext<'_> {
             &mut child.taffy_level_box,
             |independent_context| -> taffy::LayoutOutput {
                 // TODO: re-evaluate sizing constraint conversions in light of recent layout changes
-                let containing_block = &self.content_box_size_override;
+                let containing_block = self.content_box_size_override;
                 let style = independent_context.style();
 
+                // BAO patch (upstream #48644, css-grid U2): the child's percentage resolution
+                // base is the grid *container* size known at this point, not the parent
+                // containing block. Spec: https://drafts.csswg.org/css-grid-1/#layout-algorithm
+                // ("each grid area's width and height are considered definite …").
+                // Passing the wrong base made percentage paddings/sizes on grid items resolve
+                // against the wrong length, producing the small pixel offsets in the
+                // `grid-items-percentage-paddings` / baseline alignment set.
+                let child_containing_block = IndefiniteContainingBlock {
+                    size: LogicalVec2 {
+                        inline: inputs.parent_size.width.map(Au::from_f32_px),
+                        block: inputs.parent_size.height.map(Au::from_f32_px),
+                    },
+                    style: containing_block.style,
+                };
+
                 // Adjust known_dimensions from border box to content box
-                let pbm = independent_context
+                // BAO patch (upstream #48644): use the full content-box sizing computation so
+                // that the min/max sizes are available for `LazySize::new` below, replacing the
+                // `LazySize::intrinsic()` fallback that ignored `min-height`/`max-height`.
+                let ContentBoxSizesAndPBM {
+                    content_box_sizes,
+                    pbm,
+                    ..
+                } = independent_context
                     .layout_style()
-                    .padding_border_margin(containing_block);
+                    .content_box_sizes_and_padding_border_margin(&child_containing_block);
                 let pb_sum = pbm.padding_border_sums.map(|v| v.to_f32_px());
                 let margin_sum = pbm.margin.auto_is(Au::zero).sum().map(|v| v.to_f32_px());
                 let content_box_inset = pb_sum + margin_sum;
@@ -214,8 +238,18 @@ impl taffy::LayoutPartialTree for TaffyContainerContext<'_> {
                 };
 
                 let lazy_block_size = match content_box_known_dimensions.height {
-                    // FIXME: use the correct min/max sizes.
-                    None => LazySize::intrinsic(),
+                    // BAO patch (upstream #48644, css-grid U2): with an indefinite container
+                    // block size, honour the item's own min/max block sizes instead of falling
+                    // back to the pure intrinsic size (`LazySize::intrinsic()`), which ignored
+                    // `min-height`/`max-height` entirely.
+                    None => LazySize::new(
+                        &content_box_sizes.block,
+                        Direction::Block,
+                        Size::FitContent,
+                        Au::zero,
+                        None,
+                        independent_context.layout_style().is_table(),
+                    ),
                     Some(height) => Au::from_f32_px(height).into(),
                 };
 

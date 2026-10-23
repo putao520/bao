@@ -181,6 +181,7 @@ fn test_page_config_clone() {
         viewport_width: Some(1280),
         viewport_height: Some(720),
         stealth_profile: None,
+        stealth_disabled: false,
         permission: None,
         browser_context_id: None,
     };

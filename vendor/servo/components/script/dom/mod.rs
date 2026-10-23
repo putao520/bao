@@ -219,6 +219,39 @@ pub(crate) mod attributes;
 pub(crate) use self::attributes::*;
 pub(crate) mod audio;
 pub(crate) use self::audio::*;
+// Bao fork self-build (REQ-BRW-051): WebCodecs decode-plane DOM types. The
+// webidl set is gated by `script_bindings/webcodecs` (skip-unless header in
+// the .webidl files); these impl modules must follow the same gate. Concrete
+// types are reached by codegen as `crate::dom::audiodata::AudioData` etc.
+// (`webcodecs_pcm` is a pure helper module, no DOM interface).
+#[cfg(feature = "webcodecs")]
+pub(crate) mod audiodata;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod audiodecoder;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod audioencoder;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod encodedaudiochunk;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod encodedvideochunk;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod imagedecoder;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod imagetrack;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod imagetracklist;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod videocolorspace;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod videodecoder;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod videoencoder;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod videoframe;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod webcodecs_error;
+#[cfg(feature = "webcodecs")]
+pub(crate) mod webcodecs_pcm;
 pub(crate) mod bindings;
 #[cfg(feature = "bluetooth")]
 pub(crate) mod bluetooth;
@@ -247,6 +280,8 @@ pub(crate) mod domexception;
 pub(crate) mod element;
 pub(crate) use self::element::*;
 pub(crate) mod characterboundsupdateevent;
+pub(crate) mod contentvisibilityautostatechangeevent;
+pub(crate) mod deviceboundsession;
 pub(crate) mod editcontext;
 pub(crate) mod encoding;
 pub(crate) use self::encoding::*;
@@ -279,6 +314,10 @@ pub(crate) mod indexeddb;
 pub(crate) use self::indexeddb::*;
 pub(crate) mod intersectionobserver;
 pub(crate) use self::intersectionobserver::*;
+// BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): the `MathMLElement`
+// interface. MathML elements used to be bare `Element`s.
+pub(crate) mod mathml;
+pub(crate) use self::mathml::*;
 pub(crate) mod media;
 pub(crate) use self::media::*;
 pub(crate) mod mimetype;
@@ -312,6 +351,8 @@ pub(crate) use self::serviceworker::*;
 pub(crate) mod servointernals;
 pub(crate) mod servoparser;
 pub(crate) mod shadowroot;
+// BAO PATCH (REQ-BRW-051 C2): speculation rules (prefetch subset).
+pub(crate) mod speculation;
 pub(crate) mod srcset;
 pub(crate) mod storage;
 pub(crate) use self::storage::*;
@@ -335,6 +376,8 @@ pub(crate) mod url;
 pub(crate) use self::url::*;
 pub(crate) mod userscripts;
 pub(crate) mod values;
+pub(crate) mod viewtransition;
+pub(crate) mod viewtransitiontypeset;
 pub(crate) mod visualviewport;
 pub(crate) mod wakelock;
 pub(crate) use self::wakelock::*;
@@ -360,6 +403,13 @@ pub(crate) mod webcrypto;
 pub(crate) use self::webcrypto::*;
 pub(crate) mod webrtc;
 pub(crate) use self::webrtc::*;
+// BAO PATCH (REQ-BRW-051): `<script type=webbundle>` subresource loading
+// (element rule processing + bundle fetch listener). Fork-only: upstream servo
+// has no web-bundle support. These modules are referenced by their full
+// `crate::dom::webbundle*` paths, so they are deliberately not glob re-exported
+// into `dom` (no name-collision surface).
+pub(crate) mod webbundle;
+pub(crate) mod webbundle_fetch;
 pub(crate) mod webvtt;
 pub(crate) use self::webvtt::*;
 pub(crate) mod window;

@@ -312,8 +312,8 @@ impl StackingContextTree {
             .cumulative_content_box_rect(
                 ContainingBlockCalculation::AlreadyDoneWithStackingContextTree,
             )
-            .origin -
-            reference_frame_origin.cast_unit();
+            .origin
+            - reference_frame_origin.cast_unit();
 
         // Use that to find the offset from the fragment origin.
         Some(transformed_point - fragment_origin)
@@ -497,8 +497,8 @@ impl Fragment {
         let fragment_clone = self.clone();
         match self {
             Fragment::Box(fragment) | Fragment::Float(fragment) => {
-                if mode == StackingContextBuildMode::SkipHoisted &&
-                    fragment
+                if mode == StackingContextBuildMode::SkipHoisted
+                    && fragment
                         .style()
                         .get_box()
                         .position
@@ -893,8 +893,9 @@ impl BoxFragmentWithStyle<'_> {
         // > Note that text decorations are not propagated to floating and absolutely
         // > positioned descendants, nor to the contents of atomic inline-level descendants
         // > such as inline blocks and inline tables.
-        let text_decorations = match self.is_atomic_inline_level() ||
-            self.base
+        let text_decorations = match self.is_atomic_inline_level()
+            || self
+                .base
                 .flags
                 .contains(FragmentFlags::IS_OUTSIDE_LIST_ITEM_MARKER)
         {
@@ -1139,10 +1140,10 @@ impl BoxFragment {
             return None;
         }
 
-        if offsets.top.is_auto() &&
-            offsets.right.is_auto() &&
-            offsets.bottom.is_auto() &&
-            offsets.left.is_auto()
+        if offsets.top.is_auto()
+            && offsets.right.is_auto()
+            && offsets.bottom.is_auto()
+            && offsets.left.is_auto()
         {
             return None;
         }

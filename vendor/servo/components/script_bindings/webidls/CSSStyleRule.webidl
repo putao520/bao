@@ -7,4 +7,5 @@
 interface CSSStyleRule : CSSGroupingRule {
   attribute DOMString selectorText;
   [SameObject, PutForwards=cssText] readonly attribute CSSStyleDeclaration style;
+  [SameObject, Pref="dom_typed_om_enabled"] readonly attribute StylePropertyMap styleMap;
 };

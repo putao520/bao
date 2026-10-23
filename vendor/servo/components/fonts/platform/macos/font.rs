@@ -313,8 +313,8 @@ impl PlatformFontMethods for PlatformFont {
     }
 
     fn glyph_h_kerning(&self, first_glyph: GlyphId, second_glyph: GlyphId) -> FractionalPixel {
-        if let Some(ref table) = self.h_kern_subtable &&
-            let Some(font_units) = table.binary_search(first_glyph, second_glyph)
+        if let Some(ref table) = self.h_kern_subtable
+            && let Some(font_units) = table.binary_search(first_glyph, second_glyph)
         {
             return font_units as f64 * table.px_per_font_unit;
         }
@@ -340,9 +340,9 @@ impl PlatformFontMethods for PlatformFont {
         //      set to just 1.0 with no affine transformations.
         let x_scale = 1.0;
         let y_scale = 1.0;
-        let is_bitmap_font = self.table_for_tag(COLR).is_some() ||
-            self.table_for_tag(CBDT).is_some() ||
-            self.table_for_tag(SBIX).is_some();
+        let is_bitmap_font = self.table_for_tag(COLR).is_some()
+            || self.table_for_tag(CBDT).is_some()
+            || self.table_for_tag(SBIX).is_some();
 
         let (strike_scale, pixel_step) = if is_bitmap_font {
             (y_scale, 1.0)
@@ -428,9 +428,9 @@ impl PlatformFontMethods for PlatformFont {
     fn webrender_font_instance_flags(&self) -> FontInstanceFlags {
         let mut flags = {
             // TODO: Should this also validate these tables?
-            if self.table_for_tag(COLR).is_some() ||
-                self.table_for_tag(CBDT).is_some() ||
-                self.table_for_tag(SBIX).is_some()
+            if self.table_for_tag(COLR).is_some()
+                || self.table_for_tag(CBDT).is_some()
+                || self.table_for_tag(SBIX).is_some()
             {
                 FontInstanceFlags::EMBEDDED_BITMAPS
             } else {

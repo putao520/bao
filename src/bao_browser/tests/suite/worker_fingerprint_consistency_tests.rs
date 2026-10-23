@@ -418,11 +418,13 @@ fn c16_worker_surface_differs_from_no_stealth_baseline() {
         .expect("gated live test: BrowserRuntime::new must succeed");
 
     // ── Phase 1: no-stealth baseline worker (created before any stealth
-    //    install runs in this process).
+    //    install runs in this process). 显式 stealth-free 退出面(用户裁决
+    //    2026-10-21「默认 = 随机身份」后,无 profile 的默认页不再是
+    //    stealth-free;本相位角色=无 stealth 链对照,故显式退出)。
     let page_base = runtime
         .create_page(&PageConfig {
             url: Some("about:blank".into()),
-            stealth_profile: None,
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("gated live test: baseline create_page must succeed");

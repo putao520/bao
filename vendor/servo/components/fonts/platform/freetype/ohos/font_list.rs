@@ -140,8 +140,8 @@ fn detect_hos_font_style(font: &FontRef, file_path: &str) -> Option<String> {
         .unwrap_or_else(|_| {
             panic!("Failed to read {:?}'s postscript table!", file_path);
         })
-        .italic_angle() !=
-        (0_i32).into()
+        .italic_angle()
+        != (0_i32).into()
     {
         Some("italic".to_string())
     } else {
@@ -468,8 +468,8 @@ where
         return;
     }
 
-    if let Some(alias) = FONT_LIST.find_alias(family_name) &&
-        let Some(family) = FONT_LIST.find_family(&alias.to)
+    if let Some(alias) = FONT_LIST.find_alias(family_name)
+        && let Some(family) = FONT_LIST.find_family(&alias.to)
     {
         for font in &family.fonts {
             match (alias.weight, font.weight) {

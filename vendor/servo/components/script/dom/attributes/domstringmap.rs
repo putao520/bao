@@ -14,13 +14,16 @@ use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::xmlname::matches_name_production;
 use crate::dom::element::Element;
-use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::node::NodeTraits;
 
 #[dom_struct]
 pub(crate) struct DOMStringMap {
     reflector_: Reflector,
-    element: Dom<HTMLElement>,
+    // BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): the `dataset`
+    // attribute is exposed on `MathMLElement` as well (the HTML spec's
+    // HTMLOrSVGOrMathMLElement surface), so the associated element is stored as
+    // a plain `Element` rather than an `HTMLElement`.
+    element: Dom<Element>,
 }
 
 static DATA_PREFIX: &str = "data-";
@@ -115,14 +118,14 @@ fn to_snake_case(name: &DOMString, should_throw: bool) -> Option<String> {
 }
 
 impl DOMStringMap {
-    fn new_inherited(element: &HTMLElement) -> DOMStringMap {
+    fn new_inherited(element: &Element) -> DOMStringMap {
         DOMStringMap {
             reflector_: Reflector::new(),
             element: Dom::from_ref(element),
         }
     }
 
-    pub(crate) fn new(cx: &mut JSContext, element: &HTMLElement) -> DomRoot<DOMStringMap> {
+    pub(crate) fn new(cx: &mut JSContext, element: &Element) -> DomRoot<DOMStringMap> {
         reflect_dom_object(
             cx,
             Box::new(DOMStringMap::new_inherited(element)),
@@ -131,7 +134,7 @@ impl DOMStringMap {
     }
 
     fn as_element(&self) -> &Element {
-        self.element.upcast::<Element>()
+        &self.element
     }
 }
 

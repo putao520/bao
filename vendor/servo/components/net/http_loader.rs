@@ -73,20 +73,32 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 #[cfg(feature = "tracing")]
 use tracing::Instrument;
 
+// BAO (rustls excision, 2026-10-21): `ServoClient` dropped from the connector
+// imports below with the dead rustls HTTP client; the rest are the live
+// BoringSSL-face items.
 use crate::{
     async_runtime::spawn_task,
-    connector::{
-        CertificateErrorOverrideManager, ServoClient, TlsHandshakeInfo, create_ws_tls_config,
-    },
+    connector::{CertificateErrorOverrideManager, TlsHandshakeInfo, create_ws_tls_config},
     cookie::ServoCookie,
     cookie_storage::CookieStorage,
+    dbsc::{
+        exchange::{
+            SKIPPED_HEADER, process_dbsc_response_headers, refresh_sessions_for_request,
+            skipped_header_value,
+        },
+        model::RequestOrigin,
+        store::DbscStore,
+    },
     decoder::Decoder,
     devtools::{send_request_to_devtools, send_response_values_to_devtools},
     embedder::NetToEmbedderMsg,
     fetch::{
         cors_cache::CorsCache,
         fetch_params::FetchParams,
-        headers::{SecFetchDest, SecFetchMode, SecFetchSite, SecFetchUser},
+        headers::{
+            SecFetchDest, SecFetchMode, SecFetchSite, SecFetchUser,
+            insert_sec_fetch_dest_webbundle,
+        },
         methods::{Data, DoneChannel, FetchContext, Target, fetch, main_fetch},
     },
     hsts::HstsList,
@@ -382,7 +394,15 @@ pub struct HttpState {
     pub http_cache: HttpCache,
     pub auth_cache: RwLock<AuthCache>,
     pub history_states: RwLock<FxHashMap<HistoryStateId, Vec<u8>>>,
-    pub client: ServoClient,
+    // BAO PATCH (REQ-BRW-051): the DBSC session store of this cookie
+    // partition — sessions share the jar's partition by construction
+    // (REQ-CDS-009 C6 partitions resolve whole `HttpState`s, so no separate
+    // DBSC partition key exists).
+    pub dbsc: DbscStore,
+    // BAO (rustls excision, 2026-10-21): the `client: ServoClient` field is
+    // gone — the rustls-backed hyper client it held was constructed once and
+    // never issued a request (page HTTP rides the bun bridge, WSS rides
+    // BoringSSL); `HttpState` keeps only the live faces (jar/cache/overrides).
     pub override_manager: CertificateErrorOverrideManager,
     pub embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
 }
@@ -625,7 +645,14 @@ fn set_request_cookies(
     }
 }
 
-fn set_cookie_for_url(cookie_jar: &RwLock<CookieStorage>, request: &ServoUrl, cookie_val: &str) {
+// BAO PATCH (REQ-BRW-051): `pub(crate)` — the DBSC exchange layer stores
+// the bound cookies of registration/refresh instruction responses through
+// the exact path a page-visible response takes.
+pub(crate) fn set_cookie_for_url(
+    cookie_jar: &RwLock<CookieStorage>,
+    request: &ServoUrl,
+    cookie_val: &str,
+) {
     let mut cookie_jar = cookie_jar.write();
     let source = CookieSource::HTTP;
 
@@ -652,9 +679,11 @@ fn set_cookies_from_headers(
 
 fn build_tls_security_info(handshake: &TlsHandshakeInfo, hsts_enabled: bool) -> TlsSecurityInfo {
     // Simplified security state determination:
-    // Servo uses rustls, which only supports TLS 1.2+ and secure cipher suites (GCM, ChaCha20-Poly1305).
-    // rustls does NOT support TLS 1.0, TLS 1.1, SSL, or weak ciphers (RC4, 3DES, CBC, etc).
-    // Therefore, any successful TLS connection is secure by design.
+    // BAO (rustls excision, 2026-10-21): the wire stack is BoringSSL (bun
+    // bridge / WSS), but the negotiated-parameters contract is unchanged —
+    // the stealth profile constrains handshakes to TLS 1.2+ with AEAD suites
+    // (GCM / ChaCha20-Poly1305), never TLS 1.0/1.1/SSL or weak ciphers
+    // (RC4, 3DES, CBC). Any successful TLS connection is secure by design.
     //
     // We only check for missing handshake information as a defensive measure.
 
@@ -662,13 +691,13 @@ fn build_tls_security_info(handshake: &TlsHandshakeInfo, hsts_enabled: bool) -> 
         // Missing handshake information indicates an incomplete or failed connection
         TlsSecurityState::Insecure
     } else {
-        // rustls guarantees TLS 1.2+ with secure ciphers
+        // Stealth-constrained TLS 1.2+ with secure ciphers
         TlsSecurityState::Secure
     };
 
     TlsSecurityInfo {
         state,
-        weakness_reasons: Vec::new(), // rustls never negotiates weak crypto
+        weakness_reasons: Vec::new(), // no weak crypto on the BoringSSL stacks
         protocol_version: handshake.protocol_version.map(ServoProtocolVersion),
         cipher_suite: handshake.cipher_suite.map(ServoCipherSuite),
         kea_group_name: handshake.kea_group_name.map(ServoNamedGroup),
@@ -1007,7 +1036,17 @@ pub(crate) async fn http_fetch(
         // mediate its own script fetch (guards the update job, which
         // re-fetches the script while an active worker exists; upstream
         // leaves that request's service-workers mode at the default "all").
-        if request.destination != Destination::ServiceWorker {
+        // BAO PATCH (REQ-BRW-051): web bundle requests and subresources served
+        // from a web bundle never go through service worker mediation (WPT
+        // service-worker-controlled). The bundle request carries `initiator ==
+        // WebBundle` and `service_workers_mode == None`; a subresource is
+        // recognized by its matching element registration here. Requests that
+        // match but ultimately fall through to the network still skip the SW —
+        // the registration means the web bundle owns that URL.
+        if request.destination != Destination::ServiceWorker &&
+            request.initiator != Initiator::WebBundle &&
+            !crate::webbundle::request_matches_registered_bundle(request)
+        {
             response = invoke_handle_fetch(request, context).await;
         }
 
@@ -1477,6 +1516,14 @@ pub async fn http_redirect_fetch(
         // This list currently only contains the AUTHORIZATION header
         // https://fetch.spec.whatwg.org/#cors-non-wildcard-request-header-name
         request.headers.remove(AUTHORIZATION);
+        // BAO PATCH (REQ-BRW-051): the DBSC `Secure-Session-Skipped` debug
+        // header describes the hop that attempted the refresh; it must not
+        // travel to a cross-origin target (WPT debug-header "Cross-site
+        // redirects do not send debug header"). The spec defines no redirect
+        // rule for this header; the WPT cells are the authority here, and
+        // dropping it on any origin change is the privacy-safe reading
+        // (same-site-but-cross-origin redirects are not exercised by WPT).
+        request.headers.remove(crate::dbsc::exchange::SKIPPED_HEADER);
     }
 
     // Step 14: If request’s body is non-null, then set request’s body to the body of the result of
@@ -1531,6 +1578,20 @@ async fn http_network_or_cache_fetch(
     done_chan: &mut DoneChannel,
     context: &FetchContext,
 ) -> Response {
+    // BAO PATCH (REQ-BRW-051): web bundle subresource seam. A request whose URL
+    // matches a `<script type=webbundle>` element registration settles here:
+    // it waits for the bundle loader, is served from the bundle when the bundle
+    // contains the URL, or fails closed when the bundle failed/was removed. The
+    // hook runs inside the network-or-cache leg (not at `main_fetch`) so the
+    // CORS / CORP / TAO checks that bracket this call still apply to bundled
+    // responses exactly as they do to network responses.
+    if let Some(outcome) = crate::webbundle::serve_from_web_bundle(&fetch_params.request).await {
+        return match outcome {
+            crate::webbundle::BundleLookupOutcome::Serve(response) => response,
+            crate::webbundle::BundleLookupOutcome::Reject(error) => Response::network_error(error),
+        };
+    }
+
     // Step 2. Let httpFetchParams be null.
     let http_fetch_params: &mut FetchParams;
     let mut fetch_params_copy: FetchParams;
@@ -1683,8 +1744,15 @@ async fn http_network_or_cache_fetch(
 
     // Step 8.14: If httpRequest’s initiator is "prefetch", then set a structured field value given
     // (`Sec-Purpose`, the token "prefetch") in httpRequest’s header list.
-    if http_request.initiator == Initiator::Prefetch
-        && let Ok(value) = HeaderValue::from_str("prefetch")
+    //
+    // BAO PATCH (REQ-BRW-051 C2): speculation rules prefetch requests may
+    // already carry a richer `Sec-Purpose` value (`prefetch;anonymous-client-ip`
+    // when the rule requires it). Never clobber an explicitly prepared value;
+    // `<link rel=prefetch>` does not set the header and keeps the behavior
+    // below.
+    if http_request.initiator == Initiator::Prefetch &&
+        !http_request.headers.contains_key("Sec-Purpose") &&
+        let Ok(value) = HeaderValue::from_str("prefetch")
     {
         http_request.headers.insert("Sec-Purpose", value);
     }
@@ -1728,6 +1796,47 @@ async fn http_network_or_cache_fetch(
             &mut http_request.headers,
             &context.state.cookie_jar,
         );
+        // BAO PATCH (REQ-BRW-051): DBSC refresh determination — after the
+        // request's cookies were computed, a session in scope whose bound
+        // credentials are missing or mismatched triggers the draft's refresh
+        // loop (blocking this request); the jar then holds the rotated
+        // bound cookies, so they are re-read and re-attached here. The
+        // refresh URL is excluded from its own session's scope, so this
+        // hook can never recurse.
+        if pref!(network_dbsc_enabled) {
+            // §8.3 judges the request by its ORIGIN (not its URL): the
+            // refresh may run when that origin is same-site/same-origin with
+            // the session's scope origin, or its host matches an
+            // `allowed_refresh_initiators` pattern. `Origin::Client` cannot
+            // occur here (the fetch pipeline resolves it from the client
+            // before the HTTP fetch); the opaque default `RequestOrigin`
+            // permits nothing, which is the safe reading anyway.
+            let request_origin = match &http_request.origin {
+                Origin::Origin(origin) => RequestOrigin::from_origin(origin),
+                Origin::Client => RequestOrigin::default(),
+            };
+            let outcome = refresh_sessions_for_request(
+                &current_url,
+                &request_origin,
+                http_request.target_webview_id,
+                http_request.pipeline_id,
+                &context.state,
+                context,
+            )
+            .await;
+            // §8.12/§9.5: report the sessions that could not be refreshed on
+            // THIS request (the debug header is a per-hop request header).
+            if let Some(value) = skipped_header_value(&outcome.skipped) {
+                http_request.headers.insert(SKIPPED_HEADER, value);
+            }
+            if outcome.restart_cookies {
+                set_request_cookies(
+                    &current_url,
+                    &mut http_request.headers,
+                    &context.state.cookie_jar,
+                );
+            }
+        }
         // Substep 2
         if !http_request.headers.contains_key(header::AUTHORIZATION) {
             // Substep 3
@@ -2408,11 +2517,12 @@ async fn http_network_fetch(
         } => {
             // https://fetch.spec.whatwg.org/#websocket-opening-handshake
 
-            let (resource_event_sender, dom_action_receiver) = {
+            let (resource_event_sender, dom_action_receiver, flow_control) = {
                 let mut websocket_chan = context.websocket_chan.as_ref().unwrap().lock();
                 (
                     websocket_chan.sender.clone(),
                     websocket_chan.receiver.take().unwrap(),
+                    websocket_chan.flow_control,
                 )
             };
 
@@ -2436,6 +2546,7 @@ async fn http_network_fetch(
                 request,
                 tls_config,
                 dom_action_receiver,
+                flow_control,
             )
             .await
             {
@@ -2784,6 +2895,38 @@ async fn http_network_fetch(
     // Step 15
     if credentials_flag {
         set_cookies_from_headers(&url, &response.headers, &context.state.cookie_jar);
+    }
+
+    // BAO PATCH (REQ-BRW-051): DBSC response faces — Clear-Site-Data session
+    // removal, early challenge caching, and `Secure-Session-Registration`
+    // directive processing (registration POSTs included). Secure-context
+    // only: the draft establishes sessions over secure transports. This is
+    // the natural seam per the design ("set_cookies_from_headers 之后是自然
+    // 挂点"): the response's own Set-Cookie faces are stored before the
+    // registration POST's response rotates them again.
+    if pref!(network_dbsc_enabled) &&
+        url.is_secure_scheme() &&
+        (response.headers.contains_key("secure-session-registration") ||
+            response.headers.contains_key("secure-session-challenge") ||
+            response.headers.contains_key("clear-site-data"))
+    {
+        // The response's third-party state is judged from the initiating
+        // request's origin (the registration/refresh cookie-storage and
+        // challenge gates are relative to it).
+        let request_origin = match &request.origin {
+            Origin::Origin(origin) => RequestOrigin::from_origin(origin),
+            Origin::Client => RequestOrigin::default(),
+        };
+        process_dbsc_response_headers(
+            &url,
+            &request_origin,
+            &response.headers,
+            request.target_webview_id,
+            request.pipeline_id,
+            &context.state,
+            context,
+        )
+        .await;
     }
     context
         .state
@@ -3244,6 +3387,15 @@ fn set_the_sec_fetch_dest_header(r: &mut Request) {
     // Step 1. Assert: r’s current url is a potentially trustworthy URL.
     debug_assert!(r.current_url().is_potentially_trustworthy());
 
+    // BAO PATCH (REQ-BRW-051): web bundle fetches advertise
+    // `Sec-Fetch-Dest: webbundle` (WPT request-destination). The bundle request
+    // is identified by its initiator because the CSP crate's `Destination` has
+    // no `webbundle` member.
+    if r.initiator == Initiator::WebBundle {
+        insert_sec_fetch_dest_webbundle(&mut r.headers);
+        return;
+    }
+
     // Step 2. Let header be a Structured Header whose value is a token.
     // Step 3. If r’s destination is the empty string, set header’s value to the string "empty".
     // Otherwise, set header’s value to r’s destination.
@@ -3316,7 +3468,10 @@ fn set_the_sec_fetch_user_header(r: &mut Request) {
 
     // Step 2. If r is not a navigation request, or if r’s user-activation is false, return.
     // TODO user activation
-    if !r.is_navigation_request() {
+    //
+    // BAO PATCH (REQ-BRW-051 C2): speculation rules prefetches are navigation
+    // requests without user activation; never send `Sec-Fetch-User` for them.
+    if !r.is_navigation_request() || r.initiator == Initiator::Prefetch {
         return;
     }
 

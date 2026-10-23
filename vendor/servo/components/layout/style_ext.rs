@@ -25,7 +25,7 @@ use style::values::computed::basic_shape::ClipPath;
 use style::values::computed::image::Image as ComputedImageLayer;
 use style::values::computed::{
     BorderSideWidth, BorderStyle, Color, Inset, ItemPlacement, LengthPercentage, Margin,
-    SelfAlignment,
+    SelfAlignment, TextWrapMode, WhiteSpaceCollapse,
 };
 use style::values::generics::box_::Perspective;
 use style::values::generics::position::{GenericAspectRatio, PreferredRatio};
@@ -81,7 +81,23 @@ impl DisplayGeneratingBox {
         // > When the display property of a replaced element computes to one of
         // > the layout-internal values, it is handled as having a used value of
         // > inline.
-        if matches!(self, Self::LayoutInternal(_)) && contents.is_replaced() {
+        //
+        // BAO-BRIDGE(W1 ruby box model, 2026-10-21): internal ruby boxes are
+        // layout-internal, and a replaced element never generates a ruby
+        // container, so both take their used value of `inline flow`.
+        let handles_layout_internal_values = match self {
+            Self::LayoutInternal(_) => true,
+            Self::OutsideInside {
+                outside: DisplayOutside::InternalRuby,
+                ..
+            } => true,
+            Self::OutsideInside {
+                inside: DisplayInside::Ruby,
+                ..
+            } => true,
+            Self::OutsideInside { .. } => false,
+        };
+        if handles_layout_internal_values && contents.is_replaced() {
             Self::OutsideInside {
                 outside: DisplayOutside::Inline,
                 inside: DisplayInside::Flow {
@@ -95,17 +111,31 @@ impl DisplayGeneratingBox {
             // `flow-root` unconditionally, depending on the element.
             // Also, prevent it from being a list item, like Blink and WebKit, but
             // unlike Gecko. See https://github.com/w3c/csswg-drafts/issues/14187
-            if let DisplayGeneratingBox::OutsideInside { outside, inside } = self &&
-                (matches!(
+            if let DisplayGeneratingBox::OutsideInside { outside, inside } = self
+                && (matches!(
                     inside,
-                    DisplayInside::Flow { .. } | DisplayInside::FlowRoot { .. }
-                ) || info.node.type_id() !=
-                    Some(LayoutNodeType::Element(
+                    DisplayInside::Flow { .. }
+                        | DisplayInside::FlowRoot { .. }
+                        | DisplayInside::Ruby
+                        | DisplayInside::RubyBase
+                        | DisplayInside::RubyBaseContainer
+                        | DisplayInside::RubyText
+                        | DisplayInside::RubyTextContainer
+                ) || info.node.type_id()
+                    != Some(LayoutNodeType::Element(
                         LayoutElementType::HTMLButtonElement,
                     )))
             {
                 DisplayGeneratingBox::OutsideInside {
-                    outside: *outside,
+                    // A widget never generates ruby boxes: an internal ruby
+                    // outer display type is normalized to `inline` alongside
+                    // the `flow-root` inner display type.
+                    outside: match outside {
+                        DisplayOutside::Block => DisplayOutside::Block,
+                        DisplayOutside::Inline | DisplayOutside::InternalRuby => {
+                            DisplayOutside::Inline
+                        },
+                    },
                     inside: DisplayInside::FlowRoot {
                         is_list_item: false,
                     },
@@ -123,17 +153,46 @@ impl DisplayGeneratingBox {
 pub(crate) enum DisplayOutside {
     Block,
     Inline,
+    /// An internal ruby box (`display: ruby-base`, `ruby-text`,
+    /// `ruby-base-container`, `ruby-text-container`).
+    /// <https://drafts.csswg.org/css-display/#display-internal>
+    InternalRuby,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DisplayInside {
     // “list-items are limited to the Flow Layout display types”
     // <https://drafts.csswg.org/css-display/#list-items>
-    Flow { is_list_item: bool },
-    FlowRoot { is_list_item: bool },
+    Flow {
+        is_list_item: bool,
+    },
+    FlowRoot {
+        is_list_item: bool,
+    },
     Flex,
     Grid,
     Table,
+    /// A ruby container: `display: ruby` (inline-level) or `display: block
+    /// ruby` (block-level). <https://drafts.csswg.org/css-ruby/#ruby-structure>
+    Ruby,
+    /// An internal ruby box's inner display type. These are carried into
+    /// layout so that the ruby container box generation of CSS Ruby §2.2 can
+    /// classify its children; see
+    /// [`crate::flow::inline::construct::RubyChildCollector`].
+    RubyBase,
+    RubyBaseContainer,
+    RubyText,
+    RubyTextContainer,
+    // BAO PATCH (REQ-BRW-051 C2, MathML layout, 2026-10-21): a MathML
+    // formatting context. MathML Core uses `display: block math`/`display:
+    // inline math`, but this stylo snapshot has no `math` inside value (the
+    // `math` generic font family and the `font-size: math` keyword are
+    // gecko-only), so the MathML inside type is forced by layout for MathML
+    // elements instead of being derived from the computed display. See
+    // `dom_traversal::traverse_element`, where it is applied, and
+    // `formatting_contexts::IndependentFormattingContext::rebuild`, which
+    // preserves it across rebuilds.
+    Math,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,14 +283,14 @@ impl AspectRatio {
         match ratio_dependent_axis {
             // Calculate the inline size from the block size
             AxisDirection::Inline => {
-                (ratio_determining_size + self.box_sizing_adjustment.block).scale_by(self.i_over_b) -
-                    self.box_sizing_adjustment.inline
+                (ratio_determining_size + self.box_sizing_adjustment.block).scale_by(self.i_over_b)
+                    - self.box_sizing_adjustment.inline
             },
             // Calculate the block size from the inline size
             AxisDirection::Block => {
                 (ratio_determining_size + self.box_sizing_adjustment.inline)
-                    .scale_by(1.0 / self.i_over_b) -
-                    self.box_sizing_adjustment.block
+                    .scale_by(1.0 / self.i_over_b)
+                    - self.box_sizing_adjustment.block
             },
         }
     }
@@ -381,6 +440,9 @@ pub(crate) trait ComputedValuesExt {
     fn is_atomic_inline_level(&self, fragment_flags: FragmentFlags) -> bool;
     fn overflow_direction(&self) -> OverflowDirection;
     fn to_bidi_level(&self) -> Level;
+    /// Whether or not this style causes conditional hanging in inline layout
+    /// i.e. if it is `white-space-collapse: preserve` and `text-wrap-mode: wrap`.
+    fn white_space_may_hang_conditionally(&self) -> bool;
 }
 
 impl ComputedValuesExt for ComputedValues {
@@ -533,19 +595,36 @@ impl ComputedValuesExt for ComputedValues {
     }
 
     fn is_inline_box(&self, fragment_flags: FragmentFlags) -> bool {
-        (self.get_box().display.is_inline_flow() &&
-            !fragment_flags.intersects(
-                FragmentFlags::IS_REPLACED |
-                    FragmentFlags::IS_WIDGET |
-                    FragmentFlags::IS_FLEX_OR_GRID_ITEM,
-            )) ||
-            matches!(self.pseudo(), Some(PseudoElement::FirstLetter))
+        // BAO-BRIDGE(W1 ruby box model, 2026-10-21): an inline-level ruby
+        // container (`display: ruby`) is an inline box of the ruby box model
+        // (CSS Ruby §2.1) and lays out inside the line like any inline box.
+        // `display: block ruby` is block-level, and the internal ruby boxes are
+        // independent formatting contexts (ruby cells) which are classified as
+        // atomic inline-level boxes below.
+        let display = self.get_box().display;
+        let inline_ruby_container = display.inside() == stylo::DisplayInside::Ruby
+            && display.outside() == stylo::DisplayOutside::Inline;
+        ((display.is_inline_flow() || inline_ruby_container)
+            && !fragment_flags.intersects(
+                FragmentFlags::IS_REPLACED
+                    | FragmentFlags::IS_WIDGET
+                    | FragmentFlags::IS_FLEX_OR_GRID_ITEM,
+            ))
+            || matches!(self.pseudo(), Some(PseudoElement::FirstLetter))
     }
 
     fn is_atomic_inline_level(&self, fragment_flags: FragmentFlags) -> bool {
-        self.get_box().display.outside() == stylo::DisplayOutside::Inline &&
-            !self.is_inline_box(fragment_flags) &&
-            !fragment_flags.intersects(FragmentFlags::IS_FLEX_OR_GRID_ITEM)
+        // BAO-BRIDGE(W1 ruby box model, 2026-10-21): each ruby cell is an
+        // inline-level independent formatting context, so it classifies as
+        // atomic inline-level for painting and damage isolation. Its own line
+        // boxes (which carry the base and annotation text) are painted through
+        // the normal atomic inline painting path.
+        let display = self.get_box().display;
+        let is_inline_level = display.outside() == stylo::DisplayOutside::Inline
+            || display.outside() == stylo::DisplayOutside::InternalRuby;
+        is_inline_level
+            && !self.is_inline_box(fragment_flags)
+            && !fragment_flags.intersects(FragmentFlags::IS_FLEX_OR_GRID_ITEM)
     }
 
     /// Returns true if this is a transformable element.
@@ -564,11 +643,11 @@ impl ComputedValuesExt for ComputedValues {
 
     /// Returns true if this style has a transform or perspective property set.
     fn has_transform_or_perspective_style(&self) -> bool {
-        !self.get_box().transform.0.is_empty() ||
-            self.get_box().scale != GenericScale::None ||
-            self.get_box().rotate != GenericRotate::None ||
-            self.get_box().translate != GenericTranslate::None ||
-            self.get_box().perspective != Perspective::None
+        !self.get_box().transform.0.is_empty()
+            || self.get_box().scale != GenericScale::None
+            || self.get_box().rotate != GenericRotate::None
+            || self.get_box().translate != GenericTranslate::None
+            || self.get_box().perspective != Perspective::None
     }
 
     /// Returns true if this style has a transform or perspective property set, and
@@ -636,8 +715,11 @@ impl ComputedValuesExt for ComputedValues {
 
         let ignores_overflow = match self.get_box().display.inside() {
             // <https://drafts.csswg.org/css-overflow-3/#overflow-control>
-            // `overflow` doesn't apply to inline boxes.
-            stylo::DisplayInside::Flow => self.is_inline_box(fragment_flags),
+            // `overflow` doesn't apply to inline boxes. A ruby container has the
+            // same inline box face as `display: inline` here (BAO-BRIDGE W1).
+            stylo::DisplayInside::Flow | stylo::DisplayInside::Ruby => {
+                self.is_inline_box(fragment_flags)
+            },
 
             // According to <https://drafts.csswg.org/css-tables/#global-style-overrides>,
             // - overflow applies to table-wrapper boxes and not to table grid boxes.
@@ -647,19 +729,19 @@ impl ComputedValuesExt for ComputedValues {
             // - Tables ignore overflow values different than visible, clip and hidden.
             //   This affects both axes, to ensure they have the same scrollability.
             stylo::DisplayInside::Table => {
-                !matches!(self.pseudo(), Some(PseudoElement::ServoTableGrid)) ||
-                    matches!(overflow.x, Overflow::Auto | Overflow::Scroll) ||
-                    matches!(overflow.y, Overflow::Auto | Overflow::Scroll)
+                !matches!(self.pseudo(), Some(PseudoElement::ServoTableGrid))
+                    || matches!(overflow.x, Overflow::Auto | Overflow::Scroll)
+                    || matches!(overflow.y, Overflow::Auto | Overflow::Scroll)
             },
 
             // <https://drafts.csswg.org/css-tables/#global-style-overrides>
             // Table-track and table-track-group boxes ignore overflow.
-            stylo::DisplayInside::TableColumn |
-            stylo::DisplayInside::TableColumnGroup |
-            stylo::DisplayInside::TableRow |
-            stylo::DisplayInside::TableRowGroup |
-            stylo::DisplayInside::TableHeaderGroup |
-            stylo::DisplayInside::TableFooterGroup => true,
+            stylo::DisplayInside::TableColumn
+            | stylo::DisplayInside::TableColumnGroup
+            | stylo::DisplayInside::TableRow
+            | stylo::DisplayInside::TableRowGroup
+            | stylo::DisplayInside::TableHeaderGroup
+            | stylo::DisplayInside::TableFooterGroup => true,
 
             _ => false,
         };
@@ -698,14 +780,14 @@ impl ComputedValuesExt for ComputedValues {
         // TODO: Support `mask-image`, `mask-border-source`, and `contain`.
         let effects = self.get_effects();
         let overflow = self.effective_overflow(fragment_flags);
-        if !matches!(overflow.x, Overflow::Visible | Overflow::Clip) ||
-            !matches!(overflow.y, Overflow::Visible | Overflow::Clip) ||
-            effects.opacity < 1.0 ||
-            !effects.filter.0.is_empty() ||
-            !effects.clip.is_auto() ||
-            self.get_svg().clip_path != ClipPath::None ||
-            self.get_box().isolation == ComputedIsolation::Isolate ||
-            effects.mix_blend_mode != ComputedMixBlendMode::Normal
+        if !matches!(overflow.x, Overflow::Visible | Overflow::Clip)
+            || !matches!(overflow.y, Overflow::Visible | Overflow::Clip)
+            || effects.opacity < 1.0
+            || !effects.filter.0.is_empty()
+            || !effects.clip.is_auto()
+            || self.get_svg().clip_path != ClipPath::None
+            || self.get_box().isolation == ComputedIsolation::Isolate
+            || effects.mix_blend_mode != ComputedMixBlendMode::Normal
         {
             return ComputedTransformStyle::Flat;
         }
@@ -766,9 +848,9 @@ impl ComputedValuesExt for ComputedValues {
 
         // From <https://www.w3.org/TR/CSS2/visuren.html#z-index>, values different than `auto`
         // make the box establish a stacking context.
-        if self.z_index_applies(fragment_flags) &&
-            (!self.get_position().z_index.is_auto() ||
-                will_change_bits.intersects(WillChangeBits::Z_INDEX))
+        if self.z_index_applies(fragment_flags)
+            && (!self.get_position().z_index.is_auto()
+                || will_change_bits.intersects(WillChangeBits::Z_INDEX))
         {
             return true;
         }
@@ -796,11 +878,10 @@ impl ComputedValuesExt for ComputedValues {
         // From <https://www.w3.org/TR/css-transforms-2/#transform-style-property>
         // > A computed value of `preserve-3d` for `transform-style` on a transformable element
         // > establishes both a stacking context and a containing block for all descendants.
-        if self.is_transformable(fragment_flags) &&
-            (self.has_transform_or_perspective_style() ||
-                self.used_transform_style(fragment_flags) ==
-                    ComputedTransformStyle::Preserve3d ||
-                will_change_bits
+        if self.is_transformable(fragment_flags)
+            && (self.has_transform_or_perspective_style()
+                || self.used_transform_style(fragment_flags) == ComputedTransformStyle::Preserve3d
+                || will_change_bits
                     .intersects(WillChangeBits::TRANSFORM | WillChangeBits::PERSPECTIVE))
         {
             return true;
@@ -910,11 +991,10 @@ impl ComputedValuesExt for ComputedValues {
         // From <https://drafts.csswg.org/css-transforms-2/#transform-style-property>:
         // > A computed value of `preserve-3d` for `transform-style` on a transformable element
         // > establishes both a stacking context and a containing block for all descendants.
-        if self.is_transformable(fragment_flags) &&
-            (self.has_transform_or_perspective_style() ||
-                self.used_transform_style(fragment_flags) ==
-                    ComputedTransformStyle::Preserve3d ||
-                will_change_bits
+        if self.is_transformable(fragment_flags)
+            && (self.has_transform_or_perspective_style()
+                || self.used_transform_style(fragment_flags) == ComputedTransformStyle::Preserve3d
+                || will_change_bits
                     .intersects(WillChangeBits::TRANSFORM | WillChangeBits::PERSPECTIVE))
         {
             return true;
@@ -924,9 +1004,9 @@ impl ComputedValuesExt for ComputedValues {
         // > A value other than none for the filter property results in the creation of a containing
         // > block for absolute and fixed positioned descendants unless the element it applies to is
         // > a document root element in the current browsing context.
-        if !fragment_flags.contains(FragmentFlags::IS_ROOT_ELEMENT) &&
-            (!self.get_effects().filter.0.is_empty() ||
-                will_change_bits.intersects(WillChangeBits::FIXPOS_CB_NON_SVG))
+        if !fragment_flags.contains(FragmentFlags::IS_ROOT_ELEMENT)
+            && (!self.get_effects().filter.0.is_empty()
+                || will_change_bits.intersects(WillChangeBits::FIXPOS_CB_NON_SVG))
         {
             return true;
         }
@@ -1007,8 +1087,8 @@ impl ComputedValuesExt for ComputedValues {
     fn background_is_transparent(&self) -> bool {
         let background = self.get_background();
         let color = self.resolve_color(&background.background_color);
-        color.alpha == 0.0 &&
-            background
+        color.alpha == 0.0
+            && background
                 .background_image
                 .0
                 .iter()
@@ -1085,10 +1165,10 @@ impl ComputedValuesExt for ComputedValues {
         let inline_end_direction = self.writing_mode.inline_end_physical_side();
         let block_end_direction = self.writing_mode.block_end_physical_side();
 
-        let rightward = inline_end_direction == PhysicalSide::Right ||
-            block_end_direction == PhysicalSide::Right;
-        let downward = inline_end_direction == PhysicalSide::Bottom ||
-            block_end_direction == PhysicalSide::Bottom;
+        let rightward = inline_end_direction == PhysicalSide::Right
+            || block_end_direction == PhysicalSide::Right;
+        let downward = inline_end_direction == PhysicalSide::Bottom
+            || block_end_direction == PhysicalSide::Bottom;
 
         // TODO(stevennovaryo): We should consider the flex-container's CSS (e.g. flow-direction: column-reverse).
         OverflowDirection {
@@ -1106,6 +1186,11 @@ impl ComputedValuesExt for ComputedValues {
         } else {
             Level::rtl()
         }
+    }
+
+    fn white_space_may_hang_conditionally(&self) -> bool {
+        *self.get_white_space_collapse() == WhiteSpaceCollapse::Preserve
+            && *self.get_text_wrap_mode() == TextWrapMode::Wrap
     }
 }
 
@@ -1164,10 +1249,10 @@ impl LayoutStyle<'_> {
                 _ => false,
             }
         };
-        let depends_on_block_constraints = depends_on_block_constraints(&box_size.block) ||
-            depends_on_block_constraints(&min_size.block) ||
-            depends_on_block_constraints(&max_size.block) ||
-            style.depends_on_block_constraints_due_to_relative_positioning(writing_mode);
+        let depends_on_block_constraints = depends_on_block_constraints(&box_size.block)
+            || depends_on_block_constraints(&min_size.block)
+            || depends_on_block_constraints(&max_size.block)
+            || style.depends_on_block_constraints_due_to_relative_positioning(writing_mode);
 
         let box_size = box_size.map_with(&containing_block.size, |size, basis| {
             size.resolve_percentages_for_preferred(*basis)
@@ -1298,6 +1383,14 @@ impl From<stylo::Display> for Display {
                     DisplayLayoutInternal::TableCaption,
                 ));
             },
+            // BAO-BRIDGE(W1 ruby box model, 2026-10-21): internal ruby boxes
+            // keep their ruby identity into layout. The W0 transitional
+            // interpretation (`InternalRuby => Inline`, i.e. plain flow) is
+            // retired: `BlockContainerBuilder` now generates real ruby boxes
+            // for this family (CSS Ruby §2.2) via
+            // `flow::inline::construct::RubyChildCollector` and the ruby
+            // inline items.
+            stylo::DisplayOutside::InternalRuby => DisplayOutside::InternalRuby,
             stylo::DisplayOutside::InternalTable => {
                 let internal = match inside {
                     stylo::DisplayInside::TableRowGroup => DisplayLayoutInternal::TableRowGroup,
@@ -1337,17 +1430,29 @@ impl From<stylo::Display> for Display {
             stylo::DisplayInside::GridLanes => unreachable!("Should be disabled behind a pref"),
             stylo::DisplayInside::Table => DisplayInside::Table,
 
+            // BAO-BRIDGE(W1 ruby box model, 2026-10-21): the ruby value
+            // family is preserved into layout (the W0 `=> Flow` downgrade is
+            // retired). Box generation happens in `flow/construct.rs`
+            // (`handle_ruby_container_element` and friends) and the segment
+            // geometry is produced by `flow/inline` from the pure functions in
+            // `flow/ruby`.
+            stylo::DisplayInside::Ruby => DisplayInside::Ruby,
+            stylo::DisplayInside::RubyBase => DisplayInside::RubyBase,
+            stylo::DisplayInside::RubyBaseContainer => DisplayInside::RubyBaseContainer,
+            stylo::DisplayInside::RubyText => DisplayInside::RubyText,
+            stylo::DisplayInside::RubyTextContainer => DisplayInside::RubyTextContainer,
+
             // These should not be values of DisplayInside, but oh well
             stylo::DisplayInside::None => return Display::None,
             stylo::DisplayInside::Contents => return Display::Contents,
 
-            stylo::DisplayInside::TableRowGroup |
-            stylo::DisplayInside::TableColumn |
-            stylo::DisplayInside::TableColumnGroup |
-            stylo::DisplayInside::TableHeaderGroup |
-            stylo::DisplayInside::TableFooterGroup |
-            stylo::DisplayInside::TableRow |
-            stylo::DisplayInside::TableCell => unreachable!("Internal DisplayInside found"),
+            stylo::DisplayInside::TableRowGroup
+            | stylo::DisplayInside::TableColumn
+            | stylo::DisplayInside::TableColumnGroup
+            | stylo::DisplayInside::TableHeaderGroup
+            | stylo::DisplayInside::TableFooterGroup
+            | stylo::DisplayInside::TableRow
+            | stylo::DisplayInside::TableCell => unreachable!("Internal DisplayInside found"),
         };
         Display::GeneratingBox(DisplayGeneratingBox::OutsideInside { outside, inside })
     }

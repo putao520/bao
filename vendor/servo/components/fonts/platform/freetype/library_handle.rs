@@ -74,9 +74,9 @@ impl Drop for FreeTypeLibraryHandle {
 impl MallocSizeOf for FreeTypeLibraryHandle {
     fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
         unsafe {
-            FREETYPE_MEMORY_USAGE.load(Ordering::Relaxed) +
-                ops.malloc_size_of(self.freetype_library as *const _) +
-                ops.malloc_size_of(self.freetype_memory as *const _)
+            FREETYPE_MEMORY_USAGE.load(Ordering::Relaxed)
+                + ops.malloc_size_of(self.freetype_library as *const _)
+                + ops.malloc_size_of(self.freetype_memory as *const _)
         }
     }
 }

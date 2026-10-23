@@ -89,8 +89,15 @@ sub { vertical-align: sub; }
 sup { vertical-align: super; }
 sub, sup { line-height: normal; font-size: smaller; }
 
-ruby { display: ruby; }
-rt { display: ruby-text; }
+/* https://drafts.csswg.org/css-ruby-1/#default-stylesheet */
+ruby { display: ruby; ruby-position: over; ruby-align: space-around; }
+rb { display: ruby-base; }
+rt { display: ruby-text; font-size: 50%; }
+rbc { display: ruby-base-container; }
+rtc { display: ruby-text-container; }
+rtc > rt { font-size: inherit; }
+:lang(zh) rt { ruby-align: center; }
+:lang(zh-TW) rt { font-size: 30%; }
 
 /*
  * All tag names that can be links are listed here, because applying pseudo-class selectors
@@ -131,7 +138,6 @@ q::after { content: close-quote; }
 br::before { content: "\A"; white-space: pre }
 
 nobr { white-space: nowrap; }
-wbr { display-outside: break-opportunity; } /* this also has bidi implications */
 nobr wbr { white-space: normal; }
 
 
@@ -367,6 +373,21 @@ legend {
 iframe:not([seamless]) { border: 2px inset; }
 iframe[seamless] { display: block; }
 video { object-fit: contain; }
+
+/* BAO patch (fork-maintained, 2026-10-20): WebVTT UA cue defaults
+   (REQ-BRW-051; https://www.w3.org/TR/webvtt1/#css-definitions — the
+   -webkit-video-cue- defaults there resolve to these UA cue defaults).
+   Author `::cue` rules override these via normal cascade order. */
+::cue {
+  color: white;
+  background-color: rgba(0, 0, 0, 0.8);
+  font-family: sans-serif;
+  font-size: medium;
+  font-style: normal;
+  font-weight: normal;
+  text-align: center;
+  white-space: pre-line;
+}
 
 audio:not([controls]) {
   display: none !important;

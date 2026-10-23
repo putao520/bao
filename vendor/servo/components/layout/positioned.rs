@@ -14,7 +14,7 @@ use rayon::prelude::{IndexedParallelIterator, ParallelIterator};
 use servo_arc::Arc as ServoArc;
 use style::Zero;
 use style::computed_values::position::T as Position;
-use style::logical_geometry::{Direction, WritingMode};
+use style::logical_geometry::{Direction, PhysicalSide, WritingMode};
 use style::properties::ComputedValues;
 use style::values::specified::align::AlignFlags;
 
@@ -728,13 +728,6 @@ impl IndependentFormattingContext {
             },
             style: &style,
         };
-        // https://drafts.csswg.org/css-writing-modes/#orthogonal-flows
-        assert_eq!(
-            containing_block_writing_mode.is_horizontal(),
-            style.writing_mode.is_horizontal(),
-            "Mixed horizontal and vertical writing modes are not supported yet"
-        );
-
         let mut positioning_context = PositioningContext::default();
         let lazy_block_size = LazySize::new(
             &block_axis_solver.computed_sizes,
@@ -991,16 +984,12 @@ impl AbsoluteAxisSolver {
             },
         };
 
-        assert_eq!(
-            self_writing_mode.is_horizontal(),
-            original_parent_writing_mode.is_horizontal(),
-            "Mixed horizontal and vertical writing modes are not supported yet"
-        );
-        assert_eq!(
-            self_writing_mode.is_horizontal(),
-            containing_block_writing_mode.is_horizontal(),
-            "Mixed horizontal and vertical writing modes are not supported yet"
-        );
+        // The alignment values of an absolutely positioned box are resolved in the
+        // box's own logical axes. That is well-defined for orthogonal flows too:
+        // the insets and static position were already resolved in those axes by
+        // `layout_as_absolute`, and alignment only maps start/center/end onto the
+        // axis, whose physical direction is decided by `self_writing_mode`.
+        // <https://drafts.csswg.org/css-writing-modes/#orthogonal-flows>
         let self_value_matches_container = || {
             self.axis == Direction::Block ||
                 self_writing_mode.is_bidi_ltr() == alignment_container_writing_mode.is_bidi_ltr()
@@ -1023,11 +1012,45 @@ impl AbsoluteAxisSolver {
             // https://drafts.csswg.org/css-align/#valdef-self-position-self-end
             AlignFlags::SELF_END if self_value_matches_container() => AlignFlags::END,
             AlignFlags::SELF_END => AlignFlags::START,
+            // BAO patch (upstream #48746, css-flexbox/abspos static position): `left`/`right`
+            // must first be interpreted against the *axis* the alignment runs on.
             // https://drafts.csswg.org/css-align/#valdef-justify-content-left
-            AlignFlags::LEFT if alignment_container_writing_mode.is_bidi_ltr() => AlignFlags::START,
+            //   "If the property's axis is not parallel with either left↔right axis, this value
+            //    behaves as start."
+            // On the block axis only vertical writing modes can be parallel with left↔right, and
+            // there `left` is the block-start edge for `vertical-lr` but the block-end edge for
+            // `vertical-rl` — the old `is_bidi_ltr()` test measured inline direction instead and
+            // therefore mapped the keywords backwards for vertical-rl. On the inline axis the
+            // keywords mean line-left/line-right (flips with `direction`, not with bidi ltr).
+            AlignFlags::LEFT if self.axis == Direction::Block => {
+                if alignment_container_writing_mode.is_horizontal() ||
+                    alignment_container_writing_mode.block_start_physical_side() ==
+                        PhysicalSide::Left
+                {
+                    AlignFlags::START
+                } else {
+                    AlignFlags::END
+                }
+            },
+            AlignFlags::RIGHT if self.axis == Direction::Block => {
+                if alignment_container_writing_mode.is_horizontal() ||
+                    alignment_container_writing_mode.block_start_physical_side() ==
+                        PhysicalSide::Right
+                {
+                    AlignFlags::START
+                } else {
+                    AlignFlags::END
+                }
+            },
+            // https://drafts.csswg.org/css-align/#valdef-justify-content-left
+            AlignFlags::LEFT if alignment_container_writing_mode.line_left_is_inline_start() => {
+                AlignFlags::START
+            },
             AlignFlags::LEFT => AlignFlags::END,
             // https://drafts.csswg.org/css-align/#valdef-justify-content-right
-            AlignFlags::RIGHT if alignment_container_writing_mode.is_bidi_ltr() => AlignFlags::END,
+            AlignFlags::RIGHT if alignment_container_writing_mode.line_left_is_inline_start() => {
+                AlignFlags::END
+            },
             AlignFlags::RIGHT => AlignFlags::START,
             // https://drafts.csswg.org/css-align/#valdef-self-position-end
             // https://drafts.csswg.org/css-align/#valdef-self-position-flex-end

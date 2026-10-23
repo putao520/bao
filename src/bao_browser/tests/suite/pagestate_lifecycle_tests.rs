@@ -544,10 +544,14 @@ fn shutdown_close_all_drains_active_and_idle_maps() {
 }
 
 /// S2 (registry cleanliness, consequence of the close order): after a
-/// stealthed page closes, a fresh stealth-free page inherits none of its
+/// stealthed page closes, a fresh default page inherits none of its
 /// engine-level navigator overrides (BUG-ENG-366 class probe — keyed
 /// registry cleanup at close; address-reuse inheritance would surface here
-/// as the probe UA leaking into the stealth-free page).
+/// as the probe UA leaking into the new page).
+///
+/// 用户裁决 2026-10-21「默认 = 随机身份」:无显式 profile 的页不再 stealth-free,
+/// 读的是进程级默认身份(单例)—— p1/p3 两页同身份,`ua_after == ua_native`
+/// 判据语义不变(且更贴实际产品路径:清理由默认身份页承载)。
 #[test]
 fn shutdown_stealth_registry_clean_no_inheritance() {
     let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -570,7 +574,7 @@ fn shutdown_stealth_registry_clean_no_inheritance() {
         page.evaluate_js_web("navigator.userAgent").expect("read userAgent")
     };
 
-    // 1. Native baseline (stealth-free).
+    // 1. Native baseline (default identity — 进程级随机身份单例).
     let p1 = make_page(&runtime, Some(fixture.url()));
     let ua_native = ua_of(&p1);
     runtime.page_pool().close_page(p1.id()).expect("close p1");
@@ -588,12 +592,13 @@ fn shutdown_stealth_registry_clean_no_inheritance() {
     assert_eq!(ua_of(&p2), probe_ua, "probe page must run the stealth UA");
     runtime.page_pool().close_page(p2.id()).expect("close p2");
 
-    // 3. Fresh stealth-free page: native UA back, no probe residue.
+    // 3. Fresh default page: baseline UA back (shared default identity), no
+    //    probe residue.
     let p3 = make_page(&runtime, Some(fixture.url()));
     let ua_after = ua_of(&p3);
     assert_eq!(
         ua_after, ua_native,
-        "S2: stealth-free page after stealthed close must read the native UA (no inheritance)"
+        "S2: default page after stealthed close must read the baseline UA (no inheritance)"
     );
     assert!(!ua_after.contains("BaoS2Probe"), "S2: probe UA leaked");
 }

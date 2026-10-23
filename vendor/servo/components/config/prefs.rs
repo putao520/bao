@@ -150,6 +150,12 @@ pub struct Preferences {
     pub dom_crypto_subtle_enabled: bool,
     pub dom_document_dblclick_timeout: i64,
     pub dom_document_dblclick_dist: i64,
+    // feature: Device Bound Session Credentials | WICG/dbsc | Web/API/Device_Bound_Session
+    // BAO PATCH (REQ-BRW-051): kill switches, conservative default OFF —
+    // enabling DBSC is a product decision (exposes `navigator.deviceBoundSession`
+    // and activates the registration/refresh wire processing).
+    pub dom_dbsc_enabled: bool,
+    pub network_dbsc_enabled: bool,
     // feature: File and Directory Entries API | #45653 | Web/API/File_and_Directory_Entries_API
     pub dom_entries_api_enabled: bool,
     // feature: Document.execCommand | #25005 | Web/API/Document/execCommand
@@ -244,6 +250,15 @@ pub struct Preferences {
     /// conditionally-exposed parent).
     pub dom_audio_worklet_enabled: bool,
     pub dom_worklet_enabled: bool,
+    /// (Bao) CSS Typed OM exposure gate (REQ-BRW-051 C2). The Typed OM subclass
+    /// API is a BAO self-write; upstream servo only has the bare `CSSStyleValue`
+    /// + `StylePropertyMapReadOnly` pair gated on `dom_worklet_enabled`. The
+    /// whole family (numeric/unparsed/transform/color values, `StylePropertyMap`,
+    /// `computedStyleMap`, `attributeStyleMap`, `CSSStyleRule.styleMap`,
+    /// `CSS.{px,...}` unit factories) is carried by this pref. BAO CLI
+    /// `--enable-experimental-web-platform-features` expands it into
+    /// EXPERIMENTAL_PREFS (src/bao_cli/src/cli.rs).
+    pub dom_typed_om_enabled: bool,
     pub dom_worklet_blockingsleep_enabled: bool,
     pub dom_worklet_testing_enabled: bool,
     pub dom_worklet_timeout_ms: i64,
@@ -443,6 +458,10 @@ impl Preferences {
             dom_crypto_subtle_enabled: true,
             dom_document_dblclick_dist: 1,
             dom_document_dblclick_timeout: 300,
+            // BAO PATCH (REQ-BRW-051): conservative OFF — the enable
+            // decision stays with the product session.
+            dom_dbsc_enabled: false,
+            network_dbsc_enabled: false,
             dom_entries_api_enabled: false,
             dom_exec_command_enabled: false,
             dom_fontface_enabled: false,
@@ -508,6 +527,7 @@ impl Preferences {
             dom_worklet_blockingsleep_enabled: false,
             dom_audio_worklet_enabled: true,
             dom_worklet_enabled: false,
+            dom_typed_om_enabled: false,
             dom_worklet_testing_enabled: false,
             dom_worklet_timeout_ms: 10,
             dom_visual_viewport_enabled: false,

@@ -50,6 +50,10 @@ pub enum PseudoElement {
     // Also, make sure the UA sheet has the !important rules some of the
     // APPLIES_TO_PLACEHOLDER properties expect!
     FirstLetter,
+    // BAO patch (fork-maintained, 2026-10-20): WebVTT cue pseudo-element
+    // (REQ-BRW-051). Eagerly cascaded on media elements so the cue overlay
+    // renders with the author's `::cue` styling; it never generates boxes.
+    Cue,
 
     // Non-eager pseudos.
     Backdrop,
@@ -94,6 +98,7 @@ impl ToCss for PseudoElement {
             Before => "::before",
             Selection => "::selection",
             FirstLetter => "::first-letter",
+            Cue => "::cue",
             Backdrop => "::backdrop",
             DetailsContent => "::details-content",
             Marker => "::marker",
@@ -123,7 +128,7 @@ impl ::selectors::parser::PseudoElement for PseudoElement {
 }
 
 /// The number of eager pseudo-elements. Keep this in sync with cascade_type.
-pub const EAGER_PSEUDO_COUNT: usize = 4;
+pub const EAGER_PSEUDO_COUNT: usize = 5;
 
 impl PseudoElement {
     /// Gets the canonical index of this eagerly-cascaded pseudo-element.
@@ -152,6 +157,13 @@ impl PseudoElement {
         let result: PseudoElement = unsafe { mem::transmute(i as u8) };
         debug_assert!(result.is_eager());
         result
+    }
+
+    /// Whether this is `::cue` (BAO patch, fork-maintained 2026-10-20): it
+    /// never generates a box — its cascade is consumed by the layout WebVTT
+    /// cue overlay (REQ-BRW-051).
+    pub fn is_cue(&self) -> bool {
+        *self == PseudoElement::Cue
     }
 
     /// Whether the current pseudo element is ::before or ::after.
@@ -251,6 +263,7 @@ impl PseudoElement {
         match *self {
             PseudoElement::After
             | PseudoElement::Before
+            | PseudoElement::Cue
             | PseudoElement::FirstLetter
             | PseudoElement::Selection => PseudoElementCascadeType::Eager,
             PseudoElement::Backdrop
@@ -692,6 +705,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "file-selector-button" => FileSelectorButton,
             "first-letter" => FirstLetter,
             "marker" => Marker,
+            "cue" => Cue,
             "details-content" => DetailsContent,
             "color-swatch" => ColorSwatch,
             "placeholder" => Placeholder,

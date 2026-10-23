@@ -625,6 +625,11 @@ macro_rules! global_event_handlers(
         event_handler!(click, GetOnclick, SetOnclick);
         event_handler!(close, GetOnclose, SetOnclose);
         event_handler!(command, GetOncommand, SetOncommand);
+        event_handler!(
+            contentvisibilityautostatechange,
+            GetOncontentvisibilityautostatechange,
+            SetOncontentvisibilityautostatechange
+        );
         event_handler!(contextlost, GetOncontextlost, SetOncontextlost);
         event_handler!(contextmenu, GetOncontextmenu, SetOncontextmenu);
         event_handler!(contextrestored, GetOncontextrestored, SetOncontextrestored);

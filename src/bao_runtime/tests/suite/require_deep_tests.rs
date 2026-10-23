@@ -53,7 +53,9 @@ fn test_require_deep() {
         check("node_prefix_same_as_bare", function() { return require('node:fs') === require('fs'); });
 
         // === assert/strict sub-path ===
-        check("require_assert_strict", function() { return typeof require('assert/strict') === 'object'; });
+        // node v24.19.0 oracle (2026-10-23): typeof require('assert/strict')
+        // === 'function' — the strict alias is the callable Assert function.
+        check("require_assert_strict", function() { return typeof require('assert/strict') === 'function'; });
         check("assert_strict_has_equal", function() { return typeof require('assert/strict').equal === 'function'; });
 
         // === require caching ===

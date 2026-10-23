@@ -210,10 +210,13 @@ fn stealth_identity_locale_tz_precision_live() {
     );
 
     // ── ③ Stealth-free page: host-derived state restored ───────────────
+    // 显式 stealth-free 退出面(用户裁决 2026-10-21「默认 = 随机身份」后,
+    // 无 profile 的默认页不再是 stealth-free;本格的对照角色=「stealth-free
+    // 页恢复 host 派生 locale/tz」,故显式声明退出)。
     let page_c = runtime
         .create_page(&PageConfig {
             url: None,
-            stealth_profile: None,
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("gated live test: create_page (stealth-free) must succeed");

@@ -75,14 +75,22 @@ pub enum Data {
 pub struct WebSocketChannel {
     pub sender: ProfileGenericCallback<WebSocketNetworkEvent>,
     pub receiver: Option<CallbackSetter<WebSocketDomAction>>,
+    /// REQ-BRW-051: demand-driven reads (`WebSocketStream`) vs eager reads
+    /// (classic `WebSocket`).
+    pub flow_control: bool,
 }
 
 impl WebSocketChannel {
     pub fn new(
         sender: ProfileGenericCallback<WebSocketNetworkEvent>,
         receiver: Option<CallbackSetter<WebSocketDomAction>>,
+        flow_control: bool,
     ) -> Self {
-        Self { sender, receiver }
+        Self {
+            sender,
+            receiver,
+            flow_control,
+        }
     }
 }
 
@@ -239,6 +247,14 @@ pub async fn fetch_with_cors_cache(
         && matches!(request.method, Method::GET)
         // - request’s unsafe-request flag is not set or request’s header list is empty
         && (!request.unsafe_request || request.headers.is_empty())
+        // BAO PATCH (REQ-BRW-051): a request bound to a web bundle registration
+        // never consumes a preloaded candidate. The document's preload scanner
+        // may have issued the preload before the `<script type=webbundle>`
+        // element was processed (so that preload went to the network); the
+        // bundle registration must take precedence, exactly like Chrome, whose
+        // bundle subresource loads are served from the bundle even with a
+        // prefetched candidate present.
+        && request.web_bundle_binding.is_none()
     {
         // - request’s client is not null, and request’s client’s global object is a Window object
         if let Some(client) = request.client.as_ref() {
@@ -316,6 +332,27 @@ pub async fn fetch_with_cors_cache(
 }
 
 pub(crate) fn convert_request_to_csp_request(request: &Request) -> Option<csp::Request> {
+    convert_request_to_csp_request_with_urls(request, &request.url(), &request.current_url())
+}
+
+/// BAO PATCH (REQ-BRW-051): build the CSP request with an overridden URL.
+///
+/// A web bundle subresource whose URL cannot be fetched from the network
+/// (`uuid-in-package:`) is matched against the *bundle* URL, both for the
+/// source-list match and for the reported blocked URL (WPT csp-allowed /
+/// csp-blocked).
+pub(crate) fn convert_request_to_csp_request_with_url(
+    request: &Request,
+    url: &ServoUrl,
+) -> Option<csp::Request> {
+    convert_request_to_csp_request_with_urls(request, url, url)
+}
+
+fn convert_request_to_csp_request_with_urls(
+    request: &Request,
+    url: &ServoUrl,
+    current_url: &ServoUrl,
+) -> Option<csp::Request> {
     if request.is_internal_request == InternalRequest::Yes {
         return None;
     }
@@ -325,8 +362,8 @@ pub(crate) fn convert_request_to_csp_request(request: &Request) -> Option<csp::R
     };
 
     let csp_request = csp::Request {
-        url: request.url().into_url(),
-        current_url: request.current_url().into_url(),
+        url: url.clone().into_url(),
+        current_url: current_url.clone().into_url(),
         origin: origin.clone().into_url_origin(),
         redirect_count: request.redirect_count,
         destination: request.destination,
@@ -461,7 +498,11 @@ pub async fn main_fetch(
     };
 
     // Step 4. Run report Content Security Policy violations for request.
-    let csp_request = convert_request_to_csp_request(request);
+    // BAO PATCH (REQ-BRW-051): a `uuid-in-package:` URL served from a web
+    // bundle is matched against the bundle URL for CSP purposes.
+    let csp_request = crate::webbundle::csp_url_override(request)
+        .and_then(|url| convert_request_to_csp_request_with_url(request, &url))
+        .or_else(|| convert_request_to_csp_request(request));
     if let Some(csp_request) = csp_request.as_ref() {
         // Step 2.2.
         let violations = report_violations_for_request_by_csp(csp_request, &policy_container);
@@ -1248,6 +1289,22 @@ async fn scheme_fetch(
     let url_and_blob_lock = request.current_url_with_blob_claim();
 
     let scheme = url_and_blob_lock.scheme();
+    // BAO PATCH (REQ-BRW-051): a non-HTTP(S) URL that a `<script type=webbundle>`
+    // registration matches (the `uuid-in-package:` scheme) is served from the
+    // bundle here — these URLs never reach `http_network_or_cache_fetch`, the
+    // seam used for HTTP(S) subresources (which keeps CORS/CORP intact). A
+    // registration that does not contain the URL falls through to the normal
+    // scheme handling below (typically `UnsupportedScheme`).
+    if !matches!(scheme, "http" | "https") {
+        if let Some(outcome) = crate::webbundle::serve_from_web_bundle(request).await {
+            return match outcome {
+                crate::webbundle::BundleLookupOutcome::Serve(response) => response,
+                crate::webbundle::BundleLookupOutcome::Reject(error) => {
+                    Response::network_error(error)
+                },
+            };
+        }
+    }
     // BAO PATCH (REQ-CDP-006): the HTTP(S) arm returns directly — its response
     // settles on the network leg's own completion/failure seams
     // (`http_network_fetch`). Every other arm below is a **scheme response**

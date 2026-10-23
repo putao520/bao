@@ -41,8 +41,8 @@ use servo_geometry::DeviceIndependentPixel;
 use smallvec::SmallVec;
 use style_traits::CSSPixel;
 use webrender::{
-    MemoryReport, ONE_TIME_USAGE_HINT, RenderApi, RenderBackendHooks, SceneBuilderHooks,
-    ShaderPrecacheFlags, Transaction, UploadMethod,
+    MemoryReport, ONE_TIME_USAGE_HINT, RenderApi, RenderBackendHooks, RendererError,
+    SceneBuilderHooks, ShaderPrecacheFlags, Transaction, UploadMethod,
 };
 use webrender_api::units::{
     DevicePixel, DevicePoint, LayoutPoint, LayoutRect, LayoutSize, LayoutTransform, LayoutVector2D,
@@ -151,14 +151,25 @@ impl Drop for Painter {
 }
 
 impl Painter {
-    pub(crate) fn new(rendering_context: Rc<dyn RenderingContext>, paint: &Paint) -> Self {
+    pub(crate) fn new(
+        rendering_context: Rc<dyn RenderingContext>,
+        paint: &Paint,
+    ) -> Result<Self, RendererError> {
         let webrender_gl = rendering_context.gleam_gl_api();
 
         // Make sure the gl context is made current.
         if let Err(err) = rendering_context.make_current() {
             warn!("Failed to make the rendering context current: {:?}", err);
         }
-        debug_assert_eq!(webrender_gl.get_error(), gleam::gl::NO_ERROR,);
+        // BAO patch (REQ-BRW-051, gl-oom-defense-001, 2026-10-20): a GL error
+        // here (llvmpipe OOM at painter init) aborts the process under
+        // debug-assertions; log it and let init continue — webrender reports
+        // OOM through RendererError channels and the surface still presents
+        // degraded frames instead of dying.
+        let gl_error = webrender_gl.get_error();
+        if gl_error != gleam::gl::NO_ERROR {
+            warn!("GL error 0x{gl_error:x} at painter init; continuing");
+        }
 
         let id_manager = paint.webrender_external_image_id_manager();
         let mut external_image_handlers = Box::new(WebRenderExternalImageHandlers::new(id_manager));
@@ -214,19 +225,26 @@ impl Painter {
             .map(|i| i.get())
             .unwrap_or(pref!(thread_pool_fallback_workers) as usize)
             .min(pref!(thread_pool_webrender_workers_max).max(1) as usize);
-        let workers = Some(Arc::new(
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(worker_threads)
-                .thread_name(|idx| format!("WRWorker#{}", idx))
-                .start_handler(|_| {
-                    servo_base::threadboost::boost_thread(
-                        ThreadPriority::Elevated,
-                        BoostAffinity::Boost,
-                    )
-                })
-                .build()
-                .expect("Unable to initialize WebRender worker pool."),
-        ));
+        // BAO patch (REQ-BRW-051, gl-oom-defense-001, 2026-10-20): worker
+        // pool construction can fail under memory pressure (thread spawn
+        // ENOMEM); degrade to webrender's own thread pool instead of
+        // aborting the process.
+        let workers = rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_threads)
+            .thread_name(|idx| format!("WRWorker#{}", idx))
+            .start_handler(|_| {
+                servo_base::threadboost::boost_thread(
+                    ThreadPriority::Elevated,
+                    BoostAffinity::Boost,
+                )
+            })
+            .build()
+            .map(Arc::new)
+            .map(Some)
+            .inspect_err(|error| {
+                warn!("Unable to initialize WebRender worker pool: {error:?}; using webrender's default pool");
+            })
+            .unwrap_or(None);
 
         let painter_id = PainterId::next();
         let (mut webrender_renderer, webrender_api_sender) = webrender::create_webrender_instance(
@@ -262,8 +280,7 @@ impl Painter {
                 ..Default::default()
             },
             None,
-        )
-        .expect("Unable to initialize WebRender.");
+        )?;
 
         webrender_renderer.set_external_image_handler(external_image_handlers);
 
@@ -298,7 +315,7 @@ impl Painter {
         };
         painter.assert_gl_framebuffer_complete();
         painter.clear_background();
-        painter
+        Ok(painter)
     }
 
     pub(crate) fn perform_updates(&mut self) {

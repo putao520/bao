@@ -179,3 +179,8 @@ partial interface Element {
 
 // https://drafts.csswg.org/web-animations-1/#extensions-to-the-element-interface
 Element includes Animatable;
+
+// https://drafts.css-houdini.org/css-typed-om-1/#element-extension
+partial interface Element {
+  [Throws, Pref="dom_typed_om_enabled"] StylePropertyMapReadOnly computedStyleMap();
+};

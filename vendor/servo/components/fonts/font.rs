@@ -250,9 +250,9 @@ impl FontMetrics {
     /// Whether or not the block metrics of the two `FontMetrics` instances differ in a way
     /// that requires the resulting block size of a containing inline box to change.
     pub fn block_metrics_meaningfully_differ(&self, other: &Self) -> bool {
-        self.ascent != other.ascent ||
-            self.descent != other.descent ||
-            self.line_gap != other.line_gap
+        self.ascent != other.ascent
+            || self.descent != other.descent
+            || self.line_gap != other.line_gap
     }
 }
 
@@ -336,10 +336,11 @@ impl malloc_size_of::MallocSizeOf for Font {
         // This skips the template, because they are already stored in the template cache.
 
         let metrics_size = self.metrics.get().map_or(0, |metrics| metrics.size_of(ops));
-        metrics_size +
-            self.descriptor.size_of(ops) +
-            self.cached_shape_data.read().size_of(ops) +
-            self.font_instance_key
+        metrics_size
+            + self.descriptor.size_of(ops)
+            + self.cached_shape_data.read().size_of(ops)
+            + self
+                .font_instance_key
                 .read()
                 .values()
                 .map(|key| key.size_of(ops))
@@ -370,8 +371,8 @@ impl Font {
         let variation_axes = VariationAxes::from_platform_font(&handle);
 
         // Compute and apply the OpenType variations
-        let handle = if servo_config::pref!(layout_variable_fonts_enabled) &&
-            variation_axes.contains(VariationAxes::IS_VARIABLE)
+        let handle = if servo_config::pref!(layout_variable_fonts_enabled)
+            && variation_axes.contains(VariationAxes::IS_VARIABLE)
         {
             let used_variations = compute_variations(&descriptor, &template, variation_axes);
             handle.copy_with_variations(&template.identifier(), &used_variations)?
@@ -416,9 +417,9 @@ impl Font {
 
     pub(crate) fn has_color_bitmap_or_colr_table(&self) -> bool {
         *self.has_color_bitmap_or_colr_table.get_or_init(|| {
-            self.table_for_tag(SBIX).is_some() ||
-                self.table_for_tag(CBDT).is_some() ||
-                self.table_for_tag(COLR).is_some()
+            self.table_for_tag(SBIX).is_some()
+                || self.table_for_tag(CBDT).is_some()
+                || self.table_for_tag(COLR).is_some()
         })
     }
 
@@ -563,14 +564,14 @@ impl Font {
     ///
     /// Note: This will eventually be removed.
     pub fn can_do_fast_shaping(&self, text: &str, options: &ShapingOptions) -> bool {
-        options.script == Script::Latin &&
-            !options.flags.contains(ShapingFlags::RTL_FLAG) &&
-            *self.can_do_fast_shaping.get_or_init(|| {
-                self.table_for_tag(KERN).is_some() &&
-                    self.table_for_tag(GPOS).is_none() &&
-                    self.table_for_tag(GSUB).is_none()
-            }) &&
-            text.is_ascii()
+        options.script == Script::Latin
+            && !options.flags.contains(ShapingFlags::RTL_FLAG)
+            && *self.can_do_fast_shaping.get_or_init(|| {
+                self.table_for_tag(KERN).is_some()
+                    && self.table_for_tag(GPOS).is_none()
+                    && self.table_for_tag(GSUB).is_none()
+            })
+            && text.is_ascii()
     }
 
     /// Fast path for ASCII text that only needs simple horizontal LTR kerning.
@@ -834,8 +835,8 @@ impl FontGroup {
 
         let options = FallbackFontSelectionOptions::new(codepoint, next_codepoint, language);
 
-        let should_look_for_small_caps = self.descriptor.variant == font_variant_caps::T::SmallCaps &&
-            options.character.is_ascii_lowercase();
+        let should_look_for_small_caps = self.descriptor.variant == font_variant_caps::T::SmallCaps
+            && options.character.is_ascii_lowercase();
         let font_or_synthesized_small_caps = |font: FontRef| {
             if should_look_for_small_caps && font.synthesized_small_caps.is_some() {
                 return font.synthesized_small_caps.clone();
@@ -869,9 +870,9 @@ impl FontGroup {
         }
 
         let fallback_key = FallbackKey::new(&options);
-        if let Some(fallback) = self.fallbacks.read().get(&fallback_key) &&
-            char_in_template(fallback.template.clone()) &&
-            font_has_glyph_and_presentation(fallback)
+        if let Some(fallback) = self.fallbacks.read().get(&fallback_key)
+            && char_in_template(fallback.template.clone())
+            && font_has_glyph_and_presentation(fallback)
         {
             return font_or_synthesized_small_caps(fallback.clone());
         }
@@ -892,8 +893,8 @@ impl FontGroup {
         let first_font = self.first(font_context);
         if let Some(fallback) = first_font
             .as_ref()
-            .and_then(|font| font.find_fallback_using_system_font_api(&options)) &&
-            font_has_glyph_and_presentation(&fallback)
+            .and_then(|font| font.find_fallback_using_system_font_api(&options))
+            && font_has_glyph_and_presentation(&fallback)
         {
             return Some(fallback);
         }
@@ -1253,9 +1254,9 @@ fn compute_variations(
 
         // When both a `ital` and a `slnt` axis are available then we prefer `ital` for
         // `font-style: italic` and `slnt` for `font-style: oblique`.
-        let use_ital_axis = (variation_axes.contains(VariationAxes::ITAL) &&
-            clamped_font_style == FontStyle::ITALIC) ||
-            !variation_axes.contains(VariationAxes::SLNT);
+        let use_ital_axis = (variation_axes.contains(VariationAxes::ITAL)
+            && clamped_font_style == FontStyle::ITALIC)
+            || !variation_axes.contains(VariationAxes::SLNT);
         if use_ital_axis {
             add_variation(FontVariation {
                 tag: ITAL.to_u32(),

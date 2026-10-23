@@ -3,19 +3,25 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::{Cell, RefCell, RefMut};
-use std::{f64, ptr};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use std::{f64, ptr, thread};
 
 use dom_struct::dom_struct;
 use embedder_traits::{EmbedderControlRequest, InputMethodRequest, RgbColor, SelectedFile};
 use encoding_rs::Encoding;
 use html5ever::{LocalName, Prefix, local_name};
 use js::context::{JSContext, NoGC};
-use js::jsapi::{ClippedTime, JSObject, RegExpFlag_UnicodeSets, RegExpFlags};
+use js::jsapi::{
+    ClippedTime, JSContext as RawJSContext, JSObject, JS_RequestInterruptCallback,
+    RegExpFlag_UnicodeSets, RegExpFlags,
+};
 use js::jsval::UndefinedValue;
 use js::rust::wrappers2::{
-    CheckRegExpSyntax, DateGetMsecSinceEpoch, ExecuteRegExpNoStatics, JS_ClearPendingException,
-    NewDateObject, NewUCRegExpObject, ObjectIsDate, ObjectIsRegExp,
+    CheckRegExpSyntax, DateGetMsecSinceEpoch, ExecuteRegExpNoStatics, JS_AddInterruptCallback,
+    JS_ClearPendingException, NewDateObject, NewUCRegExpObject, ObjectIsDate, ObjectIsRegExp,
 };
+use log::warn;
 use js::rust::{HandleObject, MutableHandleObject};
 use num_traits::ToPrimitive;
 use script_bindings::cell::{DomRefCell, Ref};
@@ -719,6 +725,11 @@ impl HTMLInputElement {
         // Rust's regex is not compatible, we need to use mozjs RegExp.
         rooted!(&in(cx) let mut pattern = ptr::null_mut::<JSObject>());
         if compile_pattern(cx, &pattern_str.str(), pattern.handle_mut()) {
+            // BAO(REQ-BRW-051 C2): bound the execution of the compiled pattern. A hostile
+            // pattern such as `(\d+)*$` backtracks exponentially on this value and would
+            // otherwise wedge the ScriptThread during page load. The last comma separated
+            // value of a `multiple` input shares the remaining budget.
+            let _pattern_match_budget = PatternMatchBudget::start(cx);
             if self.Multiple() && self.does_multiple_apply() {
                 !split_commas(&value.str())
                     .all(|s| matches_js_regex(cx, pattern.handle(), s).unwrap_or(true))
@@ -2707,8 +2718,229 @@ fn new_js_regex(
     true
 }
 
+/// BAO(REQ-BRW-051 C2): upper bound for one `pattern` attribute validation.
+///
+/// The pattern is compiled to a SpiderMonkey RegExp and executed through irregexp.
+/// A hostile pattern such as `(\d+)*$` backtracks exponentially for
+/// `123...z`, and because the number of backtrack *stack slots* only grows with
+/// the input length (not the backtrack count), SpiderMonkey's 64MiB backtrack
+/// stack cap never trips: the ScriptThread simply wedges forever. Chromium's DOM
+/// layer bounds the same validation to a roughly constant few milliseconds, so
+/// mirror that behaviour by interrupting the RegExp once this budget elapses.
+///
+/// A timed out match is reported as a non-match (i.e. a pattern mismatch), which
+/// makes the element `:invalid`, matching Chromium's observable DOM behaviour.
+const PATTERN_MATCH_TIME_BUDGET: Duration = Duration::from_millis(100);
+
+thread_local! {
+    /// Deadline of the pattern validation currently running on this thread. The
+    /// interrupt callback below only interrupts while it has elapsed.
+    static PATTERN_MATCH_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+
+    /// Raw `JSContext` the interrupt callback has been installed on for this
+    /// thread. SpiderMonkey has no API to remove a single interrupt callback, so
+    /// it is installed once per context instead of once per validation.
+    static PATTERN_INTERRUPT_CONTEXT: Cell<usize> = const { Cell::new(0) };
+}
+
+/// BAO(REQ-BRW-051 C2): interrupt callback powering [`PatternMatchBudget`].
+///
+/// SpiderMonkey invokes it when any thread requests an urgent interrupt, and it
+/// is also invoked for engine-internal interrupts (GC, OOM). Returning `false`
+/// aborts the current operation with an uncatchable exception. That is only
+/// wanted while a pattern validation has exceeded its budget; at all other
+/// times this callback must be invisible and return `true`.
+#[expect(unsafe_code)]
+unsafe extern "C" fn pattern_match_interrupt_callback(_cx: *mut RawJSContext) -> bool {
+    PATTERN_MATCH_DEADLINE.with(|deadline| match deadline.get() {
+        Some(deadline) => Instant::now() < deadline,
+        None => true,
+    })
+}
+
+fn pattern_match_budget_expired() -> bool {
+    PATTERN_MATCH_DEADLINE.with(|deadline| {
+        deadline
+            .get()
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    })
+}
+
+struct PatternMatchJob {
+    id: u64,
+    /// Raw `*mut JSContext` owned by the validating ScriptThread. Only used by
+    /// the watchdog while holding the state lock, which guarantees that the
+    /// owner has not returned from [`PatternMatchBudget::drop`] (and therefore
+    /// cannot have destroyed the context yet).
+    cx: usize,
+    deadline: Instant,
+}
+
+#[derive(Default)]
+struct PatternMatchWatchdogState {
+    jobs: Vec<PatternMatchJob>,
+    next_id: u64,
+}
+
+/// Process wide watchdog that turns pattern validation deadlines into
+/// `JS_RequestInterruptCallback` calls. One thread serves every `JSContext`.
+struct PatternMatchWatchdog {
+    state: Mutex<PatternMatchWatchdogState>,
+    wake: Condvar,
+}
+
+static PATTERN_MATCH_WATCHDOG: OnceLock<Arc<PatternMatchWatchdog>> = OnceLock::new();
+
+impl PatternMatchWatchdog {
+    fn global() -> &'static Arc<PatternMatchWatchdog> {
+        PATTERN_MATCH_WATCHDOG.get_or_init(|| {
+            let watchdog = Arc::new(PatternMatchWatchdog {
+                state: Mutex::new(PatternMatchWatchdogState::default()),
+                wake: Condvar::new(),
+            });
+            let worker = Arc::clone(&watchdog);
+            if let Err(error) = thread::Builder::new()
+                .name("bao-pattern-budget".to_owned())
+                .spawn(move || worker.run())
+            {
+                // Without the watchdog, pattern validation stays unbounded but
+                // the callback registration is harmless. Report honestly.
+                warn!("Failed to spawn the pattern validation watchdog: {error}");
+            }
+            watchdog
+        })
+    }
+
+    fn submit(&self, cx: usize, deadline: Instant) -> u64 {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.next_id = state.next_id.wrapping_add(1);
+        let id = state.next_id;
+        state.jobs.push(PatternMatchJob { id, cx, deadline });
+        drop(state);
+        self.wake.notify_one();
+        id
+    }
+
+    fn complete(&self, id: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(index) = state.jobs.iter().position(|job| job.id == id) {
+            state.jobs.swap_remove(index);
+        }
+    }
+
+    #[expect(unsafe_code)]
+    fn run(self: Arc<Self>) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            let now = Instant::now();
+            let mut next_deadline: Option<Instant> = None;
+            let mut index = 0;
+            while index < state.jobs.len() {
+                if state.jobs[index].deadline <= now {
+                    let job = state.jobs.remove(index);
+                    // Keep the lock held across the request: `complete` is the
+                    // only path that lets the owning thread return (and later
+                    // destroy the context), so this is the lifetime barrier.
+                    unsafe {
+                        JS_RequestInterruptCallback(job.cx as *mut RawJSContext);
+                    }
+                } else {
+                    next_deadline = Some(match next_deadline {
+                        Some(deadline) if deadline <= state.jobs[index].deadline => deadline,
+                        _ => state.jobs[index].deadline,
+                    });
+                    index += 1;
+                }
+            }
+
+            state = match next_deadline {
+                Some(deadline) => {
+                    let wait = deadline.saturating_duration_since(Instant::now());
+                    self.wake
+                        .wait_timeout(state, wait)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .0
+                },
+                None => self
+                    .wake
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            };
+        }
+    }
+}
+
+/// BAO(REQ-BRW-051 C2): RAII deadline for one pattern validation.
+struct PatternMatchBudget {
+    job: Option<u64>,
+    previous_deadline: Option<Instant>,
+}
+
+impl PatternMatchBudget {
+    #[expect(unsafe_code)]
+    fn start(cx: &JSContext) -> PatternMatchBudget {
+        let deadline = Instant::now() + PATTERN_MATCH_TIME_BUDGET;
+        let previous_deadline = PATTERN_MATCH_DEADLINE.with(|slot| slot.replace(Some(deadline)));
+        let raw_cx = unsafe { cx.raw_cx_no_gc() as usize };
+
+        let job = if ensure_pattern_interrupt_callback(cx, raw_cx) {
+            Some(PatternMatchWatchdog::global().submit(raw_cx, deadline))
+        } else {
+            None
+        };
+
+        PatternMatchBudget {
+            job,
+            previous_deadline,
+        }
+    }
+}
+
+impl Drop for PatternMatchBudget {
+    fn drop(&mut self) {
+        // Disarm before synchronising with the watchdog: a request that is
+        // already in flight then finds no deadline and the callback returns
+        // `true` (continue) instead of aborting unrelated work.
+        PATTERN_MATCH_DEADLINE.with(|slot| slot.set(self.previous_deadline));
+        if let Some(job) = self.job {
+            PatternMatchWatchdog::global().complete(job);
+        }
+    }
+}
+
+#[expect(unsafe_code)]
+fn ensure_pattern_interrupt_callback(cx: &JSContext, raw_cx: usize) -> bool {
+    if PATTERN_INTERRUPT_CONTEXT.with(|slot| slot.get() == raw_cx) {
+        return true;
+    }
+
+    let installed =
+        unsafe { JS_AddInterruptCallback(cx, Some(pattern_match_interrupt_callback)) };
+    if installed {
+        PATTERN_INTERRUPT_CONTEXT.with(|slot| slot.set(raw_cx));
+    } else {
+        warn!("Failed to install the pattern validation interrupt callback");
+    }
+    installed
+}
+
 #[expect(unsafe_code)]
 fn matches_js_regex(cx: &mut JSContext, regex_obj: HandleObject, value: &str) -> Result<bool, ()> {
+    // BAO(REQ-BRW-051 C2): give up before starting work that cannot finish
+    // within the remaining budget.
+    if pattern_match_budget_expired() {
+        return Ok(false);
+    }
+
     let mut value: Vec<u16> = value.encode_utf16().collect();
 
     let mut is_regex = false;
@@ -2734,7 +2966,14 @@ fn matches_js_regex(cx: &mut JSContext, regex_obj: HandleObject, value: &str) ->
         Ok(!rval.is_null())
     } else {
         unsafe { JS_ClearPendingException(cx) };
-        Err(())
+        if pattern_match_budget_expired() {
+            // An interrupt interrupted the RegExp. Chromium reports a timed out
+            // pattern validation as a mismatch, so treat it as a non-match
+            // instead of the generic execution error path.
+            Ok(false)
+        } else {
+            Err(())
+        }
     }
 }
 

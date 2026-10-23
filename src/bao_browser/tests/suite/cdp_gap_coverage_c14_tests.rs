@@ -212,7 +212,13 @@ fn bridge_page_meta_and_explicit_reject_faces() {
         pool,
     );
     assert_eq!(nav["frameId"], json!(format!("main-{tid}")), "frameId identity: {nav}");
-    assert!(nav["loaderId"].as_str().unwrap_or_default().starts_with("loader-"));
+    // The loader id is a 32-char uppercase-hex minted counter (see
+    // `mint_loader_id`) — assert the actual face, not a prefixed shape.
+    let loader = nav["loaderId"].as_str().unwrap_or_default();
+    assert!(
+        loader.len() == 32 && loader.chars().all(|c| c.is_ascii_hexdigit()),
+        "loaderId must be a 32-char hex mint: {nav}"
+    );
     // GoBack/GoForward 的命令臂(with_page 漏斗)已由上面的显式错误派发覆盖;
     // 二段 data-url 导航的提交窗在 headless 载具下不可靠,不做时序腿。
 
@@ -313,16 +319,24 @@ fn bridge_dom_faces_on_live_page() {
         "document node serializes its documentElement: {doc_outer}"
     );
 
-    // SetAttributeValue(1425-1433):载体 = document.querySelector('[data-cdp]')
-    // (单槽写,POS 载体面)。fixture 的 #slot 带 data-cdp → 写落该元素并读回。
+    // SetAttributeValue(REQ-CDP-010 golden-oracle parity): the write lands on
+    // the ADDRESSED node (canonical positional nodeId) — the former
+    // '[data-cdp]' fixture-slot carrier silently wrote the wrong element.
     let _ = ok_response(
         BridgeCommand::SetAttributeValue { target_id: tid.clone(), node_id, name: "data-x".into(), value: "c14".into() },
         pool,
     );
     let check = page
-        .evaluate_js_web("document.getElementById('b').getAttribute('data-x')")
+        .evaluate_js_web("document.getElementById('a').getAttribute('data-x')")
         .expect("evaluate");
-    assert_eq!(check.trim().trim_matches('"'), "c14", "attribute write reached the [data-cdp] slot");
+    assert_eq!(check.trim().trim_matches('"'), "c14", "attribute write reached the addressed node");
+    // The non-element branch: the document node answers Chrome's measured
+    // "Node is not an Element" error (-32000 class), never a silent success.
+    let err = err_response(
+        BridgeCommand::SetAttributeValue { target_id: tid.clone(), node_id: 1, name: "data-x".into(), value: "c14".into() },
+        pool,
+    );
+    assert!(err.contains("Node is not an Element"), "{err}");
 }
 
 // ═════════════════════════════════════════════════════════════════════════

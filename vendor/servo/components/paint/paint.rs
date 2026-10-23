@@ -49,7 +49,7 @@ use webgl::WebGLComm;
 use webgl::webgl_thread::WebGLContextBusyMap;
 #[cfg(feature = "webgpu")]
 use webgpu::canvas_context::WebGpuExternalImageMap;
-use webrender::{CaptureBits, MemoryReport};
+use webrender::{CaptureBits, MemoryReport, RendererError};
 use webrender_api::units::{DevicePixel, DevicePoint};
 use webrender_api::{FontInstanceKey, FontKey, ImageKey};
 #[cfg(feature = "webxr")]
@@ -257,7 +257,7 @@ impl Paint {
     pub fn register_rendering_context(
         &mut self,
         rendering_context: Rc<dyn RenderingContext>,
-    ) -> PainterId {
+    ) -> Result<PainterId, RendererError> {
         if let Some(painter_id) = self.painters.iter().find_map(|painter| {
             let painter = painter.borrow();
             if Rc::ptr_eq(&painter.rendering_context, &rendering_context) {
@@ -266,10 +266,13 @@ impl Paint {
                 None
             }
         }) {
-            return painter_id;
+            return Ok(painter_id);
         }
 
-        let painter = Painter::new(rendering_context.clone(), self);
+        // BAO patch (REQ-BRW-051, gl-oom-defense-001, 2026-10-20):
+        // `Painter::new` can now fail (webrender init under GL OOM); surface
+        // it so the caller can degrade instead of the process aborting.
+        let painter = Painter::new(rendering_context.clone(), self)?;
         let painter_id = painter.painter_id;
         self.painters.push(Rc::new(RefCell::new(painter)));
 
@@ -277,12 +280,12 @@ impl Paint {
         // absence from the map
         let Some(connection) = rendering_context.connection() else {
             warn!("The rendering context has no surfman connection, WebGL will be unavailable");
-            return painter_id;
+            return Ok(painter_id);
         };
         let Ok(adapter) = connection.create_adapter().inspect_err(|error| {
             warn!("Could not create a surfman adapter, WebGL will be unavailable: {error:?}")
         }) else {
-            return painter_id;
+            return Ok(painter_id);
         };
 
         self.painter_surfman_details_map.insert(
@@ -293,7 +296,7 @@ impl Paint {
             },
         );
 
-        painter_id
+        Ok(painter_id)
     }
 
     fn remove_painter(&mut self, painter_id: PainterId) {

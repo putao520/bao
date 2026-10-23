@@ -28,7 +28,7 @@ pub use font_context::{
 pub use font_store::FontTemplates;
 pub use fonts_traits::*;
 pub(crate) use glyph::*;
-pub use glyph::{GlyphInfo, ShapedText, ShapedTextSlice, ShapedTextSliceType, ShapedTextSlicer};
+pub use glyph::{GlyphInfo, ShapedText, ShapedTextSlice, ShapedTextSlicer, TrailingWhiteSpace};
 use icu_locale_core::subtags::Language;
 pub use platform::font_list::fallback_font_families;
 pub(crate) use shapers::*;
@@ -76,10 +76,10 @@ impl FallbackFontSelectionOptions {
             // of the emoji presentation selectors above).
             _ if matches!(
                 character.emoji_status(),
-                EmojiStatus::EmojiPresentation |
-                    EmojiStatus::EmojiPresentationAndModifierBase |
-                    EmojiStatus::EmojiPresentationAndEmojiComponent |
-                    EmojiStatus::EmojiPresentationAndModifierAndEmojiComponent
+                EmojiStatus::EmojiPresentation
+                    | EmojiStatus::EmojiPresentationAndModifierBase
+                    | EmojiStatus::EmojiPresentationAndEmojiComponent
+                    | EmojiStatus::EmojiPresentationAndModifierAndEmojiComponent
             ) =>
             {
                 EmojiPresentationPreference::Emoji

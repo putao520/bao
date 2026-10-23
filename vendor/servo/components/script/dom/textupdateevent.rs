@@ -15,7 +15,6 @@ use stylo_atoms::Atom;
 use crate::dom::bindings::codegen::Bindings::EditContextBinding::TextUpdateEventInit;
 use crate::dom::bindings::codegen::Bindings::EditContextBinding::TextUpdateEventMethods;
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
-use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};

@@ -10,6 +10,7 @@
 mod accessibility;
 mod cell;
 mod context;
+mod counter;
 mod display_list;
 mod dom;
 mod dom_traversal;
@@ -20,6 +21,14 @@ mod fragment_tree;
 pub mod geom;
 mod layout_box_base;
 mod layout_impl;
+/// BAO (REQ-BRW-051 C2): CSS Motion Path engine. Pre-landed for wave #14
+/// (E-shapes-anchor U0, motion family 94 subtests); its single entry point
+/// `calculate_motion_path_transform` is not yet wired into the paint-time
+/// transform in `box_fragment`/`display_list` - see the module-level
+/// wiring-point contract. `#[allow(dead_code)]` per the
+/// ContentVisibilityAutoStateChangeEvent precedent.
+#[allow(dead_code)]
+pub(crate) mod motion;
 mod taffy;
 #[macro_use]
 mod construct_modern;
@@ -33,6 +42,16 @@ mod sizing;
 mod style_ext;
 pub mod table;
 mod traversal;
+// BAO patch (fork-maintained, 2026-10-21): CSS View Transitions pseudo-element
+// tree model, UA stylesheet, per-name dynamic style generation and the paint
+// hand-off (REQ-BRW-051 C2). The display-list wiring point and the stylo gaps
+// are documented in the module.
+mod view_transition;
+// BAO patch (fork-maintained, 2026-10-20): WebVTT cue box overlay geometry +
+// shaping for the video replaced content (REQ-BRW-051; replayed after the e99
+// snapshot swap).
+mod webvtt_cue_overlay;
+mod writing_mode;
 
 use app_units::Au;
 pub use cell::ArcRefCell;

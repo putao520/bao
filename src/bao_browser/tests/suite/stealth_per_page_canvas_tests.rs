@@ -18,10 +18,12 @@
 //      both readbacks rode the last page's seed → identical digests (RED).
 //
 //   ② `stealth_free_page_canvas_zero_noise_live` — a stealth-free page
-//      (`stealth_profile: None`) created AFTER a stealthed page must read
-//      back its canvas BYTE-EXACT (zero noise): the keyed registry's
-//      explicit `None` entry keeps stealth-free pages stealth-free instead
-//      of inheriting the earlier page's process-global seed (RED
+//      (显式退出面 `stealth_disabled: true`;用户裁决 2026-10-21 后无 profile
+//      的默认页携带进程级随机身份,不再 stealth-free) created AFTER a
+//      stealthed page must read back its canvas BYTE-EXACT (zero noise): the
+//      keyed registry's explicit `None` entry keeps stealth-free pages
+//      stealth-free instead of inheriting the earlier page's process-global
+//      seed (RED
 //      symptom: flips > 0 on the stealth-free page).
 //
 //   ③ `worker_offscreencanvas_rides_host_page_profile_live` — an
@@ -225,8 +227,8 @@ fn per_page_divergent_canvas_noise_live() {
 /// @trace REQ-STL-003 [criterion:REQ-STL-003] stealth-free page canvas
 /// zero-noise under coexistence (R53-A phase 2 keyed explicit-None entry)
 ///
-/// Page S (firefox, seed 42) then page N (`stealth_profile: None`) in ONE
-/// runtime. Page N's canvas readback must be BYTE-EXACT zero noise
+/// Page S (firefox, seed 42) then page N (显式 `stealth_disabled: true`) in
+/// ONE runtime. Page N's canvas readback must be BYTE-EXACT zero noise
 /// (flips == 0 on the flat fill) — the keyed registry's explicit `None`
 /// entry — while page S's stays noisy (flips > 0). Pre-R53 the global kept
 /// page S's seed 42 and page N's readback inherited it (RED: flips > 0 on
@@ -254,10 +256,12 @@ fn stealth_free_page_canvas_zero_noise_live() {
         .expect("gated live test: create_page S must succeed");
     pump(&page_s, 300);
 
+    // 显式 stealth-free 退出面(用户裁决 2026-10-21「默认 = 随机身份」后,
+    // 无 profile 的默认页不再是 stealth-free;N 页角色=byte-exact 对照面)。
     let page_n = runtime
         .create_page(&PageConfig {
             url: Some("about:blank".into()),
-            stealth_profile: None,
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("gated live test: create_page N must succeed");

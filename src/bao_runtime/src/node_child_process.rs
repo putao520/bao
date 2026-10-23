@@ -4515,6 +4515,97 @@ unsafe extern "C" fn cp_exec(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     true
 }
 
+// ─── execFile faces: shared helpers (node parity, oracle-pinned) ───────────
+
+/// Whether `v` is a plain options object for the execFile argument walk
+/// (file, [args], [options], [callback]): an object that is neither the args
+/// array nor the callback. The args ARRAY form carries a numeric `length`
+/// (node parity rule shared with the sync faces' `is_args_array_value`).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn exec_file_is_options_object(cx: *mut JSContext, v: JSVal) -> bool {
+    if !v.is_object() || JS_ObjectIsFunction(v.to_object()) {
+        return false;
+    }
+    // The args array is the numeric-length shape; anything else object-ish
+    // (including a plain {}) is the options bag.
+    !is_args_array_value(cx, v)
+}
+
+/// Read a string property off an options object ("" when absent — node's
+/// execFile defaults `encoding` to "utf8" and `cwd` to inherit).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn exec_file_opt_str(
+    cx: *mut JSContext,
+    opts_h: Handle<*mut JSObject>,
+    key: &[u8],
+) -> Option<String> {
+    let mut v = UndefinedValue();
+    let key_c = ZBox::from_bytes(key);
+    JS_GetProperty(
+        cx,
+        opts_h,
+        key_c.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    if v.is_string() {
+        Some(crate::js_to_rust_string(cx, v))
+    } else {
+        None
+    }
+}
+
+/// Push an argv element from a JS array's string element (silently skipping
+/// non-strings — node coerces; bao's existing argv builders keep the same
+/// string-only walk).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn exec_file_push_string_elements(
+    cx: *mut JSContext,
+    arr_obj: *mut JSObject,
+    out: &mut Vec<Box<[u8]>>,
+) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let arr_r = arr_obj);
+    let arr_h = arr_r.handle().into();
+    let mut len_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        arr_h,
+        c"length".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut len_val,
+        },
+    );
+    if !len_val.is_int32() {
+        return;
+    }
+    let len = len_val.to_int32() as u32;
+    for i in 0..len {
+        let mut elem = UndefinedValue();
+        JS_GetElement(
+            cx,
+            arr_h,
+            i,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut elem,
+            },
+        );
+        if elem.is_string() {
+            out.push(
+                crate::js_to_rust_string(cx, elem)
+                    .as_bytes()
+                    .to_vec()
+                    .into_boxed_slice(),
+            );
+        }
+    }
+}
+
 // ─── Sync-face output carrier (node parity, oracle-pinned) ─────────────────
 // node v24 (.200 oracle): spawnSync/execSync/execFileSync put stdout/stderr
 // up as a Buffer of the child's RAW bytes when `encoding` is ABSENT, and as a
@@ -4534,15 +4625,19 @@ enum SyncOutputCarrier {
 }
 
 /// Read `options.encoding` off the sync options value (may be undefined).
-/// `Err(())` = a JS error was already reported (unsupported encoding —
-/// fail-closed: no silent utf8 substitution for node's full encoding table).
+/// `default_carrier` is the face's absent-encoding default (spawnSync family
+/// = Buffer of raw bytes; the execFile callback face = utf8 string — node
+/// v24.19.0 oracle 2026-10-20). `Err(())` = a JS error was already reported
+/// (unsupported encoding — fail-closed: no silent utf8 substitution for
+/// node's full encoding table).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn parse_sync_output_carrier(
     cx: *mut JSContext,
     opts_val: JSVal,
+    default_carrier: SyncOutputCarrier,
 ) -> ::std::result::Result<SyncOutputCarrier, ()> {
     if !opts_val.is_object() {
-        return Ok(SyncOutputCarrier::Buffer);
+        return Ok(default_carrier);
     }
     let opts_obj = opts_val.to_object();
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -4559,8 +4654,8 @@ unsafe fn parse_sync_output_carrier(
         },
     );
     if !enc.is_string() {
-        // absent / null / non-string → node's default face: Buffer
-        return Ok(SyncOutputCarrier::Buffer);
+        // absent / null / non-string → the face's default carrier
+        return Ok(default_carrier);
     }
     let name = crate::js_to_rust_string(cx, enc);
     match name.to_ascii_lowercase().as_str() {
@@ -4834,7 +4929,7 @@ unsafe extern "C" fn cp_exec_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     let mut carrier = SyncOutputCarrier::Buffer;
     if argc > 1 {
         let opts_val = *args.get(1).ptr;
-        match parse_sync_output_carrier(cx, opts_val) {
+        match parse_sync_output_carrier(cx, opts_val, SyncOutputCarrier::Buffer) {
             Ok(c) => carrier = c,
             Err(()) => return false,
         }
@@ -4976,6 +5071,42 @@ unsafe extern "C" fn cp_exec_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 }
 
 // ─── cp_exec_file ──────────────────────────────────────────────────────────
+//
+// @trace REQ-ENG-048 — execFile async callback completion (node v24.19.0
+// oracle 2026-10-20). The former face spawned the child synchronously and
+// returned a plain {stdout, stderr, exitCode, pid} carrier while IGNORING the
+// callback argument entirely: every `execFile(file, args, cb)` call site (the
+// official node:test suite drives child workloads through exactly that face)
+// waited forever on a callback that never fired, the enclosing test promise
+// never settled, and the runner reported a vacuous 0/0 with exit 0. The face
+// now walks node's full argument list — (file, [args], [options], [callback])
+// — and fires `callback(error|null, stdout, stderr)` when the child settles,
+// mirroring the exec face's synchronous-completion model (spawn_sync under an
+// async-shaped API — bao's single-JS-thread model).
+//
+// Options honored for real (backed by spawn_sync): cwd, shell:true (node's
+// normalizeExecFileAndArgs joins file + args with spaces and shells it),
+// encoding (absent → utf8 string per node's execFile default; 'buffer' →
+// Buffer, full shared table). Documented boundaries (NOT silently faked —
+// node defaults they'd override are the no-op path): timeout/maxBuffer/
+// killSignal/uid/gid/abortSignal are not backed by the sync spawn (no
+// timeout enforcement, unbounded buffering); shell:"<custom path>" fails
+// closed with a reported error instead of silently running the default
+// shell; env is the established sync-family boundary (spawnSync/execFileSync
+// share it — the child inherits the parent env).
+//
+// Oracle-pinned shapes:
+//   success  → callback(null, stdout, stderr) — stdout keeps its trailing
+//              newline ("hello\n").
+//   exit≠0   → callback(Error, stdout, stderr), message
+//              "Command failed: <file>\n<stderr>" (trailing \n stands even
+//              when stderr is empty), code: <exit code NUMBER> (null on a
+//              signal death), killed: false, signal: null|"<SIG>", cmd:
+//              <file>.
+//   spawn ENOENT → callback(Error, "", ""), message "spawn <path> ENOENT",
+//              code "ENOENT" (string), errno -2, syscall "spawn <path>",
+//              path <path> — delivered through the callback, NEVER a
+//              synchronous throw when a callback exists.
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
@@ -5001,6 +5132,41 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         return false;
     }
 
+    // node argument walk (normalizeExecArgs): the callback is the LAST
+    // function argument among positions 1..=3; the array form is the args
+    // list; a plain object is the options bag; a string in an args slot is
+    // the shared ERR_INVALID_ARG_TYPE shape.
+    let mut file_args: Vec<Box<[u8]>> = Vec::new();
+    let mut callback: *mut JSObject = ::std::ptr::null_mut();
+    let mut opts_obj: *mut JSObject = ::std::ptr::null_mut();
+    let mut saw_args = false;
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let walk_max = if argc > 4 { 4 } else { argc };
+    for i in 1..walk_max {
+        let v = *args.get(i).ptr;
+        if v.is_object() && JS_ObjectIsFunction(v.to_object()) {
+            callback = v.to_object();
+        } else if is_args_array_value(cx, v) {
+            if saw_args {
+                // node rejects a second array (the options slot must be an
+                // options object): ERR_INVALID_ARG_TYPE on the options arg.
+                JS_ReportErrorUTF8(
+                    cx,
+                    c"The \"options\" argument must be of type object. Received type array".as_ptr(),
+                );
+                return false;
+            }
+            exec_file_push_string_elements(cx, v.to_object(), &mut file_args);
+            saw_args = true;
+        } else if exec_file_is_options_object(cx, v) {
+            opts_obj = v.to_object();
+        } else if v.is_string() {
+            report_string_args_type_error(cx);
+            return false;
+        }
+    }
+
     let mut sync_opts = spawn_sync::Options {
         stdin: SyncStdio::Ignore,
         stdout: SyncStdio::Buffer,
@@ -5024,62 +5190,116 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         #[cfg(not(windows))]
         windows: (),
     };
+    sync_opts.argv.extend(file_args.iter().cloned());
 
-    if argc > 1 {
-        let args_val = *args.get(1).ptr;
-        if args_val.is_object() {
-            let args_obj = args_val.to_object();
-            let mut wrapped_cx_args =
-                mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-            let cx_ref_args = &mut wrapped_cx_args;
-            rooted!(&in(cx_ref_args) let args_obj_r = args_obj);
-            let args_obj_h = args_obj_r.handle();
-            let mut len_val = UndefinedValue();
-            JS_GetProperty(
+    // Options face: cwd (real), shell (boolean true → the shared shell path),
+    // encoding (absent → utf8, node's execFile default).
+    let mut carrier = SyncOutputCarrier::Utf8;
+    let mut use_shell = false;
+    if !opts_obj.is_null() {
+        rooted!(&in(cx_ref) let opts_r = opts_obj);
+        let opts_h = opts_r.handle();
+        if let Some(cwd) = exec_file_opt_str(cx, opts_h.into(), b"cwd") {
+            sync_opts.cwd = cwd.as_bytes().to_vec().into_boxed_slice();
+        }
+        let mut shell_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            opts_h.into(),
+            c"shell".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut shell_val,
+            },
+        );
+        if shell_val.is_string() {
+            // Fail closed: node accepts a custom shell path; bao's shared
+            // shell path is fixed — silently running /bin/sh instead of the
+            // requested shell would be a wrong-engine lie, so report it.
+            JS_ReportErrorUTF8(
                 cx,
-                args_obj_h.into(),
-                c"length".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut len_val,
-                },
+                c"child_process.execFile: options.shell as a custom shell path is not supported (only shell: true — the default shell)".as_ptr(),
             );
-            if len_val.is_int32() {
-                let len = len_val.to_int32() as u32;
-                for i in 0..len {
-                    let mut elem = UndefinedValue();
-                    JS_GetElement(
-                        cx,
-                        args_obj_h.into(),
-                        i,
-                        MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut elem,
-                        },
-                    );
-                    if elem.is_string() {
-                        sync_opts.argv.push(
-                            crate::js_to_rust_string(cx, elem)
-                                .as_bytes()
-                                .to_vec()
-                                .into_boxed_slice(),
-                        );
-                    }
-                }
-            }
-        } else if args_val.is_string() {
-            report_string_args_type_error(cx);
             return false;
         }
+        use_shell = shell_val.is_boolean() && shell_val.to_boolean();
+        // `encoding` lives on the options object (the argument walk already
+        // located it at whatever position it occupied).
+        match parse_sync_output_carrier(cx, ObjectValue(opts_obj), SyncOutputCarrier::Utf8) {
+            Ok(c) => carrier = c, // @evidence .spec/10-REQUIREMENTS.html:237
+            Err(()) => return false, // @evidence .spec/10-REQUIREMENTS.html:237
+        }
+    }
+
+    if use_shell {
+        // node normalizeExecFileAndArgs(shell:true): file + args joined with
+        // single spaces, handed to the shell.
+        let mut parts: Vec<String> = Vec::with_capacity(file_args.len() + 1);
+        parts.push(file_path.clone());
+        for a in &file_args {
+            parts.push(String::from_utf8_lossy(a).into_owned());
+        }
+        sync_opts = shell_sync_opts(&parts.join(" "));
     }
 
     let spawn_result = match spawn_sync::spawn(&sync_opts) {
         Ok(Ok(r)) => r,
         Ok(Err(sys_err)) => {
-            let msg = format!("execFile system error: {:?}", sys_err);
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
-            return false;
+            if callback.is_null() {
+                // No callback → no completion channel on this face; the loud
+                // synchronous report is the honest path (same as before).
+                let msg = format!("execFile system error: {:?}", sys_err);
+                let c_msg = ZBox::from_bytes(msg.as_bytes());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                return false;
+            }
+            // node oracle: spawn failures ride the callback — a REAL Error
+            // with the SystemError surface (code/errno/syscall/path), message
+            // "spawn <path> <CODE>".
+            let code_name = String::from_utf8_lossy(sys_err.name()).into_owned();
+            let path_str = String::from_utf8_lossy(&sys_err.path).into_owned();
+            let err_obj = cp_new_error_object(cx, &format!("spawn {} {}", path_str, code_name));
+            if err_obj.is_null() {
+                args.rval().set(UndefinedValue());
+                return true;
+            }
+            rooted!(&in(cx_ref) let err_r = err_obj);
+            let err_h = err_r.handle().into();
+            for (key, value) in [
+                (c"code", code_name.clone()),
+                (c"syscall", format!("spawn {}", path_str)),
+                (c"path", path_str.clone()),
+            ] {
+                let c_val = ZBox::from_vec(value.into_bytes());
+                let js_str = JS_NewStringCopyZ(cx, c_val.as_ptr());
+                if !js_str.is_null() {
+                    let val = StringValue(&*js_str);
+                    rooted!(&in(cx_ref) let vr = val);
+                    JS_DefineProperty(
+                        cx,
+                        err_h,
+                        key.as_ptr(),
+                        vr.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
+            let errno_val = Int32Value(-(sys_err.errno as i32));
+            rooted!(&in(cx_ref) let er = errno_val);
+            JS_DefineProperty(
+                cx,
+                err_h,
+                c"errno".as_ptr(),
+                er.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            let empty = sync_output_jsval(cx, &[], carrier);
+            let err_val = ObjectValue(err_r.get());
+            rooted!(&in(cx_ref) let e0 = err_val);
+            rooted!(&in(cx_ref) let out0 = empty);
+            cp_exec_file_fire_callback(cx, cx_ref, callback, e0.get(), out0.get(), out0.get());
+            args.rval().set(UndefinedValue());
+            return true;
         }
         Err(e) => {
             let msg = format!("execFile failed: {:?}", e);
@@ -5092,49 +5312,34 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     let stdout_bytes = spawn_result.stdout.clone();
     let stderr_bytes = spawn_result.stderr.clone();
     let exit_code = status_to_exit_code(&spawn_result.status);
+    let signal = status_to_signal(&spawn_result.status);
 
     let child_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
     if child_obj.is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let child_r = child_obj);
 
     let child_h = child_r.handle().into();
-    let stdout_str = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    let c_out = ZBox::from_bytes(stdout_str.as_bytes());
-    {
-        let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
-        if !js_str.is_null() {
-            let v = StringValue(&*js_str);
-            rooted!(&in(cx_ref) let rv = v);
-            JS_DefineProperty(
-                cx,
-                child_h,
-                c"stdout".as_ptr(),
-                rv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-    }
-    let stderr_str = String::from_utf8_lossy(&stderr_bytes).into_owned();
-    let c_err = ZBox::from_bytes(stderr_str.as_bytes());
-    {
-        let js_str = JS_NewStringCopyZ(cx, c_err.as_ptr());
-        if !js_str.is_null() {
-            let v = StringValue(&*js_str);
-            rooted!(&in(cx_ref) let rv = v);
-            JS_DefineProperty(
-                cx,
-                child_h,
-                c"stderr".as_ptr(),
-                rv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-    }
+    let stdout_val = sync_output_jsval(cx, &stdout_bytes, carrier);
+    rooted!(&in(cx_ref) let out_r = stdout_val);
+    JS_DefineProperty(
+        cx,
+        child_h,
+        c"stdout".as_ptr(),
+        out_r.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+    let stderr_val = sync_output_jsval(cx, &stderr_bytes, carrier);
+    rooted!(&in(cx_ref) let errv_r = stderr_val);
+    JS_DefineProperty(
+        cx,
+        child_h,
+        c"stderr".as_ptr(),
+        errv_r.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
     rooted!(&in(cx_ref) let ec = Int32Value(exit_code));
     JS_DefineProperty(
         cx,
@@ -5154,8 +5359,91 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         JSPROP_ENUMERATE as u32,
     );
 
+    if !callback.is_null() {
+        // node v24.19.0 oracle: nonzero exit / signal death → a REAL Error,
+        // message "Command failed: <file>\n<stderr>" (trailing newline stands
+        // even when stderr is empty), code: number|null (null on signal
+        // death), killed: false, signal: null|"<SIG>", cmd: <file>.
+        let err_obj = if exit_code != 0 || signal.is_some() {
+            let stderr_str = String::from_utf8_lossy(&stderr_bytes).into_owned();
+            let msg = format!("Command failed: {}\n{}", file_path, stderr_str);
+            let e = cp_new_error_object(cx, &msg);
+            if !e.is_null() {
+                rooted!(&in(cx_ref) let e_r = e);
+                let e_h = e_r.handle().into();
+                let code_val = if signal.is_some() {
+                    NullValue()
+                } else {
+                    Int32Value(exit_code)
+                };
+                rooted!(&in(cx_ref) let cv = code_val);
+                JS_SetProperty(cx, e_h, c"code".as_ptr(), cv.handle().into());
+                let killed_v = BooleanValue(false);
+                rooted!(&in(cx_ref) let kv = killed_v);
+                JS_SetProperty(cx, e_h, c"killed".as_ptr(), kv.handle().into());
+                let sig_v = cp_signal_jsval(cx, signal);
+                rooted!(&in(cx_ref) let sv = sig_v);
+                JS_SetProperty(cx, e_h, c"signal".as_ptr(), sv.handle().into());
+                let c_cmd = ZBox::from_bytes(file_path.as_bytes());
+                let cmd_str = JS_NewStringCopyZ(cx, c_cmd.as_ptr());
+                if !cmd_str.is_null() {
+                    let cmd_v = StringValue(&*cmd_str);
+                    rooted!(&in(cx_ref) let cmdv = cmd_v);
+                    JS_SetProperty(cx, e_h, c"cmd".as_ptr(), cmdv.handle().into());
+                }
+            }
+            e
+        } else {
+            ::std::ptr::null_mut()
+        };
+
+        // Array of VALUES (not of references — the exec-callback NaN-boxing
+        // lesson in cp_exec applies here too).
+        let cb_err_val = if err_obj.is_null() {
+            NullValue()
+        } else {
+            ObjectValue(err_obj)
+        };
+        rooted!(&in(cx_ref) let cb_err = cb_err_val);
+        rooted!(&in(cx_ref) let cb_out = stdout_val);
+        rooted!(&in(cx_ref) let cb_errv = stderr_val);
+        cp_exec_file_fire_callback(cx, cx_ref, callback, cb_err.get(), cb_out.get(), cb_errv.get());
+    }
+
     args.rval().set(ObjectValue(child_r.get()));
     true
+}
+
+/// Fire `callback(error, stdout, stderr)` — the shared tail of the execFile
+/// faces (completion and spawn-failure arms). Same rooted-value-array call
+/// discipline as cp_exec (three VALUES, not three pointers).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn cp_exec_file_fire_callback(
+    cx: *mut JSContext,
+    cx_ref: &mut mozjs::context::JSContext,
+    callback: *mut JSObject,
+    err_val: JSVal,
+    stdout_val: JSVal,
+    stderr_val: JSVal,
+) {
+    rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
+    rooted!(&in(cx_ref) let cb_v = ObjectValue(callback));
+    let elems = [err_val, stdout_val, stderr_val];
+    let call_args = HandleValueArray {
+        length_: 3,
+        elements_: elems.as_ptr(),
+    };
+    let mut rval = UndefinedValue();
+    JS_CallFunctionValue(
+        cx,
+        global.handle().into(),
+        cb_v.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
 }
 
 // ─── cp_exec_file_sync ─────────────────────────────────────────────────────
@@ -5263,14 +5551,14 @@ unsafe extern "C" fn cp_exec_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
     // LAST object argument: execFileSync(file, args?, options?) — the args
     // array form carries a numeric `length`, the options object does not.
     let carrier = if argc > 2 {
-        match parse_sync_output_carrier(cx, *args.get(2).ptr) {
+        match parse_sync_output_carrier(cx, *args.get(2).ptr, SyncOutputCarrier::Buffer) {
             Ok(c) => c,
             Err(()) => return false,
         }
     } else if argc == 2 {
         let v = *args.get(1).ptr;
         if v.is_object() && !is_args_array_value(cx, v) {
-            match parse_sync_output_carrier(cx, v) {
+            match parse_sync_output_carrier(cx, v, SyncOutputCarrier::Buffer) {
                 Ok(c) => c,
                 Err(()) => return false,
             }
@@ -5533,14 +5821,14 @@ unsafe extern "C" fn cp_spawn_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     // form carries a numeric `length`, the options object does not.
     let mut carrier = SyncOutputCarrier::Buffer;
     if argc > 2 {
-        match parse_sync_output_carrier(cx, *args.get(2).ptr) {
+        match parse_sync_output_carrier(cx, *args.get(2).ptr, SyncOutputCarrier::Buffer) {
             Ok(c) => carrier = c,
             Err(()) => return false,
         }
     } else if argc == 2 {
         let v = *args.get(1).ptr;
         if v.is_object() && !is_args_array_value(cx, v) {
-            match parse_sync_output_carrier(cx, v) {
+            match parse_sync_output_carrier(cx, v, SyncOutputCarrier::Buffer) {
                 Ok(c) => carrier = c,
                 Err(()) => return false,
             }

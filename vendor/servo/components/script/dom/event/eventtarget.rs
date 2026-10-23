@@ -14,6 +14,7 @@ use std::sync::LazyLock;
 use deny_public_fields::DenyPublicFields;
 use devtools_traits::EventListenerInfo;
 use dom_struct::dom_struct;
+use html5ever::local_name;
 use js::context::JSContext;
 use js::jsapi::{JS_GetFunctionObject, SupportUnscopables};
 use js::jsval::JSVal;
@@ -35,6 +36,7 @@ use crate::dom::abortsignal::{AbortAlgorithm, RemovableDomEventListener};
 use crate::dom::beforeunloadevent::BeforeUnloadEvent;
 use crate::dom::bindings::callback::{CallbackContainer, CallbackFunction, ExceptionHandling};
 use crate::dom::bindings::codegen::Bindings::BeforeUnloadEventBinding::BeforeUnloadEventMethods;
+use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
 use crate::dom::bindings::codegen::Bindings::ErrorEventBinding::ErrorEventMethods;
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
 use crate::dom::bindings::codegen::Bindings::EventHandlerBinding::{
@@ -46,6 +48,7 @@ use crate::dom::bindings::codegen::Bindings::EventTargetBinding::{
 };
 use crate::dom::bindings::codegen::Bindings::NodeBinding::GetRootNodeOptions;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::Node_Binding::NodeMethods;
+use crate::dom::bindings::codegen::Bindings::PerformanceScriptTimingBinding::ScriptInvokerType;
 use crate::dom::bindings::codegen::Bindings::ShadowRootBinding::ShadowRoot_Binding::ShadowRootMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::codegen::GenericBindings::DocumentBinding::Document_Binding::DocumentMethods;
@@ -64,15 +67,18 @@ use crate::dom::element::Element;
 use crate::dom::errorevent::ErrorEvent;
 use crate::dom::event::{Event, EventBubbles, EventCancelable, EventComposed};
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::globalscope::messageport::MessagePort;
 use crate::dom::html::htmlformelement::FormControlElementHelpers;
 use crate::dom::indexeddb::idbdatabase::IDBDatabase;
 use crate::dom::indexeddb::idbrequest::IDBRequest;
 use crate::dom::indexeddb::idbtransaction::IDBTransaction;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{Node, NodeTraits};
+use crate::dom::performance::long_animation_frame_recorder;
 use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::window::Window;
 use crate::dom::workerglobalscope::WorkerGlobalScope;
+use crate::dom::xmlhttprequest::XMLHttpRequest;
 use crate::realms::enter_auto_realm;
 use crate::runtime::script_runtime::IntroductionType;
 
@@ -229,6 +235,11 @@ impl CompiledEventListener {
         event: &Event,
         exception_handle: ExceptionHandling,
     ) -> Fallible<()> {
+        // Long animation frames attribute the time spent inside an event
+        // listener to the listener's entry point. The guard appends the
+        // measured entry point to the current frame when it is dropped.
+        let _long_animation_frame_guard = event_listener_script_entry(object, event);
+
         // Step 3
         match *self {
             CompiledEventListener::Listener(ref listener) => {
@@ -237,8 +248,8 @@ impl CompiledEventListener {
             CompiledEventListener::Handler(ref handler) => {
                 match *handler {
                     CommonEventHandler::ErrorEventHandler(ref handler) => {
-                        if let Some(event) = event.downcast::<ErrorEvent>() &&
-                            (object.is::<Window>() || object.is::<WorkerGlobalScope>())
+                        if let Some(event) = event.downcast::<ErrorEvent>()
+                            && (object.is::<Window>() || object.is::<WorkerGlobalScope>())
                         {
                             rooted!(&in(cx) let mut error: JSVal);
                             event.Error(error.handle_mut());
@@ -255,9 +266,9 @@ impl CompiledEventListener {
                                 exception_handle,
                             );
                             // Step 4
-                            if let Ok(()) = return_value &&
-                                rooted_return_value.handle().is_boolean() &&
-                                rooted_return_value.handle().to_boolean()
+                            if let Ok(()) = return_value
+                                && rooted_return_value.handle().is_boolean()
+                                && rooted_return_value.handle().to_boolean()
                             {
                                 event.upcast::<Event>().PreventDefault();
                             }
@@ -337,6 +348,51 @@ impl CompiledEventListener {
             },
         }
     }
+}
+
+/// <https://w3c.github.io/long-animation-frames/#dfn-script-entry-point>
+///
+/// Build the `invoker`/`invokerType` pair for an event listener dispatch. The
+/// invoker is a stable description of the listener target:
+///
+/// * `IMG#image.onload` for an element with an id,
+/// * `IMG[src="..."].onload` for an element without an id,
+/// * `DOMWindow.onmessage`, `XMLHttpRequest.onload`, `MessagePort.onmessage`.
+fn event_listener_script_entry(
+    object: &EventTarget,
+    event: &Event,
+) -> Option<long_animation_frame_recorder::ScriptEntryGuard> {
+    // Hold the rooted global first: `object.global()` returns a temporary
+    // borrow that cannot outlive this statement (E0716 shape, rustc hint).
+    let global = object.global();
+    let window: DomRoot<Window> = DomRoot::downcast::<Window>(global)?;
+    let event_type = event.type_().to_string();
+
+    let invoker = if let Some(element) = object.downcast::<Element>() {
+        let local_name = element.local_name().to_string().to_ascii_uppercase();
+        let id = element.Id();
+        if !id.is_empty() {
+            format!("{local_name}#{id}.on{event_type}")
+        } else if let Some(src) = element.get_attribute_string_value(&local_name!("src")) {
+            format!("{local_name}[src=\"{src}\"].on{event_type}")
+        } else {
+            format!("{local_name}.on{event_type}")
+        }
+    } else if object.is::<Window>() {
+        format!("DOMWindow.on{event_type}")
+    } else if object.is::<XMLHttpRequest>() {
+        format!("XMLHttpRequest.on{event_type}")
+    } else if object.is::<MessagePort>() {
+        format!("MessagePort.on{event_type}")
+    } else {
+        return None;
+    };
+
+    Some(long_animation_frame_recorder::begin_script_entry(
+        &window,
+        ScriptInvokerType::Event_listener,
+        invoker,
+    ))
 }
 
 // https://dom.spec.whatwg.org/#concept-event-listener
@@ -532,10 +588,10 @@ impl EventTarget {
         let event_type = ty.trim_matches(HTML_SPACE_CHARACTERS);
 
         // type is one of "touchstart", "touchmove", "wheel", or "mousewheel"
-        let matches_event_type = event_type.eq_ignore_ascii_case("touchstart") ||
-            event_type.eq_ignore_ascii_case("touchmove") ||
-            event_type.eq_ignore_ascii_case("wheel") ||
-            event_type.eq_ignore_ascii_case("mousewheel");
+        let matches_event_type = event_type.eq_ignore_ascii_case("touchstart")
+            || event_type.eq_ignore_ascii_case("touchmove")
+            || event_type.eq_ignore_ascii_case("wheel")
+            || event_type.eq_ignore_ascii_case("mousewheel");
 
         if !matches_event_type {
             return false;
@@ -605,9 +661,9 @@ impl EventTarget {
     pub(crate) fn remove_listener(&self, ty: &Atom, entry: &Rc<RefCell<EventListenerEntry>>) {
         let mut handlers = self.handlers.borrow_mut();
 
-        if let Some(handlers) = handlers.as_mut() &&
-            let Some(entries) = handlers.get_mut(ty) &&
-            let Some(position) = entries.iter().position(|e| *e == *entry)
+        if let Some(handlers) = handlers.as_mut()
+            && let Some(entries) = handlers.get_mut(ty)
+            && let Some(position) = entries.iter().position(|e| *e == *entry)
         {
             entries.remove(position).borrow_mut().removed = true;
             self.notify_listener_removed(ty);
@@ -1000,8 +1056,8 @@ impl EventTarget {
         };
         let ty_atom = Atom::from(ty);
         let mut handlers = self.handlers.borrow_mut();
-        if let Some(handlers) = handlers.as_mut() &&
-            let Some(entries) = handlers.get_mut(&ty_atom)
+        if let Some(handlers) = handlers.as_mut()
+            && let Some(entries) = handlers.get_mut(&ty_atom)
         {
             let phase = if options.capture {
                 ListenerPhase::Capturing
@@ -1089,8 +1145,8 @@ impl EventTarget {
             if !a_root.is::<ShadowRoot>() {
                 return a;
             }
-            if let Some(b_node) = b.downcast::<Node>() &&
-                a_root.is_shadow_including_inclusive_ancestor_of(b_node)
+            if let Some(b_node) = b.downcast::<Node>()
+                && a_root.is_shadow_including_inclusive_ancestor_of(b_node)
             {
                 return a;
             }

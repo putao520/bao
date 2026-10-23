@@ -110,10 +110,15 @@ fn wait_geometry_ready(page: &PageHandle, id: &str, max_ms: u64) {
 }
 
 /// 单页 fixture:创建 page + 泵驱动等 load + 等首元素几何物化。
+///
+/// 显式 stealth-free:本域是布局几何真值断言(getBoundingClientRect ±1px
+/// 容差),默认身份(裁决 2026-10-21)会给默认页装 clientrects ±0.5px 噪声钩子
+/// —— 与容差判据叠加会越界,故显式退出。
 fn geometry_page(pool: &PagePool, html: &str, first_id: &str) -> PageHandle {
     let page = pool
         .create_page(&PageConfig {
             url: Some(data_url(html)),
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("pool.create_page failed");

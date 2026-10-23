@@ -304,6 +304,11 @@ fn overlay_pixel_acceptance_full_chain() {
     let page = runtime
         .create_page(&PageConfig {
             url: Some("about:blank".into()),
+            // 显式 stealth-free:本测试用 `getBoundingClientRect().width`
+            // 字符串精确落地判据(settle "160")与 ≤1px 的 CDP quad/rect 对齐
+            // —— 默认身份(裁决 2026-10-21)的 clientrects ±0.5px 噪声钩子会
+            // 让精确宽度读取永不命中,故显式退出。
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("create_page");

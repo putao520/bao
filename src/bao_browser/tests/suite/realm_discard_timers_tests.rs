@@ -273,6 +273,10 @@ fn same_domain_nav_discards_old_realm_bao_timers() {
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/a")),
+            // 显式 stealth-free:本域测 realm 丢弃/定时器清理,非指纹面;
+            // 默认身份(裁决 2026-10-21)会给默认页装 audio/rect 钩子,
+            // 长 OfflineAudioContext 渲染被 BigInt 噪声钩子拖慢且与判据无关。
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("create_page");
@@ -404,6 +408,8 @@ fn same_domain_nav_churn_no_timer_accumulation() {
         let page = runtime
             .create_page(&PageConfig {
                 url: Some(fixture.url(&format!("/a?c={i}"))),
+                // 显式 stealth-free(同文件其余页:realm/定时器域,非指纹面)。
+                stealth_disabled: true,
                 ..Default::default()
             })
             .expect("create_page");
@@ -468,6 +474,8 @@ fn same_domain_nav_churn_no_timer_accumulation() {
         let last = runtime
             .create_page(&PageConfig {
                 url: Some(fixture.url("/a?c=final")),
+                // 显式 stealth-free(同文件其余页:realm/定时器域,非指纹面)。
+                stealth_disabled: true,
                 ..Default::default()
             })
             .expect("create final probe page");
@@ -513,6 +521,10 @@ fn cross_host_nav_and_page_close_no_regression() {
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/a")),
+            // 显式 stealth-free:本域测 realm 丢弃/定时器清理,非指纹面;
+            // 默认身份(裁决 2026-10-21)会给默认页装 audio/rect 钩子,
+            // 长 OfflineAudioContext 渲染被 BigInt 噪声钩子拖慢且与判据无关。
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("create_page");
@@ -565,6 +577,10 @@ fn cross_host_nav_and_page_close_no_regression() {
     let page2 = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/a?close=1")),
+            // 显式 stealth-free:本域测 realm 丢弃/定时器清理,非指纹面;
+            // 默认身份(裁决 2026-10-21)会给默认页装 audio/rect 钩子,
+            // 长 OfflineAudioContext 渲染被 BigInt 噪声钩子拖慢且与判据无关。
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("create page2");
@@ -649,6 +665,10 @@ fn page_discard_inflight_completion_never_reenters_js() {
     let page_a = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/a")),
+            // 显式 stealth-free:本域测 realm 丢弃/定时器清理,非指纹面;
+            // 默认身份(裁决 2026-10-21)会给默认页装 audio/rect 钩子,
+            // 长 OfflineAudioContext 渲染被 BigInt 噪声钩子拖慢且与判据无关。
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("create_page A");
@@ -662,6 +682,10 @@ fn page_discard_inflight_completion_never_reenters_js() {
     let page_b = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/b")),
+            // 显式 stealth-free:本域测 realm 丢弃/定时器清理,非指纹面;
+            // 默认身份(裁决 2026-10-21)会给默认页装 audio/rect 钩子,
+            // 长 OfflineAudioContext 渲染被 BigInt 噪声钩子拖慢且与判据无关。
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("create_page B");
@@ -770,6 +794,10 @@ fn offline_render_resolve_suppressed_after_discard() {
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/a")),
+            // 显式 stealth-free:本域测 realm 丢弃/定时器清理,非指纹面;
+            // 默认身份(裁决 2026-10-21)会给默认页装 audio/rect 钩子,
+            // 长 OfflineAudioContext 渲染被 BigInt 噪声钩子拖慢且与判据无关。
+            stealth_disabled: true,
             ..Default::default()
         })
         .expect("create_page");

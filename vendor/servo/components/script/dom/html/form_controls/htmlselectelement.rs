@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::cell::Cell;
 use std::default::Default;
 use std::iter;
 
@@ -136,6 +137,9 @@ pub(crate) struct HTMLSelectElement {
     labels_node_list: MutNullableDom<NodeList>,
     validity_state: MutNullableDom<ValidityState>,
     shadow_tree: DomRefCell<Option<ShadowTree>>,
+    /// Depth of batched list-of-options mutations in progress (see
+    /// [`HTMLSelectElement::begin_batched_list_update`]).
+    batched_list_update_depth: Cell<u32>,
 }
 
 /// Holds handles to all elements in the UA shadow tree
@@ -209,6 +213,7 @@ impl HTMLSelectElement {
             labels_node_list: Default::default(),
             validity_state: Default::default(),
             shadow_tree: Default::default(),
+            batched_list_update_depth: Cell::new(0),
         }
     }
 
@@ -278,8 +283,50 @@ impl HTMLSelectElement {
         self.ask_for_reset(no_gc);
     }
 
+    /// Batched list-of-options mutation support.
+    ///
+    /// `HTMLOptionsCollection::add_new_elements` and the `length` shrink path
+    /// insert/remove many options inside a single script-observable operation.
+    /// The per-insert hooks — the selectedness setting algorithm (run by every
+    /// option's insertion/removal steps via `ask_for_reset`) and the UA shadow
+    /// tree refresh (run by `children_changed`) — each scan the full list of
+    /// options, so running them per option makes `options.length = 100000`
+    /// O(n²) and wedges the main thread. While a batch is in progress those
+    /// hooks are suppressed and a single catch-up runs when the outermost
+    /// batch ends. Intermediate states are unobservable to script: the setter
+    /// is one JS job and DOM insertion has no synchronous re-entry.
+    pub(crate) fn begin_batched_list_update(&self) {
+        self.batched_list_update_depth.set(
+            self.batched_list_update_depth
+                .get()
+                .saturating_add(1),
+        );
+    }
+
+    pub(crate) fn end_batched_list_update(&self, cx: &mut JSContext) {
+        let depth = self.batched_list_update_depth.get();
+        debug_assert_ne!(depth, 0, "end_batched_list_update without begin");
+        self.batched_list_update_depth.set(depth.saturating_sub(1));
+        if depth == 1 {
+            // The selectedness setting algorithm is a pure function of the
+            // current list of options, so a single run against the final tree
+            // yields the same state as running it after every mutation of the
+            // batch; ditto for the shadow-tree refresh.
+            self.ask_for_reset(cx.no_gc());
+            self.update_shadow_tree(cx);
+        }
+    }
+
+    fn batched_list_update_in_progress(&self) -> bool {
+        self.batched_list_update_depth.get() != 0
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#ask-for-a-reset>
     pub(crate) fn ask_for_reset(&self, no_gc: &NoGC) {
+        if self.batched_list_update_in_progress() {
+            // Deferred to the end of the batch (`end_batched_list_update`).
+            return;
+        }
         if self.Multiple() {
             return;
         }
@@ -345,6 +392,10 @@ impl HTMLSelectElement {
     }
 
     pub(crate) fn update_shadow_tree(&self, cx: &mut JSContext) {
+        if self.batched_list_update_in_progress() {
+            // Deferred to the end of the batch (`end_batched_list_update`).
+            return;
+        }
         let shadow_tree = self.shadow_tree(cx);
 
         let selected_options = self.selected_options(cx.no_gc());

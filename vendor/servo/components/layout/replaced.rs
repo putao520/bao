@@ -9,7 +9,9 @@ use app_units::{Au, MAX_AU};
 use data_url::DataUrl;
 use embedder_traits::ViewportDetails;
 use euclid::{Scale, Size2D};
-use layout_api::{IFrameSize, LayoutElement, LayoutImageDestination, LayoutNode, SVGElementData};
+use layout_api::{
+    IFrameSize, LayoutElement, LayoutImageDestination, LayoutNode, SVGElementData, WebVttCueBoxData,
+};
 use malloc_size_of_derive::MallocSizeOf;
 use net_traits::image_cache::{Image, ImageOrMetadataAvailable, VectorImage};
 use net_traits::request::InternalRequest;
@@ -26,6 +28,7 @@ use style::logical_geometry::{Direction, WritingMode};
 use style::properties::{ComputedValues, StyleBuilder};
 use style::rule_cache::RuleCacheConditions;
 use style::rule_tree::RuleCascadeFlags;
+use style::selector_parser::PseudoElement;
 use style::stylesheets::container_rule::ContainerSizeQuery;
 use style::url::ComputedUrl;
 use style::values::CSSFloat;
@@ -41,12 +44,15 @@ use crate::dom::NodeExt;
 use crate::fragment_tree::{
     BaseFragment, BaseFragmentInfo, CollapsedBlockMargins, Fragment, IFrameFragment, ImageFragment,
 };
+// BAO patch (fork-maintained, 2026-10-20): WebVTT cue box overlay builder
+// (REQ-BRW-051; replayed after the e99 snapshot swap).
 use crate::geom::{LogicalVec2, PhysicalPoint, PhysicalRect, PhysicalSize};
 use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBoxBase};
 use crate::sizing::{
     ComputeInlineContentSizes, InlineContentSizesResult, LazySize, SizeConstraint,
 };
 use crate::style_ext::{AspectRatio, Clamp, ComputedValuesExt, LayoutStyle};
+use crate::webvtt_cue_overlay;
 use crate::{ConstraintSpace, ContainingBlock, SharedStyle};
 
 #[derive(Debug, MallocSizeOf)]
@@ -63,6 +69,12 @@ pub(crate) struct ReplacedContents {
     pub selected_style: SharedStyle,
     /// The natural size of this replaced content.
     natural_size: NaturalSizes,
+    /// The `::cue` style resolved for this media element, when the cascade
+    /// produced one. Read from the element's eager pseudo styles at
+    /// [`ReplacedContents::for_element`] time and consumed when building
+    /// fragments (BAO patch, fork-maintained, 2026-10-20, REQ-BRW-051).
+    #[conditional_malloc_size_of]
+    cue_style: Option<ServoArc<ComputedValues>>,
 }
 
 /// The natural dimensions of a replaced element, including a height, width, and
@@ -148,6 +160,10 @@ pub(crate) struct ImageInfo {
 pub(crate) struct VideoInfo {
     pub image_key: Option<ImageKey>,
     pub poster_url: Option<ServoUrl>,
+    /// Active WebVTT cue boxes to paint on top of the video frame
+    /// (BAO patch, fork-maintained, 2026-10-20, REQ-BRW-051).
+    #[ignore_malloc_size_of = "WebVttCueBoxData is plain data from shared/layout"]
+    pub cue_overlays: Vec<WebVttCueBoxData>,
 }
 
 #[derive(Debug, MallocSizeOf)]
@@ -165,8 +181,8 @@ pub(crate) enum ReplacedContentKind {
 
 impl ReplacedContents {
     pub fn for_element(node: ServoLayoutNode<'_>, context: &LayoutContext) -> Option<Self> {
-        if let Some(ref data_attribute_string) = node.as_typeless_object_with_data_attribute() &&
-            let Some(url) = try_to_parse_image_data_url(data_attribute_string)
+        if let Some(ref data_attribute_string) = node.as_typeless_object_with_data_attribute()
+            && let Some(url) = try_to_parse_image_data_url(data_attribute_string)
         {
             return Self::from_image_url(node, context, &ComputedUrl::Valid(ServoArc::new(url)));
         }
@@ -225,6 +241,19 @@ impl ReplacedContents {
                 .handle_animated_image(node.opaque(), image.clone());
         }
 
+        // BAO patch (fork-maintained, 2026-10-20): pick up the `::cue` style
+        // for media elements from the element's eager pseudo styles — author
+        // `::cue` rules and the UA cue defaults both cascade into it
+        // (REQ-BRW-051).
+        let cue_style = node.as_element().and_then(|element| {
+            element
+                .element_data()
+                .styles
+                .pseudos
+                .get(&PseudoElement::Cue)
+                .cloned()
+        });
+
         Some(Self {
             base_fragment_info: node.into(),
             kind,
@@ -232,6 +261,7 @@ impl ReplacedContents {
             selected: Arc::new(AtomicBool::new(node.replaced_is_selected())),
             selected_style: SharedStyle::new(node.selected_style(&context.style_context)),
             natural_size,
+            cue_style,
         })
     }
 
@@ -340,8 +370,8 @@ impl ReplacedContents {
         // If the `content` property is a single image URL, non-replaced boxes
         // and images get replaced with the given image.
         if let Content::Items(GenericContentItems { items, .. }) =
-            node.style(&context.style_context).get_content() &&
-            let [GenericContentItem::Image(image)] = items.as_slice()
+            node.style(&context.style_context).get_content()
+            && let [GenericContentItem::Image(image)] = items.as_slice()
         {
             // Invalid images are treated as zero-sized.
             let mut replaced_contents = Self::from_image(node, context, image)
@@ -395,6 +425,7 @@ impl ReplacedContents {
             selected: Arc::new(AtomicBool::new(node.replaced_is_selected())),
             selected_style: SharedStyle::new(node.selected_style(&context.style_context)),
             natural_size: NaturalSizes::from_width_and_height(width, height),
+            cue_style: None,
         })
     }
 
@@ -424,6 +455,7 @@ impl ReplacedContents {
             selected: Default::default(),
             selected_style: SharedStyle::new(node.selected_style(&context.style_context)),
             natural_size: NaturalSizes::from_width_and_height(0., 0.),
+            cue_style: None,
         }
     }
 
@@ -552,11 +584,23 @@ impl ReplacedContents {
                         natural_width: self.natural_size.width,
                         natural_height: self.natural_size.height,
                         selected: self.selected.clone(),
+                        cue_overlays: Vec::new(),
                     }))
                 })
                 .into_iter()
                 .collect(),
             ReplacedContentKind::Video(video_info) => {
+                // BAO patch (fork-maintained, 2026-10-20): shape the active
+                // WebVTT cue boxes and paint them on top of the video frame,
+                // styled by the `::cue` cascade (REQ-BRW-051).
+                let cue_overlays = webvtt_cue_overlay::build_cue_overlays(
+                    layout_context,
+                    self.cue_style.as_deref(),
+                    style.clone_font(),
+                    &video_info.cue_overlays,
+                    rect.size.width,
+                    rect.size.height,
+                );
                 vec![Fragment::Image(Arc::new(ImageFragment {
                     base,
                     style: style.clone().into(),
@@ -568,6 +612,7 @@ impl ReplacedContents {
                     natural_width: self.natural_size.width,
                     natural_height: self.natural_size.height,
                     selected: self.selected.clone(),
+                    cue_overlays,
                 }))]
             },
             ReplacedContentKind::IFrame(iframe) => {
@@ -593,8 +638,8 @@ impl ReplacedContents {
                 }))]
             },
             ReplacedContentKind::Canvas(canvas_info) => {
-                if self.natural_size.width == Some(Au::zero()) ||
-                    self.natural_size.height == Some(Au::zero())
+                if self.natural_size.width == Some(Au::zero())
+                    || self.natural_size.height == Some(Au::zero())
                 {
                     return vec![];
                 }
@@ -614,6 +659,7 @@ impl ReplacedContents {
                     natural_width: self.natural_size.width,
                     natural_height: self.natural_size.height,
                     selected: self.selected.clone(),
+                    cue_overlays: Vec::new(),
                 }))]
             },
             ReplacedContentKind::SVGElement {
@@ -671,6 +717,7 @@ impl ReplacedContents {
                             natural_width: self.natural_size.width,
                             natural_height: self.natural_size.height,
                             selected: self.selected.clone(),
+                            cue_overlays: Vec::new(),
                         }))
                     })
                     .into_iter()
@@ -789,8 +836,8 @@ impl ReplacedContents {
     pub(crate) fn set_selection(&self, selected: bool) -> bool {
         // Only build a display list if the value changed and if this isn't an `<iframe>`
         // or `<audio>` element as they do not paint a selection tint.
-        self.selected.swap(selected, Ordering::Relaxed) != selected &&
-            !matches!(
+        self.selected.swap(selected, Ordering::Relaxed) != selected
+            && !matches!(
                 self.kind,
                 ReplacedContentKind::Audio | ReplacedContentKind::IFrame(..)
             )

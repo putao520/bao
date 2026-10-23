@@ -256,6 +256,126 @@ pub struct BaoWebViewState {
     /// 任何 pending 在 `Fetch.disable` / 页面关闭(整个 state drop)时按
     /// drop=DoNotIntercept 自然续行 —— 设计上不存在页面级楔死通道。
     pub(super) pending_intercepted_loads: HashMap<String, WebResourceLoad>,
+    /// CDP `loaderId` of the current load (REQ-CDP-010 golden-oracle parity).
+    ///
+    /// Chrome mints one loader identity per document load and reports it on
+    /// three faces that must agree (Chrome 155 oracle, measured):
+    /// `Page.navigate`'s response, `Page.getFrameTree().frameTree.frame.loaderId`
+    /// (present even for the initial `about:blank` load), and the frame
+    /// lifecycle events. Before this field the navigate response minted a
+    /// per-command value nothing stored, so getFrameTree had no source and
+    /// honestly omitted the field.
+    ///
+    /// This is the per-load registry row: minted at the same seam as
+    /// `load_generation` (page creation = the initial load; every embedder
+    /// navigation entry — navigate/reload/go_back/go_forward — re-mints),
+    /// which is the load-lifecycle edge the generation gate already
+    /// models. Consumers: `cdp_handler::cmd_navigate` (response),
+    /// `BridgeCommand::GetLoaderId` (getFrameTree), and the frame event
+    /// fallback path. Known boundary: page-initiated cross-document
+    /// navigations (link click / location assignment) do not pass through an
+    /// embedder entry, so they keep the id of the last embedder-initiated
+    /// load — the embedder surface exposes no commit hook to re-mint on.
+    /// @trace REQ-CDP-010 [entity:LoaderId]
+    pub loader_id: String,
+    /// `window.open()` opener relationship (REQ-CDP-010 TargetInfo face).
+    ///
+    /// Set exactly once, by `PagePool::create_popup_page` for a popup adopted
+    /// from its opener's `request_create_new` callback; every page the
+    /// embedder created directly keeps `None`. `TargetInfo.canAccessOpener`
+    /// is the protocol projection of this real relationship (Chrome reports
+    /// true exactly for targets that have an opener that can access them).
+    /// @trace REQ-CDP-010 [entity:TargetInfo]
+    pub opener_page_id: Option<usize>,
+    /// CDP session-history journal (REQ-CDP-010 `Page.getNavigationHistory`).
+    ///
+    /// The embedder surface exposes no session-history enumeration
+    /// (`WebView::go_back/go_forward` move the index but nothing lists the
+    /// entries), so the browser-side journal records what the embedder
+    /// itself observed: every embedder navigation entry (page creation,
+    /// navigate/reload/go_back/go_forward) and every script-initiated
+    /// committed navigation reported by `notify_url_changed`. Entries are
+    /// Chrome `Page.getNavigationHistory` entry shapes; `navigation_current`
+    /// is the index of the current entry.
+    /// @trace REQ-CDP-010 [entity:NavigationHistory]
+    pub navigation_journal: Vec<NavigationHistoryEntry>,
+    /// Index of the current entry in `navigation_journal` (always valid once
+    /// the default entry exists; re-navigation truncates the forward tail
+    /// exactly like Chrome's session history).
+    /// @trace REQ-CDP-010 [entity:NavigationHistory]
+    pub navigation_current: usize,
+    /// Monotonic id source for new history entries (Chrome entry ids are
+    /// positive ints unique within the target's history).
+    /// @trace REQ-CDP-010 [entity:NavigationHistory]
+    pub next_history_entry_id: u64,
+    /// `Runtime.addBinding` names installed on this page (REQ-CDP-010).
+    ///
+    /// The binding function is installed immediately on the current document
+    /// and re-installed on every future document through the vendor
+    /// embedder-new-document registry; this list is the single source both
+    /// installs are generated from. `removeBinding` deletes from it.
+    /// @trace REQ-CDP-010 [entity:RuntimeBinding]
+    pub cdp_bindings: Vec<String>,
+    /// Identifier of the internal new-document script that re-installs
+    /// `cdp_bindings` on future documents (vendor registry id; `None` until
+    /// the first binding is added, or after the last one is removed).
+    /// @trace REQ-CDP-010 [entity:RuntimeBinding]
+    pub cdp_bindings_script_id: Option<u64>,
+    /// Identifier of the internal new-document script that arms the
+    /// `Page.domContentEventFired` listener on future documents (`Page.enable`
+    /// installs it once per page; `None` = not armed).
+    /// @trace REQ-CDP-010 [entity:DomContentEvent]
+    pub dom_content_hook_script_id: Option<u64>,
+}
+
+/// One entry of the CDP session-history journal.
+///
+/// Shape follows Chrome's `Page.getNavigationHistory` entry: a positive
+/// integer id, the committed url, the title observed while the entry was
+/// current, the CDP `transitionType` enum string, and the user-typed url
+/// (the embedder's navigation url for embedder-initiated entries, the empty
+/// string for script-initiated ones whose typing intent is unknowable).
+/// @trace REQ-CDP-010 [entity:NavigationHistory]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NavigationHistoryEntry {
+    /// Positive entry id, unique within this target's journal.
+    pub id: u64,
+    /// Committed url of the entry.
+    pub url: String,
+    /// Title observed while this entry was the current one.
+    pub title: String,
+    /// CDP `transitionType` value (`auto_toplevel` / `typed` / `reload` /
+    /// `other` — the measured Chrome values this embedder can distinguish).
+    pub transition_type: &'static str,
+    /// User-typed url (`""` when the navigation was not embedder-typed).
+    pub user_typed_url: String,
+}
+
+/// Mint a CDP loader id (REQ-CDP-010).
+///
+/// Chrome's loader ids are 32-char uppercase hex (`A8C5F626AB6796F7…`,
+/// measured); the id's only protocol role is per-load uniqueness and
+/// opacity, so a process-monotonic counter in the same 32-hex form is a
+/// real identity — never a constant, never derived from page content.
+/// @trace REQ-CDP-010 [entity:LoaderId]
+pub fn mint_loader_id() -> String {
+    static LOADER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = LOADER_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{n:032X}")
+}
+
+/// Same-document url test for the history journal: origin, path and query
+/// equal (fragment ignored). A fragment-only change is `historySameDocument`
+/// in Chrome's model and adds no session-history entry.
+/// @trace REQ-CDP-010 [entity:NavigationHistory]
+fn same_document_url(a: &str, b: &str) -> bool {
+    fn strip(u: &str) -> &str {
+        match u.find('#') {
+            Some(i) => &u[..i], // @evidence .spec/10-REQUIREMENTS.html:2324
+            None => u, // @evidence .spec/10-REQUIREMENTS.html:2324
+        }
+    }
+    strip(a) == strip(b)
 }
 
 impl Default for BaoWebViewState {
@@ -287,6 +407,24 @@ impl Default for BaoWebViewState {
             highlight: None,
             fetch_interception: None,
             pending_intercepted_loads: HashMap::new(),
+            // Page creation is the initial load (about:blank): Chrome reports
+            // a loaderId for it (measured), so the default state carries one.
+            loader_id: mint_loader_id(),
+            opener_page_id: None,
+            // Chrome's measured initial entry: about:blank, id 1,
+            // transitionType "auto_toplevel", userTypedURL equal to the url.
+            navigation_journal: vec![NavigationHistoryEntry {
+                id: 1,
+                url: "about:blank".into(),
+                title: String::new(),
+                transition_type: "auto_toplevel",
+                user_typed_url: "about:blank".into(),
+            }],
+            navigation_current: 0,
+            next_history_entry_id: 2,
+            cdp_bindings: Vec::new(),
+            cdp_bindings_script_id: None,
+            dom_content_hook_script_id: None,
         }
     }
 }
@@ -300,6 +438,84 @@ impl BaoWebViewState {
     pub fn latch_frame_ready(&mut self) {
         self.frame_ready = true;
         self.repaint_pending = true;
+    }
+
+    // ─── CDP session-history journal (REQ-CDP-010) ────────────────────
+
+    /// Record an embedder navigation entry: truncate the forward tail
+    /// (Chrome session-history semantics) and append the new current entry.
+    /// `user_typed` selects the measured Chrome transition pair — typed
+    /// embedder navigations (`typed`) vs the reload entry-less reload
+    /// (callers that don't add an entry don't call this).
+    /// @trace REQ-CDP-010 [entity:NavigationHistory]
+    pub fn history_push_entry(&mut self, url: &str, transition_type: &'static str, user_typed: bool) {
+        self.navigation_journal.truncate(self.navigation_current + 1);
+        let id = self.next_history_entry_id;
+        self.next_history_entry_id += 1;
+        self.navigation_journal.push(NavigationHistoryEntry {
+            id,
+            url: url.to_string(),
+            title: String::new(),
+            transition_type,
+            user_typed_url: if user_typed { url.to_string() } else { String::new() },
+        });
+        self.navigation_current = self.navigation_journal.len() - 1;
+    }
+
+    /// Move the current index one entry back (go_back). `false` when there
+    /// is no previous entry — the caller decides whether that is an error
+    /// (the CDP face) or a no-op (direct page users), exactly like the
+    /// `can_go_back` gate.
+    /// @trace REQ-CDP-010 [entity:NavigationHistory]
+    pub fn history_move_back(&mut self) -> bool {
+        if self.navigation_current == 0 {
+            return false;
+        }
+        self.navigation_current -= 1;
+        true
+    }
+
+    /// Move the current index one entry forward (go_forward). `false` when
+    /// there is no next entry.
+    /// @trace REQ-CDP-010 [entity:NavigationHistory]
+    pub fn history_move_forward(&mut self) -> bool {
+        if self.navigation_current + 1 >= self.navigation_journal.len() {
+            return false;
+        }
+        self.navigation_current += 1;
+        true
+    }
+
+    /// Sync the journal with a committed url (`notify_url_changed`).
+    ///
+    /// Three real cases: (a) the url matches the current entry (the
+    /// embedder-entry push already happened in `navigate` — no-op);
+    /// (b) same-document change (origin/path/query equal, fragment moved) —
+    /// the current entry's url updates in place (Chrome historySameDocument
+    /// adds no entry); (c) anything else — a script-initiated cross-document
+    /// navigation the embedder did not mint an entry for: forward tail
+    /// truncated, entry appended with `transitionType "other"` and an empty
+    /// userTypedURL (the navigation intent is not observable here).
+    /// @trace REQ-CDP-010 [entity:NavigationHistory]
+    pub fn history_sync_committed_url(&mut self, url: &str) {
+        if let Some(current) = self.navigation_journal.get_mut(self.navigation_current) {
+            if current.url == url {
+                return;
+            }
+            if same_document_url(&current.url, url) {
+                current.url = url.to_string();
+                return;
+            }
+        }
+        self.history_push_entry(url, "other", false);
+    }
+
+    /// Update the current entry's title (`notify_page_title_changed`).
+    /// @trace REQ-CDP-010 [entity:NavigationHistory]
+    pub fn history_sync_title(&mut self, title: &str) {
+        if let Some(current) = self.navigation_journal.get_mut(self.navigation_current) {
+            current.title = title.to_string();
+        }
     }
 
     /// The CDP target this webview's events route to, or None when the
@@ -1822,6 +2038,34 @@ mod tests {
         assert!(matches!(state.load_status, LoadStatus::Started));
         assert!(!state.frame_ready);
         assert!(!state.dom_proxies_dirty);
+    }
+
+    // ─── per-load loader registry (REQ-CDP-010) ────────────────────
+    // @trace REQ-CDP-010 [entity:LoaderId] [level:unit]
+
+    #[test]
+    fn loader_id_default_is_a_real_32_hex_identity() {
+        // Page creation is the initial load: Chrome reports a loaderId even
+        // for about:blank. The id is a real per-load identity in Chrome's
+        // 32-char uppercase hex shape — never empty, never a constant.
+        let a = BaoWebViewState::default();
+        let b = BaoWebViewState::default();
+        assert_eq!(a.loader_id.len(), 32, "loaderId is 32 hex chars: {}", a.loader_id);
+        assert!(
+            a.loader_id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()),
+            "loaderId is uppercase hex: {}",
+            a.loader_id
+        );
+        assert_ne!(a.loader_id, b.loader_id, "each load gets a distinct identity");
+    }
+
+    #[test]
+    fn mint_loader_id_is_monotonic_and_unique() {
+        let a = mint_loader_id();
+        let b = mint_loader_id();
+        assert_eq!(a.len(), 32);
+        assert_ne!(a, b);
+        assert!(a > "00000000000000000000000000000000".to_string() && b > a);
     }
 
     #[test]

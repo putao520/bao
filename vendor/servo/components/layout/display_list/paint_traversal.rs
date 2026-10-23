@@ -63,8 +63,8 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
         let root_fragment = root_fragment
             .as_ref()
             .map(|root_fragment| root_fragment.with_style());
-        if let Some(root_fragment) = &root_fragment &&
-            !root_fragment.is_inline_box()
+        if let Some(root_fragment) = &root_fragment
+            && !root_fragment.is_inline_box()
         {
             self.handle_box(&state, root_fragment);
         }
@@ -283,10 +283,10 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                     }
                 }
             },
-            Fragment::AbsoluteOrFixedPositionedPlaceholder(..) |
-            Fragment::Text(..) |
-            Fragment::Image(..) |
-            Fragment::IFrame(..) => {},
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(..)
+            | Fragment::Text(..)
+            | Fragment::Image(..)
+            | Fragment::IFrame(..) => {},
         }
 
         saw_inline_level_or_replaced
@@ -367,11 +367,11 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                     }
                 }
             },
-            Fragment::AbsoluteOrFixedPositionedPlaceholder(_) |
-            Fragment::Float(..) |
-            Fragment::IFrame(_) |
-            Fragment::Image(_) |
-            Fragment::Text(..) => {},
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(_)
+            | Fragment::Float(..)
+            | Fragment::IFrame(_)
+            | Fragment::Image(_)
+            | Fragment::Text(..) => {},
         }
     }
 
@@ -422,6 +422,15 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
         }
 
         // Block-in-inline split, return to block mode.
+        //
+        // BAO-BRIDGE(W1 ruby box model, 2026-10-21): a ruby cell is an
+        // independent formatting context (StyleExt::is_atomic_inline_level is
+        // true for the internal ruby boxes), so it takes the atomic inline path
+        // below. Its own line boxes — which carry the base and the annotation
+        // rows — are then painted by `traverse_stacking_container` exactly like
+        // the contents of an inline-block. No ruby-specific display list code
+        // is needed: annotation rows are ordinary text fragments of the cell's
+        // inline formatting context.
         let is_atomic_inline_level = box_fragment.is_atomic_inline_level();
         if !is_atomic_inline_level && !box_fragment.is_inline_box() {
             self.traverse_line_boxes_and_replaced_for_box(
@@ -572,10 +581,11 @@ impl TraversalState {
         //
         // Also do not propagate text decorations to floats or replaced content.
         let mut propagated_text_decorations = self.text_decorations.clone();
-        if box_fragment.is_atomic_inline_level() ||
-            box_fragment.base.flags.contains(
-                FragmentFlags::IS_OUTSIDE_LIST_ITEM_MARKER | FragmentFlags::IS_REPLACED,
-            )
+        if box_fragment.is_atomic_inline_level()
+            || box_fragment
+                .base
+                .flags
+                .contains(FragmentFlags::IS_OUTSIDE_LIST_ITEM_MARKER | FragmentFlags::IS_REPLACED)
         {
             propagated_text_decorations = Default::default();
         }

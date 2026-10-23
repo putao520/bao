@@ -12,6 +12,12 @@ pub struct BaoConfig {
     pub idle_ttl: Duration,
     pub default_viewport_width: u32,
     pub default_viewport_height: u32,
+    /// Runtime-level explicit stealth choice (e.g. CLI `bao browser
+    /// --stealth` → firefox preset). Sits above the process-wide random
+    /// default identity and below page/context-level choices in the
+    /// `PagePool::create_page` resolution chain (user ruling 2026-10-21:
+    /// 默认 = 随机身份; explicit choice wins). `None` = no runtime-level
+    /// choice → default pages share `StealthProfile::default_identity()`.
     pub stealth_profile: Option<StealthProfile>,
     /// Servo `opts::ignore_certificate_errors` (WPT posture): skip peer
     /// certificate verification failures for page/network fetches. Production
@@ -75,7 +81,20 @@ pub struct PageConfig {
     pub url: Option<String>,
     pub viewport_width: Option<u32>,
     pub viewport_height: Option<u32>,
+    /// Explicit stealth identity for this page. Priority chain in
+    /// `PagePool::create_page` (user ruling 2026-10-21: 默认 = 随机身份):
+    /// this `Some(profile)` > [`Self::stealth_disabled`] > the page's browser
+    /// context identity (`browser_context_id`) > the runtime-level
+    /// `BaoConfig::stealth_profile` > the process-wide default identity
+    /// (`StealthProfile::default_identity()`, one random draw per process).
     pub stealth_profile: Option<StealthProfile>,
+    /// Explicit stealth-free opt-out (显式退出面, user ruling 2026-10-21).
+    /// A page created with `stealth_disabled: true` and no explicit profile
+    /// carries NO stealth chain at all (keyed registry entries are written as
+    /// explicit `None` — R53-A semantics unchanged). Without this flag the
+    /// no-profile default is the process-wide random identity, NOT
+    /// stealth-free.
+    pub stealth_disabled: bool,
     pub permission: Option<Permission>,
     /// REQ-CDS-009: the browser context this page belongs to. `None` = the
     /// implicit default context. `create_page` validates the id against the

@@ -285,7 +285,16 @@ fn handle_target(
                             .get("browserContextId")
                             .and_then(|v| v.as_str())
                             .unwrap_or(DEFAULT_BROWSER_CONTEXT_ID);
-                        target_infos.push(live_target_info(id, bridge, Some(context)));
+                        let mut info = live_target_info(id, bridge, Some(context));
+                        // REQ-CDP-010: pass the real opener relationship the
+                        // listing entry already carried through (never
+                        // re-derived, never a default).
+                        if let Some(opener) = entry.get("canAccessOpener") {
+                            if let Some(obj) = info.as_object_mut() {
+                                obj.insert("canAccessOpener".into(), opener.clone());
+                            }
+                        }
+                        target_infos.push(info);
                     }
                 }
                 None => target_infos.push(live_target_info(target_id, bridge, None)),
@@ -396,9 +405,23 @@ fn handle_target(
             // REQ-CDS-009 attribution: the single-target face queries the
             // browser-side registry (criterion 5).
             let context = target_context_id(tid, bridge);
-            Ok(serde_json::json!({
-                "targetInfo": live_target_info(tid, bridge, Some(&context))
-            }))
+            let mut info = live_target_info(tid, bridge, Some(&context));
+            // REQ-CDP-010: the opener relationship — the projection of the
+            // real BaoWebViewState.opener_page_id (window.open popups only).
+            let has_opener = bridge
+                .and_then(|b| {
+                    b.send(BridgeCommand::GetTargetOpenerAccess {
+                        target_id: tid.to_string(),
+                    })
+                    .result
+                    .ok()
+                })
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if let Some(obj) = info.as_object_mut() {
+                obj.insert("canAccessOpener".into(), serde_json::json!(has_opener));
+            }
+            Ok(serde_json::json!({ "targetInfo": info }))
         }
         // Session-table commands: minting/removing CDP sessions requires the
         // WS session registry (bao_browser::ws_registry::BaoWsRegistry), the
@@ -455,7 +478,24 @@ fn handle_page(
 ) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
-        "enable" | "disable" => ok_empty(),
+        // Chrome semantics: enable returns {} and the page domain becomes an
+        // event source. bao additionally arms the DOMContentLoaded
+        // observability here (REQ-CDP-010: `Page.domContentEventFired` needs
+        // a page-realm listener; `Page.enable` is the natural subscription
+        // point — without it no DCL events are emitted, matching Chrome's
+        // enable-gated delivery). The install is best-effort with a warn: a
+        // page that cannot host the listener keeps a truthful enable ack,
+        // exactly like the Runtime registry prelude's install convention.
+        "enable" => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            if bridge.is_some() {
+                let _ = bridge_send(
+                    bridge,
+                    BridgeCommand::InstallDomContentHook { target_id: tid },
+                );
+            }
+            ok_empty()
+        }
+        "disable" => ok_empty(), // @evidence .spec/10-REQUIREMENTS.html:2324
         // Subscription ack: frame lifecycle events (frameStartedLoading /
         // frameNavigated) flow through the WS registry's event face.
         "setLifecycleEventsEnabled" => ok_empty(),
@@ -472,14 +512,25 @@ fn handle_page(
                 .unwrap_or("about:blank");
             // The bridge handler's response is the truth: frameId is the servo
             // event stream's main-frame id (same value every frame event
-            // carries, REQ-CDP-004) plus a freshly generated loaderId.
-            bridge_send(
+            // carries, REQ-CDP-004) plus the per-load loaderId from the
+            // browser-side registry row (REQ-CDP-010 — the same identity
+            // Page.getFrameTree reports for this load).
+            let mut response = bridge_send(
                 bridge,
                 BridgeCommand::Navigate {
                     target_id: tid,
                     url: url.to_string(),
                 },
-            )
+            )?;
+            // REQ-CDP-010 golden-oracle parity (Chrome 155, measured): the
+            // navigate response carries `isDownload` — and on this embedder
+            // surface the answer is always false (the embedder never treats
+            // a load as a download; there is no download pipeline to
+            // reclassify a navigation).
+            if let Some(obj) = response.as_object_mut() {
+                obj.entry("isDownload").or_insert(serde_json::json!(false));
+            }
+            Ok(response)
         }
         "reload" => {
             let ignore_cache = params
@@ -487,8 +538,9 @@ fn handle_page(
                 .and_then(|p| p.get("ignoreCache"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            // Real servo reload; response carries the event-stream frameId +
-            // a fresh loaderId.
+            // Real servo reload. Chrome 155 oracle: the response is the
+            // empty object; the reload's new per-load loaderId (REQ-CDP-010)
+            // is observable through Page.getFrameTree.
             bridge_send(
                 bridge,
                 BridgeCommand::Reload {
@@ -512,9 +564,9 @@ fn handle_page(
             // (https or localhost/loopback), domainAndRegistry is "" for
             // empty/IP/loopback hosts (Chrome's rule; for named hosts the
             // hostname is the honest best value — no PSL in the embedding
-            // surface, eTLD+1 reduction not attempted). loaderId is honestly
-            // absent: no persisted per-load loader identity exists on this
-            // face (navigate mints per-command values, nothing stores them).
+            // surface, eTLD+1 reduction not attempted). loaderId is read
+            // from the browser-side per-load registry row below (REQ-CDP-010
+            // per-load identity — the same value Page.navigate reports).
             let mut frame = eval_json(
                 bridge,
                 &tid,
@@ -535,11 +587,35 @@ fn handle_page(
                         adFrameStatus: { adFrameType: 'none' }
                     }); })()"#,
             )?;
+            // REQ-CDP-010: the load identity comes from the browser-side
+            // per-load registry row — the SAME value Page.navigate reports
+            // for this load — never a value minted on this command face
+            // (Chrome 155 oracle: navigate's loaderId and the frame's
+            // loaderId agree, and the initial about:blank load has one too).
+            // The row is browser state, so it is read through the bridge
+            // rather than the page realm.
+            let loader_id = bridge_send(
+                bridge,
+                BridgeCommand::GetLoaderId {
+                    target_id: tid.clone(),
+                },
+            )?;
+            let loader_id = loader_id.as_str().ok_or_else(|| CdpError {
+                code: ERR_NOT_SUPPORTED,
+                message: "page query failed: loader registry did not return a loader id".into(),
+            })?;
             if let Some(obj) = frame.as_object_mut() {
                 obj.insert(
                     "id".into(),
                     serde_json::json!(crate::servo_bridge::main_frame_id_for_target(&tid)),
                 );
+                obj.insert("loaderId".into(), serde_json::json!(loader_id));
+                // REQ-CDP-010 golden-oracle parity (Chrome 155, measured):
+                // the frame omits `name` entirely when empty (the measured
+                // 11-key face has no name key) — never a `name: ""` member.
+                if obj.get("name").and_then(|v| v.as_str()) == Some("") {
+                    obj.remove("name");
+                }
             }
             Ok(serde_json::json!({ "frameTree": { "frame": frame } }))
         }
@@ -701,6 +777,15 @@ fn handle_page(
             "Page.printToPDF",
             "servo WebView has no print-to-PDF pipeline (no PDF backend in the embedding surface)",
         )),
+        // REQ-CDP-010 golden-oracle parity (Chrome 155, measured): the real
+        // session-history journal — currentIndex/entries with the measured
+        // entry shape {id, title, transitionType, url, userTypedURL}; the
+        // journal lives browser-side (BaoWebViewState), so the data rides
+        // the bridge instead of a page query.
+        "getNavigationHistory" => bridge_send( // @evidence .spec/10-REQUIREMENTS.html:2324
+            bridge,
+            BridgeCommand::GetNavigationHistory { target_id: tid },
+        ),
         _ => Err(CdpError {
             code: -32601,
             message: format!("'Page.{}' wasn't found", command),
@@ -875,7 +960,74 @@ fn handle_runtime(
                 ok_empty()
             }
         }
-        "compileScript" | "callArgument" => ok_empty(),
+        // REQ-CDP-010 golden-oracle parity (Chrome 155, measured): real
+        // page-global bindings — the binding function is installed on the
+        // live document AND on every future document (an internal
+        // new-document script keeps the install list durable), and each call
+        // reports `Runtime.bindingCalled`. Chrome rejects an empty name with
+        // -32602; anything else (including `:`-scoped names) is accepted.
+        // Without a bridge there is no page global — -32603, never a silent
+        // no-op ack.
+        "addBinding" => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            let name = params_str(params, "name");
+            if name.is_empty() {
+                return Err(CdpError {
+                    code: ERR_INVALID_PARAMS,
+                    message: "'Runtime.addBinding' requires a non-empty name param".into(),
+                });
+            }
+            bridge_send(
+                bridge,
+                BridgeCommand::RuntimeAddBinding {
+                    target_id: tid,
+                    name,
+                },
+            )
+        }
+        "removeBinding" => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            let name = params_str(params, "name");
+            if name.is_empty() {
+                return Err(CdpError {
+                    code: ERR_INVALID_PARAMS,
+                    message: "'Runtime.removeBinding' requires a non-empty name param".into(),
+                });
+            }
+            bridge_send(
+                bridge,
+                BridgeCommand::RuntimeRemoveBinding {
+                    target_id: tid,
+                    name,
+                },
+            )
+        }
+        // REQ-CDP-010 golden-oracle parity (Chrome 155, measured): the probe
+        // measured -32602 for a parameter-less compileScript — the mandatory
+        // {expression, sourceURL, persistScript} validation is Chrome-faithful.
+        // For VALID parameters Chrome compiles the script (never executes) and
+        // returns {scriptId}; the compiled-script table that id addresses does
+        // not exist on this embedding surface (no persistScript consumer —
+        // Runtime.runScript is not wired), so the honest face is the explicit
+        // capability-absent -32000, the same class as Page.printToPDF. Never a
+        // fabricated scriptId that maps to nothing.
+        "compileScript" => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            let expression = params_str(params, "expression");
+            let source_url = params_str(params, "sourceURL");
+            let persist_script = params
+                .as_ref()
+                .and_then(|p| p.get("persistScript"))
+                .and_then(|v| v.as_bool());
+            if expression.is_empty() || source_url.is_empty() || persist_script.is_none() {
+                return Err(CdpError {
+                    code: ERR_INVALID_PARAMS,
+                    message: "Invalid parameters".into(),
+                });
+            }
+            Err(not_supported(
+                "Runtime.compileScript",
+                "compile-only script persistence is not wired on this face (no compiled-script table; Runtime.runScript is not implemented)",
+            ))
+        }
+        "callArgument" => ok_empty(), // @evidence .spec/10-REQUIREMENTS.html:2324
         // Ack for the waitForDebuggerOnStart auto-attach flow: bao does not
         // actually pause new targets (no debugger gating exists), so this
         // ack simply unblocks the client's init sequence.
@@ -980,6 +1132,21 @@ fn handle_dom(
                 &tid,
                 &devtools_dom::node_for_owner_body(&object_id),
             )
+        }
+        // REQ-CDP-010 golden-oracle parity (Chrome 155, measured): the real
+        // attribute list of the addressed node in CDP's flat pair form; a
+        // non-element node fails with Chrome's exact "Node is not an
+        // Element" (-32000 class). The former face was absent (-32601).
+        "getAttributes" => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            let node_ref = devtools_dom::require_node_ref(params)?;
+            devtools_dom::eval_dom(bridge, &tid, &devtools_dom::attributes_body(&node_ref))
+        }
+        // REQ-CDP-010 golden-oracle parity (Chrome 155, measured): a real
+        // scroll of the addressed element into the viewport (nearest, only
+        // when out of view). The former face was absent (-32601).
+        "scrollIntoViewIfNeeded" => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            let node_ref = devtools_dom::require_node_ref(params)?;
+            devtools_dom::eval_dom(bridge, &tid, &devtools_dom::scroll_into_view_body(&node_ref))
         }
         "setAttributeValue" => {
             let node_id = params
@@ -3529,6 +3696,103 @@ mod tests {
                 "{method} (id {id}): message lacks {msg:?}: {err:?}"
             );
         }
+    }
+
+    /// REQ-CDP-010: Page.getNavigationHistory reads the browser-side session-
+    /// history journal through the bridge (the measured Chrome entry shape is
+    /// reported verbatim) and never fabricates a 1-entry history on a bridge
+    /// miss (the no-bridge transport-class -32603 is pinned by the suite).
+    #[test]
+    fn page_get_navigation_history_reads_journal_through_bridge() {
+        use crate::servo_bridge::{bridge_channel, BridgeError, BridgeResponse};
+        let (tx, rx) = bridge_channel(std::time::Duration::from_secs(2));
+        let _keeper = std::thread::spawn(move || loop {
+            let handled = rx.try_process(|cmd| match cmd {
+                BridgeCommand::GetNavigationHistory { .. } => BridgeResponse { // @evidence .spec/10-REQUIREMENTS.html:2324
+                    result: Ok(json!({
+                        "currentIndex": 1,
+                        "entries": [
+                            {
+                                "id": 1,
+                                "title": "",
+                                "transitionType": "auto_toplevel",
+                                "url": "about:blank",
+                                "userTypedURL": "about:blank"
+                            },
+                            {
+                                "id": 2,
+                                "title": "t",
+                                "transitionType": "typed",
+                                "url": "https://example.com/",
+                                "userTypedURL": "https://example.com/"
+                            }
+                        ]
+                    })),
+                },
+                _ => BridgeResponse { // @evidence .spec/10-REQUIREMENTS.html:2324
+                    result: Err(BridgeError::no_bridge("unexpected bridge command")),
+                },
+            });
+            if !handled {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+        let msg = cdp_msg(1, "Page.getNavigationHistory", None);
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, Some(&tx));
+        let result = resp.result.expect("history result");
+        assert_eq!(result["currentIndex"], json!(1));
+        assert_eq!(result["entries"].as_array().map(|a| a.len()), Some(2));
+        let first = &result["entries"][0];
+        assert_eq!(first["transitionType"], json!("auto_toplevel"));
+        assert_eq!(first["userTypedURL"], json!("about:blank"));
+    }
+
+    /// REQ-CDP-010: Page.getFrameTree consumes the browser-side per-load
+    /// loader registry row through the bridge — the frame carries the SAME
+    /// loaderId Page.navigate reports (verified against the Chrome 155
+    /// oracle), and the id is never minted on this command face.
+    #[test]
+    fn page_get_frame_tree_reads_loader_id_from_registry_row() {
+        use crate::servo_bridge::{bridge_channel, BridgeError, BridgeResponse};
+        let (tx, rx) = bridge_channel(std::time::Duration::from_secs(2));
+        let _keeper = std::thread::spawn(move || loop {
+            let handled = rx.try_process(|cmd| match cmd {
+                BridgeCommand::EvaluateJs { .. } => BridgeResponse { // @evidence .spec/10-REQUIREMENTS.html:2324
+                    result: Ok(json!({
+                        "result": {
+                            "type": "string",
+                            "value": "{\"url\":\"https://example.com/\",\"mimeType\":\"text/html\",\"name\":\"\",\"securityOrigin\":\"https://example.com\",\"domainAndRegistry\":\"example.com\",\"secureContextType\":\"SecureContext\",\"securityOriginDetails\":{\"isLocalhost\":false},\"crossOriginIsolatedContextType\":\"NotIsolated\",\"gatedAPIFeatures\":[],\"adFrameStatus\":{\"adFrameType\":\"none\"}}"
+                        }
+                    })),
+                },
+                BridgeCommand::GetLoaderId { .. } => BridgeResponse { // @evidence .spec/10-REQUIREMENTS.html:2324
+                    result: Ok(json!("1A2B3C4D5E6F708192A3B4C5D6E7F809")),
+                },
+                _ => BridgeResponse { // @evidence .spec/10-REQUIREMENTS.html:2324
+                    result: Err(BridgeError::no_bridge("unexpected bridge command")),
+                },
+            });
+            if !handled {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+        let msg = cdp_msg(1, "Page.getFrameTree", None);
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, Some(&tx));
+        let frame = resp
+            .result
+            .expect("frame tree result")
+            .get("frameTree")
+            .and_then(|t| t.get("frame"))
+            .cloned()
+            .expect("frame object");
+        assert_eq!(frame["id"], json!("main-t1"));
+        assert_eq!(
+            frame["loaderId"],
+            json!("1A2B3C4D5E6F708192A3B4C5D6E7F809"),
+            "getFrameTree must report the registry row verbatim"
+        );
     }
 
     /// δ2 form: explicit error — code and message fragment pinned (the

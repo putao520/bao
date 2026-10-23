@@ -182,7 +182,7 @@ pub fn spawn_watchdog() {
                 let mut state = WatchdogState { alerted_gen: 0 };
                 loop {
                     std::thread::sleep(Duration::from_secs(5));
-                    let gen = PHASE_GEN.load(Ordering::SeqCst);
+                    let phase_gen = PHASE_GEN.load(Ordering::SeqCst);
                     let phase = PHASE_ID.load(Ordering::SeqCst);
                     let since = PHASE_SINCE_MS.load(Ordering::SeqCst);
                     let page = PHASE_PAGE.load(Ordering::SeqCst);
@@ -192,8 +192,8 @@ pub fn spawn_watchdog() {
                         continue;
                     }
                     let elapsed = now_ms().saturating_sub(since);
-                    if elapsed > phase_budget().as_millis() as u64 && state.alerted_gen != gen {
-                        state.alerted_gen = gen;
+                    if elapsed > phase_budget().as_millis() as u64 && state.alerted_gen != phase_gen {
+                        state.alerted_gen = phase_gen;
                         // The routing forensics dump: which phase, which
                         // page, how long, and what every thread in the
                         // process is waiting on right now.

@@ -145,8 +145,8 @@ impl<InputIterator: Iterator<Item = char>> Iterator for WhitespaceCollapse<Input
         // > characters are considered collapsible
         // If whitespace is not considered collapsible, it is preserved entirely, which
         // means that we can simply return the input string exactly.
-        if self.white_space_collapse == WhiteSpaceCollapse::Preserve ||
-            self.white_space_collapse == WhiteSpaceCollapse::BreakSpaces
+        if self.white_space_collapse == WhiteSpaceCollapse::Preserve
+            || self.white_space_collapse == WhiteSpaceCollapse::BreakSpaces
         {
             // From <https://drafts.csswg.org/css-text-3/#white-space-processing>:
             // > Carriage returns (U+000D) are treated identically to spaces (U+0020) in all respects.
@@ -175,8 +175,8 @@ impl<InputIterator: Iterator<Item = char>> Iterator for WhitespaceCollapse<Input
             // Don't push non-newline whitespace immediately. Instead wait to push it until we
             // know that it isn't followed by a newline. See `push_pending_whitespace_if_needed`
             // above.
-            if InlineFormattingContextBuilder::is_document_white_space(character) &&
-                character != '\n'
+            if InlineFormattingContextBuilder::is_document_white_space(character)
+                && character != '\n'
             {
                 collected_whitespace += Utf32CodeUnits(1);
                 continue;
@@ -262,9 +262,9 @@ impl<'a> TextTransformationIterator<'a> {
             // TODO: should this be single character after whitespace collapsing?
             // TODO: does `::first-letter` mess with this check?
             let mut char_iter = text.chars();
-            if let Some(first_char) = char_iter.next() &&
-                let None = char_iter.next() &&
-                let Some(&mapping) = super::mathml_italics::ITALICS_MAPPINGS.get(&first_char)
+            if let Some(first_char) = char_iter.next()
+                && let None = char_iter.next()
+                && let Some(&mapping) = super::mathml_italics::ITALICS_MAPPINGS.get(&first_char)
             {
                 text = mapping
             }
@@ -368,8 +368,8 @@ fn simple_case_transform_iterator(
 /// > typographic character unit.
 fn is_typographic_letter_unit(character: char) -> bool {
     let category = GeneralCategory::for_char(character);
-    GeneralCategoryGroup::Letter.contains(category) ||
-        GeneralCategoryGroup::Number.contains(category)
+    GeneralCategoryGroup::Letter.contains(category)
+        || GeneralCategoryGroup::Number.contains(category)
 }
 
 /// Given an input iterator, a size hint for the number items in the iterator,
@@ -409,9 +409,9 @@ pub(crate) fn capitalization_iterator(
         // From <https://drafts.csswg.org/css-text-4/#text-transform-property>:
         // > Puts the first typographic letter unit of each word, if lowercase, in titlecase;
         // > other characters are unaffected.
-        if iteration.is_one_to_one() &&
-            pending_word_start &&
-            is_typographic_letter_unit(iteration.characters[0])
+        if iteration.is_one_to_one()
+            && pending_word_start
+            && is_typographic_letter_unit(iteration.characters[0])
         {
             if iteration.characters[0].is_lowercase() {
                 // TODO: Replace this with a call to `character.to_titlecase()` when available:
@@ -519,9 +519,9 @@ impl OffsetMap {
         additional_final_length: Utf32CodeUnits,
     ) {
         let this_range_maps_one_to_one = additional_original_length == additional_final_length;
-        if this_range_maps_one_to_one &&
-            self.last_range_maps_one_to_one &&
-            let Some(last) = self.known_positions.last_mut()
+        if this_range_maps_one_to_one
+            && self.last_range_maps_one_to_one
+            && let Some(last) = self.known_positions.last_mut()
         {
             last.original_offset += additional_original_length;
             last.final_offset += additional_final_length;

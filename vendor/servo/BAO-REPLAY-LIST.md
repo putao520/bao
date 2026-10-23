@@ -121,3 +121,29 @@
 - 关键 remap：`stylo`→dep key `style`（extern name=KEY，lib 名 `style`，代码 `use style::`）、`stylo_*`=0.22.0 系、`selectors`=0.41.0、`servo_arc`=0.5.0、`js`→bao-mozjs path ^0.24、`ipc-channel`→bao-ipc-channel path 0.22.0、`servo-background-hang-monitor-api`→dep key `background_hang_monitor_api`（上游改 key 未改 lib 名）。
 - 保留的 manifest 级 BAO patch：paint `default = ["webgl"]` carry-patch（bao_browser default-features=false 依赖图需要）。
 - 已知上游 dep bump 随快照吸收：taffy 0.13→0.14、icu_locale_core 2.1、skrifa 0.46.2、read-fonts 0.43.3、webdriver 0.54、surfman 0.14、mozangle 0.7.1、content-security-policy 0.9（registry 0.9 req，根 [patch.crates-io] 的 freetype/usvg/stylo_atoms 重定向不变）。
+
+## 七、MathML 布局自研波（2026-10-21, REQ-BRW-051 C2）— 上游同步重放锚
+
+- 上游对照：本快照（648de26fa 界）**零 MathML 布局**（`grep -rn "mathml" components/layout/` 仅命中 `flow/inline/mathml_italics.rs` 的 `math-auto` 斜体映射表），故本波为 fork 自研面、无上游 commit 可对账；上游日后若自带 MathML 布局，按「上游基底 + 本节清单重放」迁移。
+- 新增文件（整文件保留，重放=原样拷贝）：
+  - `components/layout/flow/mathml/{mod.rs,constants.rs,dictionary.rs,layout.rs,tests.rs}`
+  - `components/layout/stylesheets/mathml.css`（MathML Core UA 表子集；`layout_impl.rs` 内 `MATHML_CSS` + `parse_ua_stylesheet("mathml.css", …)` 两行接线）
+  - `components/script/dom/mathml/{mod.rs,mathmlelement.rs}` + `script_bindings/webidls/MathMLElement.webidl`（+ `dom/mod.rs` 两行、`element/create.rs` 的 `ns!(mathml) => create_mathml_element` 臂、`Bindings.conf` 的 `'MathMLElement'` cx 条目）
+- 既有文件 patch（回放锚点）：
+  | 文件 | patch | grep 锚 |
+  |---|---|---|
+  | `layout/style_ext.rs` | `DisplayInside::Math` 变体（本快照无 `display: math`；stylo 的 `Math` inside/`font-family: math`/`font-size: math` 全为 gecko-only） | `DisplayInside::Math` |
+  | `layout/formatting_contexts.rs` | `IndependentFormattingContextContents::MathMl` 变体 + construct/rebuild(保 inside)/repair/layout/layout_style/attached_to_tree/compute_inline_content_sizes 七臂 + `math_container()` 访问器 | `MathMl(` / `fn math_container` |
+  | `layout/dom_traversal.rs` | `mathml_display()`：MathML 命名空间元素强制 `inside = DisplayInside::Math`（外层 display 保留，浮动/绝对定位/block 化照常） | `fn mathml_display` |
+  | `layout/flow/mod.rs` | `pub mod mathml;` | `pub mod mathml` |
+  | `layout/fragment_tree/box_fragment.rs` | `MathRule` 绘制数据 + `BoxFragmentRareData.math_rules` + `set_math_rules`/`math_rules()`（mfrac 分数线无 CSS 可表达载体） | `MathRule` / `math_rules` |
+  | `layout/display_list/mod.rs` | `BuilderForBoxFragment::build_math_rules`（`push_rect` 画规则） | `build_math_rules` |
+  | `shared/layout/layout_element.rs` | `LayoutElement::is_mathml_element`（**required 方法**，唯一实现=script 侧） | `fn is_mathml_element` |
+  | `script/layout_dom/servo_layout_element.rs` | 上述实现：`pseudo_element_chain.is_empty() && ns!(mathml)` | `ns!(mathml)` |
+  | `script/dom/attributes/domstringmap.rs` | `Dom<HTMLElement>` → `Dom<Element>`（MathMLElement 的 `dataset` 载体）；`htmlelement.rs` 调用点改 `self.upcast()` | `element: Dom<Element>` |
+  | `script/dom/window/window.rs`、`script/dom/document/document.rs` | 命名访问 `id` 谓词对所有命名空间放开（原仅 HTML/SVG；MathML 元素 id 曾不可见）+ 两个 HTMLCollection filter 的 id 检查前移 | `is_named_element_with_id_attribute` |
+- **stylo 缺位清单（只读，未改 vendor/stylo；根治归 stylo 域）**：
+  1. `display: inline math` / `block math` inside 值缺失（`GenericDisplayInside` 无 Math；`math` 泛型族与 `font-size: math` 关键字均 `#[cfg(feature = "gecko")]`）。
+  2. `math-depth` 的 `font-size: math` 缩放 `recompute_math_font_size_if_needed` 为 `#[cfg(feature = "gecko")]`；`math-depth`/`math-style` 长手均带 `servo_pref = "layout.unimplemented"`（默认 false，解析即拒），故本波以 UA 表 `font-size: 71%/50.41%` 近似 §3.1.3 脚本缩放（可嵌套叠加，等价 `math-depth`）。
+  3. `math-shift` 长手 `engine = "gecko"`（servo 无该字段），故 cramped 位移恒按默认（`superscriptShiftUpCramped` fallback 0）处理。
+  4. stylo 字体后端不暴露 OpenType `MATH` 表（仅 `OS/2`/`post` 经 `fonts::FontMetrics`），故 `MathConstants` 用规范 §5.1 fallback 链：轴高=½`x_height`、规则厚度=`underline_size`（0 时退 0.06em 且不低于 1px）、其余按规则厚度倍数；`MATH`-only 常量按规范 fallback 0。真 `MATH` 表接入（字形变体/装配 + 逐字体位移值）= Wave C。

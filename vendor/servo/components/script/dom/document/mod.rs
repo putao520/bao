@@ -21,5 +21,7 @@ mod interactive_element_command;
 mod tree_ordered_index_map;
 pub(crate) mod visibilitystateentry;
 pub(crate) mod websocket;
+pub(crate) mod websocketerror;
+pub(crate) mod websocketstream;
 
 pub(crate) use self::document::*;

@@ -19,11 +19,17 @@ use crate::dom::bindings::str::DOMString;
 #[derive(Clone, Copy, JSTraceable, MallocSizeOf, PartialEq, VariantArray)]
 pub(crate) enum EntryType {
     LargestContentfulPaint,
+    LongAnimationFrame,
+    LongTask,
     Mark,
     Measure,
     Navigation,
     Paint,
     Resource,
+    /// Internal entry type of the `PerformanceScriptTiming` objects reported by
+    /// a [`EntryType::LongAnimationFrame`] entry. It is never queued on the
+    /// performance timeline itself.
+    Script,
     VisibilityState,
 }
 
@@ -33,9 +39,12 @@ impl EntryType {
             EntryType::Measure => "measure",
             EntryType::Mark => "mark",
             EntryType::LargestContentfulPaint => "largest-contentful-paint",
+            EntryType::LongAnimationFrame => "long-animation-frame",
+            EntryType::LongTask => "longtask",
             EntryType::Paint => "paint",
             EntryType::Navigation => "navigation",
             EntryType::Resource => "resource",
+            EntryType::Script => "script",
             EntryType::VisibilityState => "visibility-state",
         }
     }
@@ -49,9 +58,12 @@ impl<'a> TryFrom<&'a str> for EntryType {
             "measure" => EntryType::Measure,
             "mark" => EntryType::Mark,
             "largest-contentful-paint" => EntryType::LargestContentfulPaint,
+            "long-animation-frame" => EntryType::LongAnimationFrame,
+            "longtask" => EntryType::LongTask,
             "paint" => EntryType::Paint,
             "navigation" => EntryType::Navigation,
             "resource" => EntryType::Resource,
+            "script" => EntryType::Script,
             "visibility-state" => EntryType::VisibilityState,
             _ => return Err(()),
         })
@@ -111,6 +123,11 @@ impl PerformanceEntry {
     /// <https://www.w3.org/TR/performance-timeline/#dom-performanceentry-starttime>
     pub(crate) fn start_time(&self) -> Option<CrossProcessInstant> {
         self.start_time
+    }
+
+    /// <https://www.w3.org/TR/performance-timeline/#dom-performanceentry-duration>
+    pub(crate) fn duration(&self) -> Duration {
+        self.duration
     }
 }
 

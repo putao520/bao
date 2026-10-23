@@ -6556,6 +6556,25 @@ if (typeof _g.PopStateEvent === 'undefined') {
     }
 }
 
+/// Re-apply the cached per-file globals (`__filename`/`__dirname`) onto an
+/// EXISTING realm global (REQ-ENG-007/REQ-ENG-048 CJS entry face).
+///
+/// `install_file_globals_from_cache` runs exactly once, inside the realm's
+/// one-shot global setup. Any file entry evaluated AFTER the realm exists
+/// (library embedding, `bao test` driving a second file, test harnesses that
+/// eval before loading a file) would otherwise resolve the CJS wrapper tail's
+/// free `__filename`/`__dirname` (see `wrap_cjs_entry_source`) against the
+/// values baked in at realm creation — the FIRST file's values, or none at
+/// all, which surfaces as `__filename is not defined`. Idempotent re-define:
+/// the properties are writable, so this refreshes the value in place.
+// @trace REQ-ENG-007
+pub(crate) fn refresh_file_globals_on_global(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    install_file_globals_from_cache(cx, global);
+}
+
 /// Install __filename / __dirname on a target object (REQ-SEC-002 parameter injection).
 ///
 /// Same as `install_file_globals_from_cache` but attaches properties to `target`

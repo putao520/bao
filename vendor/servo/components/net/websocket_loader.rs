@@ -166,6 +166,10 @@ fn process_ws_response(
 enum DomMsg {
     Send(Message),
     Close(Option<(u16, String)>),
+    /// REQ-BRW-051: one read credit granted by the readable half's pull
+    /// algorithm. Until a credit is available the socket is not polled, which
+    /// applies backpressure to received data.
+    RequestRead,
 }
 
 /// Initialize a listener for DOM actions. These are routed from the IPC channel
@@ -197,6 +201,11 @@ fn setup_dom_listener(
                 let frame = code.map(move |c| (c, reason.unwrap_or_default()));
                 if let Err(e) = sender.send(DomMsg::Close(frame)) {
                     warn!("Error closing websocket: {:?}", e);
+                }
+            },
+            WebSocketDomAction::RequestRead => {
+                if let Err(e) = sender.send(DomMsg::RequestRead) {
+                    warn!("Error sending websocket read request: {:?}", e);
                 }
             },
         }
@@ -258,8 +267,29 @@ async fn run_ws_loop(
     mut dom_receiver: UnboundedReceiver<DomMsg>,
     resource_event_sender: ProfileGenericCallback<WebSocketNetworkEvent>,
     mut stream: WsStream,
+    flow_control: bool,
 ) {
+    // REQ-BRW-051: read credits from the readable half's pull algorithm. With
+    // flow control, a message that arrives without a credit is held back
+    // (not delivered) and the socket is not polled again until the consumer
+    // asks for more — that is the backpressure mechanism. Without flow
+    // control (classic WebSocket) every message is delivered immediately.
+    let mut credits: usize = if flow_control { 0 } else { usize::MAX };
+    let mut pending_message: Option<MessageData> = None;
     loop {
+        // Deliver a held-back message as soon as the DOM grants a credit.
+        if pending_message.is_some() && credits > 0 {
+            let message = pending_message.take().expect("checked is_some");
+            if flow_control {
+                credits -= 1;
+            }
+            if resource_event_sender
+                .send(WebSocketNetworkEvent::MessageReceived(message))
+                .is_err()
+            {
+                break;
+            }
+        }
         select! {
             dom_msg = dom_receiver.recv() => {
                 trace!("processing dom msg: {:?}", dom_msg);
@@ -271,9 +301,26 @@ async fn run_ws_loop(
                     DomMsg::Send(m) => {
                         if let Err(e) = stream.send(m).await {
                             warn!("error sending websocket message: {:?}", e);
+                            let _ = resource_event_sender.send(WebSocketNetworkEvent::Fail);
+                            break;
+                        }
+                        // Acknowledge completion so the DOM can resolve the
+                        // corresponding write promise (backpressure). Only
+                        // the demand-driven WebSocketStream consumer uses
+                        // this; the classic API would just pay an extra
+                        // event per send.
+                        if flow_control &&
+                            resource_event_sender
+                                .send(WebSocketNetworkEvent::SendComplete)
+                                .is_err()
+                        {
+                            break;
                         }
                     },
                     DomMsg::Close(frame) => {
+                        // The closing handshake requires reading the peer's
+                        // Close frame.
+                        credits = credits.saturating_add(1);
                         if let Err(e) = stream.close(frame.map(|(code, reason)| {
                             CloseFrame {
                                 code: code.into(),
@@ -281,11 +328,18 @@ async fn run_ws_loop(
                             }
                         })).await {
                             warn!("error closing websocket: {:?}", e);
+                            let _ = resource_event_sender.send(WebSocketNetworkEvent::Fail);
+                            break;
                         }
+                    },
+                    DomMsg::RequestRead => {
+                        credits = credits.saturating_add(1);
                     },
                 }
             }
-            ws_msg = stream.next() => {
+            // Do not read ahead while a message is waiting for a credit, so
+            // the peer is subjected to backpressure.
+            ws_msg = stream.next(), if pending_message.is_none() => {
                 trace!("processing WS stream: {:?}", ws_msg);
                 let msg = match ws_msg {
                     Some(Ok(msg)) => msg,
@@ -303,21 +357,35 @@ async fn run_ws_loop(
                 match msg {
                     Message::Text(s) => {
                         let message = MessageData::Text(s.as_str().to_owned());
-                        if let Err(e) = resource_event_sender
-                            .send(WebSocketNetworkEvent::MessageReceived(message))
-                        {
-                            warn!("Error sending websocket notification: {:?}", e);
-                            break;
+                        if credits > 0 {
+                            if flow_control {
+                                credits -= 1;
+                            }
+                            if let Err(e) = resource_event_sender
+                                .send(WebSocketNetworkEvent::MessageReceived(message))
+                            {
+                                warn!("Error sending websocket notification: {:?}", e);
+                                break;
+                            }
+                        } else {
+                            pending_message = Some(message);
                         }
                     }
 
                     Message::Binary(v) => {
                         let message = MessageData::Binary(v.to_vec());
-                        if let Err(e) = resource_event_sender
-                            .send(WebSocketNetworkEvent::MessageReceived(message))
-                        {
-                            warn!("Error sending websocket notification: {:?}", e);
-                            break;
+                        if credits > 0 {
+                            if flow_control {
+                                credits -= 1;
+                            }
+                            if let Err(e) = resource_event_sender
+                                .send(WebSocketNetworkEvent::MessageReceived(message))
+                            {
+                                warn!("Error sending websocket notification: {:?}", e);
+                                break;
+                            }
+                        } else {
+                            pending_message = Some(message);
                         }
                     }
 
@@ -355,6 +423,7 @@ pub(crate) async fn start_websocket(
     client: &net_traits::request::Request,
     ws_tls_config: WsTlsConfig,
     dom_action_receiver: CallbackSetter<WebSocketDomAction>,
+    flow_control: bool,
 ) -> Result<Response, Error> {
     trace!("starting WS connection to {}", client.url());
 
@@ -459,7 +528,12 @@ pub(crate) async fn start_websocket(
         }
 
         trace!("about to start ws loop for {}", url);
-        spawn_task(run_ws_loop(dom_receiver, resource_event_sender, stream));
+        spawn_task(run_ws_loop(
+            dom_receiver,
+            resource_event_sender,
+            stream,
+            flow_control,
+        ));
     } else {
         trace!("client closed connection for {}, not running loop", url);
     }

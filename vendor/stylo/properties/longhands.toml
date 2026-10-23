@@ -2567,7 +2567,6 @@ servo_restyle_damage = "rebuild_box"
 type = "RubyPosition"
 initial = "computed::RubyPosition::AlternateOver"
 struct = "inherited_text"
-engine = "gecko"
 spec = "https://drafts.csswg.org/css-ruby/#ruby-position-property"
 animation_type = "discrete"
 affects = "layout"
@@ -3986,12 +3985,27 @@ initial = "computed::TextSizeAdjust::Auto"
 
 [ruby-align]
 struct = "inherited_text"
-engine = "gecko"
 spec = "https://drafts.csswg.org/css-ruby/#ruby-align-property"
 animation_type = "discrete"
 affects = "layout"
 type = "RubyAlign"
 initial = "computed::RubyAlign::SpaceAround"
+
+[ruby-merge]
+struct = "inherited_text"
+spec = "https://drafts.csswg.org/css-ruby/#ruby-merge-property"
+animation_type = "discrete"
+affects = "layout"
+type = "RubyMerge"
+initial = "computed::RubyMerge::Separate"
+
+[ruby-overhang]
+struct = "inherited_text"
+spec = "https://drafts.csswg.org/css-ruby/#ruby-overhang-property"
+animation_type = "discrete"
+affects = "layout"
+type = "RubyOverhang"
+initial = "computed::RubyOverhang::Auto"
 
 [text-combine-upright]
 struct = "inherited_text"

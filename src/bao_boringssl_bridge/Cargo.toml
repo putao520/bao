@@ -18,7 +18,8 @@ log = "0.4"
 thiserror = "2"
 
 [dev-dependencies]
-rcgen = "0.13"
+# BAO PATCH (binary-size safe cut, 2026-10-21): rcgen removed — zero usage
+# in src/ (grep-verified); it dragged `ring` (a second crypto backend)
 
 [lints]
 workspace = true

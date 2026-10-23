@@ -35,6 +35,7 @@ use servo_geometry::DeviceIndependentPixel;
 use servo_url::ServoUrl;
 use style_traits::CSSPixel;
 use url::Url;
+use webrender::RendererError;
 use webrender_api::units::{DeviceIntRect, DevicePixel, DevicePoint, DeviceSize};
 
 use crate::clipboard_delegate::{ClipboardDelegate, DefaultClipboardDelegate};
@@ -152,11 +153,15 @@ impl Drop for WebViewInner {
 }
 
 impl WebView {
-    pub(crate) fn new(mut builder: WebViewBuilder) -> Self {
+    pub(crate) fn new(mut builder: WebViewBuilder) -> Result<Self, RendererError> {
         let servo = builder.servo;
+        // BAO patch (REQ-BRW-051, gl-oom-defense-001, 2026-10-20): painter
+        // initialization can fail under GL memory pressure; propagate the
+        // error so `WebViewBuilder::build` fails closed instead of the whole
+        // browser process aborting (embedders can retry or skip).
         let painter_id = servo
             .paint_mut()
-            .register_rendering_context(builder.rendering_context.clone());
+            .register_rendering_context(builder.rendering_context.clone())?;
 
         let id = WebViewId::new(painter_id);
         // BAO PATCH (REQ-CDS-009 C6): attribute the new webview to its context
@@ -243,7 +248,7 @@ impl WebView {
             },
         }
 
-        webview
+        Ok(webview)
     }
 
     fn inner(&self) -> Ref<'_, WebViewInner> {
@@ -1194,7 +1199,11 @@ impl WebViewBuilder {
     }
 
     /// Create the [`WebView`] using the configuration specified in this [`WebViewBuilder`].
-    pub fn build(self) -> WebView {
+    ///
+    /// Fails closed when the renderer cannot be initialized (e.g. GL
+    /// out-of-memory under system memory pressure) — the browser process stays
+    /// alive and the embedder can retry or skip the page.
+    pub fn build(self) -> Result<WebView, RendererError> {
         WebView::new(self)
     }
 }

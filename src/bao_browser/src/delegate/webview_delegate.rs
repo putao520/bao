@@ -63,6 +63,13 @@ impl WebViewDelegate for BaoWebViewDelegate {
     fn notify_url_changed(&self, _webview: WebView, url: url::Url) {
         let url_str = url.to_string();
         self.state.borrow_mut().url = Some(url);
+        // REQ-CDP-010: the session-history journal syncs with every committed
+        // url — a no-op for the entry the embedder seam already pushed, an
+        // in-place url update for same-document changes, and a new "other"
+        // entry for script-initiated cross-document navigations.
+        self.state
+            .borrow_mut()
+            .history_sync_committed_url(&url_str);
         // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
         // Dual-path: event_tx (Path B) primary for FrameNavigated,
         // console_log_tx (Path A) fallback for PageFrameNavigated.
@@ -88,7 +95,11 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 },
             );
         } else if let Some(ref tx) = self.state.borrow().console_log_tx {
-            let loader_id = format!("{:016x}", url_str.len() as u64);
+            // REQ-CDP-010: the frame event carries the load's real identity
+            // from the per-load registry row (the former url-length hash was
+            // a fabricated value). This fallback path runs only when
+            // `event_tx` is absent; the page's state is the single source.
+            let loader_id = self.state.borrow().loader_id.clone();
             // Lossy by design: fire-and-forget console observability — the
             // send only fails once the consumer is dropped; never stall the
             // servo script thread on CDP event delivery.
@@ -101,6 +112,13 @@ impl WebViewDelegate for BaoWebViewDelegate {
     }
 
     fn notify_page_title_changed(&self, _webview: WebView, title: Option<String>) {
+        // REQ-CDP-010: the journal's current entry carries the title the
+        // load observed (Chrome's getNavigationHistory entries report the
+        // title known at query time; past entries keep the last observed
+        // value — the journal records what was seen, never a re-query).
+        if let Some(t) = title.as_deref() {
+            self.state.borrow_mut().history_sync_title(t);
+        }
         self.state.borrow_mut().title = title;
     }
 
@@ -354,6 +372,9 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 stealth_profile,
                 permission,
                 browser_context_id,
+                // REQ-CDP-010: the popup's TargetInfo.canAccessOpener face
+                // is the projection of this real opener relationship.
+                opener_page_id,
             )
             .is_none()
         {
@@ -408,6 +429,31 @@ impl WebViewDelegate for BaoWebViewDelegate {
         // implementation above for the full rationale), then event_tx
         // (Path B) is primary for plain logs; console_log_tx (Path A) is
         // fallback.
+        // @trace REQ-CDP-010 [entity:RuntimeBinding] [entity:DomContentEvent]
+        // `__BAO_CDPEVT__` texts are the page-realm → embedder carrier for
+        // the two CDP observability faces the engine surface has no native
+        // hook for: `Runtime.bindingCalled` (the `Runtime.addBinding`
+        // binding function reports its call) and `Page.domContentEventFired`
+        // (the internal DOMContentLoaded listener armed at `Page.enable`).
+        // The marker is consumed BEFORE the legacy `__BAO_EVT__` arm and
+        // BEFORE the plain-console arms, so the carrier never surfaces as
+        // Runtime.consoleAPICalled / Log.entryAdded noise; with no modern
+        // event route (no event_tx) the message is dropped, never leaked.
+        if message.starts_with(super::CDP_EVT_MARKER) {
+            let Some(target_id) = self.state.borrow().cdp_target() else {
+                self.state.borrow().log_unroutable_event("cdp marker event");
+                return;
+            };
+            if let Some(event) = super::parse_cdp_marker_event(&message, target_id) {
+                let event_tx = self.state.borrow().event_tx.clone();
+                if let Some(ref tx) = event_tx {
+                    send_servo_event(tx, event);
+                }
+            }
+            // No event route (event_tx absent) or a malformed carrier:
+            // the message is dropped — never leaked as a console log line.
+            return;
+        }
         if message.starts_with("__BAO_EVT__") {
             let tx = self.state.borrow().console_log_tx.clone();
             if let Some(ref tx) = tx {
@@ -639,7 +685,8 @@ mod tests {
         // sends — frame id derived from the stamped target (REQ-CDP-004).
         let url = url::Url::parse("https://example.com").unwrap();
         let url_str = url.to_string();
-        let loader_id = format!("{:016x}", url_str.len() as u64);
+        // The registry row is the only loader-id source (REQ-CDP-010).
+        let loader_id = state.borrow().loader_id.clone();
         let frame_id =
             main_frame_id_for_target(&state.borrow().cdp_target().expect("stamped target"));
         if let Some(ref tx) = state.borrow().console_log_tx {
