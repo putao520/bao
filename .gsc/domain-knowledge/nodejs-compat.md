@@ -209,3 +209,5 @@ source: https://nodejs.org/api/dgram.html, https://nodejs.org/api/net.html, http
 4. **net.getDefaultAutoSelectFamilyAttemptTimeout** 默认 250ms 进程级 AtomicU64;set 校验=非 number→ERR_INVALID_ARG_TYPE,负/非 finite→ERR_OUT_OF_RANGE,0 允许。
 5. **process.features 13 字段**(v24):inspector/debug/uv/ipv6/tls_alpn/tls_sni/tls_ocsp/tls/openssl_is_boringssl/cached_builtins/require_module/quic/typescript("strip"=TS 直跑支持)——值按实现如实标定非 Node 默认值(boringssl 构建 openssl_is_boringssl=true)。
 6. **node_* 模块三段式导出陷阱**:NET_JS IIFE return 块+install 白名单拷贝清单+单测断言清单三处必须同步(IIFE 加导出不进白名单=require 面静默 undefined,编译绿假象)。
+
+7. **process.features.typescript 值语义**:Node v24="strip"(TS 直跑经类型剥离);bao 实证="strip"(bao run x.ts 走 bun_sm strip_typescript 主链 bun_transpiler::transpile_ts 备 legacy;needs_transpile 门覆盖 .ts/.tsx/.jsx)。值不是 boolean——如实按字符串契约暴露,禁占位 false 冒充。
