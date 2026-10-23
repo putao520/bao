@@ -725,6 +725,22 @@ pub fn install_buffer_global(
                 0u32,
             );
 
+            // Buffer.prototype.constructor === Buffer (Node parity: the
+            // dedicated prototype object would otherwise resolve `constructor`
+            // through the Uint8Array.prototype chain to `Uint8Array`, making
+            // `buf.constructor.name` report "Uint8Array" instead of "Buffer" —
+            // which breaks Buffer-vs-Uint8Array discrimination in assert's
+            // inspect path (GOLDEN A test-assert-deep misjudges notIdentical).
+            // Descriptor matches Node: writable, non-enumerable, configurable.
+            rooted!(&in(cx) let buf_ctor_val = ObjectValue(buf_root.get()));
+            JS_DefineProperty(
+                cx.raw_cx(),
+                buf_proto.handle().into(),
+                c"constructor".as_ptr(),
+                buf_ctor_val.handle().into(),
+                0u32,
+            );
+
             // Register native methods on prototype (shared by all instances)
             JS_DefineFunction(
                 cx,

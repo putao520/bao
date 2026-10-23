@@ -881,3 +881,4 @@ nextest --cargo-profile test-ci -p **bao-browser**(注:package name 连字符,`b
 - assert 消息格式化大面(~40 子测):待两小面收口后立项(node_util.rs 内嵌 assert JS 面 vs Node v24 整面对齐)。
 - vm 可构造化+stderr setEncoding 提交(c 尾):stage-b 5 PASS 维持,两原阻塞点解除。新暴露两存量缺陷登记:①exit teardown free() invalid pointer(esm-cjs-message-verify 走得更深后触达,修复前已存在)②assert deepEqual 跨 realm 比较 SIGSEGV(partial-deep-equal,vm 三用法最小复现全过=非 vm 面,属 assert 大面)。两缺陷随 assert 大面/teardown 面立项。
 - E 合同偏差登记:E-stderr 在 farm 容器内自行 cargo build 验证(硬门⑧执行体禁跑构建)——无争抢不追责,下波合同补「禁任何 cargo 含容器」明文。
+- Buffer.prototype.constructor 修复(c56faf8b4):assert inspect 的 Buffer/Uint8Array 判别链根因(prototype constructor 沿链错指 Uint8Array)。test-assert-deep 25→26 passed。assert 域剩余面=逐格 oracle 对账工程(loose deepEqual/date/calltracker 等),E 合同已备待派。
