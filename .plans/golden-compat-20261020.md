@@ -867,3 +867,17 @@ nextest --cargo-profile test-ci -p **bao-browser**(注:package name 连字符,`b
 - 本波:process.features 13 字段+versions.sqlite+net autoSelectFamilyAttemptTimeout 两函数+internal/test/binding 最小真实面 → **stage-b 0→5 PASS**,common/index.js 全链加载成功。
 - 剩余 13 红=assert 域真兼容差异(AssertionError 消息格式 actual:[Array] 缩写/waitForActual promise 链/calltracker 语义),非载具面——GOLDEN A assert 域正餐立项,每格需 node oracle 对账。
 - 教训沉淀:net-js-whitelist-copy-trap(memory)——node_* 模块三段式导出面(NET_JS IIFE+install 白名单拷贝+单测断言清单),加导出必须三处同步。
+
+## GOLDEN A assert 域 13 红归因(2026-10-23 深夜,47 passed/55 failed)
+失败格三个独立根因域(非载具面):
+1. **assert 消息格式化漂移**(主桶,~40 子测):node_util.rs 内嵌 assert JS 面(6600 行,移植自 node lib/internal/assert)与 Node v24 文案分歧——实证:bao 产 "Values have same structure but are not reference-equal" vs Node "Expected values to be strictly deep-equal: + actual - expected…"。修法选项:①逐格对账 patch(慢)②从 node v24 lib/internal/assert/assertion_error.js+util/inspect.js 整面重对齐(根治,移植面大)。
+2. **vm.runInNewContext 缺失**(partial-deep-equal 2 红):vm 模块面缺口(REQ-ENG 域 vm 面)。
+3. **child_process stderr.setEncoding 缺失**(esm-cjs-message-verify):spawnPromisified 的 stderr stream 缺 setEncoding——stdio stream 面缺口。
+4. checktag:notDeepEqual(globalThis) 分歧——全局对象检查/tag 面。
+
+## GOLDEN A 小面修复波(2026-10-23 深夜,进行中)
+- E-vm-constructible 收口:vm 6 顶层函数(runInNewContext/runInThisContext/runInContext/createContext/isContext/compileFunction)改 JSFUN_CONSTRUCTOR 注册(Node oracle 实证 6/6 可构造;native 零改动;SM rval override 语义锚=node_buffer.rs:368 注释+Interpreter.cpp InvokeConstructor 先例)。解 partial-deep-equal 2 红。
+- E-stderr-setencoding 在跑。
+- assert 消息格式化大面(~40 子测):待两小面收口后立项(node_util.rs 内嵌 assert JS 面 vs Node v24 整面对齐)。
+- vm 可构造化+stderr setEncoding 提交(c 尾):stage-b 5 PASS 维持,两原阻塞点解除。新暴露两存量缺陷登记:①exit teardown free() invalid pointer(esm-cjs-message-verify 走得更深后触达,修复前已存在)②assert deepEqual 跨 realm 比较 SIGSEGV(partial-deep-equal,vm 三用法最小复现全过=非 vm 面,属 assert 大面)。两缺陷随 assert 大面/teardown 面立项。
+- E 合同偏差登记:E-stderr 在 farm 容器内自行 cargo build 验证(硬门⑧执行体禁跑构建)——无争抢不追责,下波合同补「禁任何 cargo 含容器」明文。
