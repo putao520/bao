@@ -468,6 +468,8 @@ unsafe extern "C" fn require_resolve_fn(cx: *mut JSContext, argc: u32, vp: *mut 
         "util/types",
         "inspector/promises",
         "timers/promises",
+        // Internal test module (registered by node_internal_test_binding::install).
+        "internal/test/binding",
     ];
     if known_builtins.contains(&builtin_key) {
         let c_path = ZBox::from_bytes(builtin_key.as_bytes());

@@ -1137,11 +1137,194 @@ unsafe fn populate_process_object(
                     JSPROP_ENUMERATE as u32,
                 );
             }
+            // @trace REQ-ENG-008 — bun:sqlite (rusqlite 0.38 bundled, libsqlite3-sys 0.36.0).
+            // Version pinned from the bundled sqlite3.h SQLITE_VERSION macro of the
+            // locked libsqlite3-sys 0.36.0 crate (registry source, verified 2026-10-23).
+            // Node parity shape: "3.x.x" dotted triple.
+            let sqlite_ver = JS_NewStringCopyZ(cx.raw_cx(), c"3.51.1".as_ptr());
+            if !sqlite_ver.is_null() {
+                rooted!(&in(cx) let v = StringValue(&*sqlite_ver));
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    ver_obj.handle().into(),
+                    c"sqlite".as_ptr(),
+                    v.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
             JS_DefineProperty3(
                 cx,
                 proc_obj,
                 c"versions".as_ptr(),
                 ver_obj.handle(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+
+    // process.features — Node v24 parity surface (common/index.js:59 reads
+    // process.features.inspector at bootstrap; absence crashes the GOLDEN A
+    // stage-b harness). Every value is calibrated to bao's actual capability,
+    // not a placeholder true. Mirrors the process.versions nested-object idiom.
+    // @trace REQ-ENG-001
+    {
+        rooted!(&in(cx) let feat_obj = JS_NewPlainObject(cx));
+        if !feat_obj.get().is_null() {
+            // inspector: true — bao has a CDP server (bao_cdp / cdp-server
+            // crates) with Runtime/Debugger domains wired; the inspector face
+            // is a real product surface, not a stub.
+            let inspector_val = BooleanValue(true);
+            rooted!(&in(cx) let iv = inspector_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                feat_obj.handle().into(),
+                c"inspector".as_ptr(),
+                iv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // debug: false — bao is not a debug/development build of Node;
+            // matches Node oracle (release builds report false).
+            let debug_val = BooleanValue(false);
+            rooted!(&in(cx) let dv = debug_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                feat_obj.handle().into(),
+                c"debug".as_ptr(),
+                dv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // uv: true — bao uses a uv event loop (bao_uloop + bun_event_loop
+            // wrap libuv's epoll/tick face on the POSIX path).
+            let uv_val = BooleanValue(true);
+            rooted!(&in(cx) let uvv = uv_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                feat_obj.handle().into(),
+                c"uv".as_ptr(),
+                uvv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // ipv6: true — the networking stack (bun_http / bun_uws / bun_dns)
+            // resolves and connects over IPv6; no evidence of an IPv4-only build.
+            let ipv6_val = BooleanValue(true);
+            rooted!(&in(cx) let ipv6v = ipv6_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                feat_obj.handle().into(),
+                c"ipv6".as_ptr(),
+                ipv6v.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // tls_alpn: true — boringssl ALPN is wired in the stealth TLS
+            // connector (bao_stealth JA3/JA4 face sets ALPN protocols).
+            let tls_alpn_val = BooleanValue(true);
+            rooted!(&in(cx) let talpnv = tls_alpn_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                feat_obj.handle().into(),
+                c"tls_alpn".as_ptr(),
+                talpnv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // tls_sni: true — SNI is set in the same stealth TLS connector path
+            // (per-WebViewId profile resolution feeds the boringssl SSL config).
+            let tls_sni_val = BooleanValue(true);
+            rooted!(&in(cx) let tslniv = tls_sni_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                feat_obj.handle().into(),
+                c"tls_sni".as_ptr(),
+                tslniv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // tls_ocsp: false — bao has no OCSP stapling implementation
+            // (grep zero hits across bao_stealth / bao_boringssl_bridge).
+            let tls_ocsp_val = BooleanValue(false);
+            rooted!(&in(cx) let tocspv = tls_ocsp_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                feat_obj.handle().into(),
+                c"tls_ocsp".as_ptr(),
+                tocspv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // tls: true — TLS is fully implemented (boringssl via bao_boringssl_bridge).
+            let tls_val = BooleanValue(true);
+            rooted!(&in(cx) let tv2 = tls_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                feat_obj.handle().into(),
+                c"tls".as_ptr(),
+                tv2.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // openssl_is_boringssl: true — bao links boringssl (bao_boringssl_bridge
+            // / boringssl_sys). Node's own builds report true for boringssl-based
+            // distributions regardless of what upstream Node defaults to.
+            let ossl_boring_val = BooleanValue(true);
+            rooted!(&in(cx) let obv = ossl_boring_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                feat_obj.handle().into(),
+                c"openssl_is_boringssl".as_ptr(),
+                obv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // cached_builtins: false — bao has no Node builtin-snapshot / code-cache
+            // surface (no NODE_COMPILE_CACHE or V8 compile-cache equivalent).
+            let cached_builtins_val = BooleanValue(false);
+            rooted!(&in(cx) let cbv = cached_builtins_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                feat_obj.handle().into(),
+                c"cached_builtins".as_ptr(),
+                cbv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // require_module: true — require() of ESM is implemented (this wave's
+            // BUG-ENG-365 fix; require.rs CJS/ESM interop is a real surface).
+            let require_module_val = BooleanValue(true);
+            rooted!(&in(cx) let rmv = require_module_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                feat_obj.handle().into(),
+                c"require_module".as_ptr(),
+                rmv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // quic: false — bun_lsquic_sys is force-linked for potential QUIC use but
+            // there is no JS-level quic/sockets/quic API surface (grep zero hits in
+            // bao_runtime beyond the force_link line). Honest false, not aspirational.
+            let quic_val = BooleanValue(false);
+            rooted!(&in(cx) let qv = quic_val);
+            JS_DefineProperty(
+                cx.raw_cx(),
+                feat_obj.handle().into(),
+                c"quic".as_ptr(),
+                qv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // typescript: "strip" — bao run dispatches .ts/.tsx/.jsx through the
+            // type-strip path (bun_sm::module_loader strip_typescript → SWC
+            // transpile_ts primary, legacy fallback; needs_transpile covers
+            // ts/tsx/jsx). This is Node's "strip" face (type stripping, not full
+            // type checking).
+            let ts_str = JS_NewStringCopyZ(cx.raw_cx(), c"strip".as_ptr());
+            if !ts_str.is_null() {
+                rooted!(&in(cx) let ts_val2 = StringValue(&*ts_str));
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    feat_obj.handle().into(),
+                    c"typescript".as_ptr(),
+                    ts_val2.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            JS_DefineProperty3(
+                cx,
+                proc_obj,
+                c"features".as_ptr(),
+                feat_obj.handle(),
                 JSPROP_ENUMERATE as u32,
             );
         }

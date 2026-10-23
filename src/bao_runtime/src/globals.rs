@@ -219,6 +219,7 @@ pub unsafe fn install_node_apis(
     // (installed before stubs so stubs' guard check sees these and skips)
     crate::node_internal_streams::install(cx);
     crate::node_internal_http::install(cx);
+    crate::node_internal_test_binding::install(cx);
     crate::node_tls_common::install(cx);
     crate::node_tls_wrap::install(cx);
     crate::node_subpath_aliases::install(cx);

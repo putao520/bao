@@ -69,6 +69,7 @@ pub mod node_inspector;
 pub mod node_inspector_promises;
 pub mod node_internal_http;
 pub mod node_internal_streams;
+pub mod node_internal_test_binding;
 pub mod node_module;
 pub mod node_net;
 pub mod node_os;

@@ -581,6 +581,77 @@ static NET_VTABLE: VTable = VTable {
     on_handshake: Some(net_on_handshake),
 };
 
+// ──────────────────── autoSelectFamilyAttemptTimeout ────────────────────
+
+/// Process-wide default for net's autoSelectFamily connection attempt
+/// timeout, in milliseconds (Node default: 250). Mirrors Node's
+/// `autoSelectFamilyAttemptTimeout` — a mutable process-level default that
+/// `net.getDefaultAutoSelectFamilyAttemptTimeout()` reads and
+/// `net.setDefaultAutoSelectFamilyAttemptTimeout(v)` writes. Stored as
+/// milliseconds in an AtomicU64 so every net module in the process (and
+/// every JS realm) observes the same value.
+static AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS: ::std::sync::atomic::AtomicU64 =
+    ::std::sync::atomic::AtomicU64::new(250);
+
+/// __net_get_autoselect_timeout() → Number(ms). Backend for
+/// `net.getDefaultAutoSelectFamilyAttemptTimeout()`.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn net_get_autoselect_timeout(
+    _cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let ms = AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS.load(::std::sync::atomic::Ordering::Relaxed);
+    args.rval().set(DoubleValue(ms as f64));
+    true
+}
+
+/// __net_set_autoselect_timeout(v). Backend for
+/// `net.setDefaultAutoSelectFamilyAttemptTimeout(v)`. Node validates the
+/// value: it must be a non-negative finite number (`ERR_INVALID_ARG_TYPE`
+/// for non-numbers, `ERR_OUT_OF_RANGE` for negative / non-finite). The
+/// stored value is truncated to an integer (Node's Timeout<int, 0>)
+/// millisecond budget. A `0` restore is accepted (Node documents 0 as
+/// disabling the per-attempt timeout); the upper range is left to the
+/// consumer — Node itself only rejects negative values, not large ones.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn net_set_autoselect_timeout(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(
+            cx,
+            c"The \"value\" argument must be of type number. Received undefined.".as_ptr(),
+        );
+        return false;
+    }
+    let v = *args.get(0).ptr;
+    if !v.is_number() {
+        let msg = "The \"value\" argument must be of type number. Received a non-number value.";
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), (*c_msg).as_ptr());
+        return false;
+    }
+    let d = v.to_number();
+    if !d.is_finite() || d < 0.0 {
+        let msg = format!(
+            "The value of \"value\" is out of range. It must be a non-negative finite number. Received {}.",
+            d
+        );
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), (*c_msg).as_ptr());
+        return false;
+    }
+    AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS
+        .store(d.trunc() as u64, ::std::sync::atomic::Ordering::Relaxed);
+    args.rval().set(UndefinedValue());
+    true
+}
+
 // ──────────────────── JS helper functions ────────────────────
 
 const NET_JS: &str = r#"
@@ -979,6 +1050,17 @@ const NET_JS: &str = r#"
     isIP: isIP,
     isIPv4: function(input) { return isIP(input) === 4; },
     isIPv6: function(input) { return isIP(input) === 6; },
+    // Process-wide default for the autoSelectFamily connection attempt
+    // timeout (mirrors Node's net.getDefaultAutoSelectFamilyAttemptTimeout /
+    // net.setDefaultAutoSelectFamilyAttemptTimeout pair). The value lives
+    // in a Rust-side AtomicU64 (see AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS
+    // below) so every net module in the process observes the same default.
+    getDefaultAutoSelectFamilyAttemptTimeout: function() {
+      return __net_get_autoselect_timeout();
+    },
+    setDefaultAutoSelectFamilyAttemptTimeout: function(v) {
+      __net_set_autoselect_timeout(v);
+    },
   };
 })();
 "#;
@@ -1807,6 +1889,22 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             1,
             0,
         );
+        JS_DefineFunction(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"__net_get_autoselect_timeout".as_ptr(),
+            Some(net_get_autoselect_timeout),
+            0,
+            0,
+        );
+        JS_DefineFunction(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"__net_set_autoselect_timeout".as_ptr(),
+            Some(net_set_autoselect_timeout),
+            1,
+            0,
+        );
 
         // The NET_JS IIFE resolves these host bridges as FREE variables —
         // the `typeof __net_connect === "function"` probes inside the IIFE
@@ -1828,6 +1926,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 ("__net_isIPv6", Some(net_is_ipv6), 1),
                 ("__net_on_connection", Some(net_on_connection), 2),
                 ("__net_poll_state", Some(net_poll_state), 1),
+                ("__net_get_autoselect_timeout", Some(net_get_autoselect_timeout), 0),
+                ("__net_set_autoselect_timeout", Some(net_set_autoselect_timeout), 1),
             ];
             for &(name, native, nargs) in bridges {
                 let c_name = ZBox::from_bytes(name);
@@ -1876,6 +1976,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             "isIP",
             "isIPv4",
             "isIPv6",
+            "getDefaultAutoSelectFamilyAttemptTimeout",
+            "setDefaultAutoSelectFamilyAttemptTimeout",
         ] {
             let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
@@ -2028,6 +2130,8 @@ mod tests {
             "isIP",
             "isIPv4",
             "isIPv6",
+            "getDefaultAutoSelectFamilyAttemptTimeout",
+            "setDefaultAutoSelectFamilyAttemptTimeout",
         ] {
             assert!(NET_JS.contains(name), "JS must export {}", name);
         }
