@@ -890,3 +890,8 @@ GOLDEN A 本日总轨迹:**0→10 PASS**(require 校正→features/net→vm/stde
 
 ## GOLDEN A deep 域多行委托波(2026-10-24 凌晨)
 util.inspect compact:false 委托(assert IIFE inspectValue 复用+oracle 分界三类委托+4 处 inspectValue 偏差根治):test-assert-deep **25→51/53**,文件级 10 PASS 零回归。GOLDEN A 累计:**0→10 PASS/18 文件,格级 assert 域基本清零**(残留=SM 文案/引擎崩溃/源码提取 runner 语境等既有登记域)。新登记:深链 inspect SIGSEGV 栈成本漂移(245 层,Oct-20 后引入)。
+
+## BCE 闭环(2026-10-24,bce-domain-guard 域收口)
+**归因（BCE-20261024-SESSION-ERRFAMILY）**:本域错误类失败 9 次全链归因——①泵泛型化后 14 编译错四族(E0596 签名缺 mut/E0502 settle 闭包捕获 ctx=迁移波误搬 drain/E0308 传值/E0433-E0425 迁移波误删 import):根因=E-pump-generic 的 workaround「存在理由」判定未编译实证;②格2 require 红:根因=correct_directory_index_mjs 只挂 external 分支,try_resolve fallback 同样产 index.mjs;③PumpStuck 误杀:根因=tripwire 把「有进展后稳态」当死锁(c17 签名是全程零进展);④Buffer 身份:根因=Buffer.prototype 为 NewPlainObject,constructor 沿链错指 Uint8Array;⑤net 白名单:根因=node_net 三段式导出(IIFE+白名单拷贝+单测清单)三处同步缺二(memory net-js-whitelist-copy-trap 已沉淀)。
+**横扫**:evidence 格式 codemod 84 处(9 文件一次根治);net 白名单 install+单测两处同修;vm 六函数 oracle 清单式横扫(6/6 一次注册面变换)。
+**根治与残留核验**:①②③④⑤全部根治且经 farm 复验残留=0(窄域 110/110、deep 51/53、stage-b 10 PASS 零回归、二进制行为探针逐项绿)。诚实边界:esm-cjs SIGABRT/partial-deep SIGSEGV/深链 inspect 栈漂移(245 层)=存量引擎面缺陷,已登记非本域引入(A/B 实证 HEAD 同现),留引擎崩溃立项合同——不冒充已根治。
