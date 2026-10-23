@@ -64,7 +64,9 @@ use std::time::{Duration, Instant};
 
 /// Escape a path for interpolation into a JS double-quoted string literal.
 fn js_escape(p: &std::path::Path) -> String {
-    p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+    p.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 /// Unique per-test temp dir (nextest runs each test in its own process, but
@@ -79,19 +81,14 @@ fn tmp_dir(tag: &str) -> PathBuf {
 /// Pump the loop until a JS boolean predicate holds (bounded). Returns the
 /// final predicate value so the caller can fail with a precise message.
 fn pump_until(ctx: &mut JsContext, predicate_js: &str, deadline_ms: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_millis(deadline_ms);
-    loop {
-        if eval_string(ctx, predicate_js) == "true" {
-            return true;
-        }
-        let mut cxm = ctx.cx();
-        let _alive = bun_runtime::timers::drain_and_check(&mut cxm);
-        drop(cxm);
-        if Instant::now() >= deadline {
-            return eval_string(ctx, predicate_js) == "true";
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    let final_value = common::pump_until(
+        ctx,
+        predicate_js,
+        Duration::from_millis(deadline_ms),
+        eval_string,
+        |v| v == "true",
+    );
+    final_value == "true"
 }
 
 /// Pump until the predicate holds or the deadline expires, then REQUIRE it
@@ -105,12 +102,7 @@ fn pump_require(ctx: &mut JsContext, predicate_js: &str, what: &str) {
 }
 
 /// Same as [`pump_require`] but embeds the collector transcript on failure.
-fn pump_require_with_log(
-    ctx: &mut JsContext,
-    predicate_js: &str,
-    collector_js: &str,
-    what: &str,
-) {
+fn pump_require_with_log(ctx: &mut JsContext, predicate_js: &str, collector_js: &str, what: &str) {
     if !pump_until(ctx, predicate_js, 15_000) {
         let log = eval_string(ctx, collector_js);
         panic!("c11 delivery contract not met: {what}\ncollector: {log}");
@@ -366,7 +358,10 @@ fn c11_fs_fix_open_cb() {
             > 0,
         "fs.open cb did not deliver a numeric fd"
     );
-    assert!(p1.exists() && p2.exists(), "fs.open cb form did not create files");
+    assert!(
+        p1.exists() && p2.exists(),
+        "fs.open cb form did not create files"
+    );
 }
 
 // ===========================================================================
@@ -1204,10 +1199,7 @@ fn c11_fs_registry_fixed_faces() {
         "globalThis.__wfx.stage === 2",
         "writeFile flag chain settled",
     );
-    assert_eq!(
-        eval_string(&mut ctx, "String(globalThis.__wfx.body1)"),
-        "a"
-    );
+    assert_eq!(eval_string(&mut ctx, "String(globalThis.__wfx.body1)"), "a");
     assert_eq!(
         eval_string(&mut ctx, "String(globalThis.__wfx.code)"),
         "EEXIST",
@@ -1241,10 +1233,7 @@ fn c11_fs_registry_fixed_faces() {
         eval_string(&mut ctx, "String(globalThis.__pwf.code)"),
         "EEXIST"
     );
-    assert_eq!(
-        eval_string(&mut ctx, "String(globalThis.__pwf.body)"),
-        "a"
-    );
+    assert_eq!(eval_string(&mut ctx, "String(globalThis.__pwf.body)"), "a");
 }
 
 // ===========================================================================

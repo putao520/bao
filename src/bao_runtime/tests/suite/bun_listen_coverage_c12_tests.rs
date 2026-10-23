@@ -77,14 +77,18 @@ fn make_ctx() -> JsContext {
     ctx
 }
 
-/// Pump the unified event loop so the in-process server/client accept, parse
-/// and dispatch on our thread (C3 pump discipline).
+/// Fixed-pass pump delegate: the unified suite pump (`common::pump_until`)
+/// run for `passes` settle-pump ticks (each tick = realm-entered timer
+/// drain + MiniEventLoop tick + RunJobs, the C3 in-process server/client
+/// accept/parse/dispatch discipline). A live-but-unsettled marker never
+/// changes, so the `PumpStuck` tripwire fires at its 2s window instead of
+/// silently burning the (longer) pass budget — an unbounded `passes` under
+/// a stuck loop is the hang shape this delegate now diagnoses.
 fn pump(ctx: &mut JsContext, passes: usize) {
-    for _ in 0..passes {
-        let mut cxm = ctx.cx();
-        bun_runtime::timers::drain_and_check(&mut cxm);
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    let budget = Duration::from_millis((passes as u64).saturating_mul(5));
+    common::pump_until(ctx, "'pumping'", budget, common::eval_string_full, |_| {
+        false
+    });
 }
 
 /// Poll `cond` (a JS expression that must yield "y"/"n") until "y".
@@ -169,14 +173,23 @@ fn c12_http_server_ref_unref_keep_serving() {
         "ref/unref return undefined; port is bound"
     );
 
-    let port = eval_str(&mut ctx, "String(server.port)").parse::<u16>().expect("port");
-    let resp = raw_http(&mut ctx, port, "GET /refaced HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let port = eval_str(&mut ctx, "String(server.port)")
+        .parse::<u16>()
+        .expect("port");
+    let resp = raw_http(
+        &mut ctx,
+        port,
+        "GET /refaced HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
     assert_eq!(
         status_line_of(&resp),
         "HTTP/1.1 200 OK",
         "server must keep serving after ref+unref — got: {resp}"
     );
-    assert!(resp.contains("ref-ok"), "body must round-trip — got: {resp}");
+    assert!(
+        resp.contains("ref-ok"),
+        "body must round-trip — got: {resp}"
+    );
 
     pump(&mut ctx, 20);
     assert_eq!(
@@ -207,9 +220,18 @@ fn c12_http_port_double_parse_arm() {
     );
     assert_eq!(setup, "true", "0.5 must clamp to 0 → ephemeral bind");
 
-    let port = eval_str(&mut ctx, "String(server.port)").parse::<u16>().expect("port");
-    let resp = raw_http(&mut ctx, port, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
-    assert!(resp.contains("double-port"), "server on clamped port answers — got: {resp}");
+    let port = eval_str(&mut ctx, "String(server.port)")
+        .parse::<u16>()
+        .expect("port");
+    let resp = raw_http(
+        &mut ctx,
+        port,
+        "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        resp.contains("double-port"),
+        "server on clamped port answers — got: {resp}"
+    );
     eval_str(&mut ctx, "server.stop(); true");
     pump(&mut ctx, 5);
 }
@@ -244,7 +266,11 @@ fn c12_http_fetch_plain_object_response_arms() {
     );
     let port: u16 = setup.parse().expect("bound port");
 
-    let resp = raw_http(&mut ctx, port, "GET /coded HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let resp = raw_http(
+        &mut ctx,
+        port,
+        "GET /coded HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
     assert_eq!(
         status_line_of(&resp),
         "HTTP/1.1 404 OK",
@@ -252,21 +278,33 @@ fn c12_http_fetch_plain_object_response_arms() {
     );
     assert!(resp.contains("gone"), "string body arm — got: {resp}");
 
-    let resp = raw_http(&mut ctx, port, "GET /objbody HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let resp = raw_http(
+        &mut ctx,
+        port,
+        "GET /objbody HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
     let line = status_line_of(&resp);
     assert!(
         line == "HTTP/1.1 201 OK" && resp.contains("obj-bytes"),
         "object body goes through toString() arm — got: {resp}"
     );
 
-    let resp = raw_http(&mut ctx, port, "GET /strstatus HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let resp = raw_http(
+        &mut ctx,
+        port,
+        "GET /strstatus HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
     assert_eq!(
         status_line_of(&resp),
         "HTTP/1.1 404 Not Found",
         "non-int status object is rejected as not response-like → default 404 (R-L3) — got: {resp}"
     );
 
-    let resp = raw_http(&mut ctx, port, "GET /emptybody HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let resp = raw_http(
+        &mut ctx,
+        port,
+        "GET /emptybody HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
     assert_eq!(
         status_line_of(&resp),
         "HTTP/1.1 204 OK",
@@ -304,21 +342,39 @@ fn c12_http_fetch_throw_routes_uncaught_and_keeps_serving() {
     );
     let port: u16 = setup.parse().expect("bound port");
 
-    let resp = raw_http(&mut ctx, port, "GET /boom HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let resp = raw_http(
+        &mut ctx,
+        port,
+        "GET /boom HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
     assert!(
         status_line_of(&resp).starts_with("HTTP/1.1 500"),
         "throwing listen route → 500 — got: {resp}"
     );
-    let routed = wait_until(&mut ctx, r#"globalThis.__lcUncaught !== "" ? "y" : "n""#, 60);
-    assert!(routed, "listen fetch-handler throw must reach uncaughtException");
+    let routed = wait_until(
+        &mut ctx,
+        r#"globalThis.__lcUncaught !== "" ? "y" : "n""#,
+        60,
+    );
+    assert!(
+        routed,
+        "listen fetch-handler throw must reach uncaughtException"
+    );
     assert_eq!(
         eval_str(&mut ctx, "globalThis.__lcUncaught"),
         "c12-listen-boom",
         "uncaughtException handler observes the original listen route error"
     );
 
-    let after = raw_http(&mut ctx, port, "GET /ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
-    assert!(after.contains("ok-after"), "server survives a route throw — got: {after}");
+    let after = raw_http(
+        &mut ctx,
+        port,
+        "GET /ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        after.contains("ok-after"),
+        "server survives a route throw — got: {after}"
+    );
     eval_str(&mut ctx, "server.stop(); true");
     pump(&mut ctx, 5);
 }
@@ -366,7 +422,11 @@ fn c12_connect_refused_promise_rejects() {
         "rejected-error",
         "refused connect rejects with an Error instance"
     );
-    assert_eq!(eval_str(&mut ctx, "String(globalThis.__opened)"), "0", "open must not fire");
+    assert_eq!(
+        eval_str(&mut ctx, "String(globalThis.__opened)"),
+        "0",
+        "open must not fire"
+    );
     pump(&mut ctx, 10);
 }
 
@@ -400,7 +460,11 @@ fn c12_connect_tls_arm_refused_fails_fast() {
         ),
     );
 
-    let settled = wait_until(&mut ctx, r#"globalThis.__tlsState !== "pending" ? "y" : "n""#, 400);
+    let settled = wait_until(
+        &mut ctx,
+        r#"globalThis.__tlsState !== "pending" ? "y" : "n""#,
+        400,
+    );
     assert!(settled, "tls connect to a refused port must settle fast");
     assert_eq!(
         eval_str(&mut ctx, "globalThis.__tlsState"),
@@ -469,14 +533,29 @@ fn c12_connect_localhost_async_full_lifecycle() {
     let log = eval_str(&mut ctx, "globalThis.__log.join('|')");
     assert!(done, "lifecycle must complete — log: {log}");
 
-    assert!(log.contains("cli-open:true"), "client open carries a socket identity — log: {log}");
-    assert!(log.contains("srv-data:ping"), "server data callback got the client payload — log: {log}");
-    assert!(log.contains("cli-data:pong:ping"), "client received the server reply — log: {log}");
+    assert!(
+        log.contains("cli-open:true"),
+        "client open carries a socket identity — log: {log}"
+    );
+    assert!(
+        log.contains("srv-data:ping"),
+        "server data callback got the client payload — log: {log}"
+    );
+    assert!(
+        log.contains("cli-data:pong:ping"),
+        "client received the server reply — log: {log}"
+    );
     // end BEFORE close on the client side (half-close ordering contract)
     let end_idx = log.find("cli-end").expect("cli-end in log");
     let close_idx = log.find("cli-close").expect("cli-close in log");
-    assert!(end_idx < close_idx, "end must fire before close — log: {log}");
-    assert!(log.contains("srv-close:"), "server close fires with a code — log: {log}");
+    assert!(
+        end_idx < close_idx,
+        "end must fire before close — log: {log}"
+    );
+    assert!(
+        log.contains("srv-close:"),
+        "server close fires with a code — log: {log}"
+    );
 
     // The accept-side identity bridge (tcp_on_open 2617-2625). R-L8 oracle:
     // remoteAddress is the node v24 dotted-quad text for the loopback peer
@@ -539,11 +618,22 @@ fn c12_connect_sock_write_byte_and_error_arms() {
     );
     assert_eq!(setup, "setup-ok");
 
-    let got = wait_until(&mut ctx, r#"globalThis.__srvGot.length > 0 ? "y" : "n""#, 400);
+    let got = wait_until(
+        &mut ctx,
+        r#"globalThis.__srvGot.length > 0 ? "y" : "n""#,
+        400,
+    );
     assert!(got, "server must receive the client payload");
-    assert_eq!(eval_str(&mut ctx, "globalThis.__srvGot"), "C12", "binary payload arrives byte-exact");
     assert_eq!(
-        eval_str(&mut ctx, "globalThis.__retNoarg + '/' + globalThis.__retBad"),
+        eval_str(&mut ctx, "globalThis.__srvGot"),
+        "C12",
+        "binary payload arrives byte-exact"
+    );
+    assert_eq!(
+        eval_str(
+            &mut ctx,
+            "globalThis.__retNoarg + '/' + globalThis.__retBad"
+        ),
         "-1/-1",
         "no-arg and non-byte-view writes return -1"
     );
@@ -584,10 +674,18 @@ fn c12_connect_port_double_and_top_level_callback_fallback() {
     let bound: u16 = setup.parse().expect("bound port");
     assert!(bound > 0, "server bound");
 
-    let got = wait_until(&mut ctx, r#"globalThis.__topData.length > 0 ? "y" : "n""#, 400);
+    let got = wait_until(
+        &mut ctx,
+        r#"globalThis.__topData.length > 0 ? "y" : "n""#,
+        400,
+    );
     assert!(got, "top-level open fallback must have fired and written");
     assert_eq!(eval_str(&mut ctx, "globalThis.__topData"), "top-level");
-    assert_eq!(eval_str(&mut ctx, "String(globalThis.__topOpen)"), "1", "open fired exactly once");
+    assert_eq!(
+        eval_str(&mut ctx, "String(globalThis.__topOpen)"),
+        "1",
+        "open fired exactly once"
+    );
     eval_str(&mut ctx, "server.stop(); true");
     pump(&mut ctx, 10);
 }

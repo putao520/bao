@@ -19,20 +19,39 @@ use common::setup_ctx;
 
 use common::eval_string_full as eval_string;
 
-
+/// Quiescent-pump delegate: the unified suite pump (`common::pump_until`)
+/// on a constant poll. Each tick runs all three actuators (realm-entered
+/// timer drain, MiniEventLoop tick, RunJobs) plus the `PumpStuck`
+/// no-progress tripwire. The loop-liveness verdict is folded into the eval
+/// closure (it holds `&mut JsContext`, the settle predicate is a pure
+/// string read): each poll first runs one extra `drain_and_check` to
+/// re-read the liveness sources, then prefixes the verdict to the poll
+/// string — once the loop is dead the production loop would exit, so the
+/// delegate settles immediately. The constant poll never changes, so a
+/// liveness verdict that never turns false trips `PumpStuck` at the 2s
+/// window instead of silently burning the deadline.
 fn pump_until_quiescent(ctx: &mut JsContext, deadline_ms: u64) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
-    while std::time::Instant::now() < deadline {
-        let mut cxm = ctx.cx();
-        if !bun_runtime::timers::drain_and_check(&mut cxm) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    common::pump_until(
+        ctx,
+        "'ok'",
+        std::time::Duration::from_millis(deadline_ms),
+        |c, s| {
+            let mut cxm = c.cx();
+            let alive = bun_runtime::timers::drain_and_check(&mut cxm);
+            format!(
+                "{}{}",
+                if alive { "ALIVE" } else { "DEAD" },
+                common::eval_string_full(c, s)
+            )
+        },
+        |poll| poll.starts_with("DEAD"),
+    );
 }
 
 fn js_escape(p: &std::path::Path) -> String {
-    p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+    p.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 /// 4c815c11a5: fs.truncateSync(path, undefined) truncates to 0 — the same as
@@ -69,7 +88,10 @@ fn truncate_sync_undefined_len_is_zero() {
             js_escape(&f2)
         ),
     );
-    assert_eq!(out, "0,0", "truncateSync undefined-len and absent-len must both truncate to 0");
+    assert_eq!(
+        out, "0,0",
+        "truncateSync undefined-len and absent-len must both truncate to 0"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -164,7 +186,6 @@ fn ftruncate_sync_undefined_len_is_zero() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// Node-family answer for an over-long path: ENAMETOOLONG on POSIX, ENOENT
 /// on windows (oracle: node v24 on windows answers ENOENT for both the
 /// literal "/tmp/..." form and a drive-lettered over-long path — the CRT
@@ -194,11 +215,7 @@ fn promises_toolong_path_rejects_not_throws() {
     // single component > NAME_MAX(255): no syscall can accept this path.
     // Derive from os.tmpdir() (windows: %TMP% — a literal "/tmp/..." would
     // mis-resolve and report ENOENT instead of the path-length error).
-    let too_long = format!(
-        "{}/{}",
-        ::std::env::temp_dir().display(),
-        "a".repeat(5000)
-    );
+    let too_long = format!("{}/{}", ::std::env::temp_dir().display(), "a".repeat(5000));
 
     let out = eval_string(
         &mut ctx,

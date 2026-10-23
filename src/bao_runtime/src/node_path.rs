@@ -87,8 +87,8 @@ mod node_alg {
     fn is_windows_reserved_name(path: &str, colon_index: isize) -> bool {
         let end = if colon_index < 0 {
             match path.len() {
-                0 => 0, // @evidence .spec/10-REQUIREMENTS.html:237
-                l => l - 1, // @evidence .spec/10-REQUIREMENTS.html:237
+                0 => 0, // @evidence SPEC/10-REQUIREMENTS.html:237
+                l => l - 1, // @evidence SPEC/10-REQUIREMENTS.html:237
             }
         } else {
             colon_index as usize
@@ -375,14 +375,14 @@ mod node_alg {
             return format!(".\\{}{}", device.as_deref().unwrap_or(""), tail);
         }
         match device {
-            None => { // @evidence .spec/10-REQUIREMENTS.html:237
+            None => { // @evidence SPEC/10-REQUIREMENTS.html:237
                 if is_absolute {
                     format!("\\{}", tail)
                 } else {
                     tail
                 }
             }
-            Some(d) => { // @evidence .spec/10-REQUIREMENTS.html:237
+            Some(d) => { // @evidence SPEC/10-REQUIREMENTS.html:237
                 if is_absolute {
                     format!("{}\\{}", d, tail)
                 } else {
@@ -1869,8 +1869,8 @@ fn posix_cwd_string() -> String {
     if cfg!(windows) {
         let s = cwd.replace('\\', "/");
         match s.find('/') {
-            Some(i) => s[i..].to_string(), // @evidence .spec/10-REQUIREMENTS.html:237
-            None => s, // @evidence .spec/10-REQUIREMENTS.html:237
+            Some(i) => s[i..].to_string(), // @evidence SPEC/10-REQUIREMENTS.html:237
+            None => s, // @evidence SPEC/10-REQUIREMENTS.html:237
         }
     } else {
         cwd
@@ -3049,7 +3049,7 @@ unsafe extern "C" fn path_basename(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let ext = if argc >= 2 && !(arg_at(&args, argc, 1)).is_undefined() {
         match validated_string(cx, arg_at(&args, argc, 1), "suffix") {
             Some(e) => Some(e),
-            None => return false, // @evidence .spec/10-REQUIREMENTS.html:237
+            None => return false, // @evidence SPEC/10-REQUIREMENTS.html:237
         }
     } else {
         None

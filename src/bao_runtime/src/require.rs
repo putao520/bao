@@ -6,7 +6,6 @@ use ::std::ptr::NonNull;
 use bun_core::ZBox;
 use bun_sys::fs as bun_fs;
 
-
 use mozjs::glue::NewCompileOptions;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};
@@ -262,7 +261,11 @@ unsafe fn record_module_in_cache(cx: *mut JSContext, canonical_path: &str, expor
 ///
 /// # Safety
 /// Standard JSNative context — `cx` valid, `args` live.
-unsafe fn lookup_require_cache(cx: *mut JSContext, args: &CallArgs, canonical_path: &str) -> Option<Value> {
+unsafe fn lookup_require_cache(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    canonical_path: &str,
+) -> Option<Value> {
     let callee_obj = args.callee();
     if callee_obj.is_null() {
         return None;
@@ -702,8 +705,9 @@ unsafe extern "C" fn require_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         // failures (module-object / string allocation, compile-options
         // creation) where the context carries no module exception.
         match load_cjs_module(cx, &content, &resolved, base_dir.as_deref()) {
-            Ok(val) => val, // @evidence .spec/10-REQUIREMENTS.html:2324
-            Err(CjsLoadError::NoException) => { // @evidence .spec/10-REQUIREMENTS.html:2324
+            Ok(val) => val, // @evidence SPEC/10-REQUIREMENTS.html:2324
+            Err(CjsLoadError::NoException) => {
+                // @evidence SPEC/10-REQUIREMENTS.html:2324
                 let msg = format!("Failed to load module '{}'", specifier);
                 let c_msg = ZBox::from_bytes(msg.as_bytes());
                 JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
@@ -711,7 +715,7 @@ unsafe extern "C" fn require_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
             }
             // A module exception is pending on the context — return false so
             // the engine re-throws it to the require() caller unchanged.
-            Err(CjsLoadError::ExceptionPending) => return false, // @evidence .spec/10-REQUIREMENTS.html:2324
+            Err(CjsLoadError::ExceptionPending) => return false, // @evidence SPEC/10-REQUIREMENTS.html:2324
         }
     };
 
@@ -1197,7 +1201,7 @@ unsafe fn load_cjs_module(
 
     let dir = match path.parent() {
         Some(d) => d,
-        None => return Ok(mozjs::jsval::ObjectValue(exports_obj)), // @evidence .spec/10-REQUIREMENTS.html:237
+        None => return Ok(mozjs::jsval::ObjectValue(exports_obj)), // @evidence SPEC/10-REQUIREMENTS.html:237
     };
 
     let saved_dir = REQUIRE_DIR.with(|d| d.borrow().clone());
@@ -1229,25 +1233,76 @@ unsafe fn load_cjs_module(
     Ok(final_exports)
 }
 
+/// Node CJS directory-index correction for `.mjs` resolution results.
+///
+/// Node.js CJS directory-index lookup (LOAD_AS_DIRECTORY §3) checks
+/// `index.js` → `index.json` → `index.node` and **never** `index.mjs`.
+/// When the external resolver (bun_resolver with `ImportKind::Stmt`
+/// ESM-first ordering) resolves a directory to `index.mjs`, the caller
+/// almost certainly meant the directory CJS index, not the ESM facade.
+///
+/// Distinguishing directory-index results from explicit full-path
+/// specifiers: a specifier whose string ends with `.mjs` names the exact
+/// file — the caller asked for that specific ESM file (Node ≥22
+/// `require(esm)` semantics permit this), so no correction is applied.
+/// Any other resolution path (bare directory name like `"../common"`,
+/// or a specifier without the `.mjs` extension) that lands on
+/// `index.mjs` is a directory-index result and must be corrected.
+///
+/// Correction rules:
+/// 1. If the resolved path ends in `index.mjs` AND the original specifier
+///    does NOT end with `.mjs`:
+///    a. If a sibling `index.js` exists → return it (CJS index wins).
+///    b. Else if a sibling `index.json` exists → return it.
+///    c. Else if a sibling `index.node` exists → return it.
+///    d. Else → None (MODULE_NOT_FOUND per Node semantics).
+/// 2. Otherwise → return the resolved path unchanged.
+fn correct_directory_index_mjs(specifier: &str, resolved: &Path) -> Option<PathBuf> {
+    // Only correct when the resolver landed on an index.mjs file.
+    if resolved.file_name().and_then(|n| n.to_str()) != Some("index.mjs") {
+        return Some(resolved.to_path_buf());
+    }
+    // An explicit `.mjs` specifier (ends with ".mjs") names the exact file —
+    // require(esm) semantics apply; do not redirect to a CJS sibling.
+    if specifier.ends_with(".mjs") {
+        return Some(resolved.to_path_buf());
+    }
+    // Directory-index resolution: Node CJS LOAD_AS_DIRECTORY order.
+    let dir = resolved.parent()?;
+    for name in ["index.js", "index.json", "index.node"] {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    // No CJS index sibling: Node semantics → MODULE_NOT_FOUND.
+    None
+}
+
 fn resolve_specifier(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {
     // External resolver (bun_resolver via bao_engine hook) takes priority
     if let Some(result) = bao_engine::module_loader::try_external_resolve(specifier, base_dir) {
-        return Some(result);
+        return correct_directory_index_mjs(specifier, &result);
     }
 
     let path = Path::new(specifier);
 
+    // The local fallback paths funnel through the same correction: Node's CJS
+    // directory-index order never yields index.mjs, so any `index.mjs` these
+    // branches produce must be re-checked against its CJS siblings (or fail
+    // MODULE_NOT_FOUND) exactly like the external-resolver branch above.
     if path.is_absolute() {
-        return try_resolve(path);
+        return try_resolve(path).and_then(|r| correct_directory_index_mjs(specifier, &r));
     }
 
     if specifier.starts_with("./") || specifier.starts_with("../") {
         let base = base_dir.unwrap_or_else(|| Path::new("."));
         let full = base.join(specifier);
-        return try_resolve(&full);
+        return try_resolve(&full).and_then(|r| correct_directory_index_mjs(specifier, &r));
     }
 
     resolve_node_modules(specifier, base_dir)
+        .and_then(|r| correct_directory_index_mjs(specifier, &r))
 }
 
 fn try_resolve(path: &Path) -> ::std::option::Option<PathBuf> {

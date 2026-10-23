@@ -43,48 +43,20 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
-use mozjs::rooted;
-
 use bao_engine::context::JsContext;
-use bun_runtime::timers;
 #[path = "common/mod.rs"]
 mod common;
 
 use common::eval_string_full as eval_string;
 
-
-/// Pump from abort_signal_timeout_tests: realm-entered timer drain +
-/// MiniEventLoop tick + RunJobs, until `poll_js` stops carrying PENDING.
+// @trace REQ-ENG-010
+/// Settle-pump delegate: unified suite pump (`common::pump_until`) with the
+/// file's historical "marker left PENDING" exit — realm-entered timer drain +
+/// MiniEventLoop tick + RunJobs per tick plus the no-progress tripwire.
 fn pump_until_settled(ctx: &mut JsContext, poll_js: &str, timeout: Duration) -> String {
-    let cx_raw = ctx.raw_cx();
-    let deadline = Instant::now() + timeout;
-    let mut final_poll = String::new();
-    while Instant::now() < deadline {
-        {
-            let mut cxm = ctx.cx();
-            let global = bao_engine::context::thread_realm_global();
-            if let Some(g) = global {
-                rooted!(&in(cxm) let g_root = g);
-                let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-                let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-                timers::drain_and_check(realm_cx);
-            } else {
-                timers::drain_and_check(&mut cxm);
-            }
-        }
-        timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        std::thread::sleep(Duration::from_millis(2));
-        final_poll = eval_string(ctx, poll_js);
-        if !final_poll.contains("PENDING") {
-            break;
-        }
-    }
-    final_poll
+    common::pump_until(ctx, poll_js, timeout, common::eval_string_full, |poll| {
+        !poll.contains("PENDING")
+    })
 }
 
 fn new_ctx() -> JsContext {
@@ -164,8 +136,7 @@ fn net_connect_failed_wrappers_are_collectible_after_gc() {
     assert_eq!(gced, "gced");
     let poll = eval_string(&mut ctx, "globalThis.__pollNet()");
     assert_eq!(
-        poll,
-        "dead=200/200|liveSurvives=true",
+        poll, "dead=200/200|liveSurvives=true",
         "failed net.connect wrappers must collect to zero after full GC \
          (upstream 367d939d9a transposed: no native root pins an idle wrapper): {}",
         poll
@@ -222,8 +193,7 @@ fn tls_connect_failed_wrapper_is_collectible_after_gc() {
 
     let dropped = eval_string(&mut ctx, "globalThis.__dropAndGcTls()");
     assert_eq!(
-        dropped,
-        "closed|aliveAfterGc=false",
+        dropped, "closed|aliveAfterGc=false",
         "the failed tls.connect wrapper must be collectible once Close removed \
          the TLS_CONNS root (upstream 367d939d9a terminal-teardown contract): {}",
         dropped
@@ -272,7 +242,8 @@ fn start_retention_server() -> u16 {
                     if slow {
                         std::thread::sleep(Duration::from_millis(800));
                     }
-                    let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                    let resp =
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
                     stream.write_all(resp.as_bytes()).ok();
                     let _ = stream.flush();
                 }
@@ -404,16 +375,25 @@ fn fetch_abort_retention_body() {
     );
     // extra drain rounds: the transport-side tasklet handoff may land on a
     // ConcurrentTask after the settle marker the pump stopped at
-    let _ = pump_until_settled(&mut ctx, "globalThis.__pollFetchRetention()", Duration::from_secs(3));
+    let _ = pump_until_settled(
+        &mut ctx,
+        "globalThis.__pollFetchRetention()",
+        Duration::from_secs(3),
+    );
     std::thread::sleep(Duration::from_millis(300));
-    let _ = pump_until_settled(&mut ctx, "globalThis.__pollFetchRetention()", Duration::from_secs(3));
+    let _ = pump_until_settled(
+        &mut ctx,
+        "globalThis.__pollFetchRetention()",
+        Duration::from_secs(3),
+    );
     let gced = eval_string(&mut ctx, "globalThis.__gcFetchRetention()");
     assert_eq!(gced, "gced");
     let poll = eval_string(&mut ctx, "globalThis.__pollFetchRetention()");
     let parts: Vec<&str> = poll.split('|').collect();
     assert_eq!(
         parts[0], "chain=false",
-        "the fetch chain promise must be collectible after settle: {}", poll
+        "the fetch chain promise must be collectible after settle: {}",
+        poll
     );
     assert_eq!(
         parts[1], "resp=false",
@@ -424,7 +404,8 @@ fn fetch_abort_retention_body() {
     );
     assert_eq!(
         parts[2], "sig=false",
-        "the signal must collect with its listener: {}", poll
+        "the signal must collect with its listener: {}",
+        poll
     );
     assert_eq!(
         parts[5], "settled=rejected:AbortError",
@@ -548,7 +529,11 @@ fn fetch_unread_body_retention_body() {
     );
     assert_eq!(setup, "scheduled", "unread retention setup failed");
 
-    let poll = pump_until_settled(&mut ctx, "globalThis.__pollUnread()", Duration::from_secs(15));
+    let poll = pump_until_settled(
+        &mut ctx,
+        "globalThis.__pollUnread()",
+        Duration::from_secs(15),
+    );
     assert!(
         !poll.contains("PENDING"),
         "both unread fetches must settle within the pump window: {}",
@@ -556,9 +541,17 @@ fn fetch_unread_body_retention_body() {
     );
     // extra drain rounds: the transport-side tasklet handoff may land on a
     // ConcurrentTask after the settle marker the pump stopped at
-    let _ = pump_until_settled(&mut ctx, "globalThis.__pollUnread()", Duration::from_secs(3));
+    let _ = pump_until_settled(
+        &mut ctx,
+        "globalThis.__pollUnread()",
+        Duration::from_secs(3),
+    );
     std::thread::sleep(Duration::from_millis(300));
-    let _ = pump_until_settled(&mut ctx, "globalThis.__pollUnread()", Duration::from_secs(3));
+    let _ = pump_until_settled(
+        &mut ctx,
+        "globalThis.__pollUnread()",
+        Duration::from_secs(3),
+    );
 
     let gced = eval_string(&mut ctx, "globalThis.__gcUnread()");
     assert_eq!(gced, "gced");
@@ -566,7 +559,8 @@ fn fetch_unread_body_retention_body() {
     let parts: Vec<&str> = poll.split('|').collect();
     assert_eq!(
         parts[0], "chain=false",
-        "the settled promise of an unread fetch must collect: {}", poll
+        "the settled promise of an unread fetch must collect: {}",
+        poll
     );
     assert_eq!(
         parts[1], "resp=false",
@@ -576,15 +570,18 @@ fn fetch_unread_body_retention_body() {
     );
     assert_eq!(
         parts[2], "sigChain=false",
-        "the signal-wired unread chain must collect: {}", poll
+        "the signal-wired unread chain must collect: {}",
+        poll
     );
     assert_eq!(
         parts[3], "sigResp=false",
-        "the signal-wired unread Response must collect: {}", poll
+        "the signal-wired unread Response must collect: {}",
+        poll
     );
     assert_eq!(
         parts[4], "sig=false",
-        "the never-aborted signal must collect with its chain: {}", poll
+        "the never-aborted signal must collect with its chain: {}",
+        poll
     );
     assert_eq!(
         parts[5], "bare=false",
@@ -594,7 +591,8 @@ fn fetch_unread_body_retention_body() {
     );
     assert_eq!(
         parts[6], "ctrl=true",
-        "the referenced control must survive the same GCs: {}", poll
+        "the referenced control must survive the same GCs: {}",
+        poll
     );
     assert_eq!(parts[7], "a=A", "cell 1 must have settled: {}", poll);
     assert_eq!(parts[8], "b=B", "cell 2 must have settled: {}", poll);
@@ -606,7 +604,11 @@ fn fetch_unread_body_retention_body() {
 
     // Pump the release round-trips out (finalizer → ConcurrentTask →
     // cancel/release → tasklet free) before the force-exit.
-    let _ = pump_until_settled(&mut ctx, "globalThis.__pollUnread()", Duration::from_secs(3));
+    let _ = pump_until_settled(
+        &mut ctx,
+        "globalThis.__pollUnread()",
+        Duration::from_secs(3),
+    );
 
     bun_http::http_thread::shutdown_for_exit();
     bun_runtime::shutdown_thread_sm();
@@ -680,7 +682,8 @@ fn fetch_midstream_retention_body() {
     let parts: Vec<&str> = poll.split('|').collect();
     assert_eq!(
         parts[0], "chain=false",
-        "the mid-stream settled chain must collect: {}", poll
+        "the mid-stream settled chain must collect: {}",
+        poll
     );
     assert_eq!(
         parts[1], "resp=false",
@@ -690,7 +693,8 @@ fn fetch_midstream_retention_body() {
     );
     assert_eq!(
         parts[2], "ctrl=true",
-        "the referenced control must survive the same GCs: {}", poll
+        "the referenced control must survive the same GCs: {}",
+        poll
     );
     assert_eq!(parts[3], "a=A", "the fetch must have settled: {}", poll);
 
@@ -773,17 +777,24 @@ fn fetch_buffered_retention_body() {
     let parts: Vec<&str> = poll.split('|').collect();
     assert_eq!(
         parts[0], "chain=false",
-        "the buffered settled chain must collect: {}", poll
+        "the buffered settled chain must collect: {}",
+        poll
     );
     assert_eq!(
         parts[1], "resp=false",
-        "the buffered unread Response must collect: {}", poll
+        "the buffered unread Response must collect: {}",
+        poll
     );
     assert_eq!(
         parts[2], "ctrl=true",
-        "the referenced control must survive the same GCs: {}", poll
+        "the referenced control must survive the same GCs: {}",
+        poll
     );
-    assert_eq!(parts[3], "a=A", "the buffered fetch must have settled: {}", poll);
+    assert_eq!(
+        parts[3], "a=A",
+        "the buffered fetch must have settled: {}",
+        poll
+    );
 
     eprintln!(
         "[PASS] TEST-ENG-RETENTION fetch/buffered: buffered delivery settles \

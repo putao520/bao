@@ -13,30 +13,43 @@ use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
 
-use common::setup_ctx_bounded as setup_ctx;
 use common::HOOK_BUDGET;
+use common::setup_ctx_bounded as setup_ctx;
 
 use common::eval_string_dbg as eval_string;
 
-
-
-
 /// Pump the loop until `js_condition` yields 'y' or the deadline passes.
+/// Budget-armed wait delegate of the unified suite pump
+/// (`common::pump_until`): the pump's per-tick poll evals the condition
+/// through this file's `eval_string` binding, and each poll re-arms
+/// `HOOK_BUDGET` FIRST so the post-eval hook (setup_ctx_bounded →
+/// bounded_drain_hook → timers::drain_and_check → node_fs::fs_watch_pump_all)
+/// drains the fs-watch queue in the realm-entered eval context — the
+/// production pump contract this file pins (the bare pump tick alone cannot
+/// replace the hook: the stat-poll dispatch dereferences cx->global(), only
+/// valid while a realm is entered, i.e. inside the eval). The budget is
+/// armed once more on the success/failure tail so the caller's cleanup evals
+/// keep pumping through the hook. The `PumpStuck` tripwire turns a frozen
+/// condition into a diagnostic FAIL instead of a silent 20s burn.
 fn wait_until(ctx: &mut JsContext, js_condition: &str, per_eval_budget: usize) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline {
-        HOOK_BUDGET.with(|b| b.set(per_eval_budget));
-        if eval_string(ctx, js_condition) == "y" {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(4));
-    }
-    false
+    let final_value = common::pump_until(
+        ctx,
+        js_condition,
+        Duration::from_secs(20),
+        move |c: &mut JsContext, s: &str| {
+            HOOK_BUDGET.with(|b| b.set(per_eval_budget));
+            eval_string(c, s)
+        },
+        |v| v == "y",
+    );
+    HOOK_BUDGET.with(|b| b.set(per_eval_budget));
+    final_value == "y"
 }
 
-
 fn js_escape(p: &std::path::Path) -> String {
-    p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+    p.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 /// Per-process unique scratch dir: two invocations of this binary (e.g. two
@@ -88,7 +101,10 @@ globalThis.__close = function () {{ w.close(); }};
         80,
     );
     let events = eval_string(&mut ctx, "JSON.stringify(globalThis.__ev)");
-    let _ = eval_string(&mut ctx, "(globalThis.__close && globalThis.__close(), 'closed')");
+    let _ = eval_string(
+        &mut ctx,
+        "(globalThis.__close && globalThis.__close(), 'closed')",
+    );
     assert!(
         got_events,
         "fs.watch(dir) must deliver create/modify/rename events, got: {}",
@@ -153,7 +169,10 @@ globalThis.__close = function () {{ w.close(); }};
         80,
     );
     let events = eval_string(&mut ctx, "JSON.stringify(globalThis.__ev)");
-    let _ = eval_string(&mut ctx, "(globalThis.__close && globalThis.__close(), 'closed')");
+    let _ = eval_string(
+        &mut ctx,
+        "(globalThis.__close && globalThis.__close(), 'closed')",
+    );
     assert!(
         got && events.contains("change:watched.log"),
         "fs.watch(file) append must fire change:watched.log, got: {}",
@@ -236,7 +255,10 @@ setTimeout(function () {{ fs.writeFileSync("{d}/after-close-2.txt", "y"); }}, 12
     // Give the (closed) watcher plenty of pump iterations to prove silence.
     std::thread::sleep(Duration::from_millis(400));
     HOOK_BUDGET.with(|b| b.set(50));
-    let _ = eval_string(&mut ctx, "(function(){ for(var i=0;i<20;i++) setTimeout(function(){}, 1); return 'pumped'; })()");
+    let _ = eval_string(
+        &mut ctx,
+        "(function(){ for(var i=0;i<20;i++) setTimeout(function(){}, 1); return 'pumped'; })()",
+    );
     std::thread::sleep(Duration::from_millis(200));
     let events = eval_string(&mut ctx, "JSON.stringify(globalThis.__ev)");
     assert_eq!(
@@ -289,7 +311,10 @@ catch (e) { return 'throw:' + String(e && e.message).slice(0, 60); } })()"#,
         recursive
     );
     #[cfg(windows)]
-    assert_eq!(recursive, "no-throw", "windows recursive watch is native (bWatchSubtree)");
+    assert_eq!(
+        recursive, "no-throw",
+        "windows recursive watch is native (bWatchSubtree)"
+    );
     bun_runtime::shutdown_thread_sm();
 }
 
@@ -441,6 +466,10 @@ fs.unwatchFile(path.join(dir, 'any.txt'));
 return 'shape=' + shape + ' statwatcher=' + swShape;
 })()"#,
     );
-    assert_eq!(out, "shape=true statwatcher=true", "watcher surface: {}", out);
+    assert_eq!(
+        out, "shape=true statwatcher=true",
+        "watcher surface: {}",
+        out
+    );
     bun_runtime::shutdown_thread_sm();
 }

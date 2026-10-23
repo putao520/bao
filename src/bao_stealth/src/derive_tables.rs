@@ -308,9 +308,9 @@ pub(crate) static LINUX_COHORT: PlatformCohort = PlatformCohort {
 /// platform 子种子 → 档位(确定性;档内所有联动面共享同档)。
 pub(crate) fn cohort_for_seed(platform_sub_seed: u64) -> &'static PlatformCohort {
     match platform_sub_seed % 3 {
-        0 => &WINDOWS_COHORT, // @evidence .spec/10-REQUIREMENTS.html:1184
-        1 => &MACOS_COHORT, // @evidence .spec/10-REQUIREMENTS.html:1184
-        _ => &LINUX_COHORT, // @evidence .spec/10-REQUIREMENTS.html:1184
+        0 => &WINDOWS_COHORT, // @evidence SPEC/10-REQUIREMENTS.html:1184
+        1 => &MACOS_COHORT, // @evidence SPEC/10-REQUIREMENTS.html:1184
+        _ => &LINUX_COHORT, // @evidence SPEC/10-REQUIREMENTS.html:1184
     }
 }
 
@@ -386,9 +386,9 @@ mod tests {
                 let d3d = g.renderer.contains("Direct3D11");
                 let metal = g.renderer.contains("Metal");
                 match cohort.tier {
-                    PlatformTier::Windows => assert!(d3d && !metal), // @evidence .spec/10-REQUIREMENTS.html:1184
-                    PlatformTier::Macos => assert!(metal && !d3d), // @evidence .spec/10-REQUIREMENTS.html:1184
-                    PlatformTier::Linux => assert!(!d3d && !metal), // @evidence .spec/10-REQUIREMENTS.html:1184
+                    PlatformTier::Windows => assert!(d3d && !metal), // @evidence SPEC/10-REQUIREMENTS.html:1184
+                    PlatformTier::Macos => assert!(metal && !d3d), // @evidence SPEC/10-REQUIREMENTS.html:1184
+                    PlatformTier::Linux => assert!(!d3d && !metal), // @evidence SPEC/10-REQUIREMENTS.html:1184
                 }
             }
         }

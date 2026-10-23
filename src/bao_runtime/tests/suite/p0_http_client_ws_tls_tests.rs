@@ -40,28 +40,17 @@ fn eval_str(ctx: &mut JsContext, code: &str) -> String {
     common::eval_str_named(ctx, code, "<p0-client-test>")
 }
 
-/// Pump the unified event loop (uWS sockets + timers + jobs + microtasks).
-fn pump(ctx: &mut JsContext, passes: usize) {
-    for _ in 0..passes {
-        let cx_raw = ctx.raw_cx();
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        let mut cxm = ctx.cx();
-        bun_runtime::timers::drain_and_check(&mut cxm);
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
-
-fn drive_until(ctx: &mut JsContext, timeout: Duration, cond: impl Fn(&mut JsContext) -> bool) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    while !cond(ctx) {
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        pump(ctx, 5);
-    }
-    true
+// @trace REQ-ENG-010
+/// Settle-pump delegate: unified suite pump (`common::pump_until`) evaluating
+/// `Boolean(cond_js)` until truthy or timeout expiry.
+fn drive_until(ctx: &mut JsContext, timeout: Duration, cond_js: &str) -> bool {
+    common::pump_until(
+        ctx,
+        &format!("Boolean({})", cond_js),
+        timeout,
+        eval_str,
+        |p| p == "true",
+    ) == "true"
 }
 
 // ─── 1. http.get(url, cb) Node callback roundtrip ──────────────────────
@@ -71,11 +60,13 @@ fn http_get_callback_form_real_roundtrip() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
     // run it in a bounded child so the shared-process harness survives
     // to report the failure (crash class).
-    crate::exit_isolation::dispatch_timeout("p0_http_client_ws_tls_tests::http_get_callback_form_real_roundtrip", http_get_callback_form_real_roundtrip_body);
+    crate::exit_isolation::dispatch_timeout(
+        "p0_http_client_ws_tls_tests::http_get_callback_form_real_roundtrip",
+        http_get_callback_form_real_roundtrip_body,
+    );
 }
 
 fn http_get_callback_form_real_roundtrip_body() {
-
     bun_runtime::install_exit_handler();
     bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();
@@ -105,16 +96,20 @@ fn http_get_callback_form_real_roundtrip_body() {
         String(port)
     "#,
     );
-    let port: u16 = port_str.parse().unwrap_or_else(|_| {
-        panic!("http server listen(0) failed: {}", port_str)
-    });
+    let port: u16 = port_str
+        .parse()
+        .unwrap_or_else(|_| panic!("http server listen(0) failed: {}", port_str));
 
-    let ok = drive_until(&mut ctx, Duration::from_secs(8), |ctx| {
-        eval_str(ctx, "globalThis.got !== null ? 'y' : 'n'") == "y"
-    });
-    assert!(ok, "http.get callback form never settled (silent death class)");
+    let ok = drive_until(&mut ctx, Duration::from_secs(8), "globalThis.got !== null");
+    assert!(
+        ok,
+        "http.get callback form never settled (silent death class)"
+    );
     let got = eval_str(&mut ctx, "String(globalThis.got)");
-    assert_eq!(got, "200|yes|http-srv-body", "callback must deliver the real response");
+    assert_eq!(
+        got, "200|yes|http-srv-body",
+        "callback must deliver the real response"
+    );
     assert_eq!(
         eval_str(&mut ctx, "String(globalThis.srvHits)"),
         "1",
@@ -129,11 +124,13 @@ fn http_request_clientrequest_face_fires_on_end() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
     // run it in a bounded child so the shared-process harness survives
     // to report the failure (crash class).
-    crate::exit_isolation::dispatch_timeout("p0_http_client_ws_tls_tests::http_request_clientrequest_face_fires_on_end", http_request_clientrequest_face_fires_on_end_body);
+    crate::exit_isolation::dispatch_timeout(
+        "p0_http_client_ws_tls_tests::http_request_clientrequest_face_fires_on_end",
+        http_request_clientrequest_face_fires_on_end_body,
+    );
 }
 
 fn http_request_clientrequest_face_fires_on_end_body() {
-
     bun_runtime::install_exit_handler();
     bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();
@@ -170,9 +167,11 @@ fn http_request_clientrequest_face_fires_on_end_body() {
     );
     assert!(port_str.parse::<u16>().is_ok(), "listen: {}", port_str);
 
-    let ok = drive_until(&mut ctx, Duration::from_secs(8), |ctx| {
-        eval_str(ctx, "globalThis.result !== null ? 'y' : 'n'") == "y"
-    });
+    let ok = drive_until(
+        &mut ctx,
+        Duration::from_secs(8),
+        "globalThis.result !== null",
+    );
     assert!(ok, "http.request POST never settled");
     assert_eq!(
         eval_str(&mut ctx, "String(globalThis.hitsBeforeEnd)"),
@@ -193,11 +192,13 @@ fn node_http_ws_upgrade_answered_426_not_abort() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
     // run it in a bounded child so the shared-process harness survives
     // to report the failure (crash class).
-    crate::exit_isolation::dispatch_timeout("p0_http_client_ws_tls_tests::node_http_ws_upgrade_answered_426_not_abort", node_http_ws_upgrade_answered_426_not_abort_body);
+    crate::exit_isolation::dispatch_timeout(
+        "p0_http_client_ws_tls_tests::node_http_ws_upgrade_answered_426_not_abort",
+        node_http_ws_upgrade_answered_426_not_abort_body,
+    );
 }
 
 fn node_http_ws_upgrade_answered_426_not_abort_body() {
-
     bun_runtime::install_exit_handler();
     bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();
@@ -216,9 +217,9 @@ fn node_http_ws_upgrade_answered_426_not_abort_body() {
         String(srv.address().port)
     "#,
     );
-    let port: u16 = port_str.parse().unwrap_or_else(|_| {
-        panic!("listen(0) failed: {}", port_str)
-    });
+    let port: u16 = port_str
+        .parse()
+        .unwrap_or_else(|_| panic!("listen(0) failed: {}", port_str));
 
     // Real WebSocket upgrade request (the same shape a browser WS client
     // sends). The server has no 'upgrade' handler: pre-fix this hit uWS's
@@ -232,12 +233,14 @@ fn node_http_ws_upgrade_answered_426_not_abort_body() {
     stream
         .set_read_timeout(Some(Duration::from_millis(200)))
         .expect("read timeout");
-    stream.write_all(req.as_bytes()).expect("write upgrade request");
+    stream
+        .write_all(req.as_bytes())
+        .expect("write upgrade request");
 
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
     for _ in 0..50 {
-        pump(&mut ctx, 2);
+        common::drive_event_loop(&mut ctx, 2);
         match stream.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => {
@@ -264,11 +267,12 @@ fn node_http_ws_upgrade_answered_426_not_abort_body() {
     // And the server survives: the plain request handler still answers.
     let plain = "GET /plain HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
     let mut s2 = TcpStream::connect(("127.0.0.1", port)).expect("tcp connect 2");
-    s2.set_read_timeout(Some(Duration::from_millis(200))).expect("timeout");
+    s2.set_read_timeout(Some(Duration::from_millis(200)))
+        .expect("timeout");
     s2.write_all(plain.as_bytes()).expect("write plain");
     let mut b2: Vec<u8> = Vec::new();
     for _ in 0..50 {
-        pump(&mut ctx, 2);
+        common::drive_event_loop(&mut ctx, 2);
         match s2.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => {
@@ -323,18 +327,24 @@ fn tls_connect_callback_form_and_promise_compatible() {
         server.listen(0, '127.0.0.1', function () {{ globalThis.port = server.address().port; }});
         'setup'
         "#,
-        key = key.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\""),
-        cert = cert.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\""),
+        key = key
+            .replace('\\', "\\\\")
+            .replace('\n', "\\n")
+            .replace('"', "\\\""),
+        cert = cert
+            .replace('\\', "\\\\")
+            .replace('\n', "\\n")
+            .replace('"', "\\\""),
     );
     assert_eq!(eval_str(&mut ctx, &setup), "setup", "server setup");
 
     assert!(
-        drive_until(&mut ctx, Duration::from_secs(2), |ctx| {
-            eval_str(ctx, "String(globalThis.port > 0)") == "true"
-        }),
+        drive_until(&mut ctx, Duration::from_secs(2), "globalThis.port > 0"),
         "tls server listen callback must fire"
     );
-    let port: u16 = eval_str(&mut ctx, "String(globalThis.port)").parse().expect("port");
+    let port: u16 = eval_str(&mut ctx, "String(globalThis.port)")
+        .parse()
+        .expect("port");
 
     // ONE eval: Node callback form + synchronous-socket contract + promise
     // compat on the SAME connect call.
@@ -364,9 +374,11 @@ fn tls_connect_callback_form_and_promise_compatible() {
     assert_eq!(eval_str(&mut ctx, &connect), "connecting", "connect eval");
 
     assert!(
-        drive_until(&mut ctx, Duration::from_secs(8), |ctx| {
-            eval_str(ctx, "globalThis.gotData !== '' ? 'y' : 'n'") == "y"
-        }),
+        drive_until(
+            &mut ctx,
+            Duration::from_secs(8),
+            "globalThis.gotData !== ''"
+        ),
         "tls callback-form connect never delivered echo data"
     );
     assert_eq!(
@@ -421,10 +433,15 @@ fn tls_connect_refused_rejects_with_error() {
     );
     assert_eq!(r, "issued", "connect eval");
 
-    let ok = drive_until(&mut ctx, Duration::from_secs(6), |ctx| {
-        eval_str(ctx, "globalThis.outcome !== 'pending' ? 'y' : 'n'") == "y"
-    });
-    assert!(ok, "tls.connect to a refused port must settle (was: silent hang forever)");
+    let ok = drive_until(
+        &mut ctx,
+        Duration::from_secs(6),
+        "globalThis.outcome !== 'pending'",
+    );
+    assert!(
+        ok,
+        "tls.connect to a refused port must settle (was: silent hang forever)"
+    );
     assert_eq!(
         eval_str(&mut ctx, "String(globalThis.outcome)"),
         "rejected",
@@ -472,17 +489,23 @@ fn https_get_real_error_and_optout_roundtrip() {
         server.listen(0, '127.0.0.1', function () {{ globalThis.port = server.address().port; }});
         'setup'
         "#,
-        key = key.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\""),
-        cert = cert.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\""),
+        key = key
+            .replace('\\', "\\\\")
+            .replace('\n', "\\n")
+            .replace('"', "\\\""),
+        cert = cert
+            .replace('\\', "\\\\")
+            .replace('\n', "\\n")
+            .replace('"', "\\\""),
     );
     assert_eq!(eval_str(&mut ctx, &setup), "setup", "tls server setup");
     assert!(
-        drive_until(&mut ctx, Duration::from_secs(2), |ctx| {
-            eval_str(ctx, "String(globalThis.port > 0)") == "true"
-        }),
+        drive_until(&mut ctx, Duration::from_secs(2), "globalThis.port > 0"),
         "tls server listen callback must fire"
     );
-    let port: u16 = eval_str(&mut ctx, "String(globalThis.port)").parse().expect("port");
+    let port: u16 = eval_str(&mut ctx, "String(globalThis.port)")
+        .parse()
+        .expect("port");
 
     let client = format!(
         r#"
@@ -505,12 +528,11 @@ fn https_get_real_error_and_optout_roundtrip() {
     );
     assert_eq!(eval_str(&mut ctx, &client), "issued", "client eval");
 
-    let ok = drive_until(&mut ctx, Duration::from_secs(10), |ctx| {
-        eval_str(
-            ctx,
-            "(globalThis.strictResult !== 'pending' && globalThis.optoutResult !== 'pending') ? 'y' : 'n'",
-        ) == "y"
-    });
+    let ok = drive_until(
+        &mut ctx,
+        Duration::from_secs(10),
+        "globalThis.strictResult !== 'pending' && globalThis.optoutResult !== 'pending'",
+    );
     assert!(ok, "both https.get calls must settle");
     assert_eq!(
         eval_str(&mut ctx, "String(globalThis.strictResult)"),

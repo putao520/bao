@@ -23,18 +23,18 @@ use common::bounded_drain_hook;
 
 use common::eval_str;
 
-
-/// Pump the unified event loop (uWS sockets + timers + jobs) a few passes so
-/// the in-process server accepts on our thread.
+/// Fixed-pass pump delegate: the unified suite pump (`common::pump_until`)
+/// run for `passes` settle-pump ticks (each tick = realm-entered timer
+/// drain + MiniEventLoop tick + RunJobs, the uWS sockets + timers + jobs
+/// in-process server accept discipline). A live-but-unsettled marker never
+/// changes, so the `PumpStuck` tripwire fires at its 2s window instead of
+/// silently burning the (longer) pass budget.
 fn pump(ctx: &mut JsContext, passes: usize) {
-    for _ in 0..passes {
-        let mut cxm = ctx.cx();
-        bun_runtime::timers::drain_and_check(&mut cxm);
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    let budget = Duration::from_millis((passes as u64).saturating_mul(5));
+    common::pump_until(ctx, "'pumping'", budget, common::eval_string_full, |_| {
+        false
+    });
 }
-
-
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
     common::wait_until_with(ctx, js_condition, budget, 60, eval_str)
@@ -148,7 +148,8 @@ fn bun_listen_tcp_addr_inuse_fails_cleanly() {
             socket: { open: function(){}, data: function(){}, close: function(){}, end: function(){} },
         });
         "port=" + globalThis.__first.port
-    "#);
+    "#,
+    );
     assert!(first.starts_with("port="), "first listener: {first}");
     let port: u16 = first["port=".len()..].trim().parse().expect("port parse");
 
@@ -164,7 +165,10 @@ fn bun_listen_tcp_addr_inuse_fails_cleanly() {
         (s2 === undefined || s2 === null || !s2) ? "rejected" : "leaked:" + s2.port
     "#.replace("PORT", &port.to_string()).as_str(),
     );
-    assert_eq!(second, "rejected", "second listener on a taken port must fail");
+    assert_eq!(
+        second, "rejected",
+        "second listener on a taken port must fail"
+    );
 
     // First server still alive and registered.
     assert!(bun_runtime::node_http::has_active_servers());

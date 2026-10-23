@@ -42,16 +42,15 @@ use std::time::Duration;
 use bao_boringssl_bridge::connection::{TlsConnection, TlsState};
 use bao_boringssl_bridge::server::TlsServer;
 use bao_engine::context::JsContext;
-use bun_uws::ws_codec::{apply_mask, FrameDecoder, FrameEncoder, Opcode};
+use bun_uws::ws_codec::{FrameDecoder, FrameEncoder, Opcode, apply_mask};
 use bun_uws::ws_handshake::server_handshake;
-use mozjs::rooted;
 
 #[path = "common/mod.rs"]
 mod common;
 
 use common::eval_string;
 
-// ── test-context + pump plumbing (mirrors web_socket_async_tests.rs) ─────
+// ── test-context + pump plumbing ─────────────────────────────────────────
 
 fn new_test_ctx() -> JsContext {
     bun_runtime::install_exit_handler();
@@ -61,27 +60,17 @@ fn new_test_ctx() -> JsContext {
     ctx
 }
 
-/// Drive the JS thread (jobs + timers + the WebSocket drain pump) until
-/// `probe` evaluates truthy, or the budget runs out.
+// @trace REQ-ENG-010
+/// Settle-pump delegate: unified suite pump (`common::pump_until`) evaluating
+/// `Boolean(probe)` until truthy (the file's settle shape) or budget expiry.
 fn pump_until(ctx: &mut JsContext, probe: &str, budget_ms: u64) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_millis(budget_ms);
-    while std::time::Instant::now() < deadline {
-        let mut cxm = ctx.cx();
-        let global = bao_engine::context::thread_realm_global();
-        if let Some(g) = global {
-            rooted!(&in(cxm) let g_root = g);
-            let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-            bun_runtime::timers::drain_and_check(realm_cx);
-        } else {
-            bun_runtime::timers::drain_and_check(&mut cxm);
-        }
-        if eval_string(ctx, &format!("Boolean({})", probe)) == "true" {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    false
+    common::pump_until(
+        ctx,
+        &format!("Boolean({})", probe),
+        Duration::from_millis(budget_ms),
+        common::eval_string,
+        |p| p == "true",
+    ) == "true"
 }
 
 /// Server→client text frame (FIN + Text, unmasked — server side).
@@ -125,7 +114,7 @@ impl ServerTlsIo {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "peer closed during tls handshake",
-                    ))
+                    ));
                 }
                 Ok(n) => tls.feed(&buf[..n]),
                 Err(e) => return Err(e),
@@ -156,7 +145,7 @@ impl ServerTlsIo {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "tls peer closed",
-                    ))
+                    ));
                 }
                 Ok(n) => self.tls.feed(&buf[..n]),
                 Err(e) => return Err(e),
@@ -199,9 +188,7 @@ impl Write for ServerTlsIo {
 /// Accept + TLS-handshake one connection, hand the plaintext stream to
 /// `serve`, and answer the WS upgrade first (every C10 TLS server speaks
 /// RFC 6455 immediately after TLS completes).
-fn spawn_tls_ws_server(
-    serve: impl FnOnce(&mut ServerTlsIo) + Send + 'static,
-) -> u16 {
+fn spawn_tls_ws_server(serve: impl FnOnce(&mut ServerTlsIo) + Send + 'static) -> u16 {
     let (cert, key) =
         bao_boringssl_bridge::generate_self_signed_pem("localhost", 365).expect("self-signed cert");
     let server = std::sync::Arc::new(TlsServer::new(&cert, &key).expect("TlsServer"));
@@ -644,9 +631,7 @@ fn c10_ws_schemeless_url_fallback_and_empty_frames() {
     );
     assert_eq!(
         log,
-        format!(
-            "open:url=127.0.0.1:{port}/noscheme|t:|b:true:0|t:echo:|close"
-        ),
+        format!("open:url=127.0.0.1:{port}/noscheme|t:|b:true:0|t:echo:|close"),
         "scheme-less fallback + empty-frame transcript diverged: {}",
         log
     );
@@ -719,7 +704,11 @@ fn c10_ws_throwing_handler_routes_to_uncaughtexception_and_pump_continues() {
     // All three throws must land in the uncaughtException handler.
     let threw = pump_until(&mut ctx, "__uncaught.length === 3", 12_000);
     let uncaught = eval_string(&mut ctx, "__uncaught.join('|')");
-    assert!(threw, "throws did not route to uncaughtException: {}", uncaught);
+    assert!(
+        threw,
+        "throws did not route to uncaughtException: {}",
+        uncaught
+    );
     assert_eq!(
         uncaught, "msg-handler-boom|msg-handler-boom|msg-handler-boom",
         "every message handler throw must be routed verbatim"
@@ -831,7 +820,11 @@ fn c10_ws_non_function_handlers_are_silently_skipped() {
     );
     assert_eq!(swapped, "swapped");
     let got = pump_until(&mut ctx, "__got === true", 12_000);
-    assert!(got, "real handler must receive after non-function slots: {}", eval_string(&mut ctx, "String(__got)"));
+    assert!(
+        got,
+        "real handler must receive after non-function slots: {}",
+        eval_string(&mut ctx, "String(__got)")
+    );
 
     let _ = eval_string(&mut ctx, "ws.close()");
     let done = pump_until(&mut ctx, "__done", 12_000);
@@ -859,7 +852,8 @@ fn c10_ls_isolate_home(tag: &str) -> std::path::PathBuf {
 #[test]
 fn c10_localstorage_corrupt_file_loads_empty_and_rewrites_valid() {
     let home = c10_ls_isolate_home("corrupt");
-    std::fs::write(home.join(".bao/localstorage.json"), "{{{not json at all").expect("seed corrupt");
+    std::fs::write(home.join(".bao/localstorage.json"), "{{{not json at all")
+        .expect("seed corrupt");
 
     let mut ctx = new_test_ctx();
     let report = eval_string(
@@ -882,8 +876,12 @@ fn c10_localstorage_corrupt_file_loads_empty_and_rewrites_valid() {
     );
     // The next mutation re-persisted valid JSON over the corrupt file.
     let on_disk = std::fs::read_to_string(home.join(".bao/localstorage.json")).expect("reread");
-    let parsed: serde_json::Value = serde_json::from_str(&on_disk).expect("file must be valid JSON now");
-    assert_eq!(parsed["probe"], "survives", "persisted store must carry the rewrite");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&on_disk).expect("file must be valid JSON now");
+    assert_eq!(
+        parsed["probe"], "survives",
+        "persisted store must carry the rewrite"
+    );
 }
 
 #[test]
@@ -1004,8 +1002,10 @@ fn c10_addrinfo_v6_completed_hit_and_cancel_completed_contract() {
             out: *mut *mut core::ffi::c_void,
         ) -> core::ffi::c_int;
         fn Bun__addrinfo_getRequestResult(req: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-        fn Bun__addrinfo_cancel(req: *mut core::ffi::c_void, socket: *mut core::ffi::c_void)
-            -> core::ffi::c_int;
+        fn Bun__addrinfo_cancel(
+            req: *mut core::ffi::c_void,
+            socket: *mut core::ffi::c_void,
+        ) -> core::ffi::c_int;
         fn Bun__addrinfo_freeRequest(req: *mut core::ffi::c_void, err: core::ffi::c_int);
     }
 

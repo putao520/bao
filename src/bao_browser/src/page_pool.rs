@@ -189,11 +189,11 @@ impl PagePool {
         // ①② 已定则不必查 context(省一次 profile clone)。
         let context_profile = if config.stealth_profile.is_none() && !config.stealth_disabled {
             match config.browser_context_id.as_deref() {
-                Some(ctx) => { // @evidence .spec/06-CDP-SERVER.html:1371
+                Some(ctx) => { // @evidence SPEC/06-CDP-SERVER.html:1371
                     let contexts = self.browser_contexts.borrow();
                     contexts.stealth_profile_of_context(ctx).cloned()
                 }
-                None => None, // @evidence .spec/06-CDP-SERVER.html:1371
+                None => None, // @evidence SPEC/06-CDP-SERVER.html:1371
             }
         } else {
             None

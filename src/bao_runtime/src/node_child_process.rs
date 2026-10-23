@@ -5226,8 +5226,8 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         // `encoding` lives on the options object (the argument walk already
         // located it at whatever position it occupied).
         match parse_sync_output_carrier(cx, ObjectValue(opts_obj), SyncOutputCarrier::Utf8) {
-            Ok(c) => carrier = c, // @evidence .spec/10-REQUIREMENTS.html:237
-            Err(()) => return false, // @evidence .spec/10-REQUIREMENTS.html:237
+            Ok(c) => carrier = c, // @evidence SPEC/10-REQUIREMENTS.html:237
+            Err(()) => return false, // @evidence SPEC/10-REQUIREMENTS.html:237
         }
     }
 

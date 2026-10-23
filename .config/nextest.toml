@@ -177,3 +177,30 @@ threads-required = "num-test-threads"
 # now total: normal exit, breach/panic (Drop guard), test-host SIGKILL
 # (PDEATHSIG), and process trees (group kill). New spawn points that bypass
 # this helper reintroduce the leak class.
+
+# Test-infrastructure backstop (task: E-c17pump two-layer coverage, REQ-ENG-010
+# test-infrastructure face, 2026-10-23):
+#
+# The unified suite pump (`common::pump_until`, tests/suite/common/mod.rs) has
+# a no-progress tripwire (`PumpStuck` panic) that fires when the polled value
+# is unchanged for `PUMP_STALL` while the loop is still ticking — covering
+# tick-*between*-tick stall shapes. Its documented honest boundary: a single
+# tick call that parks at the syscall level (mutex/condvar/futex) never
+# returns to the tripwire check, so the tripwire cannot fire.
+#
+# `fetch_async_coverage_c17_tests` (3 tests) drives the async-fetch event loop
+# through `pump_until` with real wire I/O; if a regression parks the main
+# thread inside a single tick, the tripwire is structurally unreachable and
+# nextest would record SLOW for the full default slow-timeout period (1020s+
+# before the workspace-level cap), blocking the fleet.
+#
+# This override is the outer backstop for that full-park shape: nextest
+# terminates the test process at 60s (one slow-timeout period, zero grace
+# retries) and records FAIL — converting a silent 17-minute SLOW hang into a
+# bounded, attributable red. The tripwire remains the primary diagnostic for
+# tick-between-tick stalls (it names the frozen poll expression and value);
+# this entry only covers the shape the tripwire provably cannot see. No test
+# code or assertions are weakened.
+[[profile.default.overrides]]
+filter = 'package(bun_runtime) and test(fetch_async_coverage_c17_tests)'
+slow-timeout = { period = "60s", terminate-after = 1 }

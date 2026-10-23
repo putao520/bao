@@ -99,8 +99,8 @@ const FIREFOX_TLS_POOL: &[fn() -> TlsFingerprint] = &[TlsFingerprint::firefox];
 /// 再补构造器 + 更新 tls_pool_gap_registration_pins_honest_count 测试钉。
 pub(crate) fn tls_pool(family: UaFamily) -> &'static [fn() -> TlsFingerprint] {
     match family {
-        UaFamily::Chrome => CHROME_TLS_POOL, // @evidence .spec/10-REQUIREMENTS.html:1184
-        UaFamily::Firefox => FIREFOX_TLS_POOL, // @evidence .spec/10-REQUIREMENTS.html:1184
+        UaFamily::Chrome => CHROME_TLS_POOL, // @evidence SPEC/10-REQUIREMENTS.html:1184
+        UaFamily::Firefox => FIREFOX_TLS_POOL, // @evidence SPEC/10-REQUIREMENTS.html:1184
     }
 }
 
@@ -346,12 +346,12 @@ mod tests {
 
             // 档内三元组:UA token ⇔ navigator.platform ⇔ ua_data.platform。
             match cohort.tier {
-                PlatformTier::Windows => { // @evidence .spec/10-REQUIREMENTS.html:1184
+                PlatformTier::Windows => { // @evidence SPEC/10-REQUIREMENTS.html:1184
                     assert_eq!(platform, "Win32");
                     assert!(ua.contains("Windows NT"), "seed {seed}: {ua}");
                     assert_eq!(cohort.ua_data.platform, "Windows");
                 }
-                PlatformTier::Macos => { // @evidence .spec/10-REQUIREMENTS.html:1184
+                PlatformTier::Macos => { // @evidence SPEC/10-REQUIREMENTS.html:1184
                     assert_eq!(platform, "MacIntel");
                     assert!(
                         ua.contains("Macintosh; Intel Mac OS X"),
@@ -359,7 +359,7 @@ mod tests {
                     );
                     assert_eq!(cohort.ua_data.platform, "macOS");
                 }
-                PlatformTier::Linux => { // @evidence .spec/10-REQUIREMENTS.html:1184
+                PlatformTier::Linux => { // @evidence SPEC/10-REQUIREMENTS.html:1184
                     assert_eq!(platform, "Linux x86_64");
                     assert!(ua.contains("X11; Linux x86_64"), "seed {seed}: {ua}");
                     assert_eq!(cohort.ua_data.platform, "Linux");

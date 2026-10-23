@@ -17,8 +17,10 @@
 
 use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
-use mozjs::rooted;
-use std::time::{Duration, Instant};
+#[path = "common/mod.rs"]
+mod common;
+
+use std::time::Duration;
 
 fn make_ctx() -> JsContext {
     bun_core::output::init_test();
@@ -29,42 +31,17 @@ fn make_ctx() -> JsContext {
     ctx
 }
 
-/// One pump pass: realm-entered timer drain + MiniEventLoop tick (TLS
-/// tasklet dispatch) + microjobs — same combined shape as
-/// tls_socket_wrap_tests::pump_once (the tls suite needs both faces).
-fn pump_once(ctx: &mut JsContext) {
-    let cx_raw = ctx.raw_cx();
-    {
-        let mut cxm = ctx.cx();
-        let global = bao_engine::context::thread_realm_global();
-        if let Some(g) = global {
-            rooted!(&in(cxm) let g_root = g);
-            let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-            bun_runtime::timers::drain_and_check(realm_cx);
-        } else {
-            bun_runtime::timers::drain_and_check(&mut cxm);
-        }
-    }
-    bun_runtime::timers::with_event_loop(|loop_| {
-        loop_.tick_without_idle(std::ptr::null_mut());
-    });
-    unsafe {
-        mozjs_sys::jsapi::js::RunJobs(cx_raw);
-    }
-    std::thread::sleep(Duration::from_millis(2));
-}
-
-/// Deadline-based pump until `cond` holds (bounded wait, never infinite).
-fn pump_until(ctx: &mut JsContext, timeout: Duration, cond: impl Fn(&mut JsContext) -> bool) -> bool {
-    let deadline = Instant::now() + timeout;
-    while !cond(ctx) {
-        if Instant::now() >= deadline {
-            return false;
-        }
-        pump_once(ctx);
-    }
-    true
+// @trace REQ-ENG-010
+/// Settle-pump delegate: unified suite pump (`common::pump_until`) evaluating
+/// `Boolean(cond_js)` until truthy or timeout expiry.
+fn pump_until(ctx: &mut JsContext, timeout: Duration, cond_js: &str) -> bool {
+    common::pump_until(
+        ctx,
+        &format!("Boolean({})", cond_js),
+        timeout,
+        common::eval_string,
+        |p| p == "true",
+    ) == "true"
 }
 
 #[test]
@@ -99,9 +76,17 @@ fn tls_connect_refused_unhandled_error_routes_to_uncaught_crash() {
 
     // Pump until the refused connect lands as ClientError → emit('error')
     // with no listener → throw → uncaught router → request_exit(1).
-    let arrived = pump_until(&mut ctx, Duration::from_secs(10), |_| {
-        bun_runtime::should_exit()
-    });
+    // The exit flag is a Rust-side observable (not JS-reachable), so it is
+    // the settle predicate; the poll expression is a harmless sentinel whose
+    // value is ignored by the closure.
+    let _ = common::pump_until(
+        &mut ctx,
+        "globalThis.__uncaughtSentinel",
+        Duration::from_secs(10),
+        common::eval_string,
+        |_poll: &str| bun_runtime::should_exit(),
+    );
+    let arrived = bun_runtime::should_exit();
     let report = bun_runtime::uncaught::take_capture();
 
     assert!(
@@ -157,12 +142,11 @@ fn tls_connect_refused_with_error_listener_does_not_crash() {
         "tls.connect dispatch must succeed synchronously"
     );
 
-    let seen = pump_until(&mut ctx, Duration::from_secs(10), |c| {
-        matches!(
-            c.eval("globalThis.__tlsErr || ''", "<probe>"),
-            Ok(JsValue::String(s)) if !s.is_empty()
-        )
-    });
+    let seen = pump_until(
+        &mut ctx,
+        Duration::from_secs(10),
+        "(globalThis.__tlsErr || '').length > 0",
+    );
     let report = bun_runtime::uncaught::take_capture();
 
     assert!(

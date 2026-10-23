@@ -22,8 +22,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bao_engine::context::JsContext;
-use bun_runtime::timers;
-use mozjs::rooted;
 #[path = "common/mod.rs"]
 mod common;
 
@@ -127,7 +125,6 @@ fn start_abort_server() -> (u16, Captured, Arc<Mutex<usize>>) {
     (port, captured, resets)
 }
 
-
 fn count_for(captured: &Captured, path: &str) -> usize {
     captured
         .lock()
@@ -144,11 +141,13 @@ fn test_fetch_abort_signal_three_states() {
     // std::process::exit(0) is only legal in a process whose death IS
     // the test's success exit — running it in-harness would kill the
     // whole suite and park the shared HTTPThread for every later test.
-    crate::exit_isolation::dispatch("fetch_abort_e2e_tests::test_fetch_abort_signal_three_states", test_fetch_abort_signal_three_states_body);
+    crate::exit_isolation::dispatch(
+        "fetch_abort_e2e_tests::test_fetch_abort_signal_three_states",
+        test_fetch_abort_signal_three_states_body,
+    );
 }
 
 fn test_fetch_abort_signal_three_states_body() {
-
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
@@ -233,46 +232,30 @@ fn test_fetch_abort_signal_three_states_body() {
         setup_out
     );
 
-    // Drive the event loop until all four fetches settle. Two-part pump:
-    //   1. realm-entered drain_and_check (timer wheel fires the setTimeout
-    //      abort triggers; timer callbacks resolve through
-    //      CurrentGlobalOrNull) — same contract as web_socket_async_tests;
-    //   2. unconditional MiniEventLoop tick_without_idle + RunJobs, which
-    //      dispatches the FetchTasklet ConcurrentTasks (resolve_tasklet).
-    //      drain_and_check's own I/O tick is gated on active node HTTP
-    //      servers, which this test has none of (the capture server is a
-    //      raw std::net listener) — without this leg the fetch promises
-    //      would never settle (mirrors the fetch_init_e2e_tests pump).
-    let cx_raw = ctx.raw_cx();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut final_poll = String::new();
+    // Drive the event loop until all four fetches settle. The unified suite
+    // pump owns the tick body (realm-entered timer drain + MiniEventLoop tick
+    // + RunJobs per tick — the FetchTasklet ConcurrentTask dispatch leg; the
+    // drain_and_check-only I/O tick is gated on active node HTTP servers,
+    // which this test has none of, so without the unified tick the fetch
+    // promises would never settle) plus the `PumpStuck` no-progress tripwire.
+    // The per-tick wire-flag publishing rides OUTSIDE the pump in this loop:
+    // the flags gate the mid-flight aborts, so each tick must also flip
+    // `__midSeen`/`__reqSeen` the moment the capture server records
+    // "/a-mid"/"/a-req" — before its 800ms response delay — keeping each
+    // abort strictly inside the mid-flight window instead of racing the send
+    // under load.
     let (mut mid_seen, mut req_seen) = (false, false);
-    while Instant::now() < deadline {
-        {
-            let mut cxm = ctx.cx();
-            let global = bao_engine::context::thread_realm_global();
-            if let Some(g) = global {
-                rooted!(&in(cxm) let g_root = g);
-                let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-                let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-                timers::drain_and_check(realm_cx);
-            } else {
-                timers::drain_and_check(&mut cxm);
-            }
-        }
-        timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        std::thread::sleep(Duration::from_millis(2));
-        final_poll = eval_string(&mut ctx, r#"globalThis.__poll()"#);
-        // Publish the wire-observation flags the gated aborts poll for. The
-        // capture server records "/a-mid"/"/a-req" the moment its connection
-        // thread reads the full request — before its 800ms response delay —
-        // so flipping the flag here keeps each abort strictly inside the
-        // mid-flight window instead of racing the send under load.
+    let mut final_poll = String::new();
+    while {
+        final_poll = common::pump_until(
+            &mut ctx,
+            r#"globalThis.__poll()"#,
+            Duration::from_millis(200),
+            common::eval_string_full,
+            |poll| !poll.contains("PENDING"),
+        );
+        final_poll.contains("PENDING")
+    } {
         if !mid_seen && count_for(&captured, "/a-mid http") >= 1 {
             mid_seen = true;
             eval_string(&mut ctx, "globalThis.__midSeen = true");
@@ -280,9 +263,6 @@ fn test_fetch_abort_signal_three_states_body() {
         if !req_seen && count_for(&captured, "/a-req http") >= 1 {
             req_seen = true;
             eval_string(&mut ctx, "globalThis.__reqSeen = true");
-        }
-        if !final_poll.contains("PENDING") {
-            break;
         }
     }
     assert!(

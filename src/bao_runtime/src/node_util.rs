@@ -2390,7 +2390,7 @@ function makeAssert() {
     // node's inspect sorted:true orders Map entries by rendered key.
     lines.sort(function(x, y) { return x[0] < y[0] ? -1 : (x[0] > y[0] ? 1 : 0); });
     var mlines = [];
-    for (var mi = 0; mi < lines.length; mi++) mlines.push(lines[mi][0] + ' => ' + lines[mi][1]); // @evidence .spec/10-REQUIREMENTS.html:237
+    for (var mi = 0; mi < lines.length; mi++) mlines.push(lines[mi][0] + ' => ' + lines[mi][1]); // @evidence SPEC/10-REQUIREMENTS.html:237
     var mprops = Object.keys(m).filter(function(k) { return !isArrayIndexKey(k); }).sort();
     var mchild = { indent: ctx.indent + '  ', refs: ctx.refs, refCounter: ctx.refCounter, seen: ctx.seen };
     for (var mp = 0; mp < mprops.length; mp++) {
@@ -4282,8 +4282,8 @@ unsafe fn jsval_inspect(
             // (the frame has not returned yet) numbered it; node prepends
             // the `<ref *N>` prefix when the frame returns.
             match ctx.ref_number(obj_ptr) {
-                Some(n) => format!("<ref *{}> {}", n, body), // @evidence .spec/10-REQUIREMENTS.html:237
-                None => body, // @evidence .spec/10-REQUIREMENTS.html:237
+                Some(n) => format!("<ref *{}> {}", n, body), // @evidence SPEC/10-REQUIREMENTS.html:237
+                None => body, // @evidence SPEC/10-REQUIREMENTS.html:237
             }
         } else {
             String::new()
@@ -5178,8 +5178,8 @@ fn parse_v8_stack_line(line: &str) -> Option<(String, String, u32, u32)> {
             search = &search[..idx];
         }
         match found {
-            Some((n, l)) => (Some(n), l), // @evidence .spec/10-REQUIREMENTS.html:237
-            None => (None, &rest[..rest.len() - 1]), // @evidence .spec/10-REQUIREMENTS.html:237
+            Some((n, l)) => (Some(n), l), // @evidence SPEC/10-REQUIREMENTS.html:237
+            None => (None, &rest[..rest.len() - 1]), // @evidence SPEC/10-REQUIREMENTS.html:237
         }
     } else {
         (None, rest)
@@ -5313,9 +5313,9 @@ unsafe extern "C" fn util_get_call_sites(cx: *mut JSContext, argc: u32, vp: *mut
         }
     }
     let count: u32 = match count_slot {
-        None => 10, // @evidence .spec/10-REQUIREMENTS.html:237
-        Some(v) if v.is_undefined() => 10, // @evidence .spec/10-REQUIREMENTS.html:237
-        Some(v) => { // @evidence .spec/10-REQUIREMENTS.html:237
+        None => 10, // @evidence SPEC/10-REQUIREMENTS.html:237
+        Some(v) if v.is_undefined() => 10, // @evidence SPEC/10-REQUIREMENTS.html:237
+        Some(v) => { // @evidence SPEC/10-REQUIREMENTS.html:237
             if !v.is_number() {
                 let msg = format!(
                     "The \"frameCount\" argument must be of type number. Received {}",
@@ -5390,8 +5390,8 @@ unsafe extern "C" fn util_get_call_sites(cx: *mut JSContext, argc: u32, vp: *mut
         captured.and_then(|mut s| s.as_string(None, mozjs_sys::jsapi::js::StackFormat::V8))
     };
     let frames: Vec<(String, String, u32, u32)> = match text {
-        Some(t) => t.lines().filter_map(parse_v8_stack_line).collect(), // @evidence .spec/10-REQUIREMENTS.html:237
-        None => Vec::new(), // @evidence .spec/10-REQUIREMENTS.html:237
+        Some(t) => t.lines().filter_map(parse_v8_stack_line).collect(), // @evidence SPEC/10-REQUIREMENTS.html:237
+        None => Vec::new(), // @evidence SPEC/10-REQUIREMENTS.html:237
     };
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, frames.len()));

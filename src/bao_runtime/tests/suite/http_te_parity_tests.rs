@@ -16,15 +16,17 @@ mod common;
 
 use common::eval_str;
 
-
-/// Pump the unified event loop (uWS sockets + timers + jobs) a few passes so
-/// the in-process server accepts, parses and responds on our thread.
+/// Fixed-pass pump delegate: the unified suite pump (`common::pump_until`)
+/// run for `passes` settle-pump ticks (each tick = realm-entered timer
+/// drain + MiniEventLoop tick + RunJobs, the uWS sockets + timers + jobs
+/// in-process server accept/parse/respond discipline). A live-but-unsettled
+/// marker never changes, so the `PumpStuck` tripwire fires at its 2s window
+/// instead of silently burning the (longer) pass budget.
 fn pump(ctx: &mut JsContext, passes: usize) {
-    for _ in 0..passes {
-        let mut cxm = ctx.cx();
-        bun_runtime::timers::drain_and_check(&mut cxm);
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    let budget = Duration::from_millis((passes as u64).saturating_mul(5));
+    common::pump_until(ctx, "'pumping'", budget, common::eval_string_full, |_| {
+        false
+    });
 }
 
 /// Send a raw request over a real TCP connection and collect the response,
@@ -86,7 +88,11 @@ fn test_cross_eval_state_visibility() {
         &mut ctx,
         "globalThis.__realm_probe = 42; typeof globalThis.__realm_probe",
     );
-    assert_eq!(a, "number", "eval A: setup write returned wrong type: {}", a);
+    assert_eq!(
+        a, "number",
+        "eval A: setup write returned wrong type: {}",
+        a
+    );
 
     // eval B: the state MUST survive — same realm (Node semantics).
     let b = eval_str(&mut ctx, "globalThis.__realm_probe");
@@ -98,7 +104,10 @@ fn test_cross_eval_state_visibility() {
     );
 
     // eval C: a function defined in eval A is callable from eval C.
-    let c_def = eval_str(&mut ctx, "globalThis.__add = function(a,b){return a+b}; 'defined'");
+    let c_def = eval_str(
+        &mut ctx,
+        "globalThis.__add = function(a,b){return a+b}; 'defined'",
+    );
     assert_eq!(c_def, "defined");
     let c_call = eval_str(&mut ctx, "globalThis.__add(40, 2)");
     assert_eq!(c_call, "42", "cross-eval function call broken");
@@ -151,11 +160,13 @@ fn test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
     // run it in a bounded child so the shared-process harness survives
     // to report the failure (crash class).
-    crate::exit_isolation::dispatch_timeout("http_te_parity_tests::test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity", test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity_body);
+    crate::exit_isolation::dispatch_timeout(
+        "http_te_parity_tests::test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity",
+        test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity_body,
+    );
 }
 
 fn test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity_body() {
-
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext init");
@@ -181,7 +192,11 @@ fn test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity_body() {
             "#
         ),
     );
-    assert_eq!(setup, "setup-ok", "http2 server setup eval failed: {}", setup);
+    assert_eq!(
+        setup, "setup-ok",
+        "http2 server setup eval failed: {}",
+        setup
+    );
 
     let response = raw_roundtrip_full(&mut ctx, port, SMUGGLED_10_TE);
     assert!(
@@ -216,11 +231,13 @@ fn test_node_http2_accepts_http11_chunked_control() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
     // run it in a bounded child so the shared-process harness survives
     // to report the failure (crash class).
-    crate::exit_isolation::dispatch_timeout("http_te_parity_tests::test_node_http2_accepts_http11_chunked_control", test_node_http2_accepts_http11_chunked_control_body);
+    crate::exit_isolation::dispatch_timeout(
+        "http_te_parity_tests::test_node_http2_accepts_http11_chunked_control",
+        test_node_http2_accepts_http11_chunked_control_body,
+    );
 }
 
 fn test_node_http2_accepts_http11_chunked_control_body() {
-
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext init");
@@ -244,7 +261,11 @@ fn test_node_http2_accepts_http11_chunked_control_body() {
             "#
         ),
     );
-    assert_eq!(setup, "setup-ok", "http2 server setup eval failed: {}", setup);
+    assert_eq!(
+        setup, "setup-ok",
+        "http2 server setup eval failed: {}",
+        setup
+    );
 
     let response = raw_roundtrip_full(
         &mut ctx,
@@ -272,11 +293,13 @@ fn test_node_http_listen_ephemeral_port() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
     // run it in a bounded child so the shared-process harness survives
     // to report the failure (crash class).
-    crate::exit_isolation::dispatch_timeout("http_te_parity_tests::test_node_http_listen_ephemeral_port", test_node_http_listen_ephemeral_port_body);
+    crate::exit_isolation::dispatch_timeout(
+        "http_te_parity_tests::test_node_http_listen_ephemeral_port",
+        test_node_http_listen_ephemeral_port_body,
+    );
 }
 
 fn test_node_http_listen_ephemeral_port_body() {
-
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext init");
@@ -293,7 +316,10 @@ fn test_node_http_listen_ephemeral_port_body() {
     "#,
     );
     let port: u16 = port_str.parse().unwrap_or_else(|_| {
-        panic!("node:http listen(0) did not report the bound ephemeral port: {}", port_str)
+        panic!(
+            "node:http listen(0) did not report the bound ephemeral port: {}",
+            port_str
+        )
     });
 
     // The reported port must be a real listening socket.
@@ -322,11 +348,13 @@ fn test_node_http_dispatches_http10_transfer_encoding_llhttp_parity() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
     // run it in a bounded child so the shared-process harness survives
     // to report the failure (crash class).
-    crate::exit_isolation::dispatch_timeout("http_te_parity_tests::test_node_http_dispatches_http10_transfer_encoding_llhttp_parity", test_node_http_dispatches_http10_transfer_encoding_llhttp_parity_body);
+    crate::exit_isolation::dispatch_timeout(
+        "http_te_parity_tests::test_node_http_dispatches_http10_transfer_encoding_llhttp_parity",
+        test_node_http_dispatches_http10_transfer_encoding_llhttp_parity_body,
+    );
 }
 
 fn test_node_http_dispatches_http10_transfer_encoding_llhttp_parity_body() {
-
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext init");
@@ -346,7 +374,10 @@ fn test_node_http_dispatches_http10_transfer_encoding_llhttp_parity_body() {
     "#,
     );
     let port: u16 = port_str.parse().unwrap_or_else(|_| {
-        panic!("node:http listen(0) did not report the bound ephemeral port: {}", port_str)
+        panic!(
+            "node:http listen(0) did not report the bound ephemeral port: {}",
+            port_str
+        )
     });
 
     let response = raw_roundtrip_full(&mut ctx, port, SMUGGLED_10_TE);
@@ -391,7 +422,11 @@ fn test_bun_serve_rejects_http10_transfer_encoding() {
         String(s.port)
     "#,
     );
-    assert!(port_str.parse::<u16>().is_ok(), "Bun.serve port: {}", port_str);
+    assert!(
+        port_str.parse::<u16>().is_ok(),
+        "Bun.serve port: {}",
+        port_str
+    );
     let port: u16 = port_str.parse().unwrap();
 
     let response = raw_roundtrip(&mut ctx, port, SMUGGLED_10_TE);
@@ -435,7 +470,10 @@ fn test_bun_serve_accepts_http11_chunked_control() {
     "#,
     );
     let port: u16 = port_str.parse().unwrap_or_else(|_| {
-        panic!("Bun.serve did not report the bound ephemeral port: {}", port_str)
+        panic!(
+            "Bun.serve did not report the bound ephemeral port: {}",
+            port_str
+        )
     });
 
     let response = raw_roundtrip_full(
@@ -498,25 +536,18 @@ fn test_node_http2_streams_released_from_session_registry_on_close() {
         "#,
     );
     assert_eq!(scheduled, "scheduled");
-    let drained = {
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let n = eval_str(
-                &mut ctx,
-                "String(Object.keys(globalThis.__h2reg._streams).length)",
-            );
-            if n == "0" || std::time::Instant::now() > deadline {
-                break n;
-            }
-            let cx_raw = ctx.raw_cx();
-            unsafe {
-                mozjs_sys::jsapi::js::RunJobs(cx_raw);
-            }
-            let mut cxm = ctx.cx();
-            bun_runtime::timers::drain_and_check(&mut cxm);
-            std::thread::sleep(Duration::from_millis(2));
-        }
-    };
+    // Registry-drain pump delegate: the unified suite pump
+    // (`common::pump_until`) polling the live stream-registry count; "0"
+    // (fully drained) settles, any other value keeps ticking. The
+    // `PumpStuck` tripwire turns a frozen registry into a diagnostic FAIL
+    // instead of a silent 30s burn.
+    let drained = common::pump_until(
+        &mut ctx,
+        "String(Object.keys(globalThis.__h2reg._streams).length)",
+        Duration::from_secs(30),
+        eval_str,
+        |n| n == "0",
+    );
     assert_eq!(
         drained, "0",
         "5 settled outbound requests must not linger in the session registry"

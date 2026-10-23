@@ -46,22 +46,18 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
     common::eval_string_full_named(ctx, source, "<rsb>")
 }
 
+// @trace REQ-ENG-010
+/// Settle-pump delegate: unified suite pump (`common::pump_until`) polling
+/// `globalThis.__rsb.state` until it reads "done" (the file's settle marker).
 fn pump_until_done(ctx: &mut JsContext, deadline_ms: u64) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
-    while std::time::Instant::now() < deadline {
-        let cx_raw = ctx.raw_cx();
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        let mut cxm = ctx.cx();
-        let _ = bun_runtime::timers::drain_and_check(&mut cxm);
-        let status = eval_string(ctx, "globalThis.__rsb.state");
-        if status == "done" {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    false
+    let poll = common::pump_until(
+        ctx,
+        "globalThis.__rsb.state",
+        std::time::Duration::from_millis(deadline_ms),
+        eval_string,
+        |s| s == "done",
+    );
+    poll == "done"
 }
 
 #[test]
@@ -208,13 +204,13 @@ fn test_response_readablestream_body_streaming_reads() {
     assert!(
         pump_until_done(&mut ctx, 10_000),
         "probe chain did not finish in time; state={}",
-        eval_string(&mut ctx, "globalThis.__rsb.state + '|' + globalThis.__rsb.log.join('|')")
+        eval_string(
+            &mut ctx,
+            "globalThis.__rsb.state + '|' + globalThis.__rsb.log.join('|')"
+        )
     );
 
-    let verdict = eval_string(
-        &mut ctx,
-        "globalThis.__rsb.log.join('|')",
-    );
+    let verdict = eval_string(&mut ctx, "globalThis.__rsb.log.join('|')");
     assert_eq!(
         verdict,
         "bodyIdentity=true|lockedCtor=TypeError|usedBefore=false|usedAfterReader=true|\

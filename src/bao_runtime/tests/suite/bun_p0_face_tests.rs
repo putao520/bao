@@ -26,16 +26,18 @@ use common::bounded_drain_hook;
 
 use common::eval_str;
 
-
+/// Fixed-pass pump delegate: the unified suite pump (`common::pump_until`)
+/// run for `passes` settle-pump ticks (each tick = realm-entered timer
+/// drain + MiniEventLoop tick + RunJobs, the in-process server dispatch
+/// discipline). A live-but-unsettled marker never changes, so the
+/// `PumpStuck` tripwire fires at its 2s window instead of silently burning
+/// the (longer) pass budget.
 fn pump(ctx: &mut JsContext, passes: usize) {
-    for _ in 0..passes {
-        let mut cxm = ctx.cx();
-        bun_runtime::timers::drain_and_check(&mut cxm);
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    let budget = Duration::from_millis((passes as u64).saturating_mul(5));
+    common::pump_until(ctx, "'pumping'", budget, common::eval_string_full, |_| {
+        false
+    });
 }
-
-
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
     common::wait_until_with(ctx, js_condition, budget, 60, eval_str)
@@ -59,11 +61,13 @@ fn bun_dollar_template_array_and_escaping() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
     // run it in a bounded child so the shared-process harness survives
     // to report the failure (crash class).
-    crate::exit_isolation::dispatch_timeout("bun_p0_face_tests::bun_dollar_template_array_and_escaping", bun_dollar_template_array_and_escaping_body);
+    crate::exit_isolation::dispatch_timeout(
+        "bun_p0_face_tests::bun_dollar_template_array_and_escaping",
+        bun_dollar_template_array_and_escaping_body,
+    );
 }
 
 fn bun_dollar_template_array_and_escaping_body() {
-
     let mut ctx = fresh_ctx();
 
     // Tagged template — canonical form; echo emits EMPTY stderr, the exact
@@ -125,7 +129,10 @@ fn bun_dollar_template_array_and_escaping_body() {
             ? "fail-ok" : "fail-FAIL:" + f.exitCode + "/" + JSON.stringify(f.stdout)
     "#,
     );
-    assert_eq!(fail, "fail-ok", "failing command: empty stdout + real stderr");
+    assert_eq!(
+        fail, "fail-ok",
+        "failing command: empty stdout + real stderr"
+    );
 
     // lines() over multi-line stdout (per-line strings were also built from
     // non-NUL-terminated &str slices). \\n stays a literal backslash-n in the
@@ -151,7 +158,10 @@ fn bun_dollar_template_array_and_escaping_body() {
             ? "meta-ok" : "meta-FAIL:" + m.exitCode + "/" + JSON.stringify(m.text())
     "#,
     );
-    assert_eq!(meta, "meta-ok", "quoted metacharacters survive sh re-execution");
+    assert_eq!(
+        meta, "meta-ok",
+        "quoted metacharacters survive sh re-execution"
+    );
 }
 
 // ──────────────────── Item 2: Bun.resolve ────────────────────
@@ -251,7 +261,10 @@ fn bun_connect_open_identity_drives_data_flow() {
         "setup-ok port=" + server.port
     "#,
     );
-    assert!(setup.starts_with("setup-ok"), "listen/connect setup: {setup}");
+    assert!(
+        setup.starts_with("setup-ok"),
+        "listen/connect setup: {setup}"
+    );
 
     let done = wait_until(&mut ctx, "globalThis.__done === true ? 'y' : 'n'", 60);
     let log = eval_str(&mut ctx, "globalThis.__log()");

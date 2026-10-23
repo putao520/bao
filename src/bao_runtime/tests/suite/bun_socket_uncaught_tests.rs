@@ -32,21 +32,19 @@ fn make_ctx() -> JsContext {
     ctx
 }
 
-
-/// Pump the unified event loop (uWS sockets + timers + jobs) so socket
-/// dispatch runs on this thread. Stops early once an exit was requested —
-/// the router already did its job by then.
+/// Fixed-pass pump delegate: the unified suite pump (`common::pump_until`)
+/// run for `passes` settle-pump ticks (each tick = realm-entered timer
+/// drain + MiniEventLoop tick + RunJobs, the uWS sockets + timers + jobs
+/// socket-dispatch discipline). The historical early-exit-on-exit-requested
+/// is folded into the settle predicate: once an exit was requested the
+/// router already did its job, so the delegate stops ticking (a constant
+/// marker otherwise never changes and would trip the `PumpStuck` tripwire).
 fn pump(ctx: &mut JsContext, passes: usize) {
-    for _ in 0..passes {
-        let mut cxm = ctx.cx();
-        if !bun_runtime::timers::drain_and_check(&mut cxm) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    let budget = Duration::from_millis((passes as u64).saturating_mul(5));
+    common::pump_until(ctx, "'pumping'", budget, common::eval_string_full, |_| {
+        bun_runtime::should_exit()
+    });
 }
-
-
 
 /// Bun.listen TCP server on an ephemeral port whose data handler throws.
 /// Returns the bound port.
@@ -135,7 +133,11 @@ fn listen_tcp_data_callback_throw_with_handler_receives_error_and_loop_continues
         "#,
         "<test>",
     );
-    assert!(r.is_ok(), "handler registration must succeed: {:?}", r.err());
+    assert!(
+        r.is_ok(),
+        "handler registration must succeed: {:?}",
+        r.err()
+    );
     let port = listen_throwing_data_server(&mut ctx, "handled-listen-boom");
 
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("tcp connect");

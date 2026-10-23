@@ -24,8 +24,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bao_engine::context::JsContext;
-use bun_runtime::timers;
-use mozjs::rooted;
 #[path = "common/mod.rs"]
 mod common;
 
@@ -96,45 +94,16 @@ fn start_slow_server() -> (u16, Captured) {
     (port, captured)
 }
 
-
-/// Two-part pump from fetch_abort_e2e_tests:
-///   1. realm-entered drain_and_check (timer wheels fire — the timeout
-///      static's abort included; timer callbacks resolve through
-///      CurrentGlobalOrNull);
-///   2. MiniEventLoop tick_without_idle + RunJobs (dispatches the
-///      FetchTasklet ConcurrentTasks).
-/// Polls `poll_js` until it holds no "PENDING" marker or the deadline
-/// passes; returns the last poll value.
+/// Settle-pump delegate: the unified suite pump (`common::pump_until`) with
+/// the file's historical 2ms settle rhythm and "marker left PENDING" exit —
+/// same three actuators per tick (realm-entered timer drain, MiniEventLoop
+/// tick, RunJobs) plus the no-progress tripwire that turns a stalled settle
+/// into a `PumpStuck` FAIL naming the frozen poll value instead of a silent
+/// hang.
 fn pump_until_settled(ctx: &mut JsContext, poll_js: &str, timeout: Duration) -> String {
-    let cx_raw = ctx.raw_cx();
-    let deadline = Instant::now() + timeout;
-    let mut final_poll = String::new();
-    while Instant::now() < deadline {
-        {
-            let mut cxm = ctx.cx();
-            let global = bao_engine::context::thread_realm_global();
-            if let Some(g) = global {
-                rooted!(&in(cxm) let g_root = g);
-                let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-                let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-                timers::drain_and_check(realm_cx);
-            } else {
-                timers::drain_and_check(&mut cxm);
-            }
-        }
-        timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        std::thread::sleep(Duration::from_millis(2));
-        final_poll = eval_string(ctx, poll_js);
-        if !final_poll.contains("PENDING") {
-            break;
-        }
-    }
-    final_poll
+    common::pump_until(ctx, poll_js, timeout, common::eval_string_full, |poll| {
+        !poll.contains("PENDING")
+    })
 }
 
 #[test]
@@ -144,11 +113,13 @@ fn test_abort_signal_timeout_shape_and_fetch() {
     // std::process::exit(0) is only legal in a process whose death IS
     // the test's success exit — running it in-harness would kill the
     // whole suite and park the shared HTTPThread for every later test.
-    crate::exit_isolation::dispatch("abort_signal_timeout_tests::test_abort_signal_timeout_shape_and_fetch", test_abort_signal_timeout_shape_and_fetch_body);
+    crate::exit_isolation::dispatch(
+        "abort_signal_timeout_tests::test_abort_signal_timeout_shape_and_fetch",
+        test_abort_signal_timeout_shape_and_fetch_body,
+    );
 }
 
 fn test_abort_signal_timeout_shape_and_fetch_body() {
-
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
@@ -253,15 +224,13 @@ fn test_abort_signal_timeout_shape_and_fetch_body() {
     );
     let parts: Vec<&str> = poll_b.split('|').collect();
     assert_eq!(
-        parts[0],
-        "rejected:AbortError:The operation was aborted:true:true",
+        parts[0], "rejected:AbortError:The operation was aborted:true:true",
         "fetch with AbortSignal.timeout must reject with DOMException AbortError \
          (instanceof DOMException + Error both true): {}",
         poll_b
     );
     assert_eq!(
-        parts[1],
-        "resolved:ok",
+        parts[1], "resolved:ok",
         "concurrent plain fetch must be undisturbed by the timed-out fetch: {}",
         poll_b
     );

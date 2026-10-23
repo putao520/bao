@@ -26,16 +26,15 @@ use std::time::Duration;
 use bao_boringssl_bridge::connection::{TlsConnection, TlsState};
 use bao_boringssl_bridge::server::TlsServer;
 use bao_engine::context::JsContext;
-use bun_uws::ws_codec::{apply_mask, FrameDecoder, Opcode};
+use bun_uws::ws_codec::{FrameDecoder, Opcode, apply_mask};
 use bun_uws::ws_handshake::server_handshake;
-use mozjs::rooted;
 
 #[path = "common/mod.rs"]
 mod common;
 
 use common::eval_string;
 
-// ── test-context + pump plumbing (same carrier form as the c10 suite) ─────
+// ── test-context + pump plumbing ─────────────────────────────────────────
 
 fn new_test_ctx() -> JsContext {
     bun_runtime::install_exit_handler();
@@ -45,34 +44,27 @@ fn new_test_ctx() -> JsContext {
     ctx
 }
 
-/// Drive the JS thread (jobs + timers + the WebSocket drain pump) until
-/// `probe` evaluates truthy, or the budget runs out.
+// @trace REQ-ENG-010
+/// Settle-pump delegate: unified suite pump (`common::pump_until`) evaluating
+/// `Boolean(probe)` until truthy (the file's settle shape) or budget expiry.
 fn pump_until(ctx: &mut JsContext, probe: &str, budget_ms: u64) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_millis(budget_ms);
-    while std::time::Instant::now() < deadline {
-        let mut cxm = ctx.cx();
-        let global = bao_engine::context::thread_realm_global();
-        if let Some(g) = global {
-            rooted!(&in(cxm) let g_root = g);
-            let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-            bun_runtime::timers::drain_and_check(realm_cx);
-        } else {
-            bun_runtime::timers::drain_and_check(&mut cxm);
-        }
-        if eval_string(ctx, &format!("Boolean({})", probe)) == "true" {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    false
+    common::pump_until(
+        ctx,
+        &format!("Boolean({})", probe),
+        Duration::from_millis(budget_ms),
+        common::eval_string,
+        |p| p == "true",
+    ) == "true"
 }
 
 /// Hand-built server→client frame (unmasked per RFC 6455 §5.1). `fin=false`
 /// opens/continues a fragmented message (§5.4).
 fn frame(opcode: u8, fin: bool, payload: &[u8]) -> Vec<u8> {
     assert!(payload.len() < 126, "test frames stay in the short form");
-    let mut buf = vec![(if fin { 0x80 } else { 0x00 }) | opcode, payload.len() as u8];
+    let mut buf = vec![
+        (if fin { 0x80 } else { 0x00 }) | opcode,
+        payload.len() as u8,
+    ];
     buf.extend_from_slice(payload);
     buf
 }
@@ -154,7 +146,7 @@ impl ServerTlsIo {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "peer closed during tls handshake",
-                    ))
+                    ));
                 }
                 Ok(n) => tls.feed(&buf[..n]),
                 Err(e) => return Err(e),
@@ -185,7 +177,7 @@ impl ServerTlsIo {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "tls peer closed",
-                    ))
+                    ));
                 }
                 Ok(n) => self.tls.feed(&buf[..n]),
                 Err(e) => return Err(e),
@@ -293,7 +285,11 @@ fn ws_reserved_opcode_fails_plain_connection() {
 
     let done = pump_until(&mut ctx, "__done", 12_000);
     let log = eval_string(&mut ctx, "__log.join('|')");
-    assert!(done, "plain reserved-opcode failure did not surface: {}", log);
+    assert!(
+        done,
+        "plain reserved-opcode failure did not surface: {}",
+        log
+    );
     assert!(
         log.starts_with("open|t:before|error:") && log.ends_with("|close:3"),
         "plain reserved opcode must fail the connection: {}",
@@ -347,7 +343,11 @@ fn ws_bare_continuation_fails_plain_connection() {
 
     let done = pump_until(&mut ctx, "__done", 12_000);
     let log = eval_string(&mut ctx, "__log.join('|')");
-    assert!(done, "plain bare-continuation failure did not surface: {}", log);
+    assert!(
+        done,
+        "plain bare-continuation failure did not surface: {}",
+        log
+    );
     assert!(
         log.starts_with("open|t:first|error:") && log.ends_with("|close:3"),
         "bare continuation must fail the connection (orphan payload dropped): {}",
@@ -396,7 +396,11 @@ fn ws_bare_continuation_fails_tls_connection() {
 
     let done = pump_until(&mut ctx, "__done", 12_000);
     let log = eval_string(&mut ctx, "__log.join('|')");
-    assert!(done, "TLS bare-continuation failure did not surface: {}", log);
+    assert!(
+        done,
+        "TLS bare-continuation failure did not surface: {}",
+        log
+    );
     assert!(
         log.starts_with("open|t:first|error:") && log.ends_with("|close:3"),
         "TLS bare continuation must fail the connection: {}",

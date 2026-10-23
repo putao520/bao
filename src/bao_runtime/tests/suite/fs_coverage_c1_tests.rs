@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 
 /// Escape a path for interpolation into a JS double-quoted string literal.
 fn js_escape(p: &std::path::Path) -> String {
-    p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+    p.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 /// Unique per-test temp dir (nextest runs each test in its own process, but
@@ -32,22 +34,20 @@ fn tmp_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// Pump the loop until a JS boolean predicate holds (bounded). Returns the
-/// final predicate value so the caller can fail with a precise message.
+/// Boolean-predicate pump delegate: the unified suite pump
+/// (`common::pump_until`) with the historical `== "true"` settle plus the
+/// `PumpStuck` no-progress tripwire (a frozen predicate now fails at the 2s
+/// window instead of silently burning the deadline). Returns the final
+/// predicate value so the caller can fail with a precise message.
 fn pump_until(ctx: &mut JsContext, predicate_js: &str, deadline_ms: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_millis(deadline_ms);
-    loop {
-        if eval_string(ctx, predicate_js) == "true" {
-            return true;
-        }
-        let mut cxm = ctx.cx();
-        let _alive = bun_runtime::timers::drain_and_check(&mut cxm);
-        drop(cxm);
-        if Instant::now() >= deadline {
-            return eval_string(ctx, predicate_js) == "true";
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    let final_value = common::pump_until(
+        ctx,
+        predicate_js,
+        Duration::from_millis(deadline_ms),
+        eval_string,
+        |v| v == "true",
+    );
+    final_value == "true"
 }
 
 /// Evaluate a check-batch body that returns `label PASS|FAIL|ERR:...` joined
@@ -143,7 +143,11 @@ fn c1_sync_error_paths_code_family() {
         longp = js_escape(&long),
     );
     let results = run_checks(&mut ctx, &body);
-    assert!(results.len() >= 20, "expected >= 20 checks, got {}", results.len());
+    assert!(
+        results.len() >= 20,
+        "expected >= 20 checks, got {}",
+        results.len()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -624,7 +628,11 @@ fn c1_mkdtemp_opendir_dir_faces() {
     let sched_out = eval_string_full(&mut ctx, &sched);
     assert_eq!(sched_out, "scheduled", "scheduling eval: {}", sched_out);
     assert!(
-        pump_until(&mut ctx, "globalThis.__c1dir.n >= globalThis.__c1dir.want", 10_000),
+        pump_until(
+            &mut ctx,
+            "globalThis.__c1dir.n >= globalThis.__c1dir.want",
+            10_000
+        ),
         "opendir cb never fired"
     );
     let opendir_ok = eval_string(
@@ -729,7 +737,11 @@ fn c1_statfs_glob_openasblob_faces() {
     let sched_out = eval_string_full(&mut ctx, &sched);
     assert_eq!(sched_out, "scheduled", "scheduling eval: {}", sched_out);
     assert!(
-        pump_until(&mut ctx, "globalThis.__c1blob.n >= globalThis.__c1blob.want", 10_000),
+        pump_until(
+            &mut ctx,
+            "globalThis.__c1blob.n >= globalThis.__c1blob.want",
+            10_000
+        ),
         "openAsBlob promises never settled"
     );
     let blob_ok = eval_string(
@@ -783,7 +795,11 @@ fn c1_statfs_glob_openasblob_faces() {
     );
     assert_eq!(eval_string(&mut ctx, &glob_sched), "scheduled");
     assert!(
-        pump_until(&mut ctx, "globalThis.__c1glob.n >= globalThis.__c1glob.want", 10_000),
+        pump_until(
+            &mut ctx,
+            "globalThis.__c1glob.n >= globalThis.__c1glob.want",
+            10_000
+        ),
         "glob cb never fired"
     );
     let glob_ok = eval_string(
@@ -1180,9 +1196,17 @@ fn c1_async_cb_write_side_batch() {
         symt = js_escape(&sym_target),
     );
     let sched_out = eval_string_full(&mut ctx, &sched);
-    assert_eq!(sched_out, "scheduled", "write-side scheduling eval: {}", sched_out);
+    assert_eq!(
+        sched_out, "scheduled",
+        "write-side scheduling eval: {}",
+        sched_out
+    );
     assert!(
-        pump_until(&mut ctx, "globalThis.__c1w.n >= globalThis.__c1w.want", 20_000),
+        pump_until(
+            &mut ctx,
+            "globalThis.__c1w.n >= globalThis.__c1w.want",
+            20_000
+        ),
         "write-side callbacks incomplete (n={} log={})",
         eval_string(&mut ctx, "String(globalThis.__c1w.n)"),
         eval_string(&mut ctx, "Object.keys(globalThis.__c1w.log).join(',')")
@@ -1289,7 +1313,11 @@ fn c1_async_cb_read_side_batch() {
     let sched_out = eval_string_full(&mut ctx, &sched);
     assert_eq!(sched_out, "scheduled", "scheduling eval: {}", sched_out);
     assert!(
-        pump_until(&mut ctx, "globalThis.__c1r2.n >= globalThis.__c1r2.want", 20_000),
+        pump_until(
+            &mut ctx,
+            "globalThis.__c1r2.n >= globalThis.__c1r2.want",
+            20_000
+        ),
         "read-side callbacks incomplete (n={})",
         eval_string(&mut ctx, "String(globalThis.__c1r2.n)")
     );
@@ -1384,7 +1412,11 @@ fn c1_async_cb_fd_flow() {
     let sched_out = eval_string_full(&mut ctx, &sched);
     assert_eq!(sched_out, "scheduled", "scheduling eval: {}", sched_out);
     assert!(
-        pump_until(&mut ctx, "globalThis.__c1fd.n >= globalThis.__c1fd.want", 20_000),
+        pump_until(
+            &mut ctx,
+            "globalThis.__c1fd.n >= globalThis.__c1fd.want",
+            20_000
+        ),
         "fd-flow round A incomplete (n={} log={})",
         eval_string(&mut ctx, "String(globalThis.__c1fd.n)"),
         eval_string(&mut ctx, "Object.keys(globalThis.__c1fd.log).join(',')")
@@ -1434,10 +1466,17 @@ fn c1_async_cb_fd_flow() {
     let sched2_out = eval_string_full(&mut ctx, sched2);
     assert_eq!(sched2_out, "scheduled", "scheduling eval: {}", sched2_out);
     assert!(
-        pump_until(&mut ctx, "globalThis.__c1fd2.n >= globalThis.__c1fd2.want", 10_000),
+        pump_until(
+            &mut ctx,
+            "globalThis.__c1fd2.n >= globalThis.__c1fd2.want",
+            10_000
+        ),
         "close callbacks incomplete"
     );
-    let closes = eval_string(&mut ctx, "globalThis.__c1fd2.log.close_r + ',' + globalThis.__c1fd2.log.close_w");
+    let closes = eval_string(
+        &mut ctx,
+        "globalThis.__c1fd2.log.close_r + ',' + globalThis.__c1fd2.log.close_w",
+    );
     assert_eq!(closes, "ok,ok", "async close faces: {}", closes);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1478,7 +1517,11 @@ fn c1_async_cb_error_batch() {
     let sched_out = eval_string_full(&mut ctx, &sched);
     assert_eq!(sched_out, "scheduled", "scheduling eval: {}", sched_out);
     assert!(
-        pump_until(&mut ctx, "globalThis.__c1e.n >= globalThis.__c1e.want", 20_000),
+        pump_until(
+            &mut ctx,
+            "globalThis.__c1e.n >= globalThis.__c1e.want",
+            20_000
+        ),
         "error callbacks incomplete (n={})",
         eval_string(&mut ctx, "String(globalThis.__c1e.n)")
     );
@@ -1499,8 +1542,8 @@ fn c1_async_cb_error_batch() {
 //     drain_and_check against the fsw worker hard-crashes the dispatch).
 // ---------------------------------------------------------------------------
 
-use common::setup_ctx_bounded;
 use common::HOOK_BUDGET;
+use common::setup_ctx_bounded;
 
 /// Bounded eval-hook wait: each eval pumps through the post_eval_hook.
 fn wait_until_bounded(
@@ -1805,21 +1848,19 @@ psrc.pipe(pdst);
     let sched_out = eval_string(&mut ctx, &sched);
     assert_eq!(sched_out, "scheduled", "stream scheduling: {}", sched_out);
 
-    let got = wait_until_bounded(
-        &mut ctx,
-        "(globalThis.__s.n >= 5) ? 'y' : 'n'",
-        80,
-        20_000,
-    );
+    let got = wait_until_bounded(&mut ctx, "(globalThis.__s.n >= 5) ? 'y' : 'n'", 80, 20_000);
     let n = eval_string(&mut ctx, "String(globalThis.__s.n)");
 
     let out_path = dir.join("out.txt");
     let pipe_path = dir.join("out.txt.pipe");
-    let out_content = std::fs::read_to_string(&out_path)
-        .unwrap_or_else(|_| "<unreadable>".to_string());
-    let pipe_content = std::fs::read_to_string(&pipe_path)
-        .unwrap_or_else(|_| "<unreadable>".to_string());
-    assert_eq!(out_content, "hello 你+tail", "createWriteStream content mismatch");
+    let out_content =
+        std::fs::read_to_string(&out_path).unwrap_or_else(|_| "<unreadable>".to_string());
+    let pipe_content =
+        std::fs::read_to_string(&pipe_path).unwrap_or_else(|_| "<unreadable>".to_string());
+    assert_eq!(
+        out_content, "hello 你+tail",
+        "createWriteStream content mismatch"
+    );
     assert_eq!(pipe_content, "stream body 你", "pipe content mismatch");
 
     let body = r#"
@@ -1941,7 +1982,11 @@ fn c1_readv_async_backfills_caller_buffers() {
     );
     assert_eq!(eval_string_full(&mut ctx, &sched), "scheduled");
     assert!(
-        pump_until(&mut ctx, "globalThis.__krv.n >= globalThis.__krv.want", 20_000),
+        pump_until(
+            &mut ctx,
+            "globalThis.__krv.n >= globalThis.__krv.want",
+            20_000
+        ),
         "readv/read async callbacks incomplete (n={} log={})",
         eval_string(&mut ctx, "String(globalThis.__krv.n)"),
         eval_string(&mut ctx, "JSON.stringify(globalThis.__krv.log)")

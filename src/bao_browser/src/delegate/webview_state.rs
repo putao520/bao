@@ -371,8 +371,8 @@ pub fn mint_loader_id() -> String {
 fn same_document_url(a: &str, b: &str) -> bool {
     fn strip(u: &str) -> &str {
         match u.find('#') {
-            Some(i) => &u[..i], // @evidence .spec/10-REQUIREMENTS.html:2324
-            None => u, // @evidence .spec/10-REQUIREMENTS.html:2324
+            Some(i) => &u[..i], // @evidence SPEC/10-REQUIREMENTS.html:2324
+            None => u, // @evidence SPEC/10-REQUIREMENTS.html:2324
         }
     }
     strip(a) == strip(b)

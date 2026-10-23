@@ -265,13 +265,14 @@ pub fn pump_until(
     ctx: &mut JsContext,
     poll_js: &str,
     timeout: Duration,
-    eval: fn(&mut JsContext, &str) -> String,
-    settled: fn(&str) -> bool,
+    mut eval: impl FnMut(&mut JsContext, &str) -> String,
+    mut settled: impl FnMut(&str) -> bool,
 ) -> String {
     let cx_raw = ctx.raw_cx();
     let deadline = Instant::now() + timeout;
     let mut last_poll = String::new();
     let mut last_change = Instant::now();
+    let mut never_changed = true;
     let mut final_poll = String::new();
     while Instant::now() < deadline {
         {
@@ -300,10 +301,16 @@ pub fn pump_until(
         if final_poll != last_poll {
             last_poll = final_poll.clone();
             last_change = Instant::now();
-        } else if last_change.elapsed() >= PUMP_STALL {
+            never_changed = false;
+        } else if never_changed && last_change.elapsed() >= PUMP_STALL {
+            // Tripwire fires ONLY on the zero-progress signature (the c17
+            // deadlock shape: producer dead, poll frozen from the first read).
+            // A pump that made progress and then goes stationary is waiting
+            // on a slow event (e.g. GC finalization after settle) — that case
+            // belongs to the outer deadline, not this tripwire.
             panic!(
-                "PumpStuck: poll value {:?} unchanged for {:?} while pumping \
-                 (poll_js={}) — consumption stalled or producer starved",
+                "PumpStuck: poll value {:?} never changed since first read ({:?} elapsed) \
+                 while pumping (poll_js={}) — consumption stalled or producer starved",
                 final_poll, PUMP_STALL, poll_js
             );
         }

@@ -59,38 +59,37 @@ macro_rules! bun_case {
     };
 }
 
-/// Drive the pump until `probe` turns truthy (promise settlement windows).
-/// Only `timers::drain_and_check` pops the ConcurrentTask queue (live-test
-/// pump discipline) — plus RunJobs for microtask checkpoints.
+/// Truthy-settle pump delegate: the unified suite pump (`common::pump_until`)
+/// with the file's historical truthy-string settle (non-empty and not the
+/// "null"/"false"/"undefined" literal markers — promise settlement windows
+/// return their verdict string verbatim) plus the `PumpStuck` no-progress
+/// tripwire that turns a frozen probe into a diagnostic FAIL.
 fn pump_until(ctx: &mut JsContext, probe: &str, deadline_ms: u64) -> String {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
-    loop {
-        let v = eval_string(ctx, probe);
-        if !v.is_empty() && v != "null" && v != "false" && v != "undefined" {
-            return v;
-        }
-        if std::time::Instant::now() >= deadline {
-            return v;
-        }
-        {
-            let mut cxm = ctx.cx();
-            unsafe {
-                mozjs_sys::jsapi::js::RunJobs(cxm.raw_cx());
-            }
-            let _ = bun_runtime::timers::drain_and_check(&mut cxm);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    common::pump_until(
+        ctx,
+        probe,
+        std::time::Duration::from_millis(deadline_ms),
+        common::eval_string_full,
+        |v| !v.is_empty() && v != "null" && v != "false" && v != "undefined",
+    )
 }
 
 fn assert_all_pass(test: &str, verdict: &str) {
-    let bad: Vec<&str> = verdict.split('|').filter(|s| !s.ends_with(" PASS")).collect();
-    assert!(bad.is_empty(), "{test}: failing checks: {bad:?}\nfull: {verdict}");
+    let bad: Vec<&str> = verdict
+        .split('|')
+        .filter(|s| !s.ends_with(" PASS"))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "{test}: failing checks: {bad:?}\nfull: {verdict}"
+    );
 }
 
 // ── Bun.gzip/deflate/inflate/gunzip + Sync 别名 ────────────────────────────
 
-bun_case!(c2_bun_gzip_family_roundtrip, r#"
+bun_case!(
+    c2_bun_gzip_family_roundtrip,
+    r#"
     var Bun = globalThis.Bun;
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -121,9 +120,12 @@ bun_case!(c2_bun_gzip_family_roundtrip, r#"
     var sdefl = Bun.deflateSync('sync deflate sync deflate');
     ck("deflateSync_roundtrip", u8str(Bun.inflateSync(sdefl)) === 'sync deflate sync deflate');
     R.join('|');
-"#);
+"#
+);
 
-bun_case!(c2_bun_gzip_family_errors, r#"
+bun_case!(
+    c2_bun_gzip_family_errors,
+    r#"
     var Bun = globalThis.Bun;
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -141,11 +143,14 @@ bun_case!(c2_bun_gzip_family_errors, r#"
     ck("gunzip_garbage", (thr(function(){ Bun.gunzip(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])); }) || "").length > 0);
     ck("inflate_garbage", (thr(function(){ Bun.inflate(new Uint8Array([9, 8, 7, 6, 5, 4, 3, 2, 1, 0])); }) || "").length > 0);
     R.join('|');
-"#);
+"#
+);
 
 // ── Bun.CryptoHasher ───────────────────────────────────────────────────────
 
-bun_case!(c2_bun_cryptohasher_faces, r#"
+bun_case!(
+    c2_bun_cryptohasher_faces,
+    r#"
     var Bun = globalThis.Bun;
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -192,11 +197,14 @@ bun_case!(c2_bun_cryptohasher_faces, r#"
         return d === "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
     })());
     R.join('|');
-"#);
+"#
+);
 
 // ── Bun.concatArrayBuffers ─────────────────────────────────────────────────
 
-bun_case!(c2_bun_concat_faces, r#"
+bun_case!(
+    c2_bun_concat_faces,
+    r#"
     var Bun = globalThis.Bun;
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -252,11 +260,14 @@ bun_case!(c2_bun_concat_faces, r#"
     } catch (e) { detFace = 'threw'; }
     ck("detach_guard", detFace === 'threw');
     R.join('|');
-"#);
+"#
+);
 
 // ── Bun.semver ─────────────────────────────────────────────────────────────
 
-bun_case!(c2_bun_semver_faces, r#"
+bun_case!(
+    c2_bun_semver_faces,
+    r#"
     var Bun = globalThis.Bun;
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -299,11 +310,14 @@ bun_case!(c2_bun_semver_faces, r#"
     ck("order_non_string_throws", (thr(function(){ sv.order(1, '1.0.0'); }) || "").indexOf("Expected two arguments") >= 0);
     ck("order_invalid_throws", (thr(function(){ sv.order('zzz', '1.0.0'); }) || "").indexOf("Invalid SemVer") >= 0);
     R.join('|');
-"#);
+"#
+);
 
 // ── Bun.escapeHTML / fileURLToPath / pathToFileURL ─────────────────────────
 
-bun_case!(c2_bun_escape_and_url_faces, r#"
+bun_case!(
+    c2_bun_escape_and_url_faces,
+    r#"
     var Bun = globalThis.Bun;
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -328,11 +342,14 @@ bun_case!(c2_bun_escape_and_url_faces, r#"
     ck("pfurl_noargs_throws", (thr(function(){ Bun.pathToFileURL(); }) || "").indexOf("requires a path") >= 0);
     ck("pfurl_nonstring_throws", (thr(function(){ Bun.pathToFileURL({}); }) || "").indexOf("requires a string") >= 0);
     R.join('|');
-"#);
+"#
+);
 
 // ── Bun.which / resolve / build 错误臂 / cwd / gc / sleep / nanoseconds ─────
 
-bun_case!(c2_bun_which_resolve_build_err, r#"
+bun_case!(
+    c2_bun_which_resolve_build_err,
+    r#"
     var Bun = globalThis.Bun;
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -375,7 +392,8 @@ bun_case!(c2_bun_which_resolve_build_err, r#"
     ck("nanoseconds_number", typeof ns === 'number' && ns >= 0);
     ck("nanoseconds_monotonic", Bun.nanoseconds() >= ns);
     R.join('|');
-"#);
+"#
+);
 
 // ── Bun.file 家族(text/json/arrayBuffer/slice/exists/fd/URL 形态) ──────────
 
@@ -513,7 +531,9 @@ fn c2_bun_write_readfile_faces() {
     let _ = std::fs::remove_file(&target);
 }
 
-bun_case!(c2_bun_write_error_faces, r#"
+bun_case!(
+    c2_bun_write_error_faces,
+    r#"
     var Bun = globalThis.Bun;
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -526,11 +546,14 @@ bun_case!(c2_bun_write_error_faces, r#"
     ck("readfile_noargs_throws", (thr(function(){ Bun.readFile(); }) || "").indexOf("requires a path argument") >= 0);
     ck("readfile_nonstring_throws", (thr(function(){ Bun.readFile(5); }) || "").indexOf("requires a string path") >= 0);
     R.join('|');
-"#);
+"#
+);
 
 // ── Bun.env / argv / main / read / SHA / Bao 别名 ──────────────────────────
 
-bun_case!(c2_bun_namespace_aliases, r#"
+bun_case!(
+    c2_bun_namespace_aliases,
+    r#"
     var Bun = globalThis.Bun;
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -561,11 +584,14 @@ bun_case!(c2_bun_namespace_aliases, r#"
     ck("openinnewtab_noargs_throws", (thr(function(){ Bun.openInNewTab(); }) || "").indexOf("requires a URL") >= 0);
     ck("openinnewtab_nonstring_throws", (thr(function(){ Bun.openInNewTab(5); }) || "").indexOf("requires a string URL") >= 0);
     R.join('|');
-"#);
+"#
+);
 
 // ── process.* 面(bun_api.rs 内 process 族) ─────────────────────────────────
 
-bun_case!(c2_process_faces, r#"
+bun_case!(
+    c2_process_faces,
+    r#"
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
     function thr(fn) { try { fn(); return null; } catch (e) { return String((e && e.message) || e); } }
@@ -610,7 +636,8 @@ bun_case!(c2_process_faces, r#"
     ck("binding_noargs_undef", p.binding() === undefined);
     ck("tickCallback_callable", typeof p._tickCallback === 'function');
     R.join('|');
-"#);
+"#
+);
 
 /// nextTick vs microtask ordering. Node v24 oracle (probed): the nextTick
 /// queue drains FULLY first — nextTick(a), promise(b), nextTick(c) yields
@@ -634,13 +661,18 @@ fn c2_process_nexttick_ordering() {
     );
     assert_eq!(out, "scheduled");
     // A second eval runs after the checkpoint drained nextTick + microtasks.
-    let verdict = eval_string(&mut ctx, r#"globalThis.__order.join(',') === 'a,c,b' ? "PASS" : "FAIL:" + globalThis.__order.join(',')"#);
+    let verdict = eval_string(
+        &mut ctx,
+        r#"globalThis.__order.join(',') === 'a,c,b' ? "PASS" : "FAIL:" + globalThis.__order.join(',')"#,
+    );
     assert_eq!(verdict, "PASS", "nextTick ordering: {verdict}");
 }
 
 // ── Bun.test / Bun.testRun 注册面 ───────────────────────────────────────────
 
-bun_case!(c2_bun_test_registry_faces, r#"
+bun_case!(
+    c2_bun_test_registry_faces,
+    r#"
     var Bun = globalThis.Bun;
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -659,7 +691,8 @@ bun_case!(c2_bun_test_registry_faces, r#"
     var again = Bun.testRun();
     ck("registry_drained", again.total === 0 && again.success === true && again.failures === undefined);
     R.join('|');
-"#);
+"#
+);
 
 // ── Bun.file.writer / FileSink 家族(二波收敛:7251-7640)────────────────────
 
@@ -721,7 +754,9 @@ fn c2_bun_file_writer_sink_faces() {
 
 // ── process.stdin stream faces(二波收敛:2821-2969)─────────────────────────
 
-bun_case!(c2_process_stdin_faces, r#"
+bun_case!(
+    c2_process_stdin_faces,
+    r#"
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
     var sin = process.stdin;
@@ -744,11 +779,14 @@ bun_case!(c2_process_stdin_faces, r#"
     ck("destroy_sets_destroyed", sin.destroy() === sin && sin.destroyed === true);
     ck("destroy_detached_undef", sin.destroy.call(7) === undefined);
     R.join('|');
-"#);
+"#
+);
 
 // ── process.kill / binding 二臂 / tty ctor / exitCode 变体(二波收敛)─────────
 
-bun_case!(c2_process_kill_binding_tty_faces, r#"
+bun_case!(
+    c2_process_kill_binding_tty_faces,
+    r#"
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
     function thr(fn) { try { fn(); return null; } catch (e) { return String((e && e.message) || e); } }
@@ -781,14 +819,15 @@ bun_case!(c2_process_kill_binding_tty_faces, r#"
     ck("exitcode_junk_zero", process.exitCode === 0);
     process.exitCode = old;
     R.join('|');
-"#);
+"#
+);
 
 // ── Bun.spawn kill / 信号名 / poll 面二波(unix;2667-2686 等)────────────────
 
 #[cfg(unix)]
 #[test]
 fn c2_bun_spawn_kill_faces() {
-    use common::{eval_str, setup_ctx_bounded, HOOK_BUDGET};
+    use common::{HOOK_BUDGET, eval_str, setup_ctx_bounded};
     let mut ctx = setup_ctx_bounded();
     let setup = eval_str(
         &mut ctx,
@@ -806,7 +845,11 @@ fn c2_bun_spawn_kill_faces() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         HOOK_BUDGET.with(|b| b.set(2000));
-        if eval_str(&mut ctx, "(globalThis.__st.exitCode !== null || globalThis.__child.exited ? 'y' : 'n')") == "y" {
+        if eval_str(
+            &mut ctx,
+            "(globalThis.__st.exitCode !== null || globalThis.__child.exited ? 'y' : 'n')",
+        ) == "y"
+        {
             break;
         }
         if std::time::Instant::now() > deadline {
@@ -841,5 +884,8 @@ fn c2_bun_spawn_kill_faces() {
     );
     let bad: Vec<&str> = out.split('|').filter(|s| !s.ends_with(" PASS")).collect();
     assert!(bad.is_empty(), "spawn kill faces: {bad:?}\nfull: {out}");
-    let _ = eval_str(&mut ctx, "try { globalThis.__c2.kill(9); } catch (e) {} 'cleaned'");
+    let _ = eval_str(
+        &mut ctx,
+        "try { globalThis.__c2.kill(9); } catch (e) {} 'cleaned'",
+    );
 }

@@ -43,7 +43,7 @@ pub(crate) fn parse_cdp_marker_event(message: &str, target_id: String) -> Option
     let body = message.strip_prefix(CDP_EVT_MARKER)?;
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
     match v.get("kind").and_then(|k| k.as_str())? {
-        "bindingCalled" => Some(ServoEvent::BindingCalled { // @evidence .spec/10-REQUIREMENTS.html:2324
+        "bindingCalled" => Some(ServoEvent::BindingCalled { // @evidence SPEC/10-REQUIREMENTS.html:2324
             target_id,
             name: v.get("name").and_then(|p| p.as_str()).unwrap_or("").to_string(),
             payload: v
@@ -52,8 +52,8 @@ pub(crate) fn parse_cdp_marker_event(message: &str, target_id: String) -> Option
                 .unwrap_or("")
                 .to_string(),
         }),
-        "domContentLoaded" => Some(ServoEvent::DomContentLoaded { target_id }), // @evidence .spec/10-REQUIREMENTS.html:2324
-        _ => None, // @evidence .spec/10-REQUIREMENTS.html:2324
+        "domContentLoaded" => Some(ServoEvent::DomContentLoaded { target_id }), // @evidence SPEC/10-REQUIREMENTS.html:2324
+        _ => None, // @evidence SPEC/10-REQUIREMENTS.html:2324
     }
 }
 

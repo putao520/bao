@@ -647,7 +647,7 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
             target_id,
             name,
             payload,
-        } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        } => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             vec![CdpEvent {
                 method: "Runtime.bindingCalled".into(),
                 // Chrome 形:{name, payload, executionContextId} — payload 是
@@ -661,7 +661,7 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
             }]
         }
         // @trace REQ-CDP-010 [event:DomContentEvent]
-        ServoEvent::DomContentLoaded { target_id } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        ServoEvent::DomContentLoaded { target_id } => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             vec![CdpEvent {
                 method: "Page.domContentEventFired".into(),
                 params: json!({

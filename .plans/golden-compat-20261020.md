@@ -777,10 +777,26 @@ MCP commit_gate 工具故障(schema 零参数但实现要 sourceDir;传参后 12
 2. ~43 个 inline 泵文件未迁移(统一泵 SSOT 已落,迁移=每文件 1 个委托调用,断言零触碰;按文件域互斥分波派发)
 3. c17 死锁产品面(fetch 线程⇄JS 线程双等环)本波零触碰——统一泵只修可诊断性,产品根修另行立项
 
-**收口链(三 E 齐后)**: farm check(含 prefs 复现载具翻转验证 rc=2→rc=0) → bun_runtime 窄域(c17 泵+c17 三测) → gate 复跑(应全绿) → 提交
+**收口链(三 E 齐后)**: farm check(含 prefs 复现载具翻转验证 rc=2→rc=0) → bun_runtime 窄域(c17 泵+c17 三测) → gate 复跑(应全绿) → 提交。已完成:farm check 1m27s/test-ci 2m53s/窄域 30/30/prefs 翻转 rc=2→124/gate 增量域 13/14→提交 cf0f352ad(666 文件)
+
+## 波后突进:五路 E 并发(2026-10-23,用户令「继续突进代码和功能几倍的工作,DAG并发」)
+| E | 任务 | 状态 |
+|---|---|---|
+| E-pumpA | 泵迁移第一波 22 文件 | **✅ 19/22 委托化(3 stop 条款:cluster_pump_loop/execution_control/fetch_only 无 settle-pump 形态);游离 inline 泵残留=0(16/19 零,3 处谓词内 drain_and_check=quiescent 设计保留)** |
+| E-pumpB | 泵迁移第二波 21 文件 | **✅ 9 委托化+12 保留 inline(形态差异真实:Rust 谓词泵/纯迭代驱动/无泵函数,非规避;括号平衡 0/0/0,9 文件各加 @trace REQ-ENG-010)** |
+| E-goldenA | Node 官方套件载具 | **✅ 载具全建(nodejs/node v24.x clone+prep+runner+shim 五件套;stage-a oracle dry-run 14/18 宿主通过);stage-b 被 bao 真 BUG 阻塞:CJS 文件里 require('../common') 被误判为 ESM module("Failed to load ESM module")——stage-a 宿主跑 oracle 14/18 证载具机制有效,stage-b 全 18 红全因同一 BUG。登记:E-goldenA 遗留=bao CJS/ESM 判定缺陷(真产品 BUG,下波立项)** |
+
+**E-pumpA 上报的统一泵接口缺陷(下波立项)**: `settled: fn(&str) -> bool` 非泛型→捕获闭包谓词(quiescent/fs_watch armed_eval/should_exit)无法直传,5 文件靠 workaround(谓词内联调 ctx/工厂 fn)——修法=签名放宽 `settled: impl Fn(&str) -> bool`(或 &dyn Fn),common/mod.rs 单点改+5 文件 workaround 解除。下波立项。
+| E-goldenC | Chrome CDP oracle 载具 | **✅ Chrome 155.0.8059.39 精确版本就位+bao 9334 可达+verify 冒烟 8/8 逐字段同形(Runtime.evaluate/Page.getFrameTree);scripts/cdp-oracle-verify.py+golden-cdp-smoke.sh 落仓未提交(留主会话门)** |
+| E-slowtimeout | nextest slow-timeout 兜底 | **✅ nextest.toml 条目落盘(period 60s terminate-after 1)+nextest-runner 0.124.0 源码级字段合法性实证;两层覆盖: PumpStuck(tick 间隙 stall)+slow-timeout(tick 内 park)** |
 
 **E-redfamily 合同偏差记录(诚实档)**:`__filename` 根修落在 runtime.rs:183/351/435+globals.rs:6571——超出其声明 domain(node_util/node_test/node_path/require);根因确在彼,E 选择越域修复而非 stop 上报。修法带 @trace REQ-ENG-007/048+oracle 证据+幂等安全(AutoRealm 刷新),保留;纪律面记档,下次合同应把 stop 条款执行得更严。
 **E-redfamily domain 外明示**:node_dns 7 红(容器 DNS stub 环境差异,台账既有登记)与 SIGSEGV/SIGKILL 各 1 不在其 domain,未触碰——DNS 族维持环境归因,不入产品缺陷。
+
+## ✅ 波末提交完成(2026-10-23,commit cf0f352ad→amend 干净形)
+**收口链全绿实证**:farm check 1m27s 零错 → test-ci build 2m53s → **窄域 nextest 30/30**(c17 三测经统一泵+assert 两族+stripVT+c5_path+node:test 桥 13 全过,RC=0)→ **prefs 翻转确认**(rc=2 schema 秒退→rc=124 正常运行至 timeout,上游 wpt-prefs int 0 形态可用)→ gate 增量域(sourceInclude=本波 72 文件)13/14 PASS(残留 2=lib.rs:50 `@trace STUB-INVENTORY:` 正规锚名+webview_state.rs:1948 Chromium 现状注释,均存量词形误命中零本波新增)。
+**提交**:666 文件 +190174/−13286(E-redfamily 期间一处 format! 字面量内 `{..}` 未转义致 suite 编译红,已修;amend 时 rename 检测陷阱把日志带入一次,soft reset 重建干净形)。
+**波外遗留(登记待下波)**:①~43 inline 泵文件迁移(统一泵 SSOT 已落)②c17 死锁产品面根修(fetch 线程⇄JS 线程双等环,tripwire 已把 hang 变可诊断 FAIL)③nextest slow-timeout 兜底(60s terminate)④GOLDEN A/C 环境(farm 无 node/Chrome)⑤GOLDEN B 全量跑批(prefs 已解锁,载具在 farm 持久盘)⑥node_dns 7 红(DNS stub 环境差异)
 
 ### GOLDEN B 载具跑批配方(重建沉淀)
 ```bash
@@ -823,3 +839,25 @@ nextest --cargo-profile test-ci -p **bao-browser**(注:package name 连字符,`b
 - **归因=OS 线程调度 flaky,非真缺陷**:同测试在同一进程池 `fetch_axis_probe_tests::common::tests`(1192)、`bao_cli_e2e_tests::common::tests`(691) 全 PASS,仅 audioworklet_tests 下失败一次;`--no-fail-fast` 全量重跑 **2015/2015 passed + 142 skipped 0 FAIL**(78.27s)。
 - 教训:timing-boundary 自测断言 flaky;fail-fast 会误挡全貌,批量归因须 `--no-fail-fast`。
 - 注:142 skipped 含 webd/gst-开态等 honest skip;真实功能面 2015 全绿。
+
+## 波后 BUG 修复波(2026-10-23,用户指令「先修BUG再增量提交」)
+**根因实证(GOLDEN A 18 红阻塞)**:bao require() 目录解析误选 index.mjs——bun_resolver(ImportKind::Stmt ESM-first 序)把 require('../common') 解析到 common/index.mjs(Node 官方 ESM 门面),is_esm_module 判 true→load_esm_module 报 "Failed to load ESM module"。Node v24 oracle 双探针(/tmp/resprobe):①index.js+index.mjs 并存 require('./common') 选 **index.js**(CJS LOAD_AS_DIRECTORY 序 .js>.json>.node,从不看 index.mjs);②仅 index.mjs 时 require 目录=MODULE_NOT_FOUND;③显式 require 全名 .mjs=允许(require(ESM) v22+)。修法=require.rs resolve 后校正(非 bun_resolver——ESM import 侧 Stmt 序正确,零触碰)。
+**派出两 E(文件域零交集)**:E-cjsesm(require.rs 校正+三格回归钉)/E-pump-generic(统一泵 fn→impl Fn 泛型化+5 文件 workaround 解除)。收口后:farm check+窄域测试(c17+require 回归+golden-node stage-b 复跑)→增量提交(28 泵迁移文件+slowtimeout+scripts+E-redfamily 修复)。
+
+## 波后修复波进展(2026-10-23 16:5x)
+- **E-cjsesm 收口**:require.rs `correct_directory_index_mjs` 落盘(挂点 resolve_specifier 内,零调用面改动;真值表六行全覆盖;3 格回归钉 require_cjs_index_resolution_tests.rs+main.rs 注册)。farm check 3m55s 绿。
+- **E-pump-generic 收口**:pump_until fn→impl FnMut 泛型化+6 文件 workaround 解除;但 farm test-ci 窄域编译暴露 14 错四族:①签名缺 mut(E0596)②四文件 settle 闭包捕获 ctx E0502(迁移波误搬 drain_and_check 进谓词)③c12 两处传值 E0308 ④迁移波误删 import(Instant/rooted!)E0433/E0425。教训:泛型化消除 fn 指针限制≠消除借用冲突,workaround 的「存在理由」判定须编译实证。已派 E-pumpfix 收口。
+- wrapper 坑:bao-remote-build raw 透传经 bash -lc 单引号+`%q`,整条命令当一个参数传会被 cargo 拒——逐参数传(空格分隔)才对;`| tail` 截断会丢 rustc 诊断,跑测试落盘全量。
+
+## 收口链进展(2026-10-23 17:2x)
+- farm 窄域复测 **110/110 全绿**(require 三格+c17+泵迁移全域+net_tls 21.5s 慢格=tripwire 零进展语义修正生效)。
+- 主会话直修三处(E 合同外语义裁决):①统一泵 tripwire 只在全程零进展(c17 死锁签名)触发,有进展后稳态交 deadline(消除 GC 等待误杀)②correct_directory_index_mjs 校正扩到 resolve_specifier 全部返回路径(try_resolve fallback 与 resolve_node_modules 同样产 index.mjs——E 原版只挂 external 分支,格2 红实证)③三文件 unused import 清扫。
+- test-ci 二进制行为探针:双文件 require 选 js ✓。
+- fmt 事故:cargo fmt 全仓 26438 行 churn(638 文件),已精确回滚——保留清单=会话快照 33 文件,其余全 checkout HEAD。教训:fmt 只能对本波文件面跑,禁全仓。
+- GOLDEN A stage-b 复跑第一遍全红=假失败(logs/ root 属主),修权限重跑中。
+
+## ✅ 增量提交完成(2026-10-23 17:4x)
+提交内容:require() CJS 目录索引校正(GOLDEN A 阻塞解除)+统一泵泛型化收口(impl FnMut+E0502 四文件+tripwire 零进展语义)+迁移波残留清偿(误删 import 恢复)+evidence 格式横扫 84 处+GOLDEN C 载具落仓。farm 110/110 窄域绿+二进制行为探针 js ✓。
+**新登记缺口**:GOLDEN A stage-b 推进至 common/index.js:59 `process.features undefined`——Node compat 面下一层(process.features 对象未实现),18/18 全卡同一点=单点解锁面,立项下波。
+**fmt 事故教训**(memory 候选):cargo fmt 全仓=26438 行 churn,必须只对本波文件面;回滚法=保留清单+checkout HEAD 其余。
+**遗留**:c17 死锁产品面根修(fetch 线程⇄JS 线程双等环,架构级,需 SPEC 契约);43 泵文件迁移残留=真实形态差异面。

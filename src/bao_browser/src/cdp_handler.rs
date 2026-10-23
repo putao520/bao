@@ -111,7 +111,7 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             target_id,
             expression,
             return_by_value,
-        } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        } => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             return BridgeResponse {
                 result: with_page_classified(pool, &target_id, |page| {
                     cmd_evaluate(page, &expression, return_by_value)
@@ -122,7 +122,7 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             target_id,
             object_id,
             own_properties,
-        } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        } => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             return BridgeResponse {
                 result: with_page_classified(pool, &target_id, |page| {
                     cmd_runtime_get_properties(page, &object_id, own_properties)
@@ -168,14 +168,14 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             target_id,
             expression,
             return_by_value,
-        } => with_page(pool, &target_id, |page| { // @evidence .spec/10-REQUIREMENTS.html:2324
+        } => with_page(pool, &target_id, |page| { // @evidence SPEC/10-REQUIREMENTS.html:2324
             cmd_evaluate(page, &expression, return_by_value).map_err(|e| e.to_string())
         }),
         BridgeCommand::RuntimeGetProperties {
             target_id,
             object_id,
             own_properties,
-        } => with_page(pool, &target_id, |page| { // @evidence .spec/10-REQUIREMENTS.html:2324
+        } => with_page(pool, &target_id, |page| { // @evidence SPEC/10-REQUIREMENTS.html:2324
             cmd_runtime_get_properties(page, &object_id, own_properties)
                 .map_err(|e| e.to_string())
         }),
@@ -213,26 +213,26 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::GetUrl { target_id } => with_page(pool, &target_id, cmd_get_url),
         // REQ-CDP-010: the per-load loader identity getFrameTree consumes —
         // the same registry row the navigate response reports.
-        BridgeCommand::GetLoaderId { target_id } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        BridgeCommand::GetLoaderId { target_id } => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             with_page(pool, &target_id, |page| {
                 Ok(serde_json::json!(page.webview_state().borrow().loader_id.clone()))
             })
         }
         // REQ-CDP-010: the CDP session-history journal (getNavigationHistory
         // face) — real observed entries, never a fabricated list.
-        BridgeCommand::GetNavigationHistory { target_id } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        BridgeCommand::GetNavigationHistory { target_id } => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             with_page(pool, &target_id, cmd_get_navigation_history)
         }
         // REQ-CDP-010: Runtime.addBinding / removeBinding — real page-global
         // bindings with bindingCalled delivery through the marker carrier.
-        BridgeCommand::RuntimeAddBinding { target_id, name } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        BridgeCommand::RuntimeAddBinding { target_id, name } => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             with_page(pool, &target_id, |page| cmd_add_binding(page, &name))
         }
-        BridgeCommand::RuntimeRemoveBinding { target_id, name } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        BridgeCommand::RuntimeRemoveBinding { target_id, name } => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             with_page(pool, &target_id, |page| cmd_remove_binding(page, &name))
         }
         // REQ-CDP-010: the opener relationship (TargetInfo.canAccessOpener).
-        BridgeCommand::GetTargetOpenerAccess { target_id } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        BridgeCommand::GetTargetOpenerAccess { target_id } => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             with_page(pool, &target_id, |page| {
                 Ok(serde_json::json!(
                     page.webview_state().borrow().opener_page_id.is_some()
@@ -240,7 +240,7 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             })
         }
         // REQ-CDP-010: Page.enable arms the DOMContentLoaded observability.
-        BridgeCommand::InstallDomContentHook { target_id } => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        BridgeCommand::InstallDomContentHook { target_id } => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             with_page(pool, &target_id, cmd_install_dom_content_hook)
         }
         BridgeCommand::GetDocument { target_id } => with_page(pool, &target_id, cmd_get_document),

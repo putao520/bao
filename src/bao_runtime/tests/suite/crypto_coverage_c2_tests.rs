@@ -28,17 +28,35 @@ const EC_PUB_HEX: &str = "04c42beccdc7705c6e25c1ce3c155849d18eafce7249526f53c3e0
 /// SPKI PEM of the same P-256 key pair.
 const EC_PUB_PEM: &str = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExCvszcdwXG4lwc48FVhJ0Y6vznJJ\nUm9Tw+DirJBxGPtnhboq0loZtDWSNd0+PLQA+5eissG3MPiK6YgUmn7aYw==\n-----END PUBLIC KEY-----";
 
-/// Production-shaped pump for async crypto callbacks (spawn_crypto_async
-/// tasklet delivery — same discipline as timer_crypto_pump_starvation_tests).
+/// Quiescent-pump delegate for async crypto callbacks (spawn_crypto_async
+/// tasklet delivery — same discipline as timer_crypto_pump_starvation_tests):
+/// the unified suite pump (`common::pump_until`) on a constant poll. Each
+/// tick runs all three actuators (realm-entered timer drain, MiniEventLoop
+/// tick, RunJobs) plus the `PumpStuck` no-progress tripwire. The
+/// loop-liveness verdict is folded into the eval closure (it holds
+/// `&mut JsContext`, the settle predicate is a pure string read): each
+/// poll first runs one extra `drain_and_check` to re-read the liveness
+/// sources, then prefixes the verdict to the poll string — once the loop
+/// is dead the production loop would exit, so the delegate settles
+/// immediately. The constant poll never changes, so a liveness verdict
+/// that never turns false trips `PumpStuck` at the 2s window instead of
+/// silently burning the deadline.
 fn pump_until_quiescent(ctx: &mut JsContext, deadline_ms: u64) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
-    while std::time::Instant::now() < deadline {
-        let mut cxm = ctx.cx();
-        if !bun_runtime::timers::drain_and_check(&mut cxm) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    common::pump_until(
+        ctx,
+        "'ok'",
+        std::time::Duration::from_millis(deadline_ms),
+        |c, s| {
+            let mut cxm = c.cx();
+            let alive = bun_runtime::timers::drain_and_check(&mut cxm);
+            format!(
+                "{}{}",
+                if alive { "ALIVE" } else { "DEAD" },
+                common::eval_string_full(c, s)
+            )
+        },
+        |poll| poll.starts_with("DEAD"),
+    );
 }
 
 /// Run `body` in a fresh realm and require every accumulated check to PASS.
@@ -95,7 +113,9 @@ fn pem_js(pem: &str) -> String {
 
 // ── createHash: 全算法 + 错误臂 + 编码形态 ─────────────────────────────────
 
-crypto_case!(c2_hash_algorithms_and_vectors, r#"
+crypto_case!(
+    c2_hash_algorithms_and_vectors,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -142,9 +162,12 @@ crypto_case!(c2_hash_algorithms_and_vectors, r#"
     ck("update_empty_uint8array", crypto.createHash('sha256').update(new Uint8Array(0)).digest('hex') ===
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     R.join('|');
-"#);
+"#
+);
 
-crypto_case!(c2_hash_error_branches, r#"
+crypto_case!(
+    c2_hash_error_branches,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -188,11 +211,14 @@ crypto_case!(c2_hash_error_branches, r#"
         "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"); }
     catch (e) { ck("hash_class_digest", false); }
     R.join('|');
-"#);
+"#
+);
 
 // ── createHmac: 全算法 + KeyObject key + 错误臂 ────────────────────────────
 
-crypto_case!(c2_hmac_algorithms, r#"
+crypto_case!(
+    c2_hmac_algorithms,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -221,9 +247,12 @@ crypto_case!(c2_hmac_algorithms, r#"
         "W9zBRr9gdU5qBCQmCJV1x1oAPwidJzmDnexYuWTsOEM=");
     ck("hmac_digest_unknown_enc_hex", crypto.createHmac('sha256', 'Jefe').update('what do ya want for nothing?').digest('bogus') === EXPECT);
     R.join('|');
-"#);
+"#
+);
 
-crypto_case!(c2_hmac_error_branches, r#"
+crypto_case!(
+    c2_hmac_error_branches,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -254,11 +283,14 @@ crypto_case!(c2_hmac_error_branches, r#"
         crypto.createHmac('sha256', 'k').digest.call(3);
     }) || "").indexOf("receiver") >= 0);
     R.join('|');
-"#);
+"#
+);
 
 // ── randomBytes / randomUUID / getRandomValues / randomInt / randomFill ────
 
-crypto_case!(c2_random_bytes_faces, r#"
+crypto_case!(
+    c2_random_bytes_faces,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -322,7 +354,8 @@ crypto_case!(c2_random_bytes_faces, r#"
     ck("rfs_no_args_throws", (thr(function(){ crypto.randomFillSync(); }) || "").indexOf("requires a buffer") >= 0);
     ck("rfs_non_ta_throws", (thr(function(){ crypto.randomFillSync({length: 4}); }) || "").indexOf("TypedArray") >= 0);
     R.join('|');
-"#);
+"#
+);
 
 #[test]
 fn c2_random_bytes_callback_form() {
@@ -382,7 +415,9 @@ fn c2_random_fill_callback_form() {
 
 // ── pbkdf2 / scrypt / hkdf / argon2 ────────────────────────────────────────
 
-crypto_case!(c2_pbkdf2_sync_faces, r#"
+crypto_case!(
+    c2_pbkdf2_sync_faces,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -406,7 +441,8 @@ crypto_case!(c2_pbkdf2_sync_faces, r#"
     ck("keylen_non_num_throws", (thr(function(){ crypto.pbkdf2Sync('p','s',1,null,'sha256'); }) || "").indexOf("keylen must be a number") >= 0);
     ck("digest_non_string_throws", (thr(function(){ crypto.pbkdf2Sync('p','s',1,32,null); }) || "").indexOf("digest must be a string") >= 0);
     R.join('|');
-"#);
+"#
+);
 
 #[test]
 fn c2_pbkdf2_async_faces() {
@@ -441,7 +477,9 @@ fn c2_pbkdf2_async_faces() {
     assert_eq!(verdict, "PASS", "pbkdf2 async: {verdict}");
 }
 
-crypto_case!(c2_scrypt_faces, r#"
+crypto_case!(
+    c2_scrypt_faces,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -463,7 +501,8 @@ crypto_case!(c2_scrypt_faces, r#"
     ck("pw_bad_type_throws", (thr(function(){ crypto.scryptSync(5,'s',8,{N:16,r:2,p:1}); }) || "").indexOf("password must be") >= 0);
     ck("salt_bad_type_throws", (thr(function(){ crypto.scryptSync('p',5,8,{N:16,r:2,p:1}); }) || "").indexOf("salt must be") >= 0);
     R.join('|');
-"#);
+"#
+);
 
 #[test]
 fn c2_scrypt_async_faces() {
@@ -492,7 +531,9 @@ fn c2_scrypt_async_faces() {
     assert_eq!(verdict, "PASS", "scrypt async: {verdict}");
 }
 
-crypto_case!(c2_hkdf_sync_faces, r#"
+crypto_case!(
+    c2_hkdf_sync_faces,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -527,7 +568,8 @@ crypto_case!(c2_hkdf_sync_faces, r#"
     ck("missing_args_throws", (thr(function(){ crypto.hkdfSync('sha256', Buffer.alloc(4), Buffer.alloc(0), Buffer.alloc(0)); }) || "").indexOf("requires") >= 0);
     ck("len_non_num_throws", (thr(function(){ crypto.hkdfSync('sha256', Buffer.alloc(4), Buffer.alloc(0), Buffer.alloc(0), 'x'); }) || "").indexOf("length must be a number") >= 0);
     R.join('|');
-"#);
+"#
+);
 
 #[test]
 fn c2_hkdf_async_faces() {
@@ -556,7 +598,9 @@ fn c2_hkdf_async_faces() {
     assert_eq!(verdict, "PASS", "hkdf async: {verdict}");
 }
 
-crypto_case!(c2_argon2_validation_matrix, r#"
+crypto_case!(
+    c2_argon2_validation_matrix,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -598,7 +642,8 @@ crypto_case!(c2_argon2_validation_matrix, r#"
     ck("passes_zero_code", code(function(){ crypto.argon2Sync('argon2id', { message: 'm', nonce: Buffer.alloc(16), parallelism: 1, tagLength: 32, memory: 32, passes: 0 }); }) === "ERR_OUT_OF_RANGE");
     ck("scalar_fractional_code", code(function(){ crypto.argon2Sync('argon2id', { message: 'm', nonce: Buffer.alloc(16), parallelism: 1.5, tagLength: 32, memory: 32, passes: 1 }); }) === "ERR_OUT_OF_RANGE");
     R.join('|');
-"#);
+"#
+);
 
 #[test]
 fn c2_argon2_async_faces() {
@@ -631,7 +676,9 @@ fn c2_argon2_async_faces() {
     assert_eq!(verdict, "PASS", "argon2 async: {verdict}");
 }
 
-crypto_case!(c2_argon2_callback_invalid, r#"
+crypto_case!(
+    c2_argon2_callback_invalid,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -648,11 +695,14 @@ crypto_case!(c2_argon2_callback_invalid, r#"
         crypto.argon2('argon2x', {}, function() {});
     }) === "ERR_INVALID_ARG_VALUE");
     R.join('|');
-"#);
+"#
+);
 
 // ── cipher / decipher ──────────────────────────────────────────────────────
 
-crypto_case!(c2_cipher_block_roundtrips, r#"
+crypto_case!(
+    c2_cipher_block_roundtrips,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -696,9 +746,12 @@ crypto_case!(c2_cipher_block_roundtrips, r#"
     var s6 = ce6.update(Buffer.from('two-arg form'), 'base64') + ce6.final('base64');
     ck("update_buf_outenc", typeof s6 === 'string' && s6.length > 0);
     R.join('|');
-"#);
+"#
+);
 
-crypto_case!(c2_cipher_aead_faces, r#"
+crypto_case!(
+    c2_cipher_aead_faces,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -770,11 +823,14 @@ crypto_case!(c2_cipher_aead_faces, r#"
         c9.setAAD();
     }) || "").indexOf("requires data") >= 0);
     R.join('|');
-"#);
+"#
+);
 
 // ── timingSafeEqual / getHashes / getCiphers / getCurves / getCipherInfo ───
 
-crypto_case!(c2_info_and_compare_faces, r#"
+crypto_case!(
+    c2_info_and_compare_faces,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -828,11 +884,14 @@ crypto_case!(c2_info_and_compare_faces, r#"
     ck("constants_point_conv", crypto.constants.POINT_CONVERSION_UNCOMPRESSED === 4);
     ck("constants_ssl_op", typeof crypto.constants.SSL_OP_NO_TLSv1_3 === 'number');
     R.join('|');
-"#);
+"#
+);
 
 // ── crypto.hash one-shot ───────────────────────────────────────────────────
 
-crypto_case!(c2_crypto_hash_one_shot, r#"
+crypto_case!(
+    c2_crypto_hash_one_shot,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -855,11 +914,14 @@ crypto_case!(c2_crypto_hash_one_shot, r#"
     ck("oneshot_unsupported_throws", (thr(function(){ crypto.hash('sha999', 'x'); }) || "").indexOf("unsupported algorithm") >= 0);
     ck("oneshot_unknown_enc_hex", crypto.hash('sha256', 'hello', 'what') === crypto.hash('sha256', 'hello', 'hex'));
     R.join('|');
-"#);
+"#
+);
 
 // ── Sign / Verify (HMAC + asymmetric true paths) ───────────────────────────
 
-crypto_case!(c2_sign_verify_hmac_faces, r#"
+crypto_case!(
+    c2_sign_verify_hmac_faces,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -905,9 +967,12 @@ crypto_case!(c2_sign_verify_hmac_faces, r#"
         var s6 = crypto.createSign('sha256'); s6.update(5); return typeof s6.sign('k', 'hex') === 'string';
     })());
     R.join('|');
-"#);
+"#
+);
 
-crypto_case!(c2_sign_verify_ed25519, r#"
+crypto_case!(
+    c2_sign_verify_ed25519,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -942,7 +1007,8 @@ crypto_case!(c2_sign_verify_ed25519, r#"
         catch (e) { return String((e && e.message) || e).indexOf("key") >= 0; }
     })());
     R.join('|');
-"#);
+"#
+);
 
 fn js_sign_verify_ec_rsa() -> String {
     subst(
@@ -995,7 +1061,9 @@ crypto_case!(c2_sign_verify_ec_and_rsa, js_sign_verify_ec_rsa());
 
 // ── KeyObject 全 export 矩阵 ───────────────────────────────────────────────
 
-crypto_case!(c2_secret_key_faces, r#"
+crypto_case!(
+    c2_secret_key_faces,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -1027,7 +1095,8 @@ crypto_case!(c2_secret_key_faces, r#"
     var ko = crypto.KeyObject(Buffer.from('abcd'), 'secret');
     ck("keyobject_ctor", ko.type === 'secret' && ko.export().toString() === 'abcd');
     R.join('|');
-"#);
+"#
+);
 
 fn js_asym_key_export_matrix() -> String {
     subst(
@@ -1100,13 +1169,18 @@ fn js_asym_key_export_matrix() -> String {
     ck("pub_from_priv", derived.type === 'public' && derived.asymmetricKeyType === 'rsa');
     R.join('|');
 "#,
-        &[("%RSA_PRIV%", &pem_js(RSA_KEY_PEM)), ("%EC_PRIV%", &pem_js(EC_KEY_PEM))],
+        &[
+            ("%RSA_PRIV%", &pem_js(RSA_KEY_PEM)),
+            ("%EC_PRIV%", &pem_js(EC_KEY_PEM)),
+        ],
     )
 }
 
 crypto_case!(c2_asym_key_export_matrix, js_asym_key_export_matrix());
 
-crypto_case!(c2_generate_keypair_sync_faces, r#"
+crypto_case!(
+    c2_generate_keypair_sync_faces,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -1140,7 +1214,8 @@ crypto_case!(c2_generate_keypair_sync_faces, r#"
     ck("unsupported_type_throws", (thr(function(){ crypto.generateKeyPairSync('dsa'); }) || "").indexOf("unsupported key type") >= 0);
     ck("bad_curve_throws", (thr(function(){ crypto.generateKeyPairSync('ec', { namedCurve: 'P-777' }); }) || "").indexOf("unsupported EC curve") >= 0);
     R.join('|');
-"#);
+"#
+);
 
 // ── ECDH / DH ──────────────────────────────────────────────────────────────
 
@@ -1182,16 +1257,15 @@ fn js_ecdh_faces() -> String {
     ck("plain_receiver_throws", (thr(function(){ a.getPublicKey.call({}); }) || "").indexOf("invalid receiver") >= 0);
     R.join('|');
 "#,
-        &[
-            ("%EC_PRIV_HEX%", EC_PRIV_HEX),
-            ("%EC_PUB_HEX%", EC_PUB_HEX),
-        ],
+        &[("%EC_PRIV_HEX%", EC_PRIV_HEX), ("%EC_PUB_HEX%", EC_PUB_HEX)],
     )
 }
 
 crypto_case!(c2_ecdh_faces, js_ecdh_faces());
 
-crypto_case!(c2_dh_faces, r#"
+crypto_case!(
+    c2_dh_faces,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -1231,11 +1305,14 @@ crypto_case!(c2_dh_faces, r#"
     ck("plain_receiver_throws", (thr(function(){ d1.getPrime.call({}); }) || "").indexOf("invalid diffiehellman receiver") >= 0);
     ck("diffiehellman_garbage_throws", (thr(function(){ crypto.diffieHellman(Buffer.alloc(4), Buffer.alloc(4)); }) || "").length > 0);
     R.join('|');
-"#);
+"#
+);
 
 // ── checkPrime / generatePrime ─────────────────────────────────────────────
 
-crypto_case!(c2_prime_faces, r#"
+crypto_case!(
+    c2_prime_faces,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -1259,7 +1336,8 @@ crypto_case!(c2_prime_faces, r#"
     ck("gen_non_num_throws", (thr(function(){ crypto.generatePrimeSync('x'); }) || "").indexOf("size must be a number") >= 0);
     ck("gen_too_small_throws", (thr(function(){ crypto.generatePrimeSync(1); }) || "").indexOf("at least 2") >= 0);
     R.join('|');
-"#);
+"#
+);
 
 #[test]
 fn c2_prime_and_checkprime_async() {
@@ -1298,7 +1376,9 @@ fn c2_prime_and_checkprime_async() {
     assert_eq!(verdict, "PASS", "prime async: {verdict}");
 }
 
-crypto_case!(c2_checkprime_no_cb_throws, r#"
+crypto_case!(
+    c2_checkprime_no_cb_throws,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function thr(fn) { try { fn(); return null; } catch (e) { return String((e && e.message) || e); } }
@@ -1308,7 +1388,8 @@ crypto_case!(c2_checkprime_no_cb_throws, r#"
         catch (e) { return " FAIL:" + e; }
     })()));
     R.join('|');
-"#);
+"#
+);
 
 // ── X509 / Certificate(SPKAC) ──────────────────────────────────────────────
 
@@ -1357,7 +1438,9 @@ fn js_x509_faces() -> String {
 
 crypto_case!(c2_x509_faces, js_x509_faces());
 
-crypto_case!(c2_certificate_spkac_faces, r#"
+crypto_case!(
+    c2_certificate_spkac_faces,
+    r#"
     var crypto = require('crypto');
     var R = [];
     function ck(label, ok) { R.push(label + (ok ? " PASS" : " FAIL")); }
@@ -1380,7 +1463,8 @@ crypto_case!(c2_certificate_spkac_faces, r#"
     ck("verify_pub_no_args_throws", (thr(function(){ cert.verifyPublicKey(); }) || "").indexOf("requires a key buffer") >= 0);
     ck("challenge_short_buf_empty", cert.exportChallenge(Buffer.from([0x30])) === "");
     R.join('|');
-"#);
+"#
+);
 
 // ── publicEncrypt / privateDecrypt(RSA 四面) ───────────────────────────────
 

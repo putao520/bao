@@ -22,7 +22,7 @@
 use bao_boringssl_bridge::connection::{TlsConnection, TlsState};
 use bao_boringssl_bridge::server::TlsServer;
 use bao_engine::context::JsContext;
-use bun_uws::ws_codec::{apply_mask, FrameDecoder, FrameEncoder};
+use bun_uws::ws_codec::{FrameDecoder, FrameEncoder, apply_mask};
 use bun_uws::ws_handshake::server_handshake;
 use mozjs::rooted;
 use std::io::{Read, Write};
@@ -33,31 +33,17 @@ mod common;
 
 use common::eval_str;
 
-
-/// Pump the event loop (timers + jobs + the WebSocket drain pump) until
-/// `probe` (a JS expression) evaluates truthy, or the budget runs out.
-/// Enters the thread's persistent realm first — the CLI eval loop invokes
-/// its drain hook inside the realm, and timer callbacks resolve through
-/// CurrentGlobalOrNull.
+// @trace REQ-ENG-010
+/// Settle-pump delegate: unified suite pump (`common::pump_until`) evaluating
+/// `Boolean(probe)` until truthy (the file's settle shape) or budget expiry.
 fn pump_until(ctx: &mut JsContext, probe: &str, budget_ms: u64) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_millis(budget_ms);
-    while std::time::Instant::now() < deadline {
-        let mut cxm = ctx.cx();
-        let global = bao_engine::context::thread_realm_global();
-        if let Some(g) = global {
-            rooted!(&in(cxm) let g_root = g);
-            let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-            bun_runtime::timers::drain_and_check(realm_cx);
-        } else {
-            bun_runtime::timers::drain_and_check(&mut cxm);
-        }
-        if eval_str(ctx, &format!("Boolean({})", probe)) == "true" {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    false
+    common::pump_until(
+        ctx,
+        &format!("Boolean({})", probe),
+        Duration::from_millis(budget_ms),
+        common::eval_str,
+        |p| p == "true",
+    ) == "true"
 }
 
 // ── Test servers ──────────────────────────────────────────────────────────
@@ -160,7 +146,7 @@ impl ServerTlsIo {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "peer closed during tls handshake",
-                    ))
+                    ));
                 }
                 Ok(n) => tls.feed(&buf[..n]),
                 Err(e) => return Err(e),
@@ -191,7 +177,7 @@ impl ServerTlsIo {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "tls peer closed",
-                    ))
+                    ));
                 }
                 Ok(n) => self.tls.feed(&buf[..n]),
                 Err(e) => return Err(e),
@@ -253,10 +239,9 @@ fn serve_tls_connection(
         eprintln!("[wss-server] tls handshake failed: {:?}", e);
         return;
     }
-    resumed
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push(bao_boringssl_bridge::session_cache::session_reused(tls.ssl_ptr()));
+    resumed.lock().unwrap_or_else(|e| e.into_inner()).push(
+        bao_boringssl_bridge::session_cache::session_reused(tls.ssl_ptr()),
+    );
     let mut io = ServerTlsIo {
         tcp,
         tls,
@@ -777,7 +762,11 @@ fn wss_egress_profile_resolves_keyed_before_thread_local() {
         "#,
         port
     );
-    assert_eq!(eval_str(&mut ctx, &setup), "done", "constructor eval failed");
+    assert_eq!(
+        eval_str(&mut ctx, &setup),
+        "done",
+        "constructor eval failed"
+    );
     let done = pump_until(&mut ctx, "wsLog.indexOf('close') >= 0", 8_000);
     let log = eval_str(&mut ctx, "wsLog.join('|')");
     assert!(

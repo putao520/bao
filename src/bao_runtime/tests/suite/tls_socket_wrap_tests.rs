@@ -26,9 +26,6 @@ use std::time::{Duration, Instant};
 
 use bao_boringssl_bridge::{TlsServer, generate_self_signed_pem};
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
-use mozjs::realm::AutoRealm;
-use mozjs::rooted;
 #[path = "common/mod.rs"]
 mod common;
 
@@ -43,56 +40,26 @@ fn make_ctx() -> JsContext {
     ctx
 }
 
-/// One pump pass: realm-entered timer drain (dispatches the net poll
-/// chain's setTimeout callbacks — pumping timers from bare Rust outside any
-/// entered realm silently drops them, net_echo_e2e_tests) + MiniEventLoop
-/// tick (ConcurrentTask dispatch for the TLS tasklet) + microjobs. Same
-/// combined shape as net_tls_fetch_retention_tests::pump_until_settled —
-/// this suite needs BOTH faces (net timers + tls tasklets).
-fn pump_once(ctx: &mut JsContext) {
-    let cx_raw = ctx.raw_cx();
-    {
-        let mut cxm = ctx.cx();
-        let global = bao_engine::context::thread_realm_global();
-        if let Some(g) = global {
-            rooted!(&in(cxm) let g_root = g);
-            let mut realm = AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-            bun_runtime::timers::drain_and_check(realm_cx);
-        } else {
-            bun_runtime::timers::drain_and_check(&mut cxm);
-        }
-    }
-    bun_runtime::timers::with_event_loop(|loop_| {
-        loop_.tick_without_idle(std::ptr::null_mut());
-    });
-    unsafe {
-        mozjs_sys::jsapi::js::RunJobs(cx_raw);
-    }
-    std::thread::sleep(Duration::from_millis(2));
-}
-
-/// Deadline-based pump until `cond` holds (bounded wait, never infinite).
-fn pump_until(ctx: &mut JsContext, timeout: Duration, cond: impl Fn(&mut JsContext) -> bool) -> bool {
-    let deadline = Instant::now() + timeout;
-    while !cond(ctx) {
-        if Instant::now() >= deadline {
-            return false;
-        }
-        pump_once(ctx);
-    }
-    true
-}
-
-
-/// Evaluate a JS expression that must yield a boolean.
-fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
-    matches!(ctx.eval(source, "<test>"), Ok(JsValue::Bool(true)))
+// @trace REQ-ENG-010
+/// Settle-pump delegate: unified suite pump (`common::pump_until`) evaluating
+/// `Boolean(cond_js)` until truthy or timeout expiry. The historical
+/// `pump_once` + `pump_until` pair (net timers + TLS tasklets) is replaced
+/// by the unified pump's three-actuator tick.
+fn pump_until(ctx: &mut JsContext, timeout: Duration, cond_js: &str) -> bool {
+    common::pump_until(
+        ctx,
+        &format!("Boolean({})", cond_js),
+        timeout,
+        common::eval_string,
+        |p| p == "true",
+    ) == "true"
 }
 
 /// Escape a string for embedding in a JS double-quoted string literal.
 fn js_str(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\"")
+    s.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('"', "\\\"")
 }
 
 // ── STARTTLS fixture protocol markers ──────────────────────────────────
@@ -126,7 +93,9 @@ fn starttls_serve_conn(mut stream: TcpStream, cert: &str, key: &str, got: Arc<Mu
         return;
     }
     // 3. TLS upgrade on the same stream.
-    let Ok(server) = TlsServer::new(cert, key) else { return };
+    let Ok(server) = TlsServer::new(cert, key) else {
+        return;
+    };
     let Ok(mut tls) = server.accept() else { return };
     let mut decrypted = Vec::new();
     let mut saw_upgrade = false;
@@ -140,7 +109,10 @@ fn starttls_serve_conn(mut stream: TcpStream, cert: &str, key: &str, got: Arc<Mu
                 for chunk in &res.plaintext {
                     decrypted.extend_from_slice(chunk);
                 }
-                if !saw_upgrade && decrypted.windows(POST_UPGRADE.len()).any(|w| w == POST_UPGRADE)
+                if !saw_upgrade
+                    && decrypted
+                        .windows(POST_UPGRADE.len())
+                        .any(|w| w == POST_UPGRADE)
                 {
                     saw_upgrade = true;
                     // The parked pre-handshake write arrived decrypted over
@@ -257,9 +229,7 @@ fn wrap_c1_upgrade_over_existing_conn() {
         sock.write('PRE-HELLO');
         "#,
     );
-    let done = pump_until(&mut ctx, Duration::from_secs(10), |c| {
-        eval_bool(c, "globalThis.__wrapDone")
-    });
+    let done = pump_until(&mut ctx, Duration::from_secs(10), "globalThis.__wrapDone");
     let dbg = eval_string(&mut ctx, "globalThis.__dbg.join(' > ')");
     assert!(done, "C1: upgrade never completed (trace: {:?})", dbg);
     // secureConnect fired with a real negotiated protocol (C1+C2 face).
@@ -333,9 +303,7 @@ fn wrap_c2_secure_connect_authorized() {
         upgrade(false);
         "#,
     );
-    let done = pump_until(&mut ctx, Duration::from_secs(10), |c| {
-        eval_bool(c, "globalThis.__done >= 2")
-    });
+    let done = pump_until(&mut ctx, Duration::from_secs(10), "globalThis.__done >= 2");
     let dbg = eval_string(&mut ctx, "globalThis.__dbg.join(' > ')");
     assert!(done, "C2: both upgrades never completed (trace: {:?})", dbg);
     assert!(
@@ -421,11 +389,13 @@ fn wrap_c3_plaintext_phase_buffered() {
         }, 250);
         "#,
     );
-    let done = pump_until(&mut ctx, Duration::from_secs(10), |c| {
-        eval_bool(c, "globalThis.__wrapDone")
-    });
+    let done = pump_until(&mut ctx, Duration::from_secs(10), "globalThis.__wrapDone");
     let dbg = eval_string(&mut ctx, "globalThis.__dbg.join(' > ')");
-    assert!(done, "C3: buffered-upgrade flow never completed (trace: {:?})", dbg);
+    assert!(
+        done,
+        "C3: buffered-upgrade flow never completed (trace: {:?})",
+        dbg
+    );
     let order = eval_string(&mut ctx, "globalThis.__order");
     // The plaintext-phase payload is re-delivered BEFORE secureConnect
     // (FIFO through the same event channel — nothing lost, order kept).

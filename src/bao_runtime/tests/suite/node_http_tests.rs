@@ -11,30 +11,17 @@ mod common;
 
 use common::eval_string;
 
-
-/// Pump the unified event loop (uWS sockets + timers + jobs + microtasks) —
-/// same shape as p0_http_client_ws_tls_tests.
-fn pump(ctx: &mut JsContext, passes: usize) {
-    for _ in 0..passes {
-        let cx_raw = ctx.raw_cx();
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        let mut cxm = ctx.cx();
-        bun_runtime::timers::drain_and_check(&mut cxm);
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
-
-fn drive_until(ctx: &mut JsContext, timeout: Duration, cond: impl Fn(&mut JsContext) -> bool) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    while !cond(ctx) {
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        pump(ctx, 5);
-    }
-    true
+// @trace REQ-ENG-010
+/// Settle-pump delegate: unified suite pump (`common::pump_until`) evaluating
+/// `Boolean(cond_js)` until truthy or timeout expiry.
+fn drive_until(ctx: &mut JsContext, timeout: Duration, cond_js: &str) -> bool {
+    common::pump_until(
+        ctx,
+        &format!("Boolean({})", cond_js),
+        timeout,
+        common::eval_string,
+        |p| p == "true",
+    ) == "true"
 }
 
 /// Raw-wire GET alternating loop pumps with short-timeout reads (the server
@@ -43,7 +30,8 @@ fn drive_until(ctx: &mut JsContext, timeout: Duration, cond: impl Fn(&mut JsCont
 /// (headers, body) with the exact bytes off the socket.
 fn raw_get(ctx: &mut JsContext, port: u16, path: &str) -> (String, Vec<u8>) {
     let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-    s.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    s.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
     write!(
         s,
         "GET {} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
@@ -53,7 +41,7 @@ fn raw_get(ctx: &mut JsContext, port: u16, path: &str) -> (String, Vec<u8>) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     for _ in 0..50 {
-        pump(ctx, 2);
+        common::drive_event_loop(ctx, 2);
         match s.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
@@ -185,11 +173,13 @@ fn test_node_http_server_binary_bodies_wire_exact() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
     // run it in a bounded child so the shared-process harness survives
     // to report the failure (crash class).
-    crate::exit_isolation::dispatch_timeout("node_http_tests::test_node_http_server_binary_bodies_wire_exact", test_node_http_server_binary_bodies_wire_exact_body);
+    crate::exit_isolation::dispatch_timeout(
+        "node_http_tests::test_node_http_server_binary_bodies_wire_exact",
+        test_node_http_server_binary_bodies_wire_exact_body,
+    );
 }
 
 fn test_node_http_server_binary_bodies_wire_exact_body() {
-
     bun_runtime::install_exit_handler();
     bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();
@@ -218,9 +208,9 @@ fn test_node_http_server_binary_bodies_wire_exact_body() {
         String(srv.address().port)
     "#,
     );
-    let port: u16 = port_str.parse().unwrap_or_else(|_| {
-        panic!("binary-body server listen(0) failed: {}", port_str)
-    });
+    let port: u16 = port_str
+        .parse()
+        .unwrap_or_else(|_| panic!("binary-body server listen(0) failed: {}", port_str));
 
     let expected_bin: Vec<u8> = (0..=255u8).collect();
     let cases: &[(&str, Vec<u8>)] = &[
@@ -232,7 +222,12 @@ fn test_node_http_server_binary_bodies_wire_exact_body() {
     ];
     for (path, want) in cases {
         let (head, body) = raw_get(&mut ctx, port, path);
-        assert!(head.starts_with("HTTP/1.1 200"), "{} status: {:?}", path, head);
+        assert!(
+            head.starts_with("HTTP/1.1 200"),
+            "{} status: {:?}",
+            path,
+            head
+        );
         assert_eq!(
             content_length(&head),
             Some(want.len()),
@@ -257,11 +252,13 @@ fn test_node_http_client_data_chunks_buffer_byte_exact() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
     // run it in a bounded child so the shared-process harness survives
     // to report the failure (crash class).
-    crate::exit_isolation::dispatch_timeout("node_http_tests::test_node_http_client_data_chunks_buffer_byte_exact", test_node_http_client_data_chunks_buffer_byte_exact_body);
+    crate::exit_isolation::dispatch_timeout(
+        "node_http_tests::test_node_http_client_data_chunks_buffer_byte_exact",
+        test_node_http_client_data_chunks_buffer_byte_exact_body,
+    );
 }
 
 fn test_node_http_client_data_chunks_buffer_byte_exact_body() {
-
     bun_runtime::install_exit_handler();
     bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();
@@ -300,9 +297,11 @@ fn test_node_http_client_data_chunks_buffer_byte_exact_body() {
     );
     assert!(port_str.parse::<u16>().is_ok(), "listen: {}", port_str);
 
-    let ok = drive_until(&mut ctx, Duration::from_secs(8), |ctx| {
-        eval_string(ctx, "globalThis.binGot !== null && globalThis.encGot !== null ? 'y' : 'n'") == "y"
-    });
+    let ok = drive_until(
+        &mut ctx,
+        Duration::from_secs(8),
+        "globalThis.binGot !== null && globalThis.encGot !== null",
+    );
     assert!(ok, "binary client roundtrip never settled");
 
     let mut expected_hex = String::with_capacity(512);
@@ -367,10 +366,7 @@ fn test_node_http_client_binary_request_body_wire_exact() {
                     }
                 }
                 match s.read(&mut chunk) {
-                    Ok(0) => break (
-                        String::from_utf8_lossy(&buf).into_owned(),
-                        Vec::new(),
-                    ),
+                    Ok(0) => break (String::from_utf8_lossy(&buf).into_owned(), Vec::new()),
                     Ok(n) => buf.extend_from_slice(&chunk[..n]),
                     Err(ref e)
                         if e.kind() == std::io::ErrorKind::WouldBlock
@@ -382,7 +378,8 @@ fn test_node_http_client_binary_request_body_wire_exact() {
                 }
             };
             cap.lock().unwrap().push((head, body));
-            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+            let _ =
+                s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
             let _ = s.flush();
         }
     });
@@ -430,12 +427,11 @@ fn test_node_http_client_binary_request_body_wire_exact() {
     );
     assert_eq!(setup, "setup");
 
-    let ok = drive_until(&mut ctx, Duration::from_secs(8), |ctx| {
-        eval_string(
-            ctx,
-            "globalThis.n1 !== null && globalThis.n2 !== null && globalThis.n3 !== null ? 'y' : 'n'",
-        ) == "y"
-    });
+    let ok = drive_until(
+        &mut ctx,
+        Duration::from_secs(8),
+        "globalThis.n1 !== null && globalThis.n2 !== null && globalThis.n3 !== null",
+    );
     assert!(ok, "binary request roundtrips never settled");
     for (flag, label) in [("n1", "one"), ("n2", "two"), ("n3", "three")] {
         assert_eq!(
@@ -447,7 +443,12 @@ fn test_node_http_client_binary_request_body_wire_exact() {
     }
 
     let caps = captured.lock().unwrap();
-    assert_eq!(caps.len(), 3, "capture listener saw {} requests", caps.len());
+    assert_eq!(
+        caps.len(),
+        3,
+        "capture listener saw {} requests",
+        caps.len()
+    );
     let expected_all: Vec<u8> = (0..=255u8).collect();
     let expected_strbin: Vec<u8> = vec![0x61, 0x62, 0x00, 0xff, 0x63, 0x64];
     let wants = [
@@ -570,12 +571,11 @@ fn test_node_http2_client_binary_body_roundtrip() {
     );
     assert_eq!(setup, "setup");
 
-    let ok = drive_until(&mut ctx, Duration::from_secs(8), |ctx| {
-        eval_string(
-            ctx,
-            "globalThis.h2ended !== null || globalThis.h2err !== null ? 'y' : 'n'",
-        ) == "y"
-    });
+    let ok = drive_until(
+        &mut ctx,
+        Duration::from_secs(8),
+        "globalThis.h2ended !== null || globalThis.h2err !== null",
+    );
     assert!(ok, "http2 binary roundtrip never settled");
 
     assert_eq!(
@@ -608,7 +608,10 @@ fn test_node_http2_client_binary_body_roundtrip() {
         "http2 request Content-Length must match the Buffer body"
     );
     let expected_all: Vec<u8> = (0..=255u8).collect();
-    assert_eq!(body, &expected_all, "http2 request wire bytes must be exact");
+    assert_eq!(
+        body, &expected_all,
+        "http2 request wire bytes must be exact"
+    );
     bun_runtime::shutdown_thread_sm();
 }
 
@@ -650,9 +653,10 @@ fn test_node_http_thrown_dispatch_liveness() {
         String(srv.address().port)
     "#,
     );
-    let port: u16 = port_str.trim().parse().unwrap_or_else(|_| {
-        panic!("listen(0) failed: {}", port_str)
-    });
+    let port: u16 = port_str
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("listen(0) failed: {}", port_str));
 
     // 1. The throwing request gets an explicit observable terminal (500),
     //    not a crash and not silence.
@@ -690,7 +694,8 @@ fn test_node_http_thrown_dispatch_liveness() {
     //    into a failed handler), and the server answers the NEXT
     //    connection — no wedge.
     let mut s = TcpStream::connect(("127.0.0.1", port)).expect("pipelined connect");
-    s.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    s.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
     let pipelined = format!(
         "GET /boom HTTP/1.1\r\nHost: x\r\n\r\nGET /after HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
     );
@@ -698,7 +703,7 @@ fn test_node_http_thrown_dispatch_liveness() {
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
     for _ in 0..50 {
-        pump(&mut ctx, 2);
+        common::drive_event_loop(&mut ctx, 2);
         match s.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => buf.extend_from_slice(&chunk[..n]),

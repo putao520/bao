@@ -126,16 +126,14 @@ fn tmp_path(name: &str) -> String {
 }
 
 /// Poll a JS condition that yields "y"/"n", draining microtasks (promise
-/// continuations) and the unified loop each pass.
+/// continuations) and the unified loop each pass. Settle-pump delegate of
+/// the unified suite pump (`common::pump_until`): one unified-pump tick per
+/// poll round (the historical `drive_event_loop_drain(ctx, 3)` idiom is
+/// superseded by the pump's single realm-aware tick) plus the `PumpStuck`
+/// no-progress tripwire.
 fn poll_until(ctx: &mut JsContext, cond: &str, iters: u32) -> bool {
-    for _ in 0..iters {
-        if eval_string(ctx, cond) == "y" {
-            return true;
-        }
-        common::drive_event_loop_drain(ctx, 3);
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    eval_string(ctx, cond) == "y"
+    let budget = Duration::from_millis((iters as u64).saturating_mul(7));
+    common::pump_until(ctx, cond, budget, eval_string, |v| v == "y") == "y"
 }
 
 /// One raw HTTP/1.1 GET/POST against the in-process serve, pumping the loop
@@ -148,7 +146,15 @@ fn raw_http(ctx: &mut JsContext, port: u16, request: &str) -> String {
     let mut buf = [0u8; 8192];
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
-        drive_event_loop(ctx, 3);
+        // Fixed-pass loop pump (unified settle-pump tick per attempt) — uWS
+        // dispatches only while the loop ticks.
+        common::pump_until(
+            ctx,
+            "'pumping'",
+            Duration::from_millis(15),
+            eval_string,
+            |_| false,
+        );
         match sock.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => out.extend_from_slice(&buf[..n]),
@@ -180,55 +186,27 @@ fn raw_http(ctx: &mut JsContext, port: u16, request: &str) -> String {
 /// GlobalObject::getPlainObjectShapeWithDefaultProto (R-A9). Every dispatch
 /// path (ws_on_upgrade / ws_on_open / ws_on_message / client pump) must
 /// enter the persistent realm itself, so a regression here crashes the test
-/// process — the crash-class oracle pin.
+/// process — the crash-class oracle pin. Settle-pump delegate of the unified
+/// suite pump (`common::pump_until`) on a `'y'`-marker poll; when no thread
+/// realm global is registered the pump's realm-aware drain leg degenerates
+/// to a realm-less `drain_and_check` — byte-equivalent to the historical
+/// bare-tick body — plus the `PumpStuck` no-progress tripwire.
 fn poll_until_bare(ctx: &mut JsContext, cond: &str, iters: u32) -> bool {
-    for _ in 0..iters {
-        if eval_string(ctx, cond) == "y" {
-            return true;
-        }
-        let raw_cx = ctx.raw_cx();
-        {
-            let mut cxm = ctx.cx();
-            bun_runtime::timers::drain_and_check(&mut cxm);
-        }
-        bun_runtime::timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(raw_cx);
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    eval_string(ctx, cond) == "y"
+    let budget = Duration::from_millis((iters as u64).saturating_mul(7));
+    common::pump_until(ctx, cond, budget, eval_string, |v| v == "y") == "y"
 }
 
 /// Realm-wrapping poll for WebSocket faces that also exercise the client
 /// send/receive path under an entered realm (the production script-thread
 /// shape). Kept for the send/ping/close sequence; the upgrade-path realm
-/// gate itself is pinned by [`poll_until_bare`].
+/// gate itself is pinned by [`poll_until_bare`]. Settle-pump delegate of the
+/// unified suite pump (`common::pump_until`): the pump's realm-aware drain
+/// leg enters the thread realm global and ticks drain+MiniEventLoop+RunJobs
+/// inside it (the historical `poll_until_realm` body verbatim) plus the
+/// `PumpStuck` no-progress tripwire.
 fn poll_until_realm(ctx: &mut JsContext, cond: &str, iters: u32) -> bool {
-    for _ in 0..iters {
-        if eval_string(ctx, cond) == "y" {
-            return true;
-        }
-        {
-            let mut cxm = ctx.cx();
-            if let Some(g) = bao_engine::context::thread_realm_global() {
-                rooted!(&in(cxm) let g_root = g);
-                let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-                let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-                bun_runtime::timers::drain_and_check(realm_cx);
-                bun_runtime::timers::with_event_loop(|loop_| {
-                    loop_.tick_without_idle(std::ptr::null_mut());
-                });
-                unsafe {
-                    mozjs_sys::jsapi::js::RunJobs(realm_cx.raw_cx());
-                }
-            }
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    eval_string(ctx, cond) == "y"
+    let budget = Duration::from_millis((iters as u64).saturating_mul(7));
+    common::pump_until(ctx, cond, budget, eval_string, |v| v == "y") == "y"
 }
 
 /// Complete the server side of the RFC 6455 upgrade on a raw loopback
@@ -362,14 +340,17 @@ fn c12_spawn_command_shapes_deliver_stdout() {
     assert_eq!(setup, "undefined", "spawn shapes setup must eval clean");
 
     let done = poll_until(&mut ctx, r#"globalThis.__shapes !== "" ? "y" : "n""#, 600);
-    assert!(done, "spawn shapes must settle — got: {}", eval_string(&mut ctx, "globalThis.__shapes"));
+    assert!(
+        done,
+        "spawn shapes must settle — got: {}",
+        eval_string(&mut ctx, "globalThis.__shapes")
+    );
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__shapes"),
         "arr:0:arr-form|obj:0:obj-alias|split:0:split-form",
         "all three command shapes run the real binary with exit 0 and captured stdout"
     );
 }
-
 
 /// proc.wait() (bounded synchronous native pump) + proc._pollExitInfo()
 /// publish the pump's exit info and mirror the code onto the exitCode
@@ -394,15 +375,22 @@ fn c12_spawn_wait_and_poll_exit_info() {
     );
     assert_eq!(setup, "undefined", "wait setup must eval clean");
 
-    let done = poll_until(&mut ctx, r#"globalThis.__waitReport !== "" ? "y" : "n""#, 600);
-    assert!(done, "wait report must settle — got: {}", eval_string(&mut ctx, "globalThis.__waitReport"));
+    let done = poll_until(
+        &mut ctx,
+        r#"globalThis.__waitReport !== "" ? "y" : "n""#,
+        600,
+    );
+    assert!(
+        done,
+        "wait report must settle — got: {}",
+        eval_string(&mut ctx, "globalThis.__waitReport")
+    );
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__waitReport"),
         "wait=0;poll=true:0;exitCodeProp=0",
         "wait/poll publish (0,…) for a clean exit; exitCode prop mirrors"
     );
 }
-
 
 /// kill(signal-name) arm (9265-9273): a named signal kills the child; the
 /// pump publishes a signal death as exit code -1 (subproc_wait contract),
@@ -426,15 +414,22 @@ fn c12_spawn_kill_signal_name_signal_death_is_minus_one() {
     );
     assert_eq!(setup, "undefined", "kill setup must eval clean");
 
-    let done = poll_until(&mut ctx, r#"globalThis.__killReport !== "" ? "y" : "n""#, 600);
-    assert!(done, "kill report must settle — got: {}", eval_string(&mut ctx, "globalThis.__killReport"));
+    let done = poll_until(
+        &mut ctx,
+        r#"globalThis.__killReport !== "" ? "y" : "n""#,
+        600,
+    );
+    assert!(
+        done,
+        "kill report must settle — got: {}",
+        eval_string(&mut ctx, "globalThis.__killReport")
+    );
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__killReport"),
         "sent=true;code=-9",
         "named signal sent; signal death publishes -<signal> (-9 for SIGKILL).          REGISTRY R-A8: subproc_wait's doc comment claims signal deaths → -1; the observed          publish is -<signal>"
     );
 }
-
 
 // ──────────────────── process edges ────────────────────
 
@@ -460,16 +455,17 @@ fn c12_process_next_tick_order() {
     );
     assert_eq!(report, "queued");
 
-    // Pump the loop so timers/microtasks/next-tick queue drain.
-    {
-        let mut cxm = ctx.cx();
-        for _ in 0..20 {
-            unsafe {
-                mozjs_sys::jsapi::js::RunJobs(cxm.raw_cx());
-            }
-            let _ = bun_runtime::timers::drain_and_check(&mut cxm);
-            std::thread::sleep(Duration::from_millis(2));
-        }
+    // Pump the loop so timers/microtasks/next-tick queue drain (unified
+    // settle-pump ticks; the historical RunJobs-first order was not
+    // load-bearing — the settle contract is the actuator set).
+    for _ in 0..20 {
+        common::pump_until(
+            &mut ctx,
+            "'pumping'",
+            Duration::from_millis(2),
+            eval_string,
+            |_| false,
+        );
     }
 
     let order = eval_string(&mut ctx, "globalThis.__order.join(',')");
@@ -485,10 +481,20 @@ fn c12_process_next_tick_order() {
 fn c12_bun_exit_sets_request_flag() {
     let mut ctx = make_ctx();
 
-    assert!(!bun_runtime::should_exit(), "fresh context must not request exit");
+    assert!(
+        !bun_runtime::should_exit(),
+        "fresh context must not request exit"
+    );
     assert_eq!(eval_string(&mut ctx, "String(Bun.exit(7))"), "undefined");
-    assert!(bun_runtime::should_exit(), "Bun.exit must raise the exit flag");
-    assert_eq!(bun_runtime::exit_code(), 7, "exit code travels to the Rust side");
+    assert!(
+        bun_runtime::should_exit(),
+        "Bun.exit must raise the exit flag"
+    );
+    assert_eq!(
+        bun_runtime::exit_code(),
+        7,
+        "exit code travels to the Rust side"
+    );
 }
 
 // ──────────────────── Bun.serve faces ────────────────────
@@ -518,10 +524,21 @@ fn c12_serve_server_ref_unref_keep_serving() {
         "undefined|undefined|true",
         "ref/unref return undefined; port bound"
     );
-    let resp = raw_http(&mut ctx, port, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
-    assert_eq!(status_line_of(&resp), "HTTP/1.1 200 OK", "serving after ref/unref — got: {resp}");
+    let resp = raw_http(
+        &mut ctx,
+        port,
+        "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
+    assert_eq!(
+        status_line_of(&resp),
+        "HTTP/1.1 200 OK",
+        "serving after ref/unref — got: {resp}"
+    );
     assert!(resp.contains("refaced"), "body round-trips — got: {resp}");
-    assert_eq!(eval_string(&mut ctx, "String(typeof srv.stop === 'function')"), "true");
+    assert_eq!(
+        eval_string(&mut ctx, "String(typeof srv.stop === 'function')"),
+        "true"
+    );
     eval_string(&mut ctx, "srv.stop()");
     drive_event_loop(&mut ctx, 10);
 }
@@ -562,7 +579,10 @@ fn c12_serve_status_line_matrix() {
         let resp = raw_http(
             &mut ctx,
             port,
-            &format!("GET /{} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", code),
+            &format!(
+                "GET /{} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+                code
+            ),
         );
         let status_line = status_line_of(&resp);
         let expected = if reason.is_empty() {
@@ -575,7 +595,10 @@ fn c12_serve_status_line_matrix() {
             "status {code} must wire '{expected}' — full response:\n{resp}"
         );
         if code != 204 {
-            assert!(resp.contains(&format!("b-{}", code)), "body must round-trip for {code}");
+            assert!(
+                resp.contains(&format!("b-{}", code)),
+                "body must round-trip for {code}"
+            );
         }
     }
     eval_string(&mut ctx, "srv.stop()");
@@ -613,8 +636,15 @@ fn c12_serve_default_echo_uppercases_method() {
         resp.contains("\"method\":\"POST\"") && resp.contains("\"url\":\"/nope\""),
         "default echo reports uppercase method + url — got:\n{resp}"
     );
-    let resp = raw_http(&mut ctx, port, "GET /q HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
-    assert!(resp.contains("\"method\":\"GET\""), "GET arm — got:\n{resp}");
+    let resp = raw_http(
+        &mut ctx,
+        port,
+        "GET /q HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        resp.contains("\"method\":\"GET\""),
+        "GET arm — got:\n{resp}"
+    );
     eval_string(&mut ctx, "srv.stop()");
     drive_event_loop(&mut ctx, 10);
 }
@@ -649,7 +679,11 @@ fn c12_serve_route_throw_500_and_uncaught_routing() {
     .parse()
     .expect("bound port");
 
-    let resp = raw_http(&mut ctx, port, "GET /boom HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let resp = raw_http(
+        &mut ctx,
+        port,
+        "GET /boom HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
     assert!(
         eval_string(&mut ctx, "globalThis.__boomSeen").contains("/boom"),
         "the throwing route must have been dispatched — saw: {}",
@@ -659,8 +693,15 @@ fn c12_serve_route_throw_500_and_uncaught_routing() {
         status_line_of(&resp).starts_with("HTTP/1.1 500"),
         "throwing route → 500 — full response:\n{resp}"
     );
-    let after = raw_http(&mut ctx, port, "GET /ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
-    assert!(after.contains("fine"), "server survives a route throw — got:\n{after}");
+    let after = raw_http(
+        &mut ctx,
+        port,
+        "GET /ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        after.contains("fine"),
+        "server survives a route throw — got:\n{after}"
+    );
     // R-A7 oracle: the throwing route answers 500, the server survives, AND
     // the captured pending exception reaches process.on("uncaughtException")
     // (Node semantics; symmetric with the listen-side invoke_js_callback).
@@ -776,8 +817,7 @@ fn c12_bun_resolve_faces() {
         "#,
     );
     assert_eq!(
-        report,
-        "true|pkg=THREW:Cannot resolve 'c12-no-such-pk",
+        report, "true|pkg=THREW:Cannot resolve 'c12-no-such-pk",
         "dot-relative lexical join + package-miss throw"
     );
 }
@@ -827,7 +867,11 @@ fn c12_bun_build_options_matrix() {
     );
     assert_eq!(setup, "undefined", "build setup must eval clean");
 
-    let done = poll_until(&mut ctx, r#"globalThis.__buildReport !== "" ? "y" : "n""#, 600);
+    let done = poll_until(
+        &mut ctx,
+        r#"globalThis.__buildReport !== "" ? "y" : "n""#,
+        600,
+    );
     assert!(done, "build report must settle");
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__buildReport"),
@@ -876,7 +920,11 @@ fn c12_file_writer_sink_lifecycle() {
         ),
     );
 
-    let done = poll_until(&mut ctx, r#"globalThis.__sinkReport !== "" ? "y" : "n""#, 600);
+    let done = poll_until(
+        &mut ctx,
+        r#"globalThis.__sinkReport !== "" ? "y" : "n""#,
+        600,
+    );
     assert!(done, "sink report must settle");
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__sinkReport"),
@@ -912,7 +960,11 @@ fn c12_bun_write_overwrite_and_error_arm() {
         ),
     );
 
-    let done = poll_until(&mut ctx, r#"globalThis.__writeReport !== "" ? "y" : "n""#, 600);
+    let done = poll_until(
+        &mut ctx,
+        r#"globalThis.__writeReport !== "" ? "y" : "n""#,
+        600,
+    );
     assert!(done, "write report must settle");
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__writeReport"),
@@ -949,7 +1001,11 @@ fn c12_file_exists_and_slice_clamps() {
         ),
     );
 
-    let done = poll_until(&mut ctx, r#"globalThis.__sliceReport !== "" ? "y" : "n""#, 600);
+    let done = poll_until(
+        &mut ctx,
+        r#"globalThis.__sliceReport !== "" ? "y" : "n""#,
+        600,
+    );
     assert!(done, "slice report must settle");
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__sliceReport"),
@@ -980,8 +1036,7 @@ fn c12_concat_array_buffers_arraylike_and_total() {
         "#,
     );
     assert_eq!(
-        report,
-        "1,2,3|1,2,3,0,0|1,2",
+        report, "1,2,3|1,2,3,0,0|1,2",
         "array-like list accepted; totalLength zero-fills / truncates"
     );
 }
@@ -1034,8 +1089,7 @@ fn c12_open_in_new_tab_arms() {
         "#,
     );
     assert_eq!(
-        report,
-        "nonstring=THREW:Bun.openInNewTab() requires a string URL|string=undefined",
+        report, "nonstring=THREW:Bun.openInNewTab() requires a string URL|string=undefined",
         "URL validation arm + best-effort string arm"
     );
 }
@@ -1132,11 +1186,22 @@ fn c12_websocket_client_send_ping_close_faces() {
     assert!(log.contains("open"), "client opened — log: {log}");
     // send() returns undefined (void) for every accepted payload arm —
     // string, Uint8Array binary, and ToString-able object all DELIVER.
-    assert!(log.contains("text:undefined"), "string send delivers (void return)");
-    assert!(log.contains("binary:undefined"), "Uint8Array send delivers (void return)");
-    assert!(log.contains("msg:c12-text"), "text echo arrives — log: {log}");
-    assert!(log.contains("msg:plain-second") && log.contains("msg:after-ping"),
-        "later echoes arrive (connection healthy across the sequence) — log: {log}");
+    assert!(
+        log.contains("text:undefined"),
+        "string send delivers (void return)"
+    );
+    assert!(
+        log.contains("binary:undefined"),
+        "Uint8Array send delivers (void return)"
+    );
+    assert!(
+        log.contains("msg:c12-text"),
+        "text echo arrives — log: {log}"
+    );
+    assert!(
+        log.contains("msg:plain-second") && log.contains("msg:after-ping"),
+        "later echoes arrive (connection healthy across the sequence) — log: {log}"
+    );
     assert!(
         log.contains("pinged:undefined"),
         "client ping(<payload>) is the ws-library control-frame method (R-A9c fixed): \
@@ -1208,18 +1273,35 @@ fn c12_serve_websocket_in_process_roundtrip() {
         "#,
     );
 
-    let roundtripped = poll_until_bare(&mut ctx, r#"globalThis.__cliMsg === "echo:hi-c12" ? "y" : "n""#, 400);
+    let roundtripped = poll_until_bare(
+        &mut ctx,
+        r#"globalThis.__cliMsg === "echo:hi-c12" ? "y" : "n""#,
+        400,
+    );
     let srv_log = eval_string(&mut ctx, "globalThis.__srvLog.join('|')");
     assert!(
         roundtripped,
         "client↔server ws round trip — srvLog: {srv_log}, cliMsg: {}",
         eval_string(&mut ctx, "globalThis.__cliMsg")
     );
-    assert_eq!(eval_string(&mut ctx, "String(globalThis.__cliOpen)"), "1", "client open exactly once");
-    assert!(srv_log.contains("open"), "server open fired — log: {srv_log}");
-    assert!(srv_log.contains("msg:hi-c12"), "server message handler got the payload — log: {srv_log}");
+    assert_eq!(
+        eval_string(&mut ctx, "String(globalThis.__cliOpen)"),
+        "1",
+        "client open exactly once"
+    );
+    assert!(
+        srv_log.contains("open"),
+        "server open fired — log: {srv_log}"
+    );
+    assert!(
+        srv_log.contains("msg:hi-c12"),
+        "server message handler got the payload — log: {srv_log}"
+    );
 
-    eval_string(&mut ctx, "globalThis.__cli.close(); globalThis.__srv.stop();");
+    eval_string(
+        &mut ctx,
+        "globalThis.__cli.close(); globalThis.__srv.stop();",
+    );
     drive_event_loop(&mut ctx, 20);
 }
 
@@ -1275,7 +1357,10 @@ fn c12_websocket_client_back_to_back_sends_deliver() {
         msgs, "b2b-a|b2b-b|b2b-c",
         "back-to-back echoes must arrive in send order (R-A9d)"
     );
-    eval_string(&mut ctx, "globalThis.__b2bWs.close(); globalThis.__b2bServer.stop();");
+    eval_string(
+        &mut ctx,
+        "globalThis.__b2bWs.close(); globalThis.__b2bServer.stop();",
+    );
     drive_event_loop(&mut ctx, 20);
 }
 
@@ -1294,9 +1379,7 @@ fn c12_websocket_client_split_frame_still_dispatches() {
         let Ok((mut stream, _)) = listener.accept() else {
             return;
         };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .ok();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
         if !accept_ws_upgrade(&mut stream) {
             return;
         }
@@ -1370,9 +1453,7 @@ fn c12_websocket_client_ping_pong_control_frames() {
         let Ok((mut stream, _)) = listener.accept() else {
             return;
         };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(15)))
-            .ok();
+        stream.set_read_timeout(Some(Duration::from_secs(15))).ok();
         if !accept_ws_upgrade(&mut stream) {
             return;
         }
@@ -1473,10 +1554,16 @@ fn c12_websocket_client_ping_pong_control_frames() {
         400,
     );
     // Give the peer thread a beat to consume the client's auto-pong and the
-    // explicit pong frame before asserting the wire log.
+    // explicit pong frame before asserting the wire log (unified
+    // settle-pump ticks; the 5ms cadence rides the settle-pump's own tick).
     for _ in 0..20 {
-        common::drive_event_loop_drain(&mut ctx, 1);
-        std::thread::sleep(Duration::from_millis(5));
+        common::pump_until(
+            &mut ctx,
+            "'pumping'",
+            Duration::from_millis(6),
+            eval_string,
+            |_| false,
+        );
     }
 
     let log = eval_string(&mut ctx, "globalThis.__ctlLog.join('|')");
@@ -1546,4 +1633,3 @@ fn c12_websocket_client_ping_pong_control_frames() {
     );
     drive_event_loop(&mut ctx, 20);
 }
-

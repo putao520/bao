@@ -54,14 +54,17 @@ fn make_ctx() -> JsContext {
     ctx
 }
 
-/// Pump the unified event loop (uWS sockets + timers + jobs) a few passes so
-/// the in-process server/client accept, parse and dispatch on our thread.
+/// Fixed-pass pump delegate: the unified suite pump (`common::pump_until`)
+/// run for `passes` settle-pump ticks (each tick = realm-entered timer
+/// drain + MiniEventLoop tick + RunJobs, the uWS sockets + timers + jobs
+/// in-process server/client dispatch discipline). A live-but-unsettled
+/// marker never changes, so the `PumpStuck` tripwire fires at its 2s window
+/// instead of silently burning the (longer) pass budget.
 fn pump(ctx: &mut JsContext, passes: usize) {
-    for _ in 0..passes {
-        let mut cxm = ctx.cx();
-        bun_runtime::timers::drain_and_check(&mut cxm);
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    let budget = Duration::from_millis((passes as u64).saturating_mul(5));
+    common::pump_until(ctx, "'pumping'", budget, common::eval_string_full, |_| {
+        false
+    });
 }
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
@@ -149,11 +152,18 @@ fn c3_listen_tcp_accept_identity_parity_and_exactly_once_open() {
     );
     assert_eq!(setup, "setup-ok");
 
-    let done = wait_until(&mut ctx, "globalThis.__echoed === 'ping-c3' ? 'y' : 'n'", 60);
+    let done = wait_until(
+        &mut ctx,
+        "globalThis.__echoed === 'ping-c3' ? 'y' : 'n'",
+        60,
+    );
     assert!(done, "echo roundtrip must complete");
 
     assert_eq!(
-        eval_str(&mut ctx, "String(globalThis.__srvOpens) + '/' + String(globalThis.__cliOpens)"),
+        eval_str(
+            &mut ctx,
+            "String(globalThis.__srvOpens) + '/' + String(globalThis.__cliOpens)"
+        ),
         "1/1",
         "open must fire exactly once per side (loopback sync-connect guard)"
     );
@@ -215,7 +225,10 @@ fn c3_listen_tcp_accept_identity_parity_and_exactly_once_open() {
     let cli_closed = wait_until(&mut ctx, "globalThis.__cliClosed === true ? 'y' : 'n'", 60);
     assert!(cli_closed, "client close must dispatch after end()");
     let stopped = eval_str(&mut ctx, "globalThis.__srv.stop(); 'stopped'");
-    assert_eq!(stopped, "stopped", "server stop must run (guards a stale ref)");
+    assert_eq!(
+        stopped, "stopped",
+        "server stop must run (guards a stale ref)"
+    );
     let mut idle = false;
     for _ in 0..60 {
         pump(&mut ctx, 2);
@@ -410,7 +423,10 @@ fn c3_listen_tcp_destroy_close_implies_end_fires_once() {
     assert!(done, "destroy must reach the client's close");
 
     assert_eq!(
-        eval_str(&mut ctx, "String(globalThis.__cliEnd) + '/' + String(globalThis.__cliClose)"),
+        eval_str(
+            &mut ctx,
+            "String(globalThis.__cliEnd) + '/' + String(globalThis.__cliClose)"
+        ),
         "1/1",
         "abortive close must imply end exactly once (close-implies-end FIRE arm)"
     );
@@ -586,7 +602,10 @@ fn c3_connect_two_pairs_serial_no_crosstalk() {
         eval_str(&mut ctx, "String(globalThis.__s2.port)"),
         "two port-0 listeners must bind distinct ephemeral ports"
     );
-    eval_str(&mut ctx, "globalThis.__s1.stop(); globalThis.__s2.stop(); 'stopped'");
+    eval_str(
+        &mut ctx,
+        "globalThis.__s1.stop(); globalThis.__s2.stop(); 'stopped'",
+    );
 }
 
 /// tcp_on_end registry-hit arm via a RUST-driven half-close: a raw
@@ -622,10 +641,15 @@ fn c3_listen_tcp_rust_halfclose_delivers_end_with_identity() {
 
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("tcp connect");
     stream.write_all(b"half-c3").expect("write");
-    stream.shutdown(std::net::Shutdown::Write).expect("half-close");
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .expect("half-close");
 
     let ended = wait_until(&mut ctx, "globalThis.__srvEnded === 1 ? 'y' : 'n'", 60);
-    assert!(ended, "peer half-close must deliver end to the server handler");
+    assert!(
+        ended,
+        "peer half-close must deliver end to the server handler"
+    );
     assert!(
         eval_str(&mut ctx, "String(globalThis.__srvEndSock)") == "true",
         "end must carry the accepted socket identity (tcp_on_end registry-hit arm)"
@@ -726,16 +750,26 @@ fn c3_udp_two_socket_js_to_js_roundtrip() {
     );
     let a_port = eval_number(&mut ctx, "globalThis.__a.port");
     let b_port = eval_number(&mut ctx, "globalThis.__b.port");
-    assert!(a_port > 0.0 && b_port > 0.0, "both sockets must bind ephemeral ports");
+    assert!(
+        a_port > 0.0 && b_port > 0.0,
+        "both sockets must bind ephemeral ports"
+    );
     assert_ne!(a_port, b_port, "the two sockets must hold distinct ports");
 
     let sent = eval_str(
         &mut ctx,
-        &format!("String(globalThis.__a.send('udp-c3-payload', {}, '127.0.0.1'))", b_port as u16),
+        &format!(
+            "String(globalThis.__a.send('udp-c3-payload', {}, '127.0.0.1'))",
+            b_port as u16
+        ),
     );
     assert_eq!(sent, "true", "send to a real bound port must return true");
 
-    let got = wait_until(&mut ctx, "globalThis.__recv === 'udp-c3-payload' ? 'y' : 'n'", 60);
+    let got = wait_until(
+        &mut ctx,
+        "globalThis.__recv === 'udp-c3-payload' ? 'y' : 'n'",
+        60,
+    );
     assert!(got, "receiver data callback must fire");
     assert_eq!(
         eval_str(&mut ctx, "globalThis.__recvAddr"),
@@ -748,7 +782,10 @@ fn c3_udp_two_socket_js_to_js_roundtrip() {
         "data callback must report the SENDER's real port"
     );
 
-    eval_str(&mut ctx, "globalThis.__a.close(); globalThis.__b.close(); globalThis.__keep.stop(); 'closed'");
+    eval_str(
+        &mut ctx,
+        "globalThis.__a.close(); globalThis.__b.close(); globalThis.__keep.stop(); 'closed'",
+    );
 }
 
 /// Port+hostname shorthand form: Bun.udpSocket(0, "127.0.0.1") resolves to a
@@ -777,7 +814,10 @@ fn c3_udp_port_hostname_shorthand_form() {
         "127.0.0.1",
         "shorthand hostname argument must be carried"
     );
-    eval_str(&mut ctx, "globalThis.__s.close(); globalThis.__keep.stop(); 'closed'");
+    eval_str(
+        &mut ctx,
+        "globalThis.__s.close(); globalThis.__keep.stop(); 'closed'",
+    );
 }
 
 /// address() reports the bound {address, port, family} triple with the port
@@ -821,7 +861,10 @@ fn c3_udp_address_reports_bound_triple() {
         "string",
         "address() must expose the address field (binary-bytes defect registered)"
     );
-    eval_str(&mut ctx, "globalThis.__s.close(); globalThis.__keep.stop(); 'closed'");
+    eval_str(
+        &mut ctx,
+        "globalThis.__s.close(); globalThis.__keep.stop(); 'closed'",
+    );
 }
 
 /// build_sockaddr arms through the live send path (single source lives in
@@ -846,7 +889,10 @@ fn c3_udp_send_illegal_addr_false_and_v6_dest_false() {
     assert!(ready, "socket must resolve");
 
     assert_eq!(
-        eval_str(&mut ctx, "String(globalThis.__s.send('x', 9, 'not-an-address'))"),
+        eval_str(
+            &mut ctx,
+            "String(globalThis.__s.send('x', 9, 'not-an-address'))"
+        ),
         "false",
         "illegal address must return false (build_sockaddr illegal arm)"
     );
@@ -855,7 +901,10 @@ fn c3_udp_send_illegal_addr_false_and_v6_dest_false() {
         "false",
         "IPv6 destination on an IPv4-bound socket cannot send (V6 arm executed, unreachable dest)"
     );
-    eval_str(&mut ctx, "globalThis.__s.close(); globalThis.__keep.stop(); 'closed'");
+    eval_str(
+        &mut ctx,
+        "globalThis.__s.close(); globalThis.__keep.stop(); 'closed'",
+    );
 }
 
 /// close() lifecycle: after close, send returns false (closed arm),
@@ -921,7 +970,10 @@ fn c3_udp_ref_unref_chainable_noops() {
     let ready = wait_until(&mut ctx, "globalThis.__s !== null ? 'y' : 'n'", 60);
     assert!(ready, "socket must resolve");
     assert_eq!(
-        eval_str(&mut ctx, "String(globalThis.__s.ref() === globalThis.__s && globalThis.__s.unref() === globalThis.__s)"),
+        eval_str(
+            &mut ctx,
+            "String(globalThis.__s.ref() === globalThis.__s && globalThis.__s.unref() === globalThis.__s)"
+        ),
         "true",
         "ref/unref must return the socket for chaining"
     );
@@ -931,7 +983,10 @@ fn c3_udp_ref_unref_chainable_noops() {
         "true",
         "socket stays live across ref/unref"
     );
-    eval_str(&mut ctx, "globalThis.__s.close(); globalThis.__keep.stop(); 'closed'");
+    eval_str(
+        &mut ctx,
+        "globalThis.__s.close(); globalThis.__keep.stop(); 'closed'",
+    );
 }
 
 /// Create failure: an unresolvable hostname REJECTS the udpSocket promise
@@ -986,7 +1041,9 @@ fn c3_listen_http_default_echo_without_fetch() {
             String(globalThis.__srv.port)
             "#,
         );
-        out.trim().parse::<u16>().unwrap_or_else(|_| panic!("port parse, got: {out}"))
+        out.trim()
+            .parse::<u16>()
+            .unwrap_or_else(|_| panic!("port parse, got: {out}"))
     };
     assert!(port > 0, "HTTP listen(0) must expose the ephemeral port");
 
@@ -1015,7 +1072,10 @@ fn c3_listen_http_default_echo_without_fetch() {
     );
     assert_eq!(refs, "refs-ok");
     assert!(bun_runtime::node_http::has_active_servers());
-    let stopped = eval_str(&mut ctx, "globalThis.__srv.stop(); globalThis.__srv.stop(); 'stopped'");
+    let stopped = eval_str(
+        &mut ctx,
+        "globalThis.__srv.stop(); globalThis.__srv.stop(); 'stopped'",
+    );
     assert_eq!(stopped, "stopped", "double stop must be idempotent");
     assert!(!bun_runtime::node_http::has_active_servers());
 }
@@ -1040,7 +1100,9 @@ fn c3_listen_http_fetch_object_response() {
             String(globalThis.__srv.port)
             "#,
         );
-        out.trim().parse::<u16>().unwrap_or_else(|_| panic!("port parse, got: {out}"))
+        out.trim()
+            .parse::<u16>()
+            .unwrap_or_else(|_| panic!("port parse, got: {out}"))
     };
 
     let resp = raw_http(&mut ctx, port, b"GET /made HTTP/1.1\r\nHost: t\r\n\r\n");
@@ -1079,7 +1141,9 @@ fn c3_listen_http_fetch_promise_response() {
             String(globalThis.__srv.port)
             "#,
         );
-        out.trim().parse::<u16>().unwrap_or_else(|_| panic!("port parse, got: {out}"))
+        out.trim()
+            .parse::<u16>()
+            .unwrap_or_else(|_| panic!("port parse, got: {out}"))
     };
 
     let resp = raw_http(&mut ctx, port, b"GET /async HTTP/1.1\r\nHost: t\r\n\r\n");
@@ -1111,7 +1175,9 @@ fn c3_listen_http_fetch_throw_returns_500() {
             String(globalThis.__srv.port)
             "#,
         );
-        out.trim().parse::<u16>().unwrap_or_else(|_| panic!("port parse, got: {out}"))
+        out.trim()
+            .parse::<u16>()
+            .unwrap_or_else(|_| panic!("port parse, got: {out}"))
     };
 
     let resp = raw_http(&mut ctx, port, b"GET /boom HTTP/1.1\r\nHost: t\r\n\r\n");
@@ -1154,7 +1220,9 @@ fn c3_listen_http_non_response_shapes_return_404() {
             String(globalThis.__srv.port)
             "#,
         );
-        out.trim().parse::<u16>().unwrap_or_else(|_| panic!("port parse, got: {out}"))
+        out.trim()
+            .parse::<u16>()
+            .unwrap_or_else(|_| panic!("port parse, got: {out}"))
     };
 
     for path in ["/s1", "/s2", "/s3", "/s4"] {
@@ -1194,7 +1262,9 @@ fn c3_listen_http_websocket_option_stored_and_stopped() {
             String(globalThis.__srv.port)
             "#,
         );
-        out.trim().parse::<u16>().unwrap_or_else(|_| panic!("port parse, got: {out}"))
+        out.trim()
+            .parse::<u16>()
+            .unwrap_or_else(|_| panic!("port parse, got: {out}"))
     };
 
     let resp = raw_http(&mut ctx, port, b"GET /ws HTTP/1.1\r\nHost: t\r\n\r\n");
@@ -1203,7 +1273,10 @@ fn c3_listen_http_websocket_option_stored_and_stopped() {
         "fetch face must work alongside the websocket option, got: {resp}"
     );
 
-    let stopped = eval_str(&mut ctx, "globalThis.__srv.stop(); globalThis.__srv.stop(); 'stopped'");
+    let stopped = eval_str(
+        &mut ctx,
+        "globalThis.__srv.stop(); globalThis.__srv.stop(); 'stopped'",
+    );
     assert_eq!(stopped, "stopped", "stop must clean up and stay idempotent");
     assert!(!bun_runtime::node_http::has_active_servers());
 }

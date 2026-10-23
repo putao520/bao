@@ -27,24 +27,42 @@ use common::setup_ctx;
 
 use common::eval_string_full as eval_string;
 
-
-/// Production-shaped pump: keep calling `timers::drain_and_check` while the
-/// loop reports liveness (this is the eval loop's keep-alive contract). Once
-/// the verdict is false the production loop would exit — every callback that
-/// has not fired by then is lost, which is exactly the pre-cure bug.
+/// Quiescent-pump delegate: the unified suite pump (`common::pump_until`)
+/// on a constant poll. Each tick runs all three actuators (realm-entered
+/// timer drain, MiniEventLoop tick, RunJobs; the historical
+/// drain-only loop was the pre-cure shape this file pins) plus the
+/// `PumpStuck` no-progress tripwire. The loop-liveness verdict is folded
+/// into the eval closure (it holds `&mut JsContext`, the settle predicate
+/// is a pure string read): each poll first runs one extra
+/// `drain_and_check` to re-read the liveness sources, then prefixes the
+/// verdict to the poll string — once the loop is dead the production loop
+/// would exit — every callback that has not fired by then is lost, which
+/// is exactly the pre-cure bug — so the delegate settles immediately. The
+/// constant poll never changes, so a liveness verdict that never turns
+/// false trips `PumpStuck` at the 2s window instead of silently burning
+/// the deadline.
 fn pump_until_quiescent(ctx: &mut JsContext, deadline_ms: u64) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
-    while std::time::Instant::now() < deadline {
-        let mut cxm = ctx.cx();
-        if !bun_runtime::timers::drain_and_check(&mut cxm) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    common::pump_until(
+        ctx,
+        "'ok'",
+        std::time::Duration::from_millis(deadline_ms),
+        |c, s| {
+            let mut cxm = c.cx();
+            let alive = bun_runtime::timers::drain_and_check(&mut cxm);
+            format!(
+                "{}{}",
+                if alive { "ALIVE" } else { "DEAD" },
+                common::eval_string_full(c, s)
+            )
+        },
+        |poll| poll.starts_with("DEAD"),
+    );
 }
 
 fn js_escape(p: &std::path::Path) -> String {
-    p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+    p.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 /// fs.readFile(path, 'utf8', cb): the callback must be DELIVERED on the JS

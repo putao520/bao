@@ -24,8 +24,6 @@ use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
 use bao_engine::context::JsContext;
-use bun_runtime::timers;
-use mozjs::rooted;
 #[path = "common/mod.rs"]
 mod common;
 
@@ -140,44 +138,31 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
     common::eval_string_full_named(ctx, source, "<fetch_stream_test>")
 }
 
-/// Two-part pump (mirrors fetch_abort_e2e_tests): realm-entered
-/// drain_and_check (timers fire) + unconditional MiniEventLoop
-/// tick_without_idle + RunJobs (FetchTasklet ConcurrentTask dispatch).
+/// Single-tick pump delegate: one settle-pump tick of the unified suite pump
+/// (`common::pump_until`) — realm-entered timer drain (timers fire) +
+/// MiniEventLoop tick_without_idle + RunJobs (FetchTasklet ConcurrentTask
+/// dispatch). Callers poll their own marker between ticks; the settle-pump
+/// path uses [`pump_until`] below.
 fn pump_once(ctx: &mut JsContext) {
-    let cx_raw = ctx.raw_cx();
-    {
-        let mut cxm = ctx.cx();
-        let global = bao_engine::context::thread_realm_global();
-        if let Some(g) = global {
-            mozjs::rooted!(&in(cxm) let g_root = g);
-            let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-            timers::drain_and_check(realm_cx);
-        } else {
-            timers::drain_and_check(&mut cxm);
-        }
-    }
-    unsafe {
-        mozjs_sys::jsapi::js::RunJobs(cx_raw);
-    }
-    timers::with_event_loop(|loop_| {
-        loop_.tick_without_idle(std::ptr::null_mut());
+    common::pump_until(ctx, "'tick'", Duration::from_millis(1), eval_string, |_| {
+        true
     });
 }
 
+/// Done-expression pump delegate: the unified suite pump
+/// (`common::pump_until`) with this file's filename-attributed evaluator and
+/// the historical "not the literal 'false'" settle (the done expression
+/// stringifies its completion marker verbatim; an unsettled marker stays
+/// "false") plus the `PumpStuck` no-progress tripwire that turns a frozen
+/// done expression into a diagnostic FAIL.
 fn pump_until(ctx: &mut JsContext, done_expr: &str, deadline: Duration) -> String {
-    let end = Instant::now() + deadline;
-    loop {
-        pump_once(ctx);
-        let state = eval_string(ctx, &format!("({done_expr})"));
-        if state != "false" {
-            return state;
-        }
-        if Instant::now() >= end {
-            return eval_string(ctx, &format!("({done_expr})"));
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    common::pump_until(
+        ctx,
+        &format!("({done_expr})"),
+        deadline,
+        eval_string,
+        |state| state != "false",
+    )
 }
 
 // ── 1. Incremental chunked delivery ─────────────────────────────────────────
@@ -237,7 +222,11 @@ fn streaming_chunked_delivery_is_incremental() {
     let out = eval_string(&mut ctx, &js);
     assert!(out.contains("scheduled"), "setup failed: {}", out);
 
-    pump_until(&mut ctx, "globalThis.__done === true", Duration::from_secs(20));
+    pump_until(
+        &mut ctx,
+        "globalThis.__done === true",
+        Duration::from_secs(20),
+    );
     let body_out = eval_string(&mut ctx, "globalThis.__body");
     assert_eq!(
         body_out, body,
@@ -305,12 +294,23 @@ fn streaming_headers_resolve_before_body_completes() {
     let out = eval_string(&mut ctx, &js);
     assert!(out.contains("scheduled"), "setup failed: {}", out);
 
-    pump_until(&mut ctx, "globalThis.__done === true", Duration::from_secs(20));
+    pump_until(
+        &mut ctx,
+        "globalThis.__done === true",
+        Duration::from_secs(20),
+    );
     let body = eval_string(&mut ctx, "globalThis.__body");
-    assert_eq!(body, "first-half-second-half", "full body must survive the pull loop");
+    assert_eq!(
+        body, "first-half-second-half",
+        "full body must survive the pull loop"
+    );
 
-    let resolve = eval_string(&mut ctx, "globalThis.__resolveTime").parse::<u64>().unwrap_or(0);
-    let text_done = eval_string(&mut ctx, "globalThis.__textTime").parse::<u64>().unwrap_or(0);
+    let resolve = eval_string(&mut ctx, "globalThis.__resolveTime")
+        .parse::<u64>()
+        .unwrap_or(0);
+    let text_done = eval_string(&mut ctx, "globalThis.__textTime")
+        .parse::<u64>()
+        .unwrap_or(0);
     assert!(
         text_done - resolve >= 250,
         "the fetch Promise must resolve at headers arrival, well BEFORE the \
@@ -363,7 +363,11 @@ fn streaming_drain_across_park_is_byte_exact() {
     );
     let out = eval_string(&mut ctx, &js);
     assert!(out.contains("scheduled"), "setup failed: {}", out);
-    pump_until(&mut ctx, "globalThis.__resolved === true", Duration::from_secs(20));
+    pump_until(
+        &mut ctx,
+        "globalThis.__resolved === true",
+        Duration::from_secs(20),
+    );
     // Let the remainder of the body stream in unread (park territory).
     let end = Instant::now() + Duration::from_millis(1200);
     while Instant::now() < end {
@@ -384,7 +388,11 @@ fn streaming_drain_across_park_is_byte_exact() {
         });
         "#,
     );
-    pump_until(&mut ctx, "globalThis.__done === true", Duration::from_secs(30));
+    pump_until(
+        &mut ctx,
+        "globalThis.__done === true",
+        Duration::from_secs(30),
+    );
     let body = eval_string(&mut ctx, "globalThis.__body");
     assert!(
         !body.starts_with("ERR:"),
@@ -414,7 +422,11 @@ fn streaming_drain_across_park_is_byte_exact() {
         })()
         "#,
     );
-    assert_eq!(check, "EXACT", "park→unpark drain must be byte-exact: {}", check);
+    assert_eq!(
+        check, "EXACT",
+        "park→unpark drain must be byte-exact: {}",
+        check
+    );
 }
 
 // ── 4. Mid-body AbortSignal ─────────────────────────────────────────────────
@@ -462,7 +474,11 @@ fn streaming_abort_mid_body_rejects_reader_with_abort_error() {
     let out = eval_string(&mut ctx, &js);
     assert!(out.contains("scheduled"), "setup failed: {}", out);
 
-    pump_until(&mut ctx, "globalThis.__done === true", Duration::from_secs(20));
+    pump_until(
+        &mut ctx,
+        "globalThis.__done === true",
+        Duration::from_secs(20),
+    );
     let first_len = eval_string(&mut ctx, "globalThis.__firstLen || 0")
         .parse::<usize>()
         .unwrap_or(0);
@@ -516,7 +532,11 @@ fn streaming_clone_throws_type_error() {
     let out = eval_string(&mut ctx, &js);
     assert!(out.contains("scheduled"), "setup failed: {}", out);
 
-    pump_until(&mut ctx, "globalThis.__done === true", Duration::from_secs(20));
+    pump_until(
+        &mut ctx,
+        "globalThis.__done === true",
+        Duration::from_secs(20),
+    );
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__clone"),
         "TypeError",
@@ -566,11 +586,18 @@ fn streaming_endless_body_resolves_early_parks_and_cancels() {
     let out = eval_string(&mut ctx, &js);
     assert!(out.contains("scheduled"), "setup failed: {}", out);
 
-    pump_until(&mut ctx, "globalThis.__resolved === true", Duration::from_secs(20));
+    pump_until(
+        &mut ctx,
+        "globalThis.__resolved === true",
+        Duration::from_secs(20),
+    );
     let first_len = eval_string(&mut ctx, "globalThis.__firstLen || 0")
         .parse::<usize>()
         .unwrap_or(0);
-    assert!(first_len > 0, "first chunk must arrive (early resolve + first read)");
+    assert!(
+        first_len > 0,
+        "first chunk must arrive (early resolve + first read)"
+    );
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__fail || \"\""),
         "",
@@ -601,7 +628,11 @@ fn streaming_endless_body_resolves_early_parks_and_cancels() {
         });
         "#,
     );
-    let state = pump_until(&mut ctx, "globalThis.__cancelled === true", Duration::from_secs(20));
+    let state = pump_until(
+        &mut ctx,
+        "globalThis.__cancelled === true",
+        Duration::from_secs(20),
+    );
     assert_eq!(state, "true", "reader.cancel() must settle");
 }
 
@@ -667,7 +698,11 @@ fn streaming_endless_body_rss_bounded() {
     );
     let out = eval_string(&mut ctx, &js);
     assert!(out.contains("scheduled"), "setup failed: {}", out);
-    pump_until(&mut ctx, "globalThis.__parked === true", Duration::from_secs(30));
+    pump_until(
+        &mut ctx,
+        "globalThis.__parked === true",
+        Duration::from_secs(30),
+    );
     // Every stream must have resolved and read its first chunk.
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__readers.length"),

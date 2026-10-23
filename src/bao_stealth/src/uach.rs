@@ -54,10 +54,10 @@ impl Tier {
     /// (navigator.rs 出 "Linux x86_64";自定义 "Linux x86" 同族放行)。
     fn from_navigator_platform(platform: &str) -> Option<Self> {
         match platform {
-            "Win32" => Some(Tier::Windows), // @evidence .spec/10-REQUIREMENTS.html:1072
-            "MacIntel" => Some(Tier::Macos), // @evidence .spec/10-REQUIREMENTS.html:1072
-            p if p.starts_with("Linux") => Some(Tier::Linux), // @evidence .spec/10-REQUIREMENTS.html:1072
-            _ => None, // @evidence .spec/10-REQUIREMENTS.html:1072
+            "Win32" => Some(Tier::Windows), // @evidence SPEC/10-REQUIREMENTS.html:1072
+            "MacIntel" => Some(Tier::Macos), // @evidence SPEC/10-REQUIREMENTS.html:1072
+            p if p.starts_with("Linux") => Some(Tier::Linux), // @evidence SPEC/10-REQUIREMENTS.html:1072
+            _ => None, // @evidence SPEC/10-REQUIREMENTS.html:1072
         }
     }
 
@@ -65,9 +65,9 @@ impl Tier {
     /// Windows / macOS / Linux —— 桶表 UserAgentDataShape.platform 同形)。
     fn ua_data_platform(self) -> &'static str {
         match self {
-            Tier::Windows => "Windows", // @evidence .spec/10-REQUIREMENTS.html:1072
-            Tier::Macos => "macOS", // @evidence .spec/10-REQUIREMENTS.html:1072
-            Tier::Linux => "Linux", // @evidence .spec/10-REQUIREMENTS.html:1072
+            Tier::Windows => "Windows", // @evidence SPEC/10-REQUIREMENTS.html:1072
+            Tier::Macos => "macOS", // @evidence SPEC/10-REQUIREMENTS.html:1072
+            Tier::Linux => "Linux", // @evidence SPEC/10-REQUIREMENTS.html:1072
         }
     }
 
@@ -75,18 +75,18 @@ impl Tier {
     /// navigator.platform 拼装矛盾)。
     fn ua_token_present(self, ua: &str) -> bool {
         match self {
-            Tier::Windows => ua.contains("Windows NT"), // @evidence .spec/10-REQUIREMENTS.html:1072
-            Tier::Macos => ua.contains("Macintosh"), // @evidence .spec/10-REQUIREMENTS.html:1072
-            Tier::Linux => ua.contains("Linux"), // @evidence .spec/10-REQUIREMENTS.html:1072
+            Tier::Windows => ua.contains("Windows NT"), // @evidence SPEC/10-REQUIREMENTS.html:1072
+            Tier::Macos => ua.contains("Macintosh"), // @evidence SPEC/10-REQUIREMENTS.html:1072
+            Tier::Linux => ua.contains("Linux"), // @evidence SPEC/10-REQUIREMENTS.html:1072
         }
     }
 
     /// 高熵 platformVersion 策展档(任务指定值;真实观测形)。
     fn platform_version(self) -> &'static str {
         match self {
-            Tier::Windows => "15.0.0", // @evidence .spec/10-REQUIREMENTS.html:1072
-            Tier::Macos => "14.1.2", // @evidence .spec/10-REQUIREMENTS.html:1072
-            Tier::Linux => "6.5.0", // @evidence .spec/10-REQUIREMENTS.html:1072
+            Tier::Windows => "15.0.0", // @evidence SPEC/10-REQUIREMENTS.html:1072
+            Tier::Macos => "14.1.2", // @evidence SPEC/10-REQUIREMENTS.html:1072
+            Tier::Linux => "6.5.0", // @evidence SPEC/10-REQUIREMENTS.html:1072
         }
     }
 }
@@ -480,10 +480,10 @@ mod tests {
             let profile = crate::profile::StealthProfile::from_seed(seed);
             let js = build_uach_js(&profile.navigator);
             let expected_platform = match profile.navigator.platform.as_str() {
-                "Win32" => "Windows", // @evidence .spec/10-REQUIREMENTS.html:1072
-                "MacIntel" => "macOS", // @evidence .spec/10-REQUIREMENTS.html:1072
-                "Linux x86_64" => "Linux", // @evidence .spec/10-REQUIREMENTS.html:1072
-                other => panic!("seed {seed}: 未预期档位 {other}"), // @evidence .spec/10-REQUIREMENTS.html:1072
+                "Win32" => "Windows", // @evidence SPEC/10-REQUIREMENTS.html:1072
+                "MacIntel" => "macOS", // @evidence SPEC/10-REQUIREMENTS.html:1072
+                "Linux x86_64" => "Linux", // @evidence SPEC/10-REQUIREMENTS.html:1072
+                other => panic!("seed {seed}: 未预期档位 {other}"), // @evidence SPEC/10-REQUIREMENTS.html:1072
             };
             assert!(
                 js.contains("'userAgentData'"),

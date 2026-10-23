@@ -27,23 +27,34 @@ use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
 
-use common::setup_ctx_bounded as setup_ctx;
 use common::HOOK_BUDGET;
 use common::eval_string_dbg as eval_string;
+use common::setup_ctx_bounded as setup_ctx;
 
 /// Pump the loop until `js_condition` yields 'y' or the deadline passes.
-/// Arms HOOK_BUDGET before each eval so the post_eval_hook drains timers
-/// (including the fs-watch stat-poll pump) in the realm-entered context.
+/// Budget-armed wait delegate of the unified suite pump
+/// (`common::pump_until`): the pump's per-tick poll evals the condition
+/// through this file's `eval_string` binding, and each poll arms HOOK_BUDGET
+/// FIRST so the post_eval_hook (setup_ctx_bounded → bounded_drain_hook →
+/// timers::drain_and_check → node_fs::fs_watch_pump_all) drains the fs-watch
+/// stat-poll queue in the realm-entered eval context — the dispatch
+/// dereferences cx->global(), only valid inside the eval. The budget is
+/// armed once more on the tail so the caller's subsequent evals keep pumping
+/// through the hook. The `PumpStuck` tripwire turns a frozen condition into
+/// a diagnostic FAIL.
 fn wait_until(ctx: &mut JsContext, js_condition: &str, per_eval_budget: usize) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline {
-        HOOK_BUDGET.with(|b| b.set(per_eval_budget));
-        if eval_string(ctx, js_condition) == "y" {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(4));
-    }
-    false
+    let final_value = common::pump_until(
+        ctx,
+        js_condition,
+        Duration::from_secs(20),
+        move |c: &mut JsContext, s: &str| {
+            HOOK_BUDGET.with(|b| b.set(per_eval_budget));
+            eval_string(c, s)
+        },
+        |v| v == "y",
+    );
+    HOOK_BUDGET.with(|b| b.set(per_eval_budget));
+    final_value == "y"
 }
 
 /// Per-process unique scratch file: two invocations of this binary must not
@@ -53,7 +64,9 @@ fn scratch_file(name: &str) -> std::path::PathBuf {
 }
 
 fn js_escape(p: &std::path::Path) -> String {
-    p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+    p.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 // ---------------------------------------------------------------------------

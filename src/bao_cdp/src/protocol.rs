@@ -486,7 +486,7 @@ fn handle_page(
         // enable-gated delivery). The install is best-effort with a warn: a
         // page that cannot host the listener keeps a truthful enable ack,
         // exactly like the Runtime registry prelude's install convention.
-        "enable" => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        "enable" => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             if bridge.is_some() {
                 let _ = bridge_send(
                     bridge,
@@ -495,7 +495,7 @@ fn handle_page(
             }
             ok_empty()
         }
-        "disable" => ok_empty(), // @evidence .spec/10-REQUIREMENTS.html:2324
+        "disable" => ok_empty(), // @evidence SPEC/10-REQUIREMENTS.html:2324
         // Subscription ack: frame lifecycle events (frameStartedLoading /
         // frameNavigated) flow through the WS registry's event face.
         "setLifecycleEventsEnabled" => ok_empty(),
@@ -782,7 +782,7 @@ fn handle_page(
         // entry shape {id, title, transitionType, url, userTypedURL}; the
         // journal lives browser-side (BaoWebViewState), so the data rides
         // the bridge instead of a page query.
-        "getNavigationHistory" => bridge_send( // @evidence .spec/10-REQUIREMENTS.html:2324
+        "getNavigationHistory" => bridge_send( // @evidence SPEC/10-REQUIREMENTS.html:2324
             bridge,
             BridgeCommand::GetNavigationHistory { target_id: tid },
         ),
@@ -968,7 +968,7 @@ fn handle_runtime(
         // -32602; anything else (including `:`-scoped names) is accepted.
         // Without a bridge there is no page global — -32603, never a silent
         // no-op ack.
-        "addBinding" => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        "addBinding" => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             let name = params_str(params, "name");
             if name.is_empty() {
                 return Err(CdpError {
@@ -984,7 +984,7 @@ fn handle_runtime(
                 },
             )
         }
-        "removeBinding" => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        "removeBinding" => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             let name = params_str(params, "name");
             if name.is_empty() {
                 return Err(CdpError {
@@ -1009,7 +1009,7 @@ fn handle_runtime(
         // Runtime.runScript is not wired), so the honest face is the explicit
         // capability-absent -32000, the same class as Page.printToPDF. Never a
         // fabricated scriptId that maps to nothing.
-        "compileScript" => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        "compileScript" => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             let expression = params_str(params, "expression");
             let source_url = params_str(params, "sourceURL");
             let persist_script = params
@@ -1027,7 +1027,7 @@ fn handle_runtime(
                 "compile-only script persistence is not wired on this face (no compiled-script table; Runtime.runScript is not implemented)",
             ))
         }
-        "callArgument" => ok_empty(), // @evidence .spec/10-REQUIREMENTS.html:2324
+        "callArgument" => ok_empty(), // @evidence SPEC/10-REQUIREMENTS.html:2324
         // Ack for the waitForDebuggerOnStart auto-attach flow: bao does not
         // actually pause new targets (no debugger gating exists), so this
         // ack simply unblocks the client's init sequence.
@@ -1137,14 +1137,14 @@ fn handle_dom(
         // attribute list of the addressed node in CDP's flat pair form; a
         // non-element node fails with Chrome's exact "Node is not an
         // Element" (-32000 class). The former face was absent (-32601).
-        "getAttributes" => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        "getAttributes" => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             let node_ref = devtools_dom::require_node_ref(params)?;
             devtools_dom::eval_dom(bridge, &tid, &devtools_dom::attributes_body(&node_ref))
         }
         // REQ-CDP-010 golden-oracle parity (Chrome 155, measured): a real
         // scroll of the addressed element into the viewport (nearest, only
         // when out of view). The former face was absent (-32601).
-        "scrollIntoViewIfNeeded" => { // @evidence .spec/10-REQUIREMENTS.html:2324
+        "scrollIntoViewIfNeeded" => { // @evidence SPEC/10-REQUIREMENTS.html:2324
             let node_ref = devtools_dom::require_node_ref(params)?;
             devtools_dom::eval_dom(bridge, &tid, &devtools_dom::scroll_into_view_body(&node_ref))
         }
@@ -3708,7 +3708,7 @@ mod tests {
         let (tx, rx) = bridge_channel(std::time::Duration::from_secs(2));
         let _keeper = std::thread::spawn(move || loop {
             let handled = rx.try_process(|cmd| match cmd {
-                BridgeCommand::GetNavigationHistory { .. } => BridgeResponse { // @evidence .spec/10-REQUIREMENTS.html:2324
+                BridgeCommand::GetNavigationHistory { .. } => BridgeResponse { // @evidence SPEC/10-REQUIREMENTS.html:2324
                     result: Ok(json!({
                         "currentIndex": 1,
                         "entries": [
@@ -3729,7 +3729,7 @@ mod tests {
                         ]
                     })),
                 },
-                _ => BridgeResponse { // @evidence .spec/10-REQUIREMENTS.html:2324
+                _ => BridgeResponse { // @evidence SPEC/10-REQUIREMENTS.html:2324
                     result: Err(BridgeError::no_bridge("unexpected bridge command")),
                 },
             });
@@ -3758,7 +3758,7 @@ mod tests {
         let (tx, rx) = bridge_channel(std::time::Duration::from_secs(2));
         let _keeper = std::thread::spawn(move || loop {
             let handled = rx.try_process(|cmd| match cmd {
-                BridgeCommand::EvaluateJs { .. } => BridgeResponse { // @evidence .spec/10-REQUIREMENTS.html:2324
+                BridgeCommand::EvaluateJs { .. } => BridgeResponse { // @evidence SPEC/10-REQUIREMENTS.html:2324
                     result: Ok(json!({
                         "result": {
                             "type": "string",
@@ -3766,10 +3766,10 @@ mod tests {
                         }
                     })),
                 },
-                BridgeCommand::GetLoaderId { .. } => BridgeResponse { // @evidence .spec/10-REQUIREMENTS.html:2324
+                BridgeCommand::GetLoaderId { .. } => BridgeResponse { // @evidence SPEC/10-REQUIREMENTS.html:2324
                     result: Ok(json!("1A2B3C4D5E6F708192A3B4C5D6E7F809")),
                 },
-                _ => BridgeResponse { // @evidence .spec/10-REQUIREMENTS.html:2324
+                _ => BridgeResponse { // @evidence SPEC/10-REQUIREMENTS.html:2324
                     result: Err(BridgeError::no_bridge("unexpected bridge command")),
                 },
             });
