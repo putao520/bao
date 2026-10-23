@@ -6617,12 +6617,18 @@ const CP_JS: &str = r#"
       _pid: this.pid,
       _which: 0,
       _ended: false,
+      _encoding: null,
       on: function(event, cb) {
         if (!self._events['stdout_' + event]) self._events['stdout_' + event] = [];
         self._events['stdout_' + event].push(cb);
         if (event === 'data' || event === 'end') self._startPoll();
       },
-      pipe: function(dest) { return dest; }
+      pipe: function(dest) { return dest; },
+      // Readable.prototype.setEncoding parity (node_stream.js): presence
+      // contract — the poll pump below still delivers Buffers; string
+      // decoding of the 'data' payload is the node_stream full-decode face,
+      // out of scope for this shim (see node_stream.rs full version).
+      setEncoding: function(enc) { this._encoding = enc; return this; }
     };
 
     // stderr stream (readable)
@@ -6630,12 +6636,14 @@ const CP_JS: &str = r#"
       _pid: this.pid,
       _which: 1,
       _ended: false,
+      _encoding: null,
       on: function(event, cb) {
         if (!self._events['stderr_' + event]) self._events['stderr_' + event] = [];
         self._events['stderr_' + event].push(cb);
         if (event === 'data' || event === 'end') self._startPoll();
       },
-      pipe: function(dest) { return dest; }
+      pipe: function(dest) { return dest; },
+      setEncoding: function(enc) { this._encoding = enc; return this; }
     };
 
     // stdin stream (writable)

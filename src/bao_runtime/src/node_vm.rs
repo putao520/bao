@@ -723,54 +723,150 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     unsafe {
-        w2::JS_DefineFunction(
-            cx,
-            vm_obj.handle(),
-            c"runInThisContext".as_ptr(),
-            Some(vm_run_in_this_context),
-            2,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            vm_obj.handle(),
-            c"runInNewContext".as_ptr(),
+        // JSFUN_CONSTRUCTOR (0x400) makes the function constructible so
+        // `new vm.runInNewContext(...)` dispatches to the same native and
+        // the rval we set becomes the result of the `new` expression
+        // (SpiderMonkey honours native rval override for JSFUN_CONSTRUCTOR
+        // natives — see node_buffer.rs / bun_glob_api.rs precedent).
+        const JSFUN_CONSTRUCTOR: u32 = 0x400;
+
+        // vm.runInNewContext — constructible (Node parity: `new vm.runInNewContext(...)`
+        // returns the evaluation result).
+        let run_in_new_context_fn = JS_NewFunction(
+            cx.raw_cx(),
             Some(vm_run_in_new_context),
             3,
-            0,
+            JSFUN_CONSTRUCTOR,
+            c"runInNewContext".as_ptr(),
         );
-        w2::JS_DefineFunction(
-            cx,
-            vm_obj.handle(),
-            c"runInContext".as_ptr(),
+        if !run_in_new_context_fn.is_null() {
+            let run_in_new_context_obj = JS_GetFunctionObject(run_in_new_context_fn);
+            if !run_in_new_context_obj.is_null() {
+                let run_in_new_context_val = ObjectValue(run_in_new_context_obj);
+                rooted!(&in(cx) let run_in_new_context_rv = run_in_new_context_val);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    vm_obj.handle().into(),
+                    c"runInNewContext".as_ptr(),
+                    run_in_new_context_rv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+
+        // vm.runInThisContext — constructible (Node parity).
+        let run_in_this_context_fn = JS_NewFunction(
+            cx.raw_cx(),
+            Some(vm_run_in_this_context),
+            2,
+            JSFUN_CONSTRUCTOR,
+            c"runInThisContext".as_ptr(),
+        );
+        if !run_in_this_context_fn.is_null() {
+            let run_in_this_context_obj = JS_GetFunctionObject(run_in_this_context_fn);
+            if !run_in_this_context_obj.is_null() {
+                let run_in_this_context_val = ObjectValue(run_in_this_context_obj);
+                rooted!(&in(cx) let run_in_this_context_rv = run_in_this_context_val);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    vm_obj.handle().into(),
+                    c"runInThisContext".as_ptr(),
+                    run_in_this_context_rv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+
+        // vm.runInContext — constructible (Node parity).
+        let run_in_context_fn = JS_NewFunction(
+            cx.raw_cx(),
             Some(vm_run_in_context),
             3,
-            0,
+            JSFUN_CONSTRUCTOR,
+            c"runInContext".as_ptr(),
         );
-        w2::JS_DefineFunction(
-            cx,
-            vm_obj.handle(),
-            c"createContext".as_ptr(),
+        if !run_in_context_fn.is_null() {
+            let run_in_context_obj = JS_GetFunctionObject(run_in_context_fn);
+            if !run_in_context_obj.is_null() {
+                let run_in_context_val = ObjectValue(run_in_context_obj);
+                rooted!(&in(cx) let run_in_context_rv = run_in_context_val);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    vm_obj.handle().into(),
+                    c"runInContext".as_ptr(),
+                    run_in_context_rv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+
+        // vm.createContext — constructible (Node parity).
+        let create_context_fn = JS_NewFunction(
+            cx.raw_cx(),
             Some(vm_create_context),
             2,
-            0,
+            JSFUN_CONSTRUCTOR,
+            c"createContext".as_ptr(),
         );
-        w2::JS_DefineFunction(
-            cx,
-            vm_obj.handle(),
-            c"isContext".as_ptr(),
+        if !create_context_fn.is_null() {
+            let create_context_obj = JS_GetFunctionObject(create_context_fn);
+            if !create_context_obj.is_null() {
+                let create_context_val = ObjectValue(create_context_obj);
+                rooted!(&in(cx) let create_context_rv = create_context_val);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    vm_obj.handle().into(),
+                    c"createContext".as_ptr(),
+                    create_context_rv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+        // vm.isContext — constructible (Node parity).
+        let is_context_fn = JS_NewFunction(
+            cx.raw_cx(),
             Some(vm_is_context),
             1,
-            0,
+            JSFUN_CONSTRUCTOR,
+            c"isContext".as_ptr(),
         );
-        w2::JS_DefineFunction(
-            cx,
-            vm_obj.handle(),
-            c"compileFunction".as_ptr(),
+        if !is_context_fn.is_null() {
+            let is_context_obj = JS_GetFunctionObject(is_context_fn);
+            if !is_context_obj.is_null() {
+                let is_context_val = ObjectValue(is_context_obj);
+                rooted!(&in(cx) let is_context_rv = is_context_val);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    vm_obj.handle().into(),
+                    c"isContext".as_ptr(),
+                    is_context_rv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+
+        // vm.compileFunction — constructible (Node parity).
+        let compile_function_fn = JS_NewFunction(
+            cx.raw_cx(),
             Some(vm_compile_function),
             2,
-            0,
+            JSFUN_CONSTRUCTOR,
+            c"compileFunction".as_ptr(),
         );
+        if !compile_function_fn.is_null() {
+            let compile_function_obj = JS_GetFunctionObject(compile_function_fn);
+            if !compile_function_obj.is_null() {
+                let compile_function_val = ObjectValue(compile_function_obj);
+                rooted!(&in(cx) let compile_function_rv = compile_function_val);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    vm_obj.handle().into(),
+                    c"compileFunction".as_ptr(),
+                    compile_function_rv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
 
         // Script constructor
         let script_fn = JS_NewFunction(
