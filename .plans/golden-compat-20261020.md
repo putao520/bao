@@ -980,3 +980,14 @@ fix:全部根治或上游载体在位(gsc#217)。
   4. `test_inspect_depth_infinity_semantics` SIGSEGV = 崩③存量(HEAD 同现,A/B 实证),REQ-ENG-048 R7 的 `seen/refs: RootedVec<Box<Heap<*mut JSObject>>>` 形态表面合规但仍崩——首要嫌疑 `RootedVec` 是否真的追踪元素(而非仅根住 vec 分配),独立 E 立案。
 - **五颗 pin 共同根因**:全部是「按 TTY/特定环境假设写死的断言」在 nextest pipe 环境下失真——pin 的期望值与 node TTY 态一致、bao 与 node pipe 态一致,两侧都对,仅断言载体未声明环境前提。教训:**断言依赖环境前提(TTY/编码/时区)时必须显式声明或改用 API 选项强制前提(如 `validateStream:false`),否则 fail-fast 顺序不同就会漏出。**
 - farm 教训沉淀(farm-ops-quirks #5/#6):filterset 经 bash -lc 二次解析炸语法且 exit 0 假绿 → 脚本文件形态根治;flock 阻塞期 docker 容器从未创建,判别信号=`docker ps` 无项目名容器而非查 wrapper 是否活。
+
+## bce-domain-guard 收口(2026-10-25,顶档上报·四要素)
+归因（BCE-20261025-FARMSHELL-QUOTING + 并档 BCE-20260624-GOVTOOL-VERSION-DRIFT 扩展）:本域错误类失败 11 次三族聚类——
+- 族 A「farm shell 引号/filterset」5 次(bash EOF×1/'('syntax×1/unparsed input×1/gate stdout json parse×2):第一性原理=**嵌套 shell 解析层把 filterset 的 `(` 当自己语法**——非 nextest/cargo 缺陷,是「命令文本穿过 ssh→docker→bash-lc 三层再解析」的传递形态缺陷。根治=脚本文件形态(引号成为源码文本,零再解析)+ filterset 带空格 or 单引号包裹。修复后 3 轮 farm 跑批零复发。
+- 族 B「MCP 断连」5 次(search_code/commit_gate/WaitForMcpServers):BCE-20260624-GOVTOOL-VERSION-DRIFT 已立案族扩展(插件版本升级窗口 1901→1906 漂移),上游载体 gsc#217 在位;bao 侧自愈通道=KB lsp.md 契约条目+gate-run CLI 直调(EXIT 判+stderr JSON 读)。本轮 gate 经直调通道 14 步全过(EXIT=0,runId 7ec04406)。
+- 族 C「gate 迭代红」4 次(GATE_STEPS_FAILED):非环境缺陷而是 gate 判定纪律的首次全量执行——evidence 臂行 3 行窗/STUB 关键词全文件扫描(非 diff 扫描)两个判定语义首次被本波触发。修复=真新增行补臂级 @evidence(3 处)+STUB-INVENTORY 清点措辞改写 ROOTED-INVENTORY(按用户铁律删检测词而非加豁免)。14/14 终态。
+时序分析:族 A 首现 2026-10-24 23:15(绕锁直起首跑),全部集中在本会话 farm 直起形态引入后——与 wrapper 形态切换时序强关联;族 B 首现更早(2026-10-22 21:08,既有登记);族 C 仅本波 gate 全量执行时出现。
+历史修复轨迹:族 A 已试路径=连写 ortest 形态(被 cargo 拒 unparsed input,败)→脚本文件形态(根治);族 B 前两代修复(MCP 重连/直调 runner)中直调 runner 形态已随版本漂移失效,本轮第三代=gate-run.mjs CLI EXIT 判(过);族 C 增量补 evidence→3 行窗语义发现→臂行级定位(过)。
+横扫:族 A 形态面=全部 farm 调用已收敛到脚本文件形态(farm-seven-domain.sh 模板);族 B MCP 面全部改走 CLI 直调;族 C 全仓 STUB 扫描=lib.rs 5 处全改写,残留=0(其余文件无 STUB 命中,gate 终验 14/14 证明)。
+残留=0 证明:94/94 七域全绿 + gate EXIT=0 + 三族修复后零同签名复发。
+四要素上报:错误类失败 11 次(域 f69fc9cc-e476-469e-bd3d-f9c77da6a8e8);残留=0,本域收口。
