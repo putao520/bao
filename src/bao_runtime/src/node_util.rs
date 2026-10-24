@@ -5415,6 +5415,18 @@ unsafe fn jsval_inspect(
             ctx.seen.push(Heap::boxed(obj_ptr));
             let body = jsval_inspect_object_body(cx, val, depth, ctx);
             ctx.seen.pop();
+            // The deep body call ran JS (custom inspect callbacks, getter
+            // side effects, property enumeration) that may have triggered a
+            // GC and relocated this object — the caller's `val` parameter
+            // and the `obj_ptr` extracted from it above are both pre-GC
+            // snapshots.  Re-extract the pointer from a rooted handle of
+            // the (possibly relocated) object before consulting the ref
+            // registry, so the identity comparison hits on the live
+            // address.  Same fix shape as the val re-synthesis inside
+            // `jsval_inspect_object_body`.
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            rooted!(&in(wrapped_cx) let post_gc_obj = val.to_object());
+            let obj_ptr = post_gc_obj.get();
             // A back-edge to this object discovered inside its own subtree
             // (the frame has not returned yet) numbered it; node prepends
             // the `<ref *N>` prefix when the frame returns.

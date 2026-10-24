@@ -949,7 +949,7 @@ fix:全部根治或上游载体在位(gsc#217)。
 - **崩①-b(独立残留,gdb 符号化)**:pipe 字节流路径进程退出期 SIGABRT——栈=`JSClass::doFinalize(Class.h:661)→JSObject::finalize→backgroundFinalize sweep 线程→__libc_free(0x7548c8a12000)`;指针=页对齐 mmap 区基(jemalloc 域)。**根因假设=混合分配器释放**:某 native JSClass 的 finalize 回调对 Rust 全局分配器(jemalloc)分配的存储调 libc free()。触发面=pipe 路径(J3 无管道净;J1/J2 崩)。修复合同=定位该 JSClass(finalize 回调 grep 面:bao 层 JSClassDef/finalize fn),改用同分配器释放或 Box::from_raw。
 - 事故记录:E-cp-poll 两实例被误判楔死 killed(输出文件懒刷新假象),修复本身已由 E#1 落树;memory 沉淀 subagent-output-lazy-flush-not-liveness。
 
-## 四 E 并发波验证中(2026-10-24 深夜)
+## 四 E 并发波已收口(fd5f1915d,2026-10-25;九域 94/94+gate 14/14)
 - 崩①-b 判别 5/5 净(spawn echo+pipe 反复零 invalid pointer)——混合分配器根治实证(cp_drain+net_read libc::malloc 域,全仓 7 点对账,std::alloc::alloc 喂点残留=0)
 - 崩② 四向全绿(一行复现 len=4/seeding/写回/活绑定身份+突变)——JS_WrapValue CCW 封送四向(8 调用点)
 - util 域 **3→12 PASS**(F 类 9 格翻转;19 残留=E 登记项 oracle-parity×1/引擎域×2/结构域×1+其余类)
@@ -991,3 +991,13 @@ fix:全部根治或上游载体在位(gsc#217)。
 横扫:族 A 形态面=全部 farm 调用已收敛到脚本文件形态(farm-seven-domain.sh 模板);族 B MCP 面全部改走 CLI 直调;族 C 全仓 STUB 扫描=lib.rs 5 处全改写,残留=0(其余文件无 STUB 命中,gate 终验 14/14 证明)。
 残留=0 证明:94/94 七域全绿 + gate EXIT=0 + 三族修复后零同签名复发。
 四要素上报:错误类失败 11 次(域 f69fc9cc-e476-469e-bd3d-f9c77da6a8e8);残留=0,本域收口。
+
+## E4/E5 波收尾(2026-10-25,GOLDEN A util 复跑 3→12 PASS)
+- E4 `<ref *N>` 漏渲染根治(node_util.rs +12):jsval_inspect 调用方 obj_ptr 是 seen.push 时的旧快照,object_body 深递归 GC 搬移后 ref_number(旧地址) 必 miss→漏前缀;修复=pop 后 rooted! 重提取遮蔽(post_gc_obj.get())。单点缺陷:全文件 17 处 to_object() 提取点全核,仅 :5401 跨 GC 悬挂,残留=0。
+- E5 os.constants.errno 契约补全(node_os.rs +109 / node_constants.rs +10):79 键全枚举=libc 77+EDQUOT(122)/EMULTIHOP(72) 硬编码(libc 无此二,node 经 libuv 硬编码);键集与 node v24 oracle 双向零差;复用判定=数值真源 libc ABI 同 node,结构不跨模块复用。
+- **GOLDEN A util 复跑 3→12 PASS**(基线 3 PASS/28 FAIL):B 类 internal 模族 6 文件+styletext-hex/types-exists 翻绿;19 残留四类聚类:
+  - A×4 internalBinding C++ 面缺(js_stream/util/contextify)——设计边界,载具分级裁决待主会话
+  - **B'×7 空跑「0 passed, 0 failed」**(deprecate-invalid-code/getcallsites-prepare/inherits/inspect-getters-this/sleep/isDeepStrictEqual)——**新模式**:B 类修复后测试可加载但 node:test runner 未消费用例,runner 面缺口(非断言差),下波深查
+  - C×5 真断言差(callbackify/format -0/getcallsites 帧数×3/promisify/stripvt/deprecate)——产品行为合同输入
+  - D/E×3 载具/CLI(fixtures 镜像/--experimental-vm-modules SourceTextModule/mock.timers)
+- B' 空跑为下波最高优先:9 翻绿候选中 7 个落空全因 runner 消费面,非实现缺口——修 runner 面一次可翻多格。

@@ -216,6 +216,11 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             define_int_prop(cx, os_obj.get(), "EDEADLK", libc::EDEADLK as i32);
             define_int_prop(cx, os_obj.get(), "EDESTADDRREQ", libc::EDESTADDRREQ as i32);
             define_int_prop(cx, os_obj.get(), "EDOM", libc::EDOM as i32);
+            // EDQUOT has no Linux libc errno; libuv hardcodes 122 (node v24
+            // os.constants.errno.EDQUOT === 122). Omitted on windows like
+            // upstream's `?constant | null → skip` recipe (no CRT EDQUOT).
+            #[cfg(not(windows))]
+            define_int_prop(cx, os_obj.get(), "EDQUOT", 122);
             define_int_prop(cx, os_obj.get(), "EEXIST", libc::EEXIST as i32);
             define_int_prop(cx, os_obj.get(), "EFAULT", libc::EFAULT as i32);
             define_int_prop(cx, os_obj.get(), "EFBIG", libc::EFBIG as i32);
@@ -232,6 +237,11 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             define_int_prop(cx, os_obj.get(), "EMFILE", libc::EMFILE as i32);
             define_int_prop(cx, os_obj.get(), "EMLINK", libc::EMLINK as i32);
             define_int_prop(cx, os_obj.get(), "EMSGSIZE", libc::EMSGSIZE as i32);
+            // EMULTIHOP has no Linux libc errno; libuv hardcodes 72 (node v24
+            // os.constants.errno.EMULTIHOP === 72). Omitted on windows like
+            // upstream (no CRT EMULTIHOP).
+            #[cfg(not(windows))]
+            define_int_prop(cx, os_obj.get(), "EMULTIHOP", 72);
             define_int_prop(cx, os_obj.get(), "ENAMETOOLONG", libc::ENAMETOOLONG as i32);
             define_int_prop(cx, os_obj.get(), "ENETDOWN", libc::ENETDOWN as i32);
             define_int_prop(cx, os_obj.get(), "ENETRESET", libc::ENETRESET as i32);

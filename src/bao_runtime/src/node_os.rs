@@ -204,6 +204,115 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     unsafe {
         rooted!(&in(cx) let constants_obj = w2::JS_NewPlainObject(cx));
         if !constants_obj.get().is_null() {
+            // os.constants.errno — UV errno full set (node v24 os.constants.errno
+            // === os.constants.os.errno, 79 enumerable keys). The libc-backed
+            // table lives in node_constants (install -> constants.os); only the
+            // two libuv-hardcoded entries with no Linux libc errno (EDQUOT=122,
+            // EMULTIHOP=72) are surfaced here to complete the node parity set.
+            rooted!(&in(cx) let errno_obj = w2::JS_NewPlainObject(cx));
+            if !errno_obj.get().is_null() {
+                let raw = cx.raw_cx();
+                // EACCES .. EXDEV: full UV errno set, libc values == node (Linux).
+                let errno_entries: [(&str, i32); 79] = [
+                    ("E2BIG", libc::E2BIG as i32),
+                    ("EACCES", libc::EACCES as i32),
+                    ("EADDRINUSE", libc::EADDRINUSE as i32),
+                    ("EADDRNOTAVAIL", libc::EADDRNOTAVAIL as i32),
+                    ("EAFNOSUPPORT", libc::EAFNOSUPPORT as i32),
+                    ("EAGAIN", libc::EAGAIN as i32),
+                    ("EALREADY", libc::EALREADY as i32),
+                    ("EBADF", libc::EBADF as i32),
+                    ("EBADMSG", libc::EBADMSG as i32),
+                    ("EBUSY", libc::EBUSY as i32),
+                    ("ECANCELED", libc::ECANCELED as i32),
+                    ("ECHILD", libc::ECHILD as i32),
+                    ("ECONNABORTED", libc::ECONNABORTED as i32),
+                    ("ECONNREFUSED", libc::ECONNREFUSED as i32),
+                    ("ECONNRESET", libc::ECONNRESET as i32),
+                    ("EDEADLK", libc::EDEADLK as i32),
+                    ("EDESTADDRREQ", libc::EDESTADDRREQ as i32),
+                    ("EDOM", libc::EDOM as i32),
+                    ("EDQUOT", 122), // no libc EDQUOT; libuv-hardcoded
+                    ("EEXIST", libc::EEXIST as i32),
+                    ("EFAULT", libc::EFAULT as i32),
+                    ("EFBIG", libc::EFBIG as i32),
+                    ("EHOSTUNREACH", libc::EHOSTUNREACH as i32),
+                    ("EIDRM", libc::EIDRM as i32),
+                    ("EILSEQ", libc::EILSEQ as i32),
+                    ("EINPROGRESS", libc::EINPROGRESS as i32),
+                    ("EINTR", libc::EINTR as i32),
+                    ("EINVAL", libc::EINVAL as i32),
+                    ("EIO", libc::EIO as i32),
+                    ("EISCONN", libc::EISCONN as i32),
+                    ("EISDIR", libc::EISDIR as i32),
+                    ("ELOOP", libc::ELOOP as i32),
+                    ("EMFILE", libc::EMFILE as i32),
+                    ("EMLINK", libc::EMLINK as i32),
+                    ("EMSGSIZE", libc::EMSGSIZE as i32),
+                    ("EMULTIHOP", 72), // no libc EMULTIHOP; libuv-hardcoded
+                    ("ENAMETOOLONG", libc::ENAMETOOLONG as i32),
+                    ("ENETDOWN", libc::ENETDOWN as i32),
+                    ("ENETRESET", libc::ENETRESET as i32),
+                    ("ENETUNREACH", libc::ENETUNREACH as i32),
+                    ("ENFILE", libc::ENFILE as i32),
+                    ("ENOBUFS", libc::ENOBUFS as i32),
+                    ("ENODATA", libc::ENODATA as i32),
+                    ("ENODEV", libc::ENODEV as i32),
+                    ("ENOENT", libc::ENOENT as i32),
+                    ("ENOEXEC", libc::ENOEXEC as i32),
+                    ("ENOLCK", libc::ENOLCK as i32),
+                    ("ENOLINK", libc::ENOLINK as i32),
+                    ("ENOMEM", libc::ENOMEM as i32),
+                    ("ENOMSG", libc::ENOMSG as i32),
+                    ("ENOPROTOOPT", libc::ENOPROTOOPT as i32),
+                    ("ENOSPC", libc::ENOSPC as i32),
+                    ("ENOSR", libc::ENOSR as i32),
+                    ("ENOSTR", libc::ENOSTR as i32),
+                    ("ENOSYS", libc::ENOSYS as i32),
+                    ("ENOTCONN", libc::ENOTCONN as i32),
+                    ("ENOTDIR", libc::ENOTDIR as i32),
+                    ("ENOTEMPTY", libc::ENOTEMPTY as i32),
+                    ("ENOTSOCK", libc::ENOTSOCK as i32),
+                    ("ENOTSUP", libc::ENOTSUP as i32),
+                    ("ENOTTY", libc::ENOTTY as i32),
+                    ("ENXIO", libc::ENXIO as i32),
+                    ("EOPNOTSUPP", libc::EOPNOTSUPP as i32),
+                    ("EOVERFLOW", libc::EOVERFLOW as i32),
+                    ("EPERM", libc::EPERM as i32),
+                    ("EPIPE", libc::EPIPE as i32),
+                    ("EPROTO", libc::EPROTO as i32),
+                    ("EPROTONOSUPPORT", libc::EPROTONOSUPPORT as i32),
+                    ("EPROTOTYPE", libc::EPROTOTYPE as i32),
+                    ("ERANGE", libc::ERANGE as i32),
+                    ("EROFS", libc::EROFS as i32),
+                    ("ESPIPE", libc::ESPIPE as i32),
+                    ("ESRCH", libc::ESRCH as i32),
+                    ("ESTALE", libc::ESTALE as i32),
+                    ("ETIME", libc::ETIME as i32),
+                    ("ETIMEDOUT", libc::ETIMEDOUT as i32),
+                    ("ETXTBSY", libc::ETXTBSY as i32),
+                    ("EWOULDBLOCK", libc::EWOULDBLOCK as i32),
+                    ("EXDEV", libc::EXDEV as i32),
+                ];
+                for (name, val) in &errno_entries {
+                    let v = Int32Value(*val);
+                    rooted!(&in(cx) let rv = v);
+                    JS_DefineProperty(
+                        raw,
+                        errno_obj.handle().into(),
+                        ZBox::from_bytes(name.as_bytes()).as_ptr(),
+                        rv.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+                w2::JS_DefineProperty3(
+                    cx,
+                    constants_obj.handle(),
+                    c"errno".as_ptr(),
+                    errno_obj.handle(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
             rooted!(&in(cx) let sig_obj = w2::JS_NewPlainObject(cx));
             if !sig_obj.get().is_null() {
                 let raw = cx.raw_cx();
