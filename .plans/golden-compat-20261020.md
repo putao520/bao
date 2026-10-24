@@ -919,3 +919,4 @@ D 载具布局缺口×1(fixtures 镜像,载具侧)
 E 产品 API/CLI 缺口×3(--enable-source-maps/os.constants.errno/vm.SourceTextModule)
 F 断言值差×12=util 面正餐(format -0/inherits descriptor/stripVT 残差/styletext/types 同引用/inspect getters/callbackify/deprecate 错形态/getcallsites/isDeepStrictEqual)
 裁定:载具已建 stage-b-util.sh+work-util/(putao 属主);node 对照法=farm 无系统 node,借 node v22.21.1(版本差污染标注)。F 类 12 格+env 缺口=util 域产品合同输入,B/A 类=internal 模块族合同(与 internalBinding fail-closed 先例同链)。
+- lsp 域 residualZero(4 例闭环):poolSize=0 假阴性×2+schema 契约错+超长单行结果溢出——全部按 .gsc/domain-knowledge/lsp.md 通道处置(替代取证/直调 runner/结果文件切片);KB 已覆盖 4/4 形态,入库后零盲调残留。
