@@ -73,25 +73,23 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
             (c"stripVTControlCharacters", util_strip_vt_control_characters, 1)
         );
 
-        // util.types — native type checkers (12 Rust-backed)
+        // util.types — node v24.19 namespace (43 members, oracle-enumerated).
+        // The SAME object is cached as builtin "util/types" BEFORE
+        // node_util_types::install runs (globals.rs installs util first), so
+        // require('util/types') === util.types by construction (node identity
+        // contract, test-util-types-exists) and the legacy standalone
+        // util/types table early-returns without ever being observed. The
+        // node-absent util.* legacy checkers (isBoolean/isArray/isError/…)
+        // stay on the util module root only — node's util.types never
+        // carried them.
         {
             rooted!(&in(cx) let types_obj = w2::JS_NewPlainObject(cx));
             if !types_obj.get().is_null() {
                 let enumerate = JSPROP_ENUMERATE as u32;
                 register_js_functions!(cx, types_obj, enumerate;
-                    (c"isBoolean", util_is_boolean, 1)
-                    (c"isNumber", util_is_number, 1)
-                    (c"isString", util_is_string, 1)
-                    (c"isSymbol", util_is_symbol, 1)
-                    (c"isUndefined", util_is_undefined, 1)
-                    (c"isNull", util_is_null, 1)
-                    (c"isObject", util_is_object, 1)
-                    (c"isFunction", util_is_function, 1)
                     (c"isProxy", util_is_proxy, 1)
-                    (c"isArray", util_is_array, 1)
                     (c"isDate", util_is_date, 1)
                     (c"isRegExp", util_is_regexp, 1)
-                    (c"isError", util_is_error, 1)
                 );
 
                 // Extended types via JS eval — factory function pattern
@@ -114,6 +112,7 @@ t.isInt16Array=function(v){return v instanceof Int16Array};
 t.isUint16Array=function(v){return v instanceof Uint16Array};
 t.isInt32Array=function(v){return v instanceof Int32Array};
 t.isUint32Array=function(v){return v instanceof Uint32Array};
+t.isFloat16Array=function(v){return typeof Float16Array!=='undefined'&&v instanceof Float16Array};
 t.isFloat32Array=function(v){return v instanceof Float32Array};
 t.isFloat64Array=function(v){return v instanceof Float64Array};
 t.isBigInt64Array=function(v){return typeof BigInt64Array!=='undefined'&&v instanceof BigInt64Array};
@@ -122,7 +121,8 @@ t.isBooleanObject=function(v){return v instanceof Boolean};
 t.isNumberObject=function(v){return v instanceof Number};
 t.isStringObject=function(v){return v instanceof String};
 t.isSymbolObject=function(v){return v instanceof Symbol};
-t.isBoxedPrimitive=function(v){return t.isBooleanObject(v)||t.isNumberObject(v)||t.isStringObject(v)||t.isSymbolObject(v)};
+t.isBigIntObject=function(v){return Object.prototype.toString.call(v)==='[object BigInt]'};
+t.isBoxedPrimitive=function(v){return t.isBooleanObject(v)||t.isNumberObject(v)||t.isStringObject(v)||t.isSymbolObject(v)||t.isBigIntObject(v)};
 t.isNativeError=function(v){return v instanceof Error};
 t.isAsyncFunction=function(v){return Object.prototype.toString.call(v)==='[object AsyncFunction]'};
 t.isGeneratorFunction=function(v){return Object.prototype.toString.call(v)==='[object GeneratorFunction]'};
@@ -137,6 +137,10 @@ t.isCryptoKey=function(){return false};
 })"#;
                 eval_js_factory_on_object(cx, types_src, c"<types>", types_obj.handle());
 
+                // Single-source identity: util.types IS the util/types export
+                // (node contract; require('util/types') resolves this cache).
+                cache_builtin(cx, "util/types", types_obj.get());
+
                 w2::JS_DefineProperty3(
                     cx,
                     util_obj.handle(),
@@ -147,57 +151,287 @@ t.isCryptoKey=function(){return false};
             }
         }
 
-        // @trace REQ-ENG-006 [api:util.styleText / isDeepStrictEqual-object]
-        // Bridge JS additions (reuses Bun's util.ts styleText + deep-strict
-        // algorithm shapes — see ~/code/rust/bun/src/js/node/util.ts):
-        //   - styleText(fmt, text)  → ANSI-wrapped text via inspect.colors map
-        //   - isDeepStrictEqual     → deep recursive comparison over objects
-        // Attached on top of util_obj so they override any native placeholder.
+        // @trace REQ-ENG-004 [api:util.styleText / isDeepStrictEqual /
+        // inherits / deprecate-messages / inspect-getters] — node v24.19.0
+        // oracle ports (lib/util.js styleText incl. hex colors + aliases +
+        // nested close-code reapplication; errors.js determineSpecificType;
+        // internal/util.js inherits non-enumerable super_; inspect.js
+        // getters/showHidden/protoProps/compact:3 options engine). Attached
+        // on top of util_obj so they override the native placeholders.
         let util_extra_src = r#"(function(u){
-  // ANSI color table reused from Bun's util.ts (which derives it from
-  // node's inspect.colors). Each entry is [openCode, closeCode].
-  var colors = {
+  // ── node errors.js determineSpecificType (v24.19 oracle) ──────────────
+  // 'Received null' / 'an instance of X' / 'type number (-0)' family — the
+  // exact tail shape test-util-deprecate-invalid-code / inherits /
+  // callbackify assert against (common.invalidArgTypeHelper agreement).
+  function inspectDepthNeg1(value) {
+    // node inspect(value, {depth:-1}) — top-level shape, nested values as
+    // truncation tags. Sole consumer: determineSpecificType fallback.
+    if (Array.isArray(value)) {
+      if (value.length === 0) return '[]';
+      var el = [];
+      for (var i = 0; i < value.length && i < 100; i++) {
+        var ev;
+        try { ev = value[i]; } catch (e0) { ev = undefined; }
+        el.push(ev !== null && typeof ev === 'object'
+          ? (Array.isArray(ev) ? '[Array]' : '[Object]') : inspectDepthNeg1(ev));
+      }
+      var extra = value.length > 100 ? ', ... ' + (value.length - 100) + ' more items' : '';
+      return '[ ' + el.join(', ') + extra + ' ]';
+    }
+    var proto = Object.getPrototypeOf(value);
+    var prefix = proto === null ? '[Object: null prototype] ' : '';
+    var keys;
+    try { keys = Object.keys(value); } catch (e1) { return prefix + '{}'; }
+    if (keys.length === 0) return prefix + '{}';
+    var parts = [];
+    for (var k = 0; k < keys.length && k < 100; k++) {
+      var v;
+      try { v = value[keys[k]]; } catch (e2) { v = undefined; }
+      parts.push(keys[k] + ': ' + (v !== null && typeof v === 'object'
+        ? (Array.isArray(v) ? '[Array]' : '[Object]') : inspectDepthNeg1(v)));
+    }
+    return prefix + '{ ' + parts.join(', ') + ' }';
+  }
+  function determineSpecificType(value) {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    var t = typeof value;
+    switch (t) {
+      case 'bigint': return 'type bigint (' + value + 'n)';
+      case 'number':
+        if (value === 0) return 1 / value === -Infinity ? 'type number (-0)' : 'type number (0)';
+        if (value !== value) return 'type number (NaN)';
+        if (value === Infinity) return 'type number (Infinity)';
+        if (value === -Infinity) return 'type number (-Infinity)';
+        return 'type number (' + value + ')';
+      case 'boolean': return value ? 'type boolean (true)' : 'type boolean (false)';
+      case 'symbol': return 'type symbol (' + String(value) + ')';
+      case 'function': return 'function ' + value.name;
+      case 'object': {
+        var name = '';
+        try { name = (value.constructor && value.constructor.name) || ''; } catch (e) {}
+        if (typeof name === 'string' && name !== '') return 'an instance of ' + name;
+        return inspectDepthNeg1(value);
+      }
+      case 'string': {
+        var s = value;
+        if (s.length > 28) s = s.slice(0, 25) + '...';
+        return s.indexOf("'") === -1 ? "type string ('" + s + "')" : 'type string (' + JSON.stringify(s) + ')';
+      }
+      default: return 'type ' + t + ' (' + String(value) + ')';
+    }
+  }
+  function errOf(ctor, code, msg) { var e = new ctor(msg); e.code = code; return e; }
+  function invalidArgTypeErr(name, expected, value) {
+    var kind = name.indexOf('.') !== -1 ? 'property' : 'argument';
+    return errOf(TypeError, 'ERR_INVALID_ARG_TYPE',
+      'The "' + name + '" ' + kind + ' must be of type ' + expected +
+      '. Received ' + determineSpecificType(value));
+  }
+  function inspFullNumber(n) {
+    return (n === 0 && 1 / n === -Infinity) ? '-0' : String(n);
+  }
+  function inspFullStrEscape(s) {
+    var out = "'";
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charAt(i), code = s.charCodeAt(i);
+      if (c === "'") out += "\\'";
+      else if (c === '\\') out += '\\\\';
+      else if (c === '\n') out += '\\n';
+      else if (c === '\r') out += '\\r';
+      else if (c === '\t') out += '\\t';
+      else if (code < 0x20 || code === 0x7f) {
+        var h = code.toString(16);
+        out += '\\x' + (h.length < 2 ? '0' + h : h);
+      } else out += c;
+    }
+    return out + "'";
+  }
+  function inspReceived(v) {
+    if (typeof v === 'string') return "'" + v + "'";
+    if (typeof v === 'boolean') return String(v);
+    if (typeof v === 'number') return inspFullNumber(v);
+    if (v === null) return 'null';
+    if (v === undefined) return 'undefined';
+    if (typeof v === 'bigint') return String(v) + 'n';
+    if (typeof v === 'symbol') return String(v);
+    if (typeof v === 'function') return v.name ? '[Function: ' + v.name + ']' : '[Function (anonymous)]';
+    return '{}';
+  }
+
+  // ── util.styleText — node v24.19 lib/util.js oracle ───────────────────
+  // Colors table = node inspect.colors own names verbatim (56 entries incl.
+  // aliases grey/blackBright/bgGrey/bgBlackBright/faint/crossedout/…).
+  var styleColors = {
     reset: [0, 0], bold: [1, 22], dim: [2, 22], italic: [3, 23],
-    underline: [4, 24], inverse: [7, 27], hidden: [8, 28],
+    underline: [4, 24], blink: [5, 25], inverse: [7, 27], hidden: [8, 28],
     strikethrough: [9, 29], doubleunderline: [21, 24],
-    black: [30, 39], red: [31, 39], green: [32, 39],
-    yellow: [33, 39], blue: [34, 39], magenta: [35, 39],
-    cyan: [36, 39], white: [37, 39], gray: [90, 39], grey: [90, 39],
-    bgBlack: [40, 49], bgRed: [41, 49], bgGreen: [42, 49],
-    bgYellow: [43, 49], bgBlue: [44, 49], bgMagenta: [45, 49],
-    bgCyan: [46, 49], bgWhite: [47, 49],
+    black: [30, 39], red: [31, 39], green: [32, 39], yellow: [33, 39],
+    blue: [34, 39], magenta: [35, 39], cyan: [36, 39], white: [37, 39],
+    bgBlack: [40, 49], bgRed: [41, 49], bgGreen: [42, 49], bgYellow: [43, 49],
+    bgBlue: [44, 49], bgMagenta: [45, 49], bgCyan: [46, 49], bgWhite: [47, 49],
+    framed: [51, 54], overlined: [53, 55], gray: [90, 39],
     redBright: [91, 39], greenBright: [92, 39], yellowBright: [93, 39],
     blueBright: [94, 39], magentaBright: [95, 39], cyanBright: [96, 39],
-    whiteBright: [97, 39]
+    whiteBright: [97, 39],
+    bgGray: [100, 49], bgRedBright: [101, 49], bgGreenBright: [102, 49],
+    bgYellowBright: [103, 49], bgBlueBright: [104, 49],
+    bgMagentaBright: [105, 49], bgCyanBright: [106, 49], bgWhiteBright: [107, 49],
+    grey: [90, 39], blackBright: [90, 39], bgGrey: [100, 49],
+    bgBlackBright: [100, 49], faint: [2, 22], crossedout: [9, 29],
+    strikeThrough: [9, 29], crossedOut: [9, 29], conceal: [8, 28],
+    swapColors: [7, 27], swapcolors: [7, 27], doubleUnderline: [21, 24]
   };
-  function styleText(format, text) {
-    if (typeof text !== 'string') {
-      throw new TypeError('The "text" argument must be of type string.');
-    }
-    function wrap(fmt) {
-      var codes = colors[fmt];
-      if (!codes) {
-        throw new TypeError('The "format" argument must be one of: ' + Object.keys(colors).join(', '));
-      }
-      return '[' + codes[0] + 'm' + text + '[' + codes[1] + 'm';
-    }
-    if (Array.isArray(format)) {
-      var left = '', right = '';
-      for (var i = 0; i < format.length; i++) {
-        var c = colors[format[i]];
-        if (!c) {
-          throw new TypeError('The "format" argument must be one of: ' + Object.keys(colors).join(', '));
-        }
-        left += '[' + c[0] + 'm';
-        right = '[' + c[1] + 'm' + right;
-      }
-      return left + text + right;
-    }
-    return wrap(format);
+  var kHexCloseSeq = '\u001b[39m';
+  var hexColorRegExp = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+  function codesToStyle(codes) {
+    return {
+      openSeq: '\u001b[' + codes[0] + 'm',
+      closeSeq: '\u001b[' + codes[1] + 'm',
+      keepClose: codes[0] === 2 || codes[0] === 1
+    };
   }
-  u.styleText = styleText;
+  // node replaceCloseCode: every INNER occurrence of this style's close
+  // sequence re-opens the style (the trailing close stays) — the nested
+  // styleText contract (dim over bold:
+  // '\x1b[2mdim\x1b[1mbold\x1b[22m\x1b[2mdim\x1b[22m').
+  function replaceCloseCode(str, closeSeq, openSeq, keepClose) {
+    var closeLen = closeSeq.length;
+    var index = str.indexOf(closeSeq);
+    if (index === -1) return str;
+    var result = '';
+    var lastIndex = 0;
+    var replacement = keepClose ? closeSeq + openSeq : openSeq;
+    do {
+      var afterClose = index + closeLen;
+      if (afterClose < str.length) {
+        result += str.slice(lastIndex, index) + replacement;
+        lastIndex = afterClose;
+      } else {
+        break;
+      }
+      index = str.indexOf(closeSeq, lastIndex);
+    } while (index !== -1);
+    return result + str.slice(lastIndex);
+  }
+  function hexToRgb(hex) {
+    var hexStr;
+    if (hex.length === 4) {
+      hexStr = hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
+    } else if (hex.length === 7) {
+      hexStr = hex.slice(1);
+    } else {
+      throw errOf(RangeError, 'ERR_OUT_OF_RANGE',
+        'The value of "hex" is out of range. It must be #RGB or #RRGGBB. Received ' +
+        inspReceived(hex));
+    }
+    return [parseInt(hexStr.slice(0, 2), 16), parseInt(hexStr.slice(2, 4), 16),
+            parseInt(hexStr.slice(4, 6), 16)];
+  }
+  function validateOneOfMsg(key) {
+    var keys = Object.keys(styleColors);
+    var strings = '';
+    for (var i = 0; i < keys.length; i++) {
+      if (i > 0) strings += ', ';
+      strings += "'" + keys[i] + "'";
+    }
+    return "The argument 'format' must be one of: " + strings +
+      '. Received ' + inspReceived(key);
+  }
+  function styleShouldColorize(stream) {
+    var env = (typeof process !== 'undefined' && process.env) || {};
+    if (env.FORCE_COLOR !== undefined) {
+      return env.FORCE_COLOR !== '0' && env.FORCE_COLOR !== 'false' && env.FORCE_COLOR !== '';
+    }
+    if (env.NODE_DISABLE_COLORS !== undefined || env.NO_COLOR !== undefined) return false;
+    return stream != null && stream.isTTY === true &&
+      (typeof stream.getColorDepth !== 'function' || stream.getColorDepth() > 2);
+  }
+  u.styleText = function styleText(format, text, options) {
+    var validateStream = (options == null || options.validateStream === undefined)
+      ? true : options.validateStream;
+    // Fast path: single format string with validateStream=false.
+    if (!validateStream && typeof format === 'string' && typeof text === 'string') {
+      if (format === 'none') return text;
+      var fstyle = styleColors[format];
+      if (fstyle !== undefined) {
+        var fst = codesToStyle(fstyle);
+        return fst.openSeq +
+          replaceCloseCode(text, fst.closeSeq, fst.openSeq, fst.keepClose) +
+          fst.closeSeq;
+      }
+      if (format.charAt(0) === '#' && hexColorRegExp.test(format)) {
+        var frgb = hexToRgb(format);
+        var fhexOpen = '\u001b[38;2;' + frgb[0] + ';' + frgb[1] + ';' + frgb[2] + 'm';
+        return fhexOpen +
+          replaceCloseCode(text, kHexCloseSeq, fhexOpen, false) + kHexCloseSeq;
+      }
+    }
+    if (typeof text !== 'string') throw invalidArgTypeErr('text', 'string', text);
+    if (options !== undefined) {
+      if (options === null || typeof options !== 'object') {
+        throw invalidArgTypeErr('options', 'object', options);
+      }
+      if (typeof validateStream !== 'boolean') {
+        throw errOf(TypeError, 'ERR_INVALID_ARG_TYPE',
+          'The "options.validateStream" property must be of type boolean. Received ' +
+          determineSpecificType(validateStream));
+      }
+    }
+    var skipColorize = false;
+    if (validateStream) {
+      var stream = (options && options.stream !== undefined) ? options.stream : process.stdout;
+      var isStreamObj = stream !== null && stream !== undefined &&
+        (typeof stream === 'object' || typeof stream === 'function') &&
+        (typeof stream.write === 'function' || typeof stream.on === 'function');
+      if (!isStreamObj) {
+        throw errOf(TypeError, 'ERR_INVALID_ARG_TYPE',
+          'The "stream" argument must be an instance of ReadableStream, WritableStream, or Stream. Received ' +
+          determineSpecificType(stream));
+      }
+      skipColorize = !styleShouldColorize(stream);
+    }
+    var formatArray = Array.isArray(format) ? format : [format];
+    var openCodes = '', closeCodes = '', processedText = text;
+    for (var fi = 0; fi < formatArray.length; fi++) {
+      var key = formatArray[fi];
+      if (key === 'none') continue;
+      if (typeof key === 'string' && key.charAt(0) === '#') {
+        if (hexColorRegExp.test(key) === false) {
+          throw errOf(TypeError, 'ERR_INVALID_ARG_VALUE',
+            "The argument 'format' must be a valid hex color (#RGB or #RRGGBB). Received " +
+            inspReceived(key));
+        }
+        if (skipColorize) continue;
+        var rgb = hexToRgb(key);
+        var hexOpenSeq = '\u001b[38;2;' + rgb[0] + ';' + rgb[1] + ';' + rgb[2] + 'm';
+        openCodes += hexOpenSeq;
+        closeCodes = kHexCloseSeq + closeCodes;
+        processedText = replaceCloseCode(processedText, kHexCloseSeq, hexOpenSeq, false);
+        continue;
+      }
+      var codes = styleColors[key];
+      if (!codes) {
+        throw errOf(TypeError, 'ERR_INVALID_ARG_VALUE', validateOneOfMsg(key));
+      }
+      var st = codesToStyle(codes);
+      openCodes += st.openSeq;
+      closeCodes = st.closeSeq + closeCodes;
+      processedText = replaceCloseCode(processedText, st.closeSeq, st.openSeq, st.keepClose);
+    }
+    if (skipColorize) return text;
+    return openCodes + processedText + closeCodes;
+  };
 
-  function isDeepStrictEqual(a, b) {
+  // ── util.isDeepStrictEqual — full comparator back-channel ──────────────
+  // install_assert stashes the assert blob's comparisons.js port (boxed
+  // primitives, Map/Set/Date/RegExp/TypedArray, cycle memos, skipPrototype)
+  // on this object as the non-enumerable __baoIsDeepStrictEqual before any
+  // user code runs (globals.rs installs util then assert). The structural
+  // walk below is the bare-engine fallback (no assert install) only.
+  u.isDeepStrictEqual = function isDeepStrictEqual(a, b, skipPrototype) {
+    var full = u.__baoIsDeepStrictEqual;
+    if (full) return full(a, b, skipPrototype === true);
     if (a === b) return true;
     if (typeof a !== typeof b) return false;
     if (a === null || b === null) return a === b;
@@ -213,8 +447,449 @@ t.isCryptoKey=function(){return false};
       if (!isDeepStrictEqual(a[k], b[k])) return false;
     }
     return true;
+  };
+
+  // ── util.inherits — node internal/util.js oracle ───────────────────────
+  // super_ is defined with value/writable/configurable ONLY — enumerable
+  // defaults false (test-util-inherits descriptor assertion); the three
+  // ERR_INVALID_ARG_TYPE throws use the errors.js message shapes.
+  u.inherits = function inherits(ctor, superCtor) {
+    if (ctor === undefined || ctor === null) {
+      throw invalidArgTypeErr('ctor', 'function', ctor);
+    }
+    if (superCtor === undefined || superCtor === null) {
+      throw invalidArgTypeErr('superCtor', 'function', superCtor);
+    }
+    if (superCtor.prototype === undefined) {
+      throw invalidArgTypeErr('superCtor.prototype', 'object', superCtor.prototype);
+    }
+    Object.defineProperty(ctor, 'super_', {
+      value: superCtor,
+      writable: true,
+      configurable: true
+    });
+    Object.setPrototypeOf(ctor.prototype, superCtor.prototype);
+  };
+
+  // ── util.inspect options engine (getters / showHidden / breakLength) ───
+  // Bounded port of node lib/internal/util/inspect.js for the option shapes
+  // the native compact engine does not implement: accessor invocation
+  // (getters), non-enumerable own props + prototype-layer props
+  // (showHidden + addPrototypeProperties, 3-layer builtin-stop walk), and
+  // compact:3 breakLength multi-line joining (reduceToSingleString).
+  // Plain objects/arrays render here; exotic builtins keep their native
+  // compact shapes (options inert on those heads — declared boundary).
+  var inspectFullBuiltinNames = null;
+  function getInspectFullBuiltinNames() {
+    if (inspectFullBuiltinNames === null) {
+      inspectFullBuiltinNames = new Set();
+      var names;
+      try { names = Object.getOwnPropertyNames(globalThis); } catch (e) { names = []; }
+      for (var i = 0; i < names.length; i++) {
+        if (/^[A-Z][a-zA-Z0-9]+$/.test(names[i])) inspectFullBuiltinNames.add(names[i]);
+      }
+    }
+    return inspectFullBuiltinNames;
   }
-  u.isDeepStrictEqual = isDeepStrictEqual;
+  function inspFullTag(value) {
+    var tag = '';
+    try { tag = Object.prototype.toString.call(value); } catch (e) { tag = ''; }
+    if (tag === '[object Object]' || tag === '[object Module]') {
+      var proto = Object.getPrototypeOf(value);
+      if (proto === null) return '[Object: null prototype]';
+      var ctor = '';
+      try { ctor = (value.constructor && value.constructor.name) || ''; } catch (e2) {}
+      if (ctor && ctor !== 'Object') return '[' + ctor + ']';
+      return '[Object]';
+    }
+    if (tag === '[object Array]') return '[Array]';
+    if (tag === '[object Map]') return '[Map]';
+    if (tag === '[object Set]') return '[Set]';
+    if (tag === '[object Promise]') return '[Promise]';
+    if (tag === '[object WeakMap]') return '[WeakMap]';
+    if (tag === '[object WeakSet]') return '[WeakSet]';
+    var tstr = '';
+    try { tstr = value[Symbol.toStringTag]; } catch (e3) {}
+    if (typeof tstr === 'string' && tstr !== '') return '[' + tstr + ']';
+    return '[Object]';
+  }
+  // ctx: {seen, circular, indentationLvl, depth, breakLength, compact,
+  //       getters, showHidden, currentDepth}
+  function inspFull(value, recurseTimes, ctx) {
+    var t = typeof value;
+    if (value === null) return 'null';
+    if (t === 'undefined') return 'undefined';
+    if (t === 'boolean') return String(value);
+    if (t === 'number') return inspFullNumber(value);
+    if (t === 'bigint') return String(value) + 'n';
+    if (t === 'symbol') return String(value);
+    if (t === 'string') return inspFullStrEscape(value);
+    if (t === 'function') {
+      var fname = '';
+      var isClass = false;
+      try {
+        fname = value.name || '';
+        isClass = /^class[\s{]/.test(String(value).slice(0, 100));
+      } catch (e) {}
+      return isClass
+        ? (fname ? '[class ' + fname + ']' : '[class (anonymous)]')
+        : (fname ? '[Function: ' + fname + ']' : '[Function (anonymous)]');
+    }
+    // Cycle check precedes the depth tag (node formatValue order) — the
+    // golden fixture2 circular reference resolves at depth 1 where the
+    // truncation tag would otherwise mask the [Circular *N] form.
+    if (ctx.seen.indexOf(value) !== -1) {
+      var ci;
+      if (ctx.circular === null) {
+        ctx.circular = new Map();
+        ctx.circular.set(value, 1);
+        ci = 1;
+      } else {
+        ci = ctx.circular.get(value);
+        if (ci === undefined) {
+          ci = ctx.circular.size + 1;
+          ctx.circular.set(value, ci);
+        }
+      }
+      return '[Circular *' + ci + ']';
+    }
+    if (ctx.depth !== null && recurseTimes > ctx.depth) return inspFullTag(value);
+    recurseTimes += 1;
+    ctx.seen.push(value);
+    ctx.currentDepth = recurseTimes;
+    var rendered = inspFullFormatRaw(value, recurseTimes, ctx);
+    if (ctx.circular !== null) {
+      var r = ctx.circular.get(value);
+      if (r !== undefined) {
+        rendered.base = rendered.base === ''
+          ? '<ref *' + r + '>'
+          : '<ref *' + r + '> ' + rendered.base;
+      }
+    }
+    ctx.seen.pop();
+    return inspFullReduce(rendered, ctx);
+  }
+  function inspFullCtorWalk(value) {
+    var walk = value;
+    while (walk) {
+      var d = null;
+      try { d = Object.getOwnPropertyDescriptor(walk, 'constructor'); } catch (e) {}
+      if (d && typeof d.value === 'function' && d.value.name !== '' &&
+          (function() { try { return value instanceof d.value; } catch (e2) { return false; } })()) {
+        return d.value.name;
+      }
+      walk = Object.getPrototypeOf(walk);
+    }
+    return null;
+  }
+  function inspFullAddProtoProps(ctx, main, obj, recurseTimes, output) {
+    var depth = 0;
+    var keys = null;
+    var keySet = null;
+    do {
+      if (depth !== 0 || main === obj) {
+        obj = Object.getPrototypeOf(obj);
+        if (obj === null) return;
+        var d = null;
+        try { d = Object.getOwnPropertyDescriptor(obj, 'constructor'); } catch (e) {}
+        if (d && typeof d.value === 'function' &&
+            getInspectFullBuiltinNames().has(d.value.name)) return;
+      }
+      if (depth === 0) {
+        keySet = new Set();
+      } else {
+        keys.forEach(function(k) { keySet.add(k); });
+      }
+      keys = Reflect.ownKeys(obj);
+      ctx.seen.push(main);
+      for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        if (key === 'constructor' ||
+            Object.prototype.hasOwnProperty.call(main, key) ||
+            (depth !== 0 && keySet.has(key))) {
+          continue;
+        }
+        var desc;
+        try { desc = Object.getOwnPropertyDescriptor(obj, key); } catch (e2) { continue; }
+        if (desc === undefined) continue;
+        if (typeof desc.value === 'function') continue;
+        output.push(inspFullFormatProperty(ctx, obj, recurseTimes, key, desc, main));
+      }
+      ctx.seen.pop();
+    } while (++depth !== 3);
+  }
+  function inspFullFormatProperty(ctx, value, recurseTimes, key, desc, original) {
+    var str;
+    if (desc.value !== undefined) {
+      str = inspFull(desc.value, recurseTimes, ctx);
+    } else if (desc.get !== undefined) {
+      var label = desc.set !== undefined ? 'Getter/Setter' : 'Getter';
+      if (ctx.getters && (ctx.getters === true ||
+          (ctx.getters === 'get' && desc.set === undefined) ||
+          (ctx.getters === 'set' && desc.set !== undefined))) {
+        var threw = false;
+        var tmp;
+        try { tmp = desc.get.call(original); } catch (err) { threw = true; tmp = err; }
+        if (threw) {
+          str = '[' + label + ': <Inspection threw (' + inspFull(tmp, recurseTimes, ctx) + ')>]';
+        } else if (tmp === null) {
+          str = '[' + label + ': null]';
+        } else if (typeof tmp === 'object' || typeof tmp === 'function') {
+          str = '[' + label + '] ' + inspFull(tmp, recurseTimes, ctx);
+        } else {
+          str = '[' + label + ': ' + inspFull(tmp, recurseTimes, ctx) + ']';
+        }
+      } else {
+        str = '[' + label + ']';
+      }
+    } else if (desc.set !== undefined) {
+      str = '[Setter]';
+    } else {
+      str = 'undefined';
+    }
+    var name;
+    if (typeof key === 'symbol') {
+      name = String(key);
+    } else if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)) {
+      name = key === '__proto__' ? "['__proto__']" : key;
+    } else {
+      name = inspFullStrEscape(key);
+    }
+    if (desc.enumerable === false) name = '[' + name + ']';
+    return name + ': ' + str;
+  }
+  function inspFullFormatRaw(value, recurseTimes, ctx) {
+    var tag = '';
+    try { tag = Object.prototype.toString.call(value); } catch (e) {}
+    var isArr = tag === '[object Array]';
+    // Errors: node formatError — head = stack's first line, remaining
+    // frames re-indented to ctx.indentationLvl + 4; own enumerable props
+    // append as a standard body (node 'Error: msg { prop: 1 }').
+    if (!isArr && value instanceof Error) {
+      var errStack = '';
+      try { errStack = String(value.stack || (value.name + ': ' + value.message)); } catch (e) {}
+      var lines = errStack.split('\n');
+      var baseStr = lines[0];
+      if (lines.length > 1) {
+        // node normalizes frame indentation — strip each frame's original
+        // leading whitespace and re-pad uniformly (indentationLvl + 4).
+        var framePad = new Array(ctx.indentationLvl + 5).join(' ');
+        baseStr += '\n' + framePad + lines.slice(1)
+          .map(function(l) { return l.replace(/^\s+/, ''); })
+          .join('\n' + framePad);
+      }
+      var ekeys = [];
+      try { ekeys = Object.keys(value); } catch (e10) {}
+      if (ekeys.length === 0) return { str: baseStr };
+      var eout = [];
+      ctx.indentationLvl += 2;
+      for (var ei = 0; ei < ekeys.length; ei++) {
+        var edesc;
+        try { edesc = Object.getOwnPropertyDescriptor(value, ekeys[ei]); } catch (e9) { continue; }
+        if (edesc === undefined) continue;
+        eout.push(inspFullFormatProperty(ctx, value, recurseTimes, ekeys[ei], edesc, value));
+      }
+      ctx.indentationLvl -= 2;
+      return { base: baseStr, braces: ['{', '}'], output: eout, recurseTimes: recurseTimes };
+    }
+    var protoProps;
+    if (ctx.showHidden && (ctx.depth === null || recurseTimes <= ctx.depth + 1)) {
+      protoProps = [];
+    }
+    var ctorName = null;
+    if (protoProps !== undefined) {
+      // Identify the constructor and collect the prototype-layer props
+      // (node getConstructorName + addPrototypeProperties pairing).
+      var walk = value;
+      var firstProto;
+      var identified = false;
+      while (walk) {
+        var d = null;
+        try { d = Object.getOwnPropertyDescriptor(walk, 'constructor'); } catch (e2) {}
+        if (d && typeof d.value === 'function' && d.value.name !== '' &&
+            (function() { try { return value instanceof d.value; } catch (e3) { return false; } })()) {
+          if (firstProto !== walk ||
+              !getInspectFullBuiltinNames().has(d.value.name)) {
+            inspFullAddProtoProps(ctx, value,
+              firstProto === undefined ? value : firstProto, recurseTimes, protoProps);
+          }
+          ctorName = d.value.name;
+          identified = true;
+          break;
+        }
+        var next = Object.getPrototypeOf(walk);
+        if (firstProto === undefined) firstProto = next;
+        walk = next;
+      }
+      if (!identified) ctorName = inspFullCtorWalk(value);
+      if (protoProps.length === 0) protoProps = undefined;
+    } else {
+      ctorName = inspFullCtorWalk(value);
+    }
+    var proto = Object.getPrototypeOf(value);
+    var keys, symbols;
+    try {
+      symbols = Object.getOwnPropertySymbols(value);
+      if (ctx.showHidden) {
+        keys = Object.getOwnPropertyNames(value);
+      } else {
+        keys = Object.keys(value);
+        symbols = symbols.filter(function(s) {
+          try {
+            return Object.prototype.propertyIsEnumerable.call(value, s);
+          } catch (e4) { return false; }
+        });
+      }
+    } catch (e5) {
+      keys = [];
+      symbols = [];
+    }
+    var prefix = '';
+    if (proto === null) {
+      prefix = '[Object: null prototype] ';
+    } else if (ctorName && ctorName !== 'Object') {
+      prefix = ctorName + ' ';
+    }
+    if (!isArr && keys.length === 0 && protoProps === undefined) {
+      if (proto === null) return { str: '[Object: null prototype] {}' };
+      if (ctorName && ctorName !== 'Object') return { str: ctorName + ' {}' };
+      return { str: '{}' };
+    }
+    var braces;
+    if (isArr) {
+      var arrCtor = '';
+      try { arrCtor = (value.constructor && value.constructor.name) || ''; } catch (e6) {}
+      braces = [(arrCtor && arrCtor !== 'Array')
+        ? arrCtor + '(' + value.length + ') [' : '[', ']'];
+    } else {
+      braces = [(prefix === '' ? '{' : prefix + '{'), '}'];
+    }
+    var output = [];
+    ctx.indentationLvl += 2;
+    if (isArr) {
+      var n = value.length;
+      var holeRun = 0;
+      for (var i = 0; i < n; i++) {
+        if (i in value) {
+          if (holeRun > 0) {
+            output.push(holeRun === 1 ? '<1 empty item>' : '<' + holeRun + ' empty items>');
+            holeRun = 0;
+          }
+          output.push(inspFull(value[i], recurseTimes, ctx));
+        } else {
+          holeRun++;
+        }
+      }
+      if (holeRun > 0) {
+        output.push(holeRun === 1 ? '<1 empty item>' : '<' + holeRun + ' empty items>');
+      }
+    }
+    for (var ki = 0; ki < keys.length; ki++) {
+      var key = keys[ki];
+      if (isArr && typeof key === 'string' && /^[0-9]+$/.test(key)) continue;
+      var desc;
+      try { desc = Object.getOwnPropertyDescriptor(value, key); } catch (e7) { continue; }
+      if (desc === undefined) continue;
+      output.push(inspFullFormatProperty(ctx, value, recurseTimes, key, desc, value));
+    }
+    if (protoProps !== undefined) {
+      for (var pi = 0; pi < protoProps.length; pi++) output.push(protoProps[pi]);
+    }
+    ctx.indentationLvl -= 2;
+    return { base: '', braces: braces, output: output, recurseTimes: recurseTimes };
+  }
+  function inspFullBelowBreak(ctx, output, start) {
+    if (ctx.breakLength === Infinity) {
+      for (var i = 0; i < output.length; i++) {
+        if (output[i].indexOf('\n') !== -1) return false;
+      }
+      return true;
+    }
+    var total = output.length + start;
+    if (total + output.length > ctx.breakLength) return false;
+    for (var j = 0; j < output.length; j++) {
+      total += output[j].length;
+      if (total > ctx.breakLength) return false;
+    }
+    return true;
+  }
+  function inspFullReduce(r, ctx) {
+    if ('str' in r) return r.str;
+    var base = r.base, braces = r.braces, output = r.output;
+    if (output.length === 0) return braces[0] + braces[1];
+    var unit = '  ';
+    if (ctx.compact !== true && typeof ctx.compact === 'number' && ctx.compact >= 1) {
+      if (ctx.currentDepth - r.recurseTimes < ctx.compact) {
+        var start = output.length + ctx.indentationLvl + braces[0].length +
+          base.length + 10;
+        if (inspFullBelowBreak(ctx, output, start)) {
+          var joined = output.join(', ');
+          if (joined.indexOf('\n') === -1) {
+            return (base ? base + ' ' : '') + braces[0] + ' ' + joined +
+              ' ' + braces[1];
+          }
+        }
+      }
+      var indentation = '\n' + new Array(ctx.indentationLvl + 1).join(' ');
+      return (base ? base + ' ' : '') + braces[0] + indentation + unit +
+        output.join(',' + indentation + unit) + indentation + braces[1];
+    }
+    if (inspFullBelowBreak(ctx, output, 0)) {
+      return braces[0] + (base ? ' ' + base : '') + ' ' + output.join(', ') +
+        ' ' + braces[1];
+    }
+    var ind = new Array(ctx.indentationLvl + 1).join(' ');
+    var ln = base === '' && braces[0].length === 1
+      ? ' '
+      : (base ? ' ' + base : '') + '\n' + ind + unit;
+    return braces[0] + ln + output.join(',\n' + ind + unit) + ' ' + braces[1];
+  }
+  function inspFullOptions(opts) {
+    var o = (opts === undefined || opts === null || typeof opts !== 'object') ? {} : opts;
+    var d = o.depth;
+    return {
+      seen: [],
+      circular: null,
+      indentationLvl: 0,
+      depth: d === undefined ? 2
+        : (d === Infinity ? null : (typeof d === 'number' ? d : 2)),
+      breakLength: o.breakLength === undefined ? 80 : o.breakLength,
+      compact: o.compact === undefined ? 3 : o.compact,
+      getters: o.getters === undefined ? false : o.getters,
+      showHidden: o.showHidden === undefined ? false : o.showHidden,
+      currentDepth: 0
+    };
+  }
+  function inspFullRender(value, opts) {
+    return inspFull(value, 0, inspFullOptions(opts));
+  }
+  // Hidden back-channel: the u.inspect wrapper below (and install-side
+  // callers) reach the options engine without polluting the util namespace.
+  Object.defineProperty(u, '__baoInspectFull', {
+    value: inspFullRender,
+    enumerable: false,
+    writable: false,
+    configurable: false
+  });
+  (function() {
+    var nativeInspect = u.inspect;
+    if (typeof nativeInspect !== 'function') return;
+    var wrapped = function inspect(value, options) {
+      var route = false;
+      if (options !== undefined && options !== null && typeof options === 'object') {
+        if (options.getters !== undefined && options.getters !== false) route = true;
+        if (options.showHidden === true) route = true;
+      }
+      if (route) return inspFullRender(value, options);
+      return nativeInspect(value, options);
+    };
+    var descs = Object.getOwnPropertyDescriptors(nativeInspect);
+    for (var k in descs) {
+      if (k === 'length' || k === 'name' || k === 'prototype') continue;
+      try { Object.defineProperty(wrapped, k, descs[k]); } catch (e8) {}
+    }
+    u.inspect = wrapped;
+  })();
 
   // ── util.parseArgs — node v24 semantics (ported from
   // internal/util/parse_args/{parse_args,utils}) ────────────────────────
@@ -512,10 +1187,10 @@ t.isCryptoKey=function(){return false};
   // stderr so the deprecation is never silent.
   u.deprecate = function deprecate(fn, msg, code) {
     if (code !== undefined && typeof code !== 'string') {
-      var ce = new TypeError('The "code" argument must be of type string. Received type ' +
-                             typeof code + ' (' + String(code) + ')');
-      ce.code = 'ERR_INVALID_ARG_TYPE';
-      throw ce;
+      // node errors.js ERR_INVALID_ARG_TYPE message shape — null reports
+      // 'Received null', objects 'Received an instance of X' (oracle:
+      // test-util-deprecate-invalid-code / common.invalidArgTypeHelper).
+      throw invalidArgTypeErr('code', 'string', code);
     }
     var warned = false;
     function deprecated() {
@@ -4068,6 +4743,18 @@ function makeAssert() {
     configurable: false,
   });
 
+  // Non-enumerable back-channel for util.isDeepStrictEqual: the Section-1
+  // comparisons.js port (boxed primitives, Map/Set/Date/RegExp/TypedArray,
+  // cycle memos, skipPrototype). Hidden so golden probes scanning assert's
+  // public surface never see it; install_assert's Rust tail forwards it
+  // onto the cached util object as util.__baoIsDeepStrictEqual.
+  Object.defineProperty(assertFn, '__baoIsDeepStrictEqual', {
+    value: isDeepStrictEqual,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+
   Object.assign(strict, assertFn, {
     equal: assertFn.strictEqual,
     deepEqual: assertFn.deepStrictEqual,
@@ -4141,6 +4828,43 @@ return makeAssert();
         if iv_val.is_object() && JS_ObjectIsFunction(iv_val.to_object()) {
             rooted!(&in(wrapped_cx) let iv_obj = iv_val.to_object());
             cache_builtin(cx, "assert/__inspectValue", iv_obj.get());
+        }
+
+        // Forward the Section-1 comparisons port onto the cached util
+        // object (install order: util first, assert second — globals.rs).
+        // util.isDeepStrictEqual delegates to it at call time, so the full
+        // comparator (boxed primitives / skipPrototype / cycle memos)
+        // backs the util export with a single implementation (DRY with
+        // assert.deepStrictEqual's engine). Hidden property: never visible
+        // to golden probes scanning util's public surface.
+        let mut ds_val = UndefinedValue();
+        JS_GetProperty(
+            cx.raw_cx(),
+            assert_fn_obj.handle().into(),
+            c"__baoIsDeepStrictEqual".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ds_val,
+            },
+        );
+        if ds_val.is_object() && JS_ObjectIsFunction(ds_val.to_object()) {
+            rooted!(&in(wrapped_cx) let ds_obj = ds_val.to_object());
+            cache_builtin(cx, "assert/__isDeepStrictEqual", ds_obj.get());
+            if let Some(util_raw) = crate::gc_store::gc_store_get(cx.raw_cx(), "builtin:util") {
+                if !util_raw.is_null() {
+                    rooted!(&in(wrapped_cx) let util_obj = util_raw);
+                    let ds_obj_val = ObjectValue(ds_obj.get());
+                    rooted!(&in(wrapped_cx) let ds_val_root = ds_obj_val);
+                    let c_bao_cmp = ZBox::from_bytes(b"__baoIsDeepStrictEqual");
+                    JS_DefineProperty(
+                        cx.raw_cx(),
+                        util_obj.handle().into(),
+                        c_bao_cmp.as_ptr(),
+                        ds_val_root.handle().into(),
+                        0, // non-enumerable, non-writable, non-configurable
+                    );
+                }
+            }
         }
 
         // Also expose AssertionError globally for tests that reference it
@@ -4222,6 +4946,10 @@ unsafe fn bun_inspect_delegate(cx: *mut JSContext, val: JSVal, depth: u32) -> Op
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let global_root = global);
+    // Root val early: the JS_GetProperty / JS_NewPlainObject calls below
+    // can trigger GC and relocate the object, making the by-value val
+    // parameter stale before its use in the JS_CallFunctionValue args.
+    rooted!(&in(cx_ref) let val_root = val);
     let mut bun_val = UndefinedValue();
     if !JS_GetProperty(
         cx,
@@ -4267,7 +4995,6 @@ unsafe fn bun_inspect_delegate(cx: *mut JSContext, val: JSVal, depth: u32) -> Op
         depth_v.handle().into(),
         0,
     );
-    rooted!(&in(cx_ref) let val_root = val);
     rooted!(&in(cx_ref) let inspect_root = inspect_v);
     let call_vals = [val_root.get(), ObjectValue(opts_obj.get())];
     let call_args = HandleValueArray {
@@ -4718,9 +5445,19 @@ unsafe fn jsval_inspect_object_body(
 
         // node's util.inspect dispatches to Symbol.for('nodejs.util.inspect.custom')
         // when present on the object or its prototype chain.
-        if let Some(s) = crate::bun_inspect_api::try_custom_inspect(cx, &mut wrapped_cx, obj.handle(), depth) {
+        if let Some(s) =
+            crate::bun_inspect_api::try_custom_inspect(cx, &mut wrapped_cx, obj.handle(), depth)
+        {
             return s;
         }
+
+        // Re-synthesize val from the rooted handle: try_custom_inspect runs
+        // JS (JS_NewStringCopyZ / JS_GetPropertyById / user callbacks) that
+        // can trigger GC and relocate the object, leaving the by-value
+        // `val` parameter stale. Downstream consumers (IsArrayObject,
+        // jsval_buffer_bytes, bun_inspect_delegate) re-extract the object
+        // pointer from val, so refresh it from the GC-updated root.
+        let val = ObjectValue(obj.get());
 
         // Arrays → [ a, b, c ] (elements first, then non-index own
         // properties — Node renders `[ 1, 2, 3, foo: 'x' ]`).
@@ -5074,6 +5811,10 @@ unsafe fn json_stringify_for_format(cx: *mut JSContext, val: JSVal) -> String {
     }
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let global_root = global);
+    // Root val early: the JS_GetProperty calls below can trigger GC and
+    // relocate the object, making the by-value val parameter stale before
+    // its use in the JS_CallFunctionValue args.
+    rooted!(&in(wrapped_cx) let val_root = val);
     let mut json_val = UndefinedValue();
     JS_GetProperty(
         cx,
@@ -5104,7 +5845,6 @@ unsafe fn json_stringify_for_format(cx: *mut JSContext, val: JSVal) -> String {
     }
     // The callee slot takes a VALUE handle — root the jsval form.
     rooted!(&in(wrapped_cx) let stringify_root = stringify_val);
-    rooted!(&in(wrapped_cx) let val_root = val);
     let call_args = HandleValueArray {
         length_: 1,
         elements_: &val_root.get() as *const Value,
@@ -5839,6 +6579,31 @@ unsafe fn make_call_site(
     site
 }
 
+/// node CallSite `scriptName` contract: the script's resolved ABSOLUTE
+/// location (test-util-getcallsites-preparestacktrace oracle:
+/// `sites[0].scriptName === __filename`, and __filename is the CWD-joined
+/// script argument with relative segments preserved verbatim — the same
+/// naive join bao's `__filename` performs). Non-path sources pass through:
+/// `node:`-prefixed internals, engine pseudo-names (`[eval]`, `<blob>`),
+/// scheme-bearing URLs.
+fn resolve_call_site_script_name(name: &str) -> String {
+    if name.starts_with('/')
+        || name.starts_with("node:")
+        || name.starts_with('<')
+        || name.starts_with('[')
+        || name.contains("://")
+    {
+        return name.to_string();
+    }
+    match ::std::env::current_dir() {
+        // REQ-ENG-004 getCallSites scriptName absolutization: a bare relative
+        // module name resolves against the process cwd (node v24 returns
+        // absolute scriptName); cwd-unresolvable falls back verbatim.
+        Ok(cwd) => format!("{}/{}", cwd.display(), name), // @evidence SPEC/10-REQUIREMENTS.html:237
+        Err(_) => name.to_string(),                       // @evidence SPEC/10-REQUIREMENTS.html:237
+    }
+}
+
 /// `util.getCallSites([frameCount], [options])` — node v24 contract:
 /// structured stack frames of the caller chain, freshest first, own frame
 /// excluded (a JSNative has no JS frame, so SM's capture starts at the
@@ -5889,9 +6654,10 @@ unsafe extern "C" fn util_get_call_sites(cx: *mut JSContext, argc: u32, vp: *mut
         }
     }
     let count: u32 = match count_slot {
-        None => 10, // @evidence SPEC/10-REQUIREMENTS.html:237
+        None => 10,                        // @evidence SPEC/10-REQUIREMENTS.html:237
         Some(v) if v.is_undefined() => 10, // @evidence SPEC/10-REQUIREMENTS.html:237
-        Some(v) => { // @evidence SPEC/10-REQUIREMENTS.html:237
+        Some(v) => {
+            // @evidence SPEC/10-REQUIREMENTS.html:237
             if !v.is_number() {
                 let msg = format!(
                     "The \"frameCount\" argument must be of type number. Received {}",
@@ -5976,7 +6742,8 @@ unsafe extern "C" fn util_get_call_sites(cx: *mut JSContext, argc: u32, vp: *mut
         return true;
     }
     for (i, (fname, sname, lineno, colno)) in frames.iter().enumerate() {
-        let site = make_call_site(cx, fname, sname, *lineno, *colno);
+        let resolved_sname = resolve_call_site_script_name(sname);
+        let site = make_call_site(cx, fname, &resolved_sname, *lineno, *colno);
         if site.is_null() {
             continue;
         }
@@ -6174,6 +6941,13 @@ unsafe extern "C" fn util_is_error(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 /// JS `ToString(Number)` for a computed f64 (util.format %d/%i/%f output).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn f64_js_text(cx: *mut JSContext, n: f64) -> String {
+    // node formatNumber contract (lib/internal/util/inspect.js): -0 renders
+    // '-0' — engine ToString(String(-0) === '0') must be bypassed before any
+    // string conversion (node: "this must be checked before any String()
+    // conversion"). REQ-ENG-004 util.format %d/%i/%f oracle.
+    if n == 0.0 && n.is_sign_negative() {
+        return "-0".to_string();
+    }
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let nv = mozjs::jsval::DoubleValue(n));
@@ -6202,6 +6976,10 @@ unsafe fn call_global_number_parser(
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let global_root = global);
+    // Root val early: JS_GetProperty below can trigger GC and relocate
+    // the object, making the by-value val parameter stale before its use
+    // in the JS_CallFunctionValue args.
+    rooted!(&in(cx_ref) let val_root = val);
     let c_name = ZBox::from_bytes(name);
     let mut fn_v = UndefinedValue();
     if !JS_GetProperty(
@@ -6220,7 +6998,6 @@ unsafe fn call_global_number_parser(
         return None;
     }
     rooted!(&in(cx_ref) let fn_root = fn_v);
-    rooted!(&in(cx_ref) let val_root = val);
     let call_vals = [val_root.get()];
     let call_args = HandleValueArray {
         length_: 1,
@@ -6485,16 +7262,24 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     true
 }
 
-// @trace REQ-ENG-006 [api:util.callbackify] — real Node semantics. The
-// previous implementation returned the argument unchanged, so the callback
-// never ran (silent fake). Mirrors Node lib/util.js:
-//   - last argument must be a function (else TypeError ERR_INVALID_CALLBACK)
-//   - uses `fn[Symbol.for('nodejs.callbackify.custom')]` when present
-//   - resolved value: undefined → cb(null); Array → cb(null, ...arr);
-//     anything else → cb(null, value)
-//   - rejection: falsy reason is wrapped in an Error carrying `.cause`
-//   - a synchronous throw of the wrapped fn is delivered to the callback on a
-//     microtask (Node defers via process.nextTick)
+// @trace REQ-ENG-004 [api:util.callbackify] — node v24.19 lib/util.js
+// oracle semantics (REQ-ENG-048 F-class rework):
+//   - validateFunction(original, 'original') → ERR_INVALID_ARG_TYPE with
+//     determineSpecificType tail ('Received null' / 'an instance of X')
+//   - own-property descriptor copy onto the callbackified fn, with numeric
+//     length gaining the callback slot (+1) and string names gaining the
+//     'Callbackified' suffix; non-number/non-string values preserved
+//     verbatim (the promiseFn descriptor-object oracle)
+//   - callback bound to the call's `this`; delivery via process.nextTick
+//     (a throwing callback surfaces as uncaughtException — fixture
+//     contract; bao process.nextTick: bun_api.rs:1514)
+//   - resolved value always cb(null, ret) — arrays are NOT spread
+//   - falsy rejection wrapped: ERR_FALSY_VALUE_REJECTION, message
+//     'Promise was rejected with falsy value', `.reason` = original value
+//   - a synchronous throw of the wrapped fn propagates synchronously
+//     (node has no try/catch around ReflectApply)
+//   - last-argument validation: 'The last argument must be of type
+//     function. Received <specific>' (node's unquoted phrasing)
 //
 // CS-EMPTY-CATCH exemption: the empty-catch around `reason.cause = err` inside
 // the rejection handler is best-effort cause attachment — a frozen/non-
@@ -6504,46 +7289,98 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn util_callbackify(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    if _argc == 0 || !(*args.get(0).ptr).is_object() {
-        JS_ReportErrorUTF8(cx, c"callbackify requires a function".as_ptr());
-        return false;
-    }
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let fn_val = *args.get(0).ptr);
+    rooted!(&in(wrapped_cx) let fn_val = if _argc > 0 {
+        *args.get(0).ptr
+    } else {
+        UndefinedValue()
+    });
 
+    // node v24 lib/util.js callbackify oracle: descriptor copy with
+    // length+1 / name+'Callbackified' mutation guards, callback bound to
+    // the call's `this`, process.nextTick delivery (a throwing callback
+    // surfaces as uncaughtException — the fixture contract), falsy
+    // rejection wrapped as ERR_FALSY_VALUE_REJECTION carrying `.reason`,
+    // ERR_INVALID_ARG_TYPE validation messages via determineSpecificType.
     let callbackify_src = r#"(function(orig) {
-  var custom = orig[Symbol.for('nodejs.callbackify.custom')];
-  var impl = (typeof custom === 'function') ? function() { return custom.apply(this, arguments); } : orig;
+  function cbSpecificType(value) {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    var t = typeof value;
+    switch (t) {
+      case 'bigint': return 'type bigint (' + value + 'n)';
+      case 'number':
+        if (value === 0) return 1 / value === -Infinity ? 'type number (-0)' : 'type number (0)';
+        if (value !== value) return 'type number (NaN)';
+        if (value === Infinity) return 'type number (Infinity)';
+        if (value === -Infinity) return 'type number (-Infinity)';
+        return 'type number (' + value + ')';
+      case 'boolean': return value ? 'type boolean (true)' : 'type boolean (false)';
+      case 'symbol': return 'type symbol (' + String(value) + ')';
+      case 'function': return 'function ' + value.name;
+      case 'object': {
+        var name = '';
+        try { name = (value.constructor && value.constructor.name) || ''; } catch (e) {}
+        if (typeof name === 'string' && name !== '') return 'an instance of ' + name;
+        return 'object';
+      }
+      case 'string': {
+        var s = value;
+        if (s.length > 28) s = s.slice(0, 25) + '...';
+        return s.indexOf("'") === -1 ? "type string ('" + s + "')" : 'type string (' + JSON.stringify(s) + ')';
+      }
+      default: return 'type ' + t + ' (' + String(value) + ')';
+    }
+  }
+  if (typeof orig !== 'function') {
+    var oe = new TypeError('The "original" argument must be of type function. Received ' +
+                           cbSpecificType(orig));
+    oe.code = 'ERR_INVALID_ARG_TYPE';
+    throw oe;
+  }
   function callbackified() {
     var args = Array.prototype.slice.call(arguments);
     var maybeCb = args.pop();
     if (typeof maybeCb !== 'function') {
-      throw new TypeError('The last argument passed to callbackify must be a callback function');
+      var le = new TypeError('The last argument must be of type function. Received ' +
+                             cbSpecificType(maybeCb));
+      le.code = 'ERR_INVALID_ARG_TYPE';
+      throw le;
     }
-    var cb = maybeCb;
-    var ret;
-    try {
-      ret = impl.apply(this, args);
-    } catch (err) {
-      // Node defers the synchronous failure to process.nextTick; a microtask
-      // is the same "after the current call" delivery without nextTick.
-      Promise.resolve().then(function() { cb(err); });
-      return;
-    }
-    Promise.resolve(ret).then(function(value) {
-      if (value === undefined) cb(null);
-      else if (Array.isArray(value)) cb.apply(null, [null].concat(value));
-      else cb(null, value);
-    }, function(err) {
-      var reason = err;
-      if (!reason) {
-        reason = new Error('falsy rejection reason');
-        if (reason && !reason.cause) { try { reason.cause = err; } catch (e) {/*CS-EMPTY-CATCH exempt: frozen reason cannot take .cause; original reason still delivered*/} }
+    var cb = maybeCb.bind(this);
+    // In true node style the callback runs on process.nextTick with all the
+    // implications for stack, uncaughtException and async_hooks.
+    orig.apply(this, args).then(function(ret) {
+      process.nextTick(cb, null, ret);
+    }, function(rej) {
+      if (!rej) {
+        // `!reason` guard: null is the callbacks' "no error" sentinel, so a
+        // falsy rejection is error-wrapped (node callbackifyOnRejected) —
+        // the original value rides on `.reason`.
+        var wrapped = new Error('Promise was rejected with falsy value');
+        wrapped.code = 'ERR_FALSY_VALUE_REJECTION';
+        wrapped.reason = rej;
+        rej = wrapped;
       }
-      cb(reason);
+      process.nextTick(cb, rej);
     });
   }
-  callbackified[Symbol.for('nodejs.callbackify.custom')] = orig[Symbol.for('nodejs.callbackify.custom')];
+  var descriptors = Object.getOwnPropertyDescriptors(orig);
+  // Guards against a manipulated `length`/`name`: numeric length gains the
+  // callback slot; string names gain the suffix; anything else is preserved
+  // verbatim (the promiseFn descriptor-object oracle).
+  if (descriptors.length && typeof descriptors.length.value === 'number') {
+    descriptors.length.value++;
+  }
+  if (descriptors.name && typeof descriptors.name.value === 'string') {
+    descriptors.name.value += 'Callbackified';
+  }
+  var values = Object.values(descriptors);
+  for (var i = 0; i < values.length; i++) {
+    // null-prototype descriptors: no reliance on globally mutable %Object.prototype%.
+    Object.setPrototypeOf(values[i], null);
+  }
+  Object.defineProperties(callbackified, descriptors);
   return callbackified;
 })"#;
     let mut src = mozjs::rust::transform_str_to_source_text(callbackify_src);
@@ -6570,8 +7407,10 @@ unsafe extern "C" fn util_callbackify(cx: *mut JSContext, _argc: u32, vp: *mut J
         return true;
     }
     rooted!(&in(wrapped_cx) let global_root = global);
-    rooted!(&in(wrapped_cx) let fn_obj = fn_val.get().to_object());
-    rooted!(&in(wrapped_cx) let fn_obj_val = ObjectValue(fn_obj.get()));
+    // The factory performs node-shaped validation itself — ANY argument
+    // value (including non-objects) reaches the ERR_INVALID_ARG_TYPE throw
+    // path, so the arg passes as the raw value, not an ObjectValue.
+    rooted!(&in(wrapped_cx) let fn_obj_val = fn_val.get());
     let args_arr = HandleValueArray {
         length_: 1,
         elements_: &fn_obj_val.get() as *const Value,

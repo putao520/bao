@@ -33,12 +33,12 @@ use crate::require::cache_builtin;
 // Platform socket-type namespace: the winsock mirrors in
 // bun_windows_sys::ws2_32 carry POSIX field names and identical layouts
 // (size/align-asserted), so every producer/consumer below is cfg-blind.
-#[cfg(unix)]
-use libc::{in6_addr, in_addr, sockaddr_in, sockaddr_in6, sockaddr_storage, AF_INET, AF_INET6};
 #[cfg(windows)]
 use bun_windows_sys::ws2_32::{
-    in6_addr, in_addr, sockaddr_in, sockaddr_in6, sockaddr_storage, AF_INET, AF_INET6,
+    AF_INET, AF_INET6, in_addr, in6_addr, sockaddr_in, sockaddr_in6, sockaddr_storage,
 };
+#[cfg(unix)]
+use libc::{AF_INET, AF_INET6, in_addr, in6_addr, sockaddr_in, sockaddr_in6, sockaddr_storage};
 // winsock's addrlen parameters are `int` (POSIX socklen_t = u32); the alias
 // keeps every signature/arith site cfg-blind.
 #[cfg(unix)]
@@ -253,11 +253,7 @@ fn dup_socket_fd(fd: bun_core::Fd) -> Option<::std::os::fd::RawFd> {
     // Fd's posix backing is the raw descriptor (FdBacking = i32).
     // SAFETY: fd.0 is a live socket descriptor; dup(2) only copies it.
     let d = unsafe { libc::dup(fd.0) };
-    if d < 0 {
-        None
-    } else {
-        Some(d)
-    }
+    if d < 0 { None } else { Some(d) }
 }
 
 /// Adopt the duplicate as an owned blocking-by-default std stream (the tls
@@ -1132,8 +1128,7 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         if !port_val.is_number() {
             JS_ReportErrorUTF8(
                 cx,
-                c"The 'port' argument must be a number. Received a non-number value."
-                    .as_ptr(),
+                c"The 'port' argument must be a number. Received a non-number value.".as_ptr(),
             );
             return false;
         }
@@ -1149,7 +1144,10 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         0
     };
     let addr = if argc > 1 && (*args.get(1).ptr).is_string() {
-        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(1).ptr).to_string()))
+        jsstr_to_string(
+            &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+            NonNull::new_unchecked((*args.get(1).ptr).to_string()),
+        )
     } else {
         "0.0.0.0".to_string()
     };
@@ -1249,8 +1247,7 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         if !port_val.is_number() {
             JS_ReportErrorUTF8(
                 cx,
-                c"The 'port' argument must be a number. Received a non-number value."
-                    .as_ptr(),
+                c"The 'port' argument must be a number. Received a non-number value.".as_ptr(),
             );
             return false;
         }
@@ -1267,7 +1264,10 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     };
 
     let addr = if argc > 1 && (*args.get(1).ptr).is_string() {
-        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(1).ptr).to_string()))
+        jsstr_to_string(
+            &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+            NonNull::new_unchecked((*args.get(1).ptr).to_string()),
+        )
     } else {
         "127.0.0.1".to_string()
     };
@@ -1409,8 +1409,11 @@ unsafe extern "C" fn net_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     // argument (the silent no-op class) — echo servers writing the received
     // ArrayBuffer back transmitted nothing.
     let data: Vec<u8> = if (*args.get(1).ptr).is_string() {
-        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(1).ptr).to_string()))
-            .into_bytes()
+        jsstr_to_string(
+            &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+            NonNull::new_unchecked((*args.get(1).ptr).to_string()),
+        )
+        .into_bytes()
     } else {
         match crate::node_buffer::collect_byte_view(cx, *args.get(1).ptr) {
             Some(b) => b,
@@ -1538,8 +1541,7 @@ unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     // Get local address via libc::getsockname as fallback
     let mut addr: sockaddr_storage = unsafe { ::std::mem::zeroed() };
-    let mut addr_len: socklen_t =
-        ::std::mem::size_of::<sockaddr_storage>() as socklen_t;
+    let mut addr_len: socklen_t = ::std::mem::size_of::<sockaddr_storage>() as socklen_t;
     let fd = unsafe { (*listen_ptr).fd() };
 
     let (address_str, family_str, resolved_port) = if unsafe {
@@ -1696,11 +1698,18 @@ unsafe extern "C" fn net_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     // Use JS_NewArrayBufferWithContents to transfer ownership of the data
     let len = data.len();
     let buf_ptr = data.as_ptr();
-    // We need to copy data into a new allocation because Vec will be freed
-    let alloc = ::std::alloc::alloc(
-        ::std::alloc::Layout::from_size_align(len, 1)
-            .unwrap_or_else(|_| ::std::alloc::Layout::from_size_align(1, 1).unwrap()),
-    );
+    // We need to copy data into a new allocation because Vec will be freed.
+    // The copy MUST be libc::malloc: NewArrayBufferWithContents takes
+    // ownership and frees the contents at GC finalize via JS_free (system
+    // free — SM contract, ArrayBuffer.h "|contents| must be allocated
+    // compatible with deallocation by |JS_free|"; ArrayBufferObject::
+    // releaseData MALLOCED_UNKNOWN_ARENA arm → gcx->free_). The process
+    // global allocator is jemalloc (servo components/allocator
+    // #[global_allocator] = tikv Jemalloc), so a std::alloc pointer here gets
+    // libc free()'d at the process-exit sweep → "free(): invalid pointer"
+    // SIGABRT (same class as 崩①-b). Allocator-pairing law: @trace
+    // REQ-ENG-048. Mirror of web_api.rs bytes_to_arraybuffer_val.
+    let alloc = unsafe { libc::malloc(len) } as *mut u8;
     if alloc.is_null() {
         args.rval().set(NullValue());
         return true;
@@ -1716,12 +1725,10 @@ unsafe extern "C" fn net_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     let array_buffer =
         w2::NewArrayBufferWithContents(cx_ref, len, alloc as *mut ::std::os::raw::c_void);
     if array_buffer.is_null() {
-        // NewArrayBufferWithContents failed — free our allocation
-        ::std::alloc::dealloc(
-            alloc,
-            ::std::alloc::Layout::from_size_align(len, 1)
-                .unwrap_or_else(|_| ::std::alloc::Layout::from_size_align(1, 1).unwrap()),
-        );
+        // NewArrayBufferWithContents failed — free our allocation in the same
+        // domain we allocated in (libc::malloc above; JS only takes ownership
+        // on success).
+        unsafe { libc::free(alloc as *mut ::std::os::raw::c_void) };
         args.rval().set(NullValue());
         return true;
     }
@@ -1742,7 +1749,10 @@ unsafe extern "C" fn net_is_ipv6(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         return true;
     }
 
-    let input = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(0).ptr).to_string()));
+    let input = jsstr_to_string(
+        &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+        NonNull::new_unchecked((*args.get(0).ptr).to_string()),
+    );
     let result = input.contains(':');
     args.rval().set(BooleanValue(result));
     true
@@ -1926,8 +1936,16 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 ("__net_isIPv6", Some(net_is_ipv6), 1),
                 ("__net_on_connection", Some(net_on_connection), 2),
                 ("__net_poll_state", Some(net_poll_state), 1),
-                ("__net_get_autoselect_timeout", Some(net_get_autoselect_timeout), 0),
-                ("__net_set_autoselect_timeout", Some(net_set_autoselect_timeout), 1),
+                (
+                    "__net_get_autoselect_timeout",
+                    Some(net_get_autoselect_timeout),
+                    0,
+                ),
+                (
+                    "__net_set_autoselect_timeout",
+                    Some(net_set_autoselect_timeout),
+                    1,
+                ),
             ];
             for &(name, native, nargs) in bridges {
                 let c_name = ZBox::from_bytes(name);

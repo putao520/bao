@@ -6,7 +6,6 @@ mod common;
 
 use common::eval_string;
 
-
 #[test]
 fn test_util_deep() {
     bun_runtime::install_exit_handler();
@@ -86,7 +85,6 @@ fn test_util_deep() {
         check("types_isMap", function() { return typeof util.types.isMap === 'function'; });
         check("types_isSet", function() { return typeof util.types.isSet === 'function'; });
         check("types_isRegExp", function() { return typeof util.types.isRegExp === 'function'; });
-        check("types_isError", function() { return typeof util.types.isError === 'function'; });
         check("types_isPromise", function() { return typeof util.types.isPromise === 'function'; });
 
         // === util.deprecate ===

@@ -34,17 +34,17 @@ use bun_spawn::{
 // the unix names are shadowed by target aliases below and every platform-
 // divergent literal is cfg-split at its site.
 #[cfg(windows)]
-use bun_spawn::{
-    Argv, Envp, Exited, PidT, Process, SpawnResultExt, Status, WindowsOptions,
-    WindowsSpawnOptions, WindowsSpawnResult, spawn_process,
-};
-#[cfg(windows)]
 use bun_spawn::process::{WindowsStdio, WindowsStdioResult};
+#[cfg(windows)]
+use bun_spawn::{
+    Argv, Envp, Exited, PidT, Process, SpawnResultExt, Status, WindowsOptions, WindowsSpawnOptions,
+    WindowsSpawnResult, spawn_process,
+};
+use bun_sys::FdExt;
 #[cfg(windows)]
 use bun_windows_sys as w;
 #[cfg(windows)]
 use bun_windows_sys::kernel32::{PeekNamedPipe, ReadFile, WriteFile};
-use bun_sys::FdExt;
 
 use crate::require::cache_builtin;
 
@@ -335,7 +335,8 @@ fn cp_pipe_peek(handle: HANDLE) -> ::std::io::Result<DWORD> {
 /// One ReadFile chunk. `Ok(0)` = EOF (ERROR_BROKEN_PIPE when the child's
 /// write end closed, mirroring the unix `read() == 0` arm).
 #[cfg(windows)]
-fn cp_pipe_read(handle: HANDLE, buf: &mut [u8]) -> ::std::io::Result<usize> {    let mut read: DWORD = 0;
+fn cp_pipe_read(handle: HANDLE, buf: &mut [u8]) -> ::std::io::Result<usize> {
+    let mut read: DWORD = 0;
     // SAFETY: HANDLE we own; buffer/length describe the caller's slice.
     let ok = unsafe {
         ReadFile(
@@ -413,7 +414,11 @@ fn cp_new_stdio_pipe_pair(child_reads: bool) -> ::std::result::Result<CpStdioPip
     if ok == 0 {
         return Err(());
     }
-    let (child_end, parent) = if child_reads { (read, write) } else { (write, read) };
+    let (child_end, parent) = if child_reads {
+        (read, write)
+    } else {
+        (write, read)
+    };
     // CRT-backed fd for the UV_INHERIT_FD slot. On failure fail-closed:
     // reclaim both ends, never half-own a pipe.
     let crt = match bun_sys::Fd::from_native(child_end as _).make_libuv_owned() {
@@ -599,7 +604,12 @@ fn cp_detect_exit_windows(s: &mut CpDrainState, buf: &mut [u8]) -> bool {
 /// (returns true = progress); EOF (broken pipe / zero-byte read) marks that
 /// pipe's EOF (with exit push); transient errors retry on the next tick.
 #[cfg(windows)]
-fn cp_service_pipe_windows(s: &mut CpDrainState, is_stdout: bool, handle: HANDLE, buf: &mut [u8]) -> bool {
+fn cp_service_pipe_windows(
+    s: &mut CpDrainState,
+    is_stdout: bool,
+    handle: HANDLE,
+    buf: &mut [u8],
+) -> bool {
     match cp_pipe_read(handle, buf) {
         Ok(n) if n > 0 => {
             let data = buf[..n].to_vec();
@@ -1010,7 +1020,12 @@ fn pipe_poll_thread(mut s: CpDrainState) {
 /// `CP_STDIN_FDS`, removed + closed at JS-observed exit / runtime sweep /
 /// runtime drop).
 #[cfg(unix)]
-pub(crate) fn register_async_child(pid: i32, stdout_fd: c_int, stderr_fd: c_int, stdin_fd: c_int) -> bool {
+pub(crate) fn register_async_child(
+    pid: i32,
+    stdout_fd: c_int,
+    stderr_fd: c_int,
+    stdin_fd: c_int,
+) -> bool {
     let (tx, rx) = bao_ipc::unbounded::<CpEvent>();
     let rx_state = Arc::new(Mutex::new(CpRxState {
         // Stamp the creating runtime's token (0 = process-shared when no
@@ -1050,7 +1065,8 @@ pub(crate) fn register_async_child(pid: i32, stdout_fd: c_int, stderr_fd: c_int,
             // a silent hang.
             log::error!(
                 "[bao] FATAL: failed to spawn cp-poll-{} thread: {} — child stdout/stderr will not drain, process may block on 64KB pipe buffer",
-                pid, e
+                pid,
+                e
             );
             false
         }
@@ -1089,8 +1105,12 @@ pub(crate) fn has_live_async_children() -> bool {
 /// cluster kill face calls uv_process_kill through it).
 #[cfg(windows)]
 pub(crate) fn cp_process_for_pid(pid: i32) -> Option<*mut ::std::ffi::c_void> {
-    cp_rx_state_for_pid(pid)
-        .and_then(|state| state.lock().ok().and_then(|s| s.process.map(|p| p as *mut _)))
+    cp_rx_state_for_pid(pid).and_then(|state| {
+        state
+            .lock()
+            .ok()
+            .and_then(|s| s.process.map(|p| p as *mut _))
+    })
 }
 
 /// windows twin: HANDLE ends + the spawn face's `*mut Process` for exit
@@ -1159,7 +1179,8 @@ pub(crate) fn register_async_child(
             // a silent hang.
             log::error!(
                 "[bao] FATAL: failed to spawn cp-poll-{} thread: {} — child stdout/stderr will not drain, process may block on 64KB pipe buffer",
-                pid, e
+                pid,
+                e
             );
             false
         }
@@ -1247,11 +1268,7 @@ fn cp_signal_pid(pid: i32, sig: i32) -> i32 {
     unsafe {
         w::CloseHandle(handle);
     }
-    if rc == 0 {
-        -1
-    } else {
-        0
-    }
+    if rc == 0 { -1 } else { 0 }
 }
 
 /// Outcome of the bounded reap in [`cleanup_for_token`].
@@ -1454,7 +1471,8 @@ pub(crate) fn cleanup_for_token(token: u64) -> usize {
                 // can double-kill, and the drain thread keeps its fds.
                 log::warn!(
                     "[bao] runtime-drop sweep: child {} (token {}) survived SIGTERM+SIGKILL — registry entry kept",
-                    pid, token
+                    pid,
+                    token
                 );
             }
         }
@@ -1873,7 +1891,12 @@ unsafe fn js_wants_ipc(cx: *mut JSContext, obj_h: Handle<*mut JSObject>) -> bool
         }
 
         if !stdio_val.is_object() {
-            log::debug!("[dbg3] stdio not object: is_string={} is_undef={} is_null={}", stdio_val.is_string(), stdio_val.is_undefined(), stdio_val.is_null());
+            log::debug!(
+                "[dbg3] stdio not object: is_string={} is_undef={} is_null={}",
+                stdio_val.is_string(),
+                stdio_val.is_undefined(),
+                stdio_val.is_null()
+            );
         }
         // 3) Legacy shorthand
         for slot in [c"stdin".as_ptr(), c"stdout".as_ptr(), c"stderr".as_ptr()].iter() {
@@ -2059,9 +2082,7 @@ pub(crate) fn spawn_cluster_worker(
                 // copy and the parent keeps the server end only.
                 let client_fd = bun_sys::Fd::from_native(client.handle() as _)
                     .make_libuv_owned()
-                    .map_err(|()| {
-                        "cluster.fork: ipc client handle -> crt fd failed".to_string()
-                    })?;
+                    .map_err(|()| "cluster.fork: ipc client handle -> crt fd failed".to_string())?;
                 let opts = WindowsSpawnOptions {
                     stdin: WindowsStdio::Inherit,
                     stdout: WindowsStdio::Inherit,
@@ -2101,13 +2122,14 @@ pub(crate) fn spawn_cluster_worker(
                 // Take the parent-side IPC fd before PosixSpawnResult drops
                 // (its Drop closes OwnedFd entries) — same dance as cp_spawn.
                 use bun_spawn::ExtraPipe;
-                let parent_ipc_fd: Option<c_int> =
-                    match posix_result.extra_pipes.first() {
-                        Some(ExtraPipe::OwnedFd(fd)) | Some(ExtraPipe::UnownedFd(fd)) => {
-                            Some((*fd).native())
-                        }
-                        _ => None,
-                    };
+                let parent_ipc_fd: Option<c_int> = match posix_result.extra_pipes.first() {
+                    // @evidence SPEC/10-REQUIREMENTS.html:237
+                    Some(ExtraPipe::OwnedFd(fd)) | Some(ExtraPipe::UnownedFd(fd)) => {
+                        Some((*fd).native())
+                    }
+                    // @evidence SPEC/10-REQUIREMENTS.html:237
+                    _ => None,
+                };
                 if matches!(
                     posix_result.extra_pipes.first(),
                     Some(ExtraPipe::OwnedFd(_))
@@ -2147,7 +2169,7 @@ pub(crate) fn spawn_cluster_worker(
                     // the spawn face (sole parent-side owner).
                     Some(p) => unsafe { (*p).pid },
                     None => {
-                        return Err("cluster.fork: spawn produced no process handle".to_string())
+                        return Err("cluster.fork: spawn produced no process handle".to_string());
                     }
                 };
                 if let Some(server) = ipc_server {
@@ -2258,96 +2280,96 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     rooted!(&in(cx_ref) let opts_obj_r = opts_obj.unwrap_or_else(|| ::std::ptr::null_mut::<JSObject>()));
 
     // Parse command and args from JS arguments.
-    let (cmd, cmd_args, cwd, pipe_stdout, pipe_stderr, pipe_stdin, wants_ipc) = if let Some(
-        ref cmd,
-    ) = cmd_str
-    {
-        let mut a: Vec<String> = Vec::new();
-        let mut c = None;
-        let mut ps = true;
-        let mut pe = true;
-        let mut pi = false;
-        let mut ipc = false;
-        // Options resolution (Node.js spawn API contract):
-        //   spawn(cmd, options)        — options is arg[1] (the object)
-        //   spawn(cmd, args, options)  — options is arg[2] (arg[1] is the
-        //                                args ARRAY, not an options bag)
-        // The old code always used arg[1] as options — for the 3-arg form
-        // it scanned the args array for stdio/ipc (never finding them,
-        // since arrays don't carry those properties), silently dropping
-        // the entire options object. Node-contract fix 2026-09-26.
-        // Options resolution (Node.js spawn API contract):
-        //   spawn(cmd, options)        — options is arg[1]
-        //   spawn(cmd, args, options)  — options is arg[2] (arg[1] is the
-        //                                args ARRAY, not an options bag)
-        // The old code always used arg[1] as options — for the 3-arg form
-        // it scanned the args array for stdio/ipc (never finding them),
-        // silently dropping the entire options object. Node fix 2026-09-26.
-        rooted!(&in(cx_ref) let third_r = if argc > 2 {
-            let third = *args.get(2).ptr;
-            if third.is_object() {
-                third.to_object()
-            } else {
-                ::std::ptr::null_mut::<JSObject>()
-            }
-        } else {
-            ::std::ptr::null_mut::<JSObject>()
-        });
-        // For 3-arg form use third_r; for 2-arg use second_obj_r.
-        let use_third = argc > 2 && !third_r.get().is_null();
-        let opt_obj_raw: *mut JSObject = if use_third {
-            third_r.get()
-        } else if second_obj.is_some() && !second_obj_r.get().is_null() {
-            second_obj_r.get()
-        } else {
-            ::std::ptr::null_mut::<JSObject>()
-        };
-        if !opt_obj_raw.is_null() {
-            rooted!(&in(cx_ref) let opt_r = opt_obj_raw);
-            let obj_h = opt_r.handle();
-            let cargs = if use_third {
-                // 3-arg form: args are the second arg (a JS array)
-                let arr_val = *args.get(1).ptr;
-                if arr_val.is_object() {
-                    rooted!(&in(cx_ref) let a_r = arr_val.to_object());
-                    js_str_array_from_js_array(cx, a_r.handle().into())
+    let (cmd, cmd_args, cwd, pipe_stdout, pipe_stderr, pipe_stdin, wants_ipc) =
+        if let Some(ref cmd) = cmd_str {
+            let mut a: Vec<String> = Vec::new();
+            let mut c = None;
+            let mut ps = true;
+            let mut pe = true;
+            let mut pi = false;
+            let mut ipc = false;
+            // Options resolution (Node.js spawn API contract):
+            //   spawn(cmd, options)        — options is arg[1] (the object)
+            //   spawn(cmd, args, options)  — options is arg[2] (arg[1] is the
+            //                                args ARRAY, not an options bag)
+            // The old code always used arg[1] as options — for the 3-arg form
+            // it scanned the args array for stdio/ipc (never finding them,
+            // since arrays don't carry those properties), silently dropping
+            // the entire options object. Node-contract fix 2026-09-26.
+            // Options resolution (Node.js spawn API contract):
+            //   spawn(cmd, options)        — options is arg[1]
+            //   spawn(cmd, args, options)  — options is arg[2] (arg[1] is the
+            //                                args ARRAY, not an options bag)
+            // The old code always used arg[1] as options — for the 3-arg form
+            // it scanned the args array for stdio/ipc (never finding them),
+            // silently dropping the entire options object. Node fix 2026-09-26.
+            rooted!(&in(cx_ref) let third_r = if argc > 2 {
+                let third = *args.get(2).ptr;
+                if third.is_object() {
+                    third.to_object()
                 } else {
-                    Vec::new()
+                    ::std::ptr::null_mut::<JSObject>()
                 }
             } else {
-                // 2-arg form: args are the options object's args property
-                js_str_array_prop(cx, obj_h.into(), c"args".as_ptr())
+                ::std::ptr::null_mut::<JSObject>()
+            });
+            // For 3-arg form use third_r; for 2-arg use second_obj_r.
+            let use_third = argc > 2 && !third_r.get().is_null();
+            let opt_obj_raw: *mut JSObject = if use_third {
+                third_r.get()
+            } else if second_obj.is_some() && !second_obj_r.get().is_null() {
+                second_obj_r.get()
+            } else {
+                ::std::ptr::null_mut::<JSObject>()
             };
-            a = cargs;
-            c = js_str_prop(cx, obj_h.into(), c"cwd".as_ptr());
-            ps = js_stdio_wants_pipe(cx, obj_h.into(), c"stdout".as_ptr());
-            pe = js_stdio_wants_pipe(cx, obj_h.into(), c"stderr".as_ptr());
-            pi = js_stdio_wants_pipe(cx, obj_h.into(), c"stdin".as_ptr());
-            ipc = js_wants_ipc(cx, obj_h.into());
-        }
-        (cmd.clone(), a, c, ps, pe, pi, ipc)
-    } else if opts_obj.is_some() && !opts_obj_r.get().is_null() {
-        let obj_h = opts_obj_r.handle();
-        let cmd = match js_str_prop(cx, obj_h.into(), c"command".as_ptr())
-            .or_else(|| js_str_prop(cx, obj_h.into(), c"cmd".as_ptr()))
-        {
-            Some(c) => c,
-            None => {
-                JS_ReportErrorUTF8(cx, c"child_process.spawn: missing command".as_ptr());
-                return false;
+            if !opt_obj_raw.is_null() {
+                rooted!(&in(cx_ref) let opt_r = opt_obj_raw);
+                let obj_h = opt_r.handle();
+                let cargs = if use_third {
+                    // 3-arg form: args are the second arg (a JS array)
+                    let arr_val = *args.get(1).ptr;
+                    if arr_val.is_object() {
+                        rooted!(&in(cx_ref) let a_r = arr_val.to_object());
+                        js_str_array_from_js_array(cx, a_r.handle().into())
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    // 2-arg form: args are the options object's args property
+                    js_str_array_prop(cx, obj_h.into(), c"args".as_ptr())
+                };
+                a = cargs;
+                c = js_str_prop(cx, obj_h.into(), c"cwd".as_ptr());
+                ps = js_stdio_wants_pipe(cx, obj_h.into(), c"stdout".as_ptr());
+                pe = js_stdio_wants_pipe(cx, obj_h.into(), c"stderr".as_ptr());
+                pi = js_stdio_wants_pipe(cx, obj_h.into(), c"stdin".as_ptr());
+                ipc = js_wants_ipc(cx, obj_h.into());
             }
+            (cmd.clone(), a, c, ps, pe, pi, ipc)
+        } else if opts_obj.is_some() && !opts_obj_r.get().is_null() {
+            let obj_h = opts_obj_r.handle();
+            let cmd = match js_str_prop(cx, obj_h.into(), c"command".as_ptr())
+                .or_else(|| js_str_prop(cx, obj_h.into(), c"cmd".as_ptr()))
+            {
+                // REQ-ENG-004 spawn options object arm: command taken from
+                // "command" with "cmd" fallback; missing → loud error.
+                Some(c) => c, // @evidence SPEC/10-REQUIREMENTS.html:237
+                None => {
+                    JS_ReportErrorUTF8(cx, c"child_process.spawn: missing command".as_ptr());
+                    return false;
+                }
+            };
+            let cmd_args = js_str_array_prop(cx, obj_h.into(), c"args".as_ptr());
+            let cwd = js_str_prop(cx, obj_h.into(), c"cwd".as_ptr());
+            let ps = js_stdio_wants_pipe(cx, obj_h.into(), c"stdout".as_ptr());
+            let pe = js_stdio_wants_pipe(cx, obj_h.into(), c"stderr".as_ptr());
+            let pi = js_stdio_wants_pipe(cx, obj_h.into(), c"stdin".as_ptr());
+            let ipc = js_wants_ipc(cx, obj_h.into());
+            (cmd, cmd_args, cwd, ps, pe, pi, ipc)
+        } else {
+            JS_ReportErrorUTF8(cx, c"child_process.spawn requires arguments".as_ptr());
+            return false;
         };
-        let cmd_args = js_str_array_prop(cx, obj_h.into(), c"args".as_ptr());
-        let cwd = js_str_prop(cx, obj_h.into(), c"cwd".as_ptr());
-        let ps = js_stdio_wants_pipe(cx, obj_h.into(), c"stdout".as_ptr());
-        let pe = js_stdio_wants_pipe(cx, obj_h.into(), c"stderr".as_ptr());
-        let pi = js_stdio_wants_pipe(cx, obj_h.into(), c"stdin".as_ptr());
-        let ipc = js_wants_ipc(cx, obj_h.into());
-        (cmd, cmd_args, cwd, ps, pe, pi, ipc)
-    } else {
-        JS_ReportErrorUTF8(cx, c"child_process.spawn requires arguments".as_ptr());
-        return false;
-    };
 
     // Build argv for posix_spawn.
     let mut argv: Vec<Box<[u8]>> = Vec::with_capacity(cmd_args.len() + 1);
@@ -2500,7 +2522,10 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     #[cfg(unix)]
     if pipe_stdout {
         if unsafe { libc::pipe(stdout_pipe.as_mut_ptr()) } != 0 {
-            let msg = format!("spawn: failed to create stdout pipe: errno {}", bun_core::ffi::errno());
+            let msg = format!(
+                "spawn: failed to create stdout pipe: errno {}",
+                bun_core::ffi::errno()
+            );
             let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
@@ -2520,7 +2545,10 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                     libc::close(stdout_pipe[1]);
                 }
             }
-            let msg = format!("spawn: failed to create stderr pipe: errno {}", bun_core::ffi::errno());
+            let msg = format!(
+                "spawn: failed to create stderr pipe: errno {}",
+                bun_core::ffi::errno()
+            );
             let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
@@ -2549,7 +2577,10 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                     libc::close(stderr_pipe[1]);
                 }
             }
-            let msg = format!("spawn: failed to create stdin pipe: errno {}", bun_core::ffi::errno());
+            let msg = format!(
+                "spawn: failed to create stdin pipe: errno {}",
+                bun_core::ffi::errno()
+            );
             let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
@@ -2859,7 +2890,10 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                         };
                         let channel = crate::ipc_channel::IpcChannel::new(sock);
                         if let Ok(mut registry) = CP_IPC_CHANNELS.lock() {
-                            registry.insert(pid, ::std::sync::Arc::new(::std::sync::Mutex::new(channel)));
+                            registry.insert(
+                                pid,
+                                ::std::sync::Arc::new(::std::sync::Mutex::new(channel)),
+                            );
                         }
                     }
                 }
@@ -2918,7 +2952,8 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                 if let Some(server) = ipc_server {
                     let channel = crate::ipc_channel::IpcChannel::new(server);
                     if let Ok(mut registry) = CP_IPC_CHANNELS.lock() {
-                        registry.insert(pid, ::std::sync::Arc::new(::std::sync::Mutex::new(channel)));
+                        registry
+                            .insert(pid, ::std::sync::Arc::new(::std::sync::Mutex::new(channel)));
                     }
                 }
 
@@ -3105,13 +3140,7 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                 // `_ipcFd` = 3 (Node.js convention: IPC channel at fd 3).
                 let ipc_fd_v = Int32Value(3);
                 rooted!(&in(cx_ref) let ifdv = ipc_fd_v);
-                JS_DefineProperty(
-                    cx,
-                    child_h,
-                    c"_ipcFd".as_ptr(),
-                    ifdv.handle().into(),
-                    0,
-                );
+                JS_DefineProperty(cx, child_h, c"_ipcFd".as_ptr(), ifdv.handle().into(), 0);
 
                 // `send(msg[, sendHandle])` → native __cp_ipc_send(pid, msg, fd?).
                 w2::JS_DefineFunction(
@@ -3141,7 +3170,8 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             //
             // GC safety: every JSObject / JSVal produced below is rooted via
             // rooted!() + .handle().into() per BCE-20260619-012 (no raw Handle{ptr}).
-            let streams = build_stdio_streams(cx_ref, child_h, pid, pipe_stdout, pipe_stderr, pipe_stdin);
+            let streams =
+                build_stdio_streams(cx_ref, child_h, pid, pipe_stdout, pipe_stderr, pipe_stdin);
             // If the JS helper failed (returns false), surface the error.
             if !streams {
                 args.rval().set(ObjectValue(child_obj.get()));
@@ -3332,7 +3362,13 @@ unsafe fn build_stdio_streams(
 
     // Root the returned array and unpack elements onto child_obj.
     rooted!(&in(cx) let arr = rval.to_object());
-    for (idx, name) in [(0u32, c"stdout".as_ptr()), (1u32, c"stderr".as_ptr()), (2u32, c"stdin".as_ptr())].iter() {
+    for (idx, name) in [
+        (0u32, c"stdout".as_ptr()),
+        (1u32, c"stderr".as_ptr()),
+        (2u32, c"stdin".as_ptr()),
+    ]
+    .iter()
+    {
         let mut elem = UndefinedValue();
         JS_GetElement(
             cx_raw,
@@ -3437,8 +3473,7 @@ pub(crate) fn take_and_close_stdin_fd(pid: i32) {
 /// just the EOF the child would have seen from `stdin.end()`.
 #[cfg(unix)]
 pub(crate) fn close_stdin_fds_for_current_thread() {
-    let fds: Vec<c_int> =
-        CP_STDIN_FDS.with(|m| m.borrow_mut().drain().map(|(_, fd)| fd).collect());
+    let fds: Vec<c_int> = CP_STDIN_FDS.with(|m| m.borrow_mut().drain().map(|(_, fd)| fd).collect());
     for fd in fds {
         unsafe {
             libc::close(fd);
@@ -3523,11 +3558,17 @@ unsafe extern "C" fn cp_drain(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
 
     let len = data.len();
     let buf_ptr = data.as_ptr();
-    // Copy data into a new allocation for JS.
-    let alloc = ::std::alloc::alloc(
-        ::std::alloc::Layout::from_size_align(len, 1)
-            .unwrap_or_else(|_| ::std::alloc::Layout::from_size_align(1, 1).unwrap()),
-    );
+    // Copy data into a new allocation for JS. The allocation MUST be
+    // libc::malloc: NewArrayBufferWithContents takes ownership and frees the
+    // contents at GC finalize via JS_free (system free — SM contract,
+    // ArrayBuffer.h "|contents| must be allocated compatible with deallocation
+    // by |JS_free|"; ArrayBufferObject::releaseData MALLOCED_UNKNOWN_ARENA arm
+    // → gcx->free_). The process global allocator is jemalloc
+    // (servo components/allocator #[global_allocator] = tikv Jemalloc), so a
+    // std::alloc pointer here gets libc free()'d at the process-exit sweep →
+    // "free(): invalid pointer" SIGABRT (崩①-b). Allocator-pairing law:
+    // @trace REQ-ENG-048. Mirror of web_api.rs bytes_to_arraybuffer_val.
+    let alloc = unsafe { libc::malloc(len) } as *mut u8;
     if alloc.is_null() {
         args.rval().set(NullValue());
         return true;
@@ -3542,11 +3583,9 @@ unsafe extern "C" fn cp_drain(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     let array_buffer =
         w2::NewArrayBufferWithContents(cx_ref, len, alloc as *mut ::std::os::raw::c_void);
     if array_buffer.is_null() {
-        ::std::alloc::dealloc(
-            alloc,
-            ::std::alloc::Layout::from_size_align(len, 1)
-                .unwrap_or_else(|_| ::std::alloc::Layout::from_size_align(1, 1).unwrap()),
-        );
+        // Ownership did NOT transfer (JS only takes it on success) — free in
+        // the same domain we allocated in (libc::malloc above).
+        unsafe { libc::free(alloc as *mut ::std::os::raw::c_void) };
         args.rval().set(NullValue());
         return true;
     }
@@ -3765,11 +3804,7 @@ unsafe extern "C" fn cp_stdin_write(cx: *mut JSContext, argc: u32, vp: *mut JSVa
             &mut written,
             ::std::ptr::null_mut(),
         );
-        if ok == 0 {
-            -1
-        } else {
-            written as isize
-        }
+        if ok == 0 { -1 } else { written as isize }
     };
     args.rval().set(DoubleValue(written as f64));
     true
@@ -4021,11 +4056,7 @@ unsafe extern "C" fn cp_kill_child(_cx: *mut JSContext, argc: u32, vp: *mut JSVa
 // Returns true on success, false on any I/O or registry-miss error.
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn cp_ipc_send(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn cp_ipc_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 {
         cp_arg_i32(*args.get(0).ptr)
@@ -4050,11 +4081,7 @@ unsafe extern "C" fn cp_ipc_send(
         let v = *args.get(2).ptr;
         if v.is_int32() {
             let n = v.to_int32();
-            if n >= 0 {
-                Some(n)
-            } else {
-                None
-            }
+            if n >= 0 { Some(n) } else { None }
         } else {
             None
         }
@@ -4118,11 +4145,7 @@ unsafe extern "C" fn cp_ipc_send(
 // toggle the socket non-blocking for the probe read and restore afterwards.
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn cp_ipc_recv(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn cp_ipc_recv(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 {
         cp_arg_i32(*args.get(0).ptr)
@@ -4145,9 +4168,7 @@ unsafe extern "C" fn cp_ipc_recv(
                     .cloned()
                     .ok_or("no ipc channel for pid")
                     .and_then(|chan_mtx| {
-                        let mut chan = chan_mtx
-                            .lock()
-                            .map_err(|_| "channel lock poisoned")?;
+                        let mut chan = chan_mtx.lock().map_err(|_| "channel lock poisoned")?;
                         // unix: toggle O_NONBLOCK around the recv (would-block
                         // surfaces as a None poll). windows: no O_NONBLOCK face
                         // — recv_msg_chunk maps ERROR_NO_DATA to the same
@@ -4163,9 +4184,10 @@ unsafe extern "C" fn cp_ipc_recv(
                         #[cfg(windows)]
                         let res = chan.recv_msg();
                         match res {
-                            Ok((json, fd_opt)) => {
-                                Ok(Some((json, fd_opt.map(|fd| fd as c_int))))
-                            }
+                            // REQ-ENG-004 child_process IPC chunk recv: Ok arm
+                            // passes decoded JSON + SCM_RIGHTS fd through as a
+                            // Some-payload; fd widened to c_int for the JS face.
+                            Ok((json, fd_opt)) => Ok(Some((json, fd_opt.map(|fd| fd as c_int)))), // @evidence SPEC/10-REQUIREMENTS.html:237
                             Err(e) if e.kind() == ::std::io::ErrorKind::WouldBlock => Ok(None),
                             Err(e) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => {
                                 // Peer closed: signal via the closed sentinel below.
@@ -4248,11 +4270,7 @@ unsafe extern "C" fn cp_ipc_recv(
 // registry so subsequent send/recv calls return errors cleanly.
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn cp_ipc_disconnect(
-    _cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn cp_ipc_disconnect(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 {
         cp_arg_i32(*args.get(0).ptr)
@@ -4847,11 +4865,7 @@ unsafe fn cp_new_error_object(cx: *mut JSContext, message: &str) -> *mut JSObjec
 /// NULs. Unit-per-byte arms (latin1/ascii/utf16le) build the units directly,
 /// which also preserves NUL chars node's decoders keep.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn sync_output_jsval(
-    cx: *mut JSContext,
-    bytes: &[u8],
-    carrier: SyncOutputCarrier,
-) -> JSVal {
+unsafe fn sync_output_jsval(cx: *mut JSContext, bytes: &[u8], carrier: SyncOutputCarrier) -> JSVal {
     // UTF-16 units → JSString. NUL-safe; empty → the canonical empty string
     // (JS_NewUCStringCopyN with len 0 is fine too, but the empty-literal form
     // matches the crate-wide idiom).
@@ -5078,7 +5092,8 @@ unsafe extern "C" fn cp_exec_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         return false;
     }
 
-    args.rval().set(sync_output_jsval(cx, &spawn_result.stdout, carrier));
+    args.rval()
+        .set(sync_output_jsval(cx, &spawn_result.stdout, carrier));
     true
 }
 
@@ -5165,7 +5180,8 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
                 // options object): ERR_INVALID_ARG_TYPE on the options arg.
                 JS_ReportErrorUTF8(
                     cx,
-                    c"The \"options\" argument must be of type object. Received type array".as_ptr(),
+                    c"The \"options\" argument must be of type object. Received type array"
+                        .as_ptr(),
                 );
                 return false;
             }
@@ -5238,7 +5254,7 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         // `encoding` lives on the options object (the argument walk already
         // located it at whatever position it occupied).
         match parse_sync_output_carrier(cx, ObjectValue(opts_obj), SyncOutputCarrier::Utf8) {
-            Ok(c) => carrier = c, // @evidence SPEC/10-REQUIREMENTS.html:237
+            Ok(c) => carrier = c,    // @evidence SPEC/10-REQUIREMENTS.html:237
             Err(()) => return false, // @evidence SPEC/10-REQUIREMENTS.html:237
         }
     }
@@ -5419,7 +5435,14 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         rooted!(&in(cx_ref) let cb_err = cb_err_val);
         rooted!(&in(cx_ref) let cb_out = stdout_val);
         rooted!(&in(cx_ref) let cb_errv = stderr_val);
-        cp_exec_file_fire_callback(cx, cx_ref, callback, cb_err.get(), cb_out.get(), cb_errv.get());
+        cp_exec_file_fire_callback(
+            cx,
+            cx_ref,
+            callback,
+            cb_err.get(),
+            cb_out.get(),
+            cb_errv.get(),
+        );
     }
 
     args.rval().set(ObjectValue(child_r.get()));
@@ -5725,7 +5748,8 @@ unsafe extern "C" fn cp_exec_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
         );
         return false;
     }
-    args.rval().set(sync_output_jsval(cx, &spawn_result.stdout, carrier));
+    args.rval()
+        .set(sync_output_jsval(cx, &spawn_result.stdout, carrier));
     true
 }
 
@@ -5871,10 +5895,7 @@ unsafe extern "C" fn cp_spawn_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             // path/spawnargs. The 774f7088f follow-up ("JS_NewError-style
             // constructor not in the mozjs-sys surface") is bridged by
             // `cp_new_error_object` (global Error constructor call).
-            let err_obj = cp_new_error_object(
-                cx,
-                &format!("spawnSync {} {}", path_str, code_name),
-            );
+            let err_obj = cp_new_error_object(cx, &format!("spawnSync {} {}", path_str, code_name));
             if !err_obj.is_null() {
                 rooted!(&in(cx_ref) let err_r = err_obj);
                 for (key, value) in [
@@ -6471,12 +6492,7 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
                 // site previously built its AsyncChildState inline; the flip
                 // folds it in so both faces can't diverge again).
                 // Parent holds the write end (stdin_pipe[1]) to write to child's stdin.
-                let _ = register_async_child(
-                    pid,
-                    stdout_pipe[0],
-                    stderr_pipe[0],
-                    stdin_pipe[1],
-                );
+                let _ = register_async_child(pid, stdout_pipe[0], stderr_pipe[0], stdin_pipe[1]);
                 CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[1]));
                 pid
             };
@@ -7185,7 +7201,6 @@ mod tests {
         assert!(result.is_ok());
     }
 }
-
 
 /// F5 discriminating tests (REQ-ARCH-003): the push-model publication face.
 /// In-crate `#[cfg(test)]` (not tests/suite) — these drive the registry

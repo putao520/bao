@@ -470,6 +470,14 @@ unsafe extern "C" fn require_resolve_fn(cx: *mut JSContext, argc: u32, vp: *mut 
         "timers/promises",
         // Internal test module (registered by node_internal_test_binding::install).
         "internal/test/binding",
+        // Internal util/timers family (registered by node_internal_util::
+        // install, which funnels node_internal_timers). Upstream homes:
+        // internal/util.js, internal/timers.js and internal/util/{debounce,
+        // throttle}.js (node v24 tree).
+        "internal/util",
+        "internal/timers",
+        "internal/util/debounce",
+        "internal/util/throttle",
     ];
     if known_builtins.contains(&builtin_key) {
         let c_path = ZBox::from_bytes(builtin_key.as_bytes());

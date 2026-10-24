@@ -155,7 +155,7 @@ fn util_inspect_shape_arms() {
         check("inspect_empty_object", function() {
             return util.inspect({}) === '{}';
         });
-        "#
+        "#,
     );
     assert_all_pass(&results);
 }
@@ -191,7 +191,7 @@ fn util_inspect_options_validation() {
         check("inspect_no_options_depth_default", function() {
             return util.inspect({a: {b: 1}}) === '{ a: { b: 1 } }';
         });
-        "#
+        "#,
     );
     assert_all_pass(&results);
 }
@@ -285,7 +285,7 @@ fn util_format_specifier_arms() {
             if (s !== '%q 1') throw new Error('GOT:' + s);
             return true;
         });
-        "#
+        "#,
     );
     assert_all_pass(&results);
 }
@@ -298,16 +298,22 @@ fn util_styletext_arms() {
         r#"
         var util = require('util');
 
+        // Forced-ANSI option: node's --color=auto suppresses color on a pipe
+        // (styleText('red','x') returns the bare "x" when stdout is not a TTY),
+        // so the old indexOf-based pins were environment-dependent and failed
+        // under a pipe. `{validateStream:false}` is node's own force-color
+        // escape hatch — it skips the stream colorization check entirely, so
+        // the assertion holds in both pipe and TTY. node v24.19.0 oracle:
+        //   styleText('red','x',{validateStream:false}) === "\u001b[31mx\u001b[39m"
         check("styletext_single_format", function() {
-            var s = util.styleText('red', 'x');
-            return typeof s === 'string' && s.indexOf('31m') !== -1
-                && s.indexOf('x') !== -1 && s.indexOf('39m') !== -1;
+            var s = util.styleText('red', 'x', {validateStream: false});
+            return s === '\u001b[31mx\u001b[39m';
         });
+        // bold opens first, red second; closes unwound (39 before 22).
+        // node v24.19.0 oracle: "\u001b[1m\u001b[31mx\u001b[39m\u001b[22m"
         check("styletext_array_format_orders_wraps", function() {
-            var s = util.styleText(['bold', 'red'], 'x');
-            // bold opens first, red second; closes unwound (39 before 22).
-            return s.indexOf('1m') !== -1 && s.indexOf('31m') !== -1
-                && s.indexOf('x') !== -1 && s.indexOf('39m') < s.indexOf('22m');
+            var s = util.styleText(['bold', 'red'], 'x', {validateStream: false});
+            return s === '\u001b[1m\u001b[31mx\u001b[39m\u001b[22m';
         });
         check("styletext_unknown_format_throws", function() {
             try { util.styleText('nope', 'x'); return false; }
@@ -327,7 +333,7 @@ fn util_styletext_arms() {
                     && e.message.indexOf('text') !== -1;
             }
         });
-        "#
+        "#,
     );
     assert_all_pass(&results);
 }
@@ -413,7 +419,7 @@ fn util_types_extended_matrix() {
             return !t.isPromise(1) && !t.isMap('m') && !t.isSet(null)
                 && !t.isArrayBufferView({length: 1}) && !t.isTypedArray([1]);
         });
-        "#
+        "#,
     );
     assert_all_pass(&results);
 }
@@ -455,7 +461,7 @@ fn util_promisify_arms() {
             try { util.promisify(5); return false; }
             catch (e) { return String(e.message).indexOf('promisify') !== -1; }
         });
-        "#
+        "#,
     );
     assert_all_pass(&results);
 
@@ -515,9 +521,17 @@ fn util_callbackify_arms() {
             __cbResults.push('falsy:' + (err instanceof Error) + ',' + err.message + ',' + (err.cause === null));
         });
 
-        // synchronous throw of the wrapped fn → deferred cb(err)
+        // synchronous throw of the wrapped fn → node v24 oracle: the error
+        // propagates SYNCHRONOUSLY out of the callbackified call (not
+        // deferred into cb). Catch it here so the nofn probe still runs.
         var f6 = util.callbackify(function() { throw new Error('sync-throw'); });
-        f6(function(err) { __cbResults.push('sync:' + (err && err.message)); });
+        try {
+            f6(function(err) { __cbResults.push('sync:deferred:' + (err && err.message)); });
+            __cbResults.push('sync:deferred-unreached');
+        }
+        catch (e) {
+            __cbResults.push('sync:sync-throw:' + (e instanceof Error) + ',' + e.message);
+        }
 
         // non-function last argument → TypeError thrown synchronously
         try { f6(42); __cbResults.push('nofn:FAIL'); }
@@ -528,13 +542,18 @@ fn util_callbackify_arms() {
         common::drive_event_loop(&mut ctx, 2);
     }
     let results = eval_string_full(&mut ctx, "__cbResults.join('|')");
+    // node v24 oracle (verbatim): array resolve does NOT spread into extra
+    // cb params (x=["a","b"] joins to "a,b", y=undefined); falsy rejection
+    // message is "Promise was rejected with falsy value" with .cause left
+    // undefined (cause === null is false); sync throw of the wrapped fn
+    // propagates synchronously as the original Error.
     for expected in [
         "undef:null,undefined",
         "val:null,7",
-        "arr:null,a,b",
+        "arr:null,a,b,undefined",
         "rej:rej",
-        "falsy:true,falsy rejection reason,true",
-        "sync:sync-throw",
+        "falsy:true,Promise was rejected with falsy value,false",
+        "sync:sync-throw:true,sync-throw",
         "nofn:true",
     ] {
         assert!(
@@ -561,9 +580,20 @@ fn util_misc_surface_arms() {
             util.inherits(Child, Parent);
             return Child.super_ === Parent;
         });
-        check("inherits_non_object_args_noop", function() {
-            return util.inherits(5, {}) === undefined
-                && util.inherits({}) === undefined;
+        // Non-object / non-function args THROW a TypeError — the old pin name
+        // "noop" (and its === undefined assertions) was wrong: node never
+        // returns undefined here, it validates each arg. node v24.19.0 oracle:
+        //   inherits(5, {})  -> TypeError: The "superCtor.prototype" property
+        //                       must be of type object. Received undefined
+        //   inherits({})     -> TypeError: The "superCtor" argument must be
+        //                       of type function. Received undefined
+        // Only the 'superCtor' key fragment is asserted (both messages carry it)
+        // rather than the whole string, which differs per arg.
+        check("inherits_non_object_args_throw", function() {
+            try { util.inherits(5, {}); return false; }
+            catch (e) {
+                return e instanceof TypeError && e.message.indexOf('superCtor') !== -1;
+            }
         });
         // getSystemErrorName: node v24 validates the code — a positive (or
         // zero) value is a RangeError ERR_OUT_OF_RANGE ("must be a negative
@@ -610,7 +640,7 @@ fn util_misc_surface_arms() {
                 && util.isRegExp(/r/) && !util.isRegExp('/')
                 && util.isError(new Error()) && !util.isError({name: 'Error'});
         });
-        "#
+        "#,
     );
     assert_all_pass(&results);
 }
@@ -722,13 +752,18 @@ fn assert_spec_forms_matrix() {
             try { assert.strict.deepEqual({a: 1}, {a: '1'}); return false; }
             catch (e) { return e.name === 'AssertionError'; }
         });
-        // CallTracker registers and verifies without throwing.
+        // CallTracker registers and verifies without throwing. node v24
+        // oracle: calls(fn[, exact]) takes the wrapped FUNCTION (a string
+        // arg is a TypeError in both engines — V8: "Cannot create proxy
+        // with a non-object as target or handler"); verify() passes when
+        // the call count matches.
         check("call_tracker", function() {
             var tracker = new assert.CallTracker();
-            var fn = tracker.calls('lab');
+            var hit = false;
+            var fn = tracker.calls(function() { hit = true; }, 1);
             fn();
             tracker.verify();
-            return typeof tracker.calls === 'function';
+            return hit && typeof tracker.calls === 'function';
         });
         // ok falsy value message arm. node v24.19.0 (getErrMessage, read
         // from the embedded internal/assert/utils source via
@@ -746,7 +781,7 @@ fn assert_spec_forms_matrix() {
                     && String(e.message).indexOf('0 == true') !== -1;
             }
         });
-        "#
+        "#,
     );
     assert_all_pass(&results);
 }

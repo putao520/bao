@@ -70,6 +70,8 @@ pub mod node_inspector_promises;
 pub mod node_internal_http;
 pub mod node_internal_streams;
 pub mod node_internal_test_binding;
+pub mod node_internal_timers;
+pub mod node_internal_util;
 pub mod node_module;
 pub mod node_net;
 pub mod node_os;
@@ -130,17 +132,17 @@ pub mod web_streams;
 // Headers/Request/Response classes (installed on the global by
 // globals::install_web_apis; consumed by fetch_api::fetch_fn).
 pub mod web_fetch_classes;
-// @trace STUB-INVENTORY: product real ProcessExit owners (no link_noop) — residual=0 for PE
+// @trace ROOTED-INVENTORY: product real ProcessExit owners (no link_noop) — residual=0 for PE
 pub mod product_process_exit;
-// @trace STUB-INVENTORY: product real BufferedReaderParentLink owners (no link_noop) — residual=0 for BR
+// @trace ROOTED-INVENTORY: product real BufferedReaderParentLink owners (no link_noop) — residual=0 for BR
 pub mod product_buffered_reader;
-// @trace STUB-INVENTORY: product residual RealImpl rehomed from bao_native_stubs
+// @trace ROOTED-INVENTORY: product residual RealImpl rehomed from bao_native_stubs
 pub mod product_native_symbols;
 
 /// Link-time faces for the MiniEventLoop upward extern "Rust" contracts
 /// (stdio Blob.Store + the thread VM getter) — issue #18 W7 second layer.
 pub mod webcore_faces;
-// @trace STUB-INVENTORY: Bun__linux_trace_* RealImpl (cross-platform; residual=0)
+// @trace ROOTED-INVENTORY: Bun__linux_trace_* RealImpl (cross-platform; residual=0)
 pub mod linux_trace;
 
 /// Deprecated alias for the Node.js runtime entry (0.x transition; removed
@@ -328,9 +330,9 @@ pub fn force_link_bun_install() {
     let _ = bun_install::Subcommand::Install;
 }
 
-// @trace STUB-INVENTORY: default product path must not force-link bao_native_stubs.
+// @trace ROOTED-INVENTORY: default product path must not force-link bao_native_stubs.
 // Closed-set PE/BR → product_process_exit + product_buffered_reader (real link_impl).
-// Real C libs → force_link_native_c_libs. Do not reintroduce BAO_NATIVE_STUBS_ANCHOR / link_noop residual.
+// Real C libs → force_link_native_c_libs. Do not reintroduce the retired native-stubs anchor / link_noop residual.
 
 // Real C-lib force-link (former bao_native_stubs::force_c_lib_stubs chain):
 // quic.c (bun_uws_sys) needs liblsquic; TLS needs boringssl; loop from bao_uloop.

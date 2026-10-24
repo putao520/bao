@@ -10,8 +10,14 @@
 //!
 //! Code execution uses `AutoRealm` to temporarily switch the JSContext into
 //! the sandbox Compartment; dropping the `AutoRealm` restores the caller's
-//! realm. Cross-Compartment object references are automatically wrapped by
-//! SM's CCW (Cross-Compartment Wrapper) mechanism.
+//! realm. Values that cross the Compartment boundary at this module's JSAPI
+//! seams (seeded sandbox properties, the registration GC edge, evaluation
+//! return values, write-back globals) are wrapped explicitly with
+//! `JS_WrapValue` into CCWs (Cross-Compartment Wrappers): SpiderMonkey does
+//! NOT auto-wrap at the JSAPI property layer or at native-call return values
+//! when callee and caller share a compartment, and an unwrapped foreign-
+//! realm object crashes realm-local consumers at the unconditional
+//! same-compartment releaseCheck (REQ-ENG-011).
 //!
 //! ## Key APIs
 //!
@@ -184,18 +190,34 @@ unsafe fn read_context_edge(cx: *mut JSContext, obj: *mut JSObject) -> Option<*m
 /// Attach the context GC edge `sandbox[symbol] = CCW(sandbox_global)`.
 ///
 /// MUST run in the sandbox object's compartment (the caller's realm):
-/// `JS_DefineProperty` wants the target in the current compartment, and the
-/// foreign realm's global is auto-wrapped into a CCW — which is exactly the
-/// reference that keeps the target realm reachable through the GC.
+/// `JS_DefineProperty` wants the target in the current compartment. The
+/// foreign realm's global is wrapped into a CCW explicitly — the JSAPI
+/// property layer does NOT auto-wrap values (only the JS_CRASH_DIAGNOSTICS-
+/// gated `cx->check` runs there, compiled out in this build), and the edge
+/// symbol is a registered (`Symbol.for`) symbol: caller-realm JS can read
+/// this property, so the stored form must be a caller-compartment wrapper,
+/// never a raw foreign-realm object (REQ-ENG-011 — same releaseCheck class
+/// as the runInNewContext return face). `read_context_edge` unwraps the CCW
+/// on the way back out, so the registration path is unchanged.
+///
+/// A failed wrap degrades to edge-absent (pending exception cleared), the
+/// same handled outcome as a rejected define: the realm is simply re-created
+/// on the next use, never dereferenced stale.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn attach_context_edge(cx: *mut JSContext, sandbox: *mut JSObject, global: *mut JSObject) {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let sb = sandbox);
-    rooted!(&in(cx_ref) let gv = ObjectValue(global));
+    rooted!(&in(cx_ref) let mut gv = ObjectValue(global));
     let Some(id) = vm_context_symbol_id(cx) else {
         return;
     };
+    // JS_WrapValue allocates the CCW and may trigger GC — the handle targets
+    // the rooted slot (stale-rval UB class, e206).
+    if !JS_WrapValue(cx, gv.handle_mut().into()) {
+        JS_ClearPendingException(cx);
+        return;
+    }
     JS_DefinePropertyById2(
         cx,
         sb.handle().into(),
@@ -275,7 +297,11 @@ unsafe fn read_context_id(cx: *mut JSContext, obj: *mut JSObject) -> Option<u64>
 /// edge is attached separately by `vm_create_context` just before this, so
 /// a lookup can only ever hit after both are in place; see the registry
 /// BCE note.
-fn register_context(cx: *mut JSContext, sandbox: *mut JSObject, baseline: ::std::rc::Rc<Vec<String>>) {
+fn register_context(
+    cx: *mut JSContext,
+    sandbox: *mut JSObject,
+    baseline: ::std::rc::Rc<Vec<String>>,
+) {
     let id = VM_CONTEXT_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     unsafe {
         attach_context_id(cx, sandbox, id);
@@ -595,12 +621,7 @@ unsafe fn validate_options_object(cx: *mut JSContext, opts: JSVal) -> bool {
     if is_plain_options_object(cx, opts) {
         return true;
     }
-    throw_invalid_arg_type(
-        cx,
-        "options",
-        "object",
-        &describe_received_value(cx, opts),
-    );
+    throw_invalid_arg_type(cx, "options", "object", &describe_received_value(cx, opts));
     false
 }
 
@@ -1019,8 +1040,9 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
     let sandbox_props = collect_sandbox_properties(cx_ref, sandbox_r.get());
 
     // Phase 2: Enter the new Realm and define collected properties on the
-    // sandbox global. Values from the caller's realm are automatically
-    // wrapped as CCWs by SpiderMonkey when defined in the sandbox realm. The
+    // sandbox global. Each caller-realm value is wrapped into the sandbox
+    // realm explicitly inside define_properties_on_global (SM does not
+    // auto-wrap at the JSAPI layer — see the REQ-ENG-011 note there). The
     // block evaluates to the pre-seed baseline (hoisted out so the metadata
     // registration can run outside the AutoRealm, in the sandbox object's
     // own compartment — the same requirement as the edge attach).
@@ -1034,7 +1056,9 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
         // into the write-back set.
         let baseline = capture_global_baseline(realm_cx, sandbox_global.get());
 
-        define_properties_on_global(realm_cx, sandbox_global.get(), &sandbox_props);
+        if !define_properties_on_global(realm_cx, sandbox_global.get(), &sandbox_props) {
+            return false;
+        }
 
         // Apply code-generation restrictions (eval/Function/WebAssembly).
         apply_code_generation_restrictions(realm_cx, sandbox_global.get(), cgen_flags);
@@ -1104,17 +1128,21 @@ fn collect_sandbox_properties(
     let raw_cx = unsafe { cx.raw_cx() };
     rooted!(&in(cx) let sandbox_root = sandbox);
     unsafe {
-        crate::for_each_string_property(raw_cx, sandbox_root.handle().into(), |key, _id, val, got| {
-            if !got {
-                return;
-            }
+        crate::for_each_string_property(
+            raw_cx,
+            sandbox_root.handle().into(),
+            |key, _id, val, got| {
+                if !got {
+                    return;
+                }
 
-            // Store key as Rust String, value as a rooted Box<Heap<Value>> —
-            // barrier-pinned (Heap::boxed) AND tracer-visible
-            // (RootedTraceableSet) across the realm switch below.
-            let heap_val = RootedTraceableBox::from_box(Heap::boxed(val));
-            props.push((key.to_string(), heap_val));
-        });
+                // Store key as Rust String, value as a rooted Box<Heap<Value>> —
+                // barrier-pinned (Heap::boxed) AND tracer-visible
+                // (RootedTraceableSet) across the realm switch below.
+                let heap_val = RootedTraceableBox::from_box(Heap::boxed(val));
+                props.push((key.to_string(), heap_val));
+            },
+        );
     }
 
     props
@@ -1123,15 +1151,28 @@ fn collect_sandbox_properties(
 /// Phase 2: Define collected properties on the sandbox Realm's global.
 ///
 /// Runs INSIDE the sandbox AutoRealm. For each (key, value) pair collected
-/// in Phase 1, defines the property on the global object. Values from the
-/// caller's realm are automatically wrapped as CCWs by SpiderMonkey.
+/// in Phase 1, wraps the caller-realm value into THIS realm with
+/// `JS_WrapValue` (no-op for primitives / same-realm values) and then
+/// defines it on the global object. The wrap is mandatory: the JSAPI
+/// property layer does NOT wrap values — `JS_DefinePropertyById` only runs
+/// the JS_CRASH_DIAGNOSTICS-gated `cx->check` (compiled out in this build),
+/// so an unwrapped caller-realm object lands raw in a realm-global slot and
+/// any realm-local consumer of it (e.g. `new Uint8Array(seed)` on a seeded
+/// ArrayBuffer) trips the unconditional same-compartment releaseCheck
+/// (TypedArrayObject.cpp `fromBufferSameCompartment`) — REQ-ENG-011, same
+/// class as the runInNewContext return face.
+///
+/// Returns `false` when a value wrap fails (exception pending) — callers
+/// must propagate; continuing on a pending exception is UB at the JSAPI
+/// layer.
+#[allow(unsafe_op_in_unsafe_fn)]
 fn define_properties_on_global(
     realm_cx: &mut mozjs::context::JSContext,
     global: *mut JSObject,
     props: &[(::std::string::String, RootedTraceableBox<Heap<JS::Value>>)],
-) {
+) -> bool {
     if global.is_null() {
-        return;
+        return true;
     }
 
     let raw_cx = unsafe { realm_cx.raw_cx() };
@@ -1143,23 +1184,25 @@ fn define_properties_on_global(
             continue;
         }
 
-        // SpiderMonkey automatically wraps cross-compartment values as CCWs
-        // when defining the property. Deref to the inner Heap first — the
-        // box's own handle() returns the mozjs-crate Handle, but the raw
-        // JS_DefineProperty wants the bindgen Handle<Value> that
-        // Heap::handle() produces.
+        // Wrap the caller-realm value into the sandbox realm before the
+        // define. The mutable handle targets the rooted copy: JS_WrapValue
+        // allocates the CCW and may trigger GC (stale-rval UB class, e206).
         let heap_inner: &Heap<JS::Value> = &*heap_val;
-        let val_h = unsafe { heap_inner.handle() };
+        rooted!(&in(realm_cx) let mut val_root = heap_inner.get());
+        if !unsafe { JS_WrapValue(raw_cx, val_root.handle_mut().into()) } {
+            return false;
+        }
         unsafe {
             JS_DefineProperty(
                 raw_cx,
                 global_root.handle().into(),
                 c_key.as_ptr(),
-                val_h,
+                val_root.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
         }
     }
+    true
 }
 
 /// Capture the realm global's own string keys. MUST run inside the sandbox
@@ -1202,7 +1245,10 @@ unsafe fn capture_global_baseline(
             continue;
         }
         let key = unsafe {
-            jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)), NonNull::new_unchecked(key_str_ptr))
+            jsstr_to_string(
+                &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)),
+                NonNull::new_unchecked(key_str_ptr),
+            )
         };
         keys.push(key);
     }
@@ -1213,22 +1259,26 @@ unsafe fn capture_global_baseline(
 /// realm global (sandbox → global). Runs before each evaluation so properties
 /// added to the sandbox object after createContext are visible inside the
 /// realm (Node semantics: the contextified object is the realm's global view).
+///
+/// Returns `false` when a seeded-value wrap failed (exception pending) —
+/// callers must propagate.
 unsafe fn sync_sandbox_into_global(
     cx: &mut mozjs::context::JSContext,
     sandbox: *mut JSObject,
     global: *mut JSObject,
-) {
+) -> bool {
     if sandbox.is_null() || global.is_null() {
-        return;
+        return true;
     }
     // Phase 1: collect in the CALLER's realm (sandbox lives there).
     let props = collect_sandbox_properties(cx, sandbox);
-    // Phase 2: define inside the sandbox realm.
+    // Phase 2: define inside the sandbox realm (values wrapped per-value —
+    // see define_properties_on_global).
     {
         rooted!(&in(cx) let global_h = global);
         let mut realm = AutoRealm::new_from_handle(cx, global_h.handle());
         let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-        define_properties_on_global(realm_cx, global, &props);
+        define_properties_on_global(realm_cx, global, &props)
     }
 }
 
@@ -1236,7 +1286,22 @@ unsafe fn sync_sandbox_into_global(
 /// string-keyed global property that is NOT in the creation-time baseline back
 /// onto the sandbox object. This is the write-through half of the vm contract:
 /// `script.runInContext(ctx)` leaves `sandbox.x === <value assigned in vm>`.
-/// Values belonging to the realm are wrapped as CCWs automatically.
+///
+/// Two phases, because values must be WRAPPED, not stored raw (REQ-ENG-011):
+/// the JSAPI property layer does not wrap — `JS_SetPropertyById` only runs
+/// the JS_CRASH_DIAGNOSTICS-gated `cx->check` (compiled out in this build),
+/// so storing a realm-owned object raw into a caller-realm slot later trips
+/// the unconditional same-compartment releaseCheck in any realm-local
+/// consumer (e.g. `new Uint8Array(sandbox.ab)` on a vm-assigned ArrayBuffer —
+/// same class as the runInNewContext return face). Phase 1 collects the
+/// realm-owned values INSIDE the realm's AutoRealm; phase 2 — back in the
+/// caller's compartment — wraps each value with `JS_WrapValue` (CCW; no-op
+/// for primitives) and sets it on the now same-compartment sandbox object.
+/// This preserves the live binding: the sandbox sees the very object the vm
+/// code created, mutated through a wrapper, never a copy.
+///
+/// Returns `false` when a value wrap failed (exception pending) — callers
+/// must propagate instead of returning `true` with a pending exception.
 ///
 /// MUST be called with no exception pending (after a successful evaluation).
 unsafe fn copy_global_writes_to_sandbox(
@@ -1244,37 +1309,58 @@ unsafe fn copy_global_writes_to_sandbox(
     global: *mut JSObject,
     sandbox: *mut JSObject,
     baseline: &[String],
-) {
+) -> bool {
     if global.is_null() || sandbox.is_null() {
-        return;
+        return true;
     }
-    rooted!(&in(cx) let global_h = global);
-    let mut realm = AutoRealm::new_from_handle(cx, global_h.handle());
-    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-    let raw_cx = unsafe { realm_cx.raw_cx() };
 
-    rooted!(&in(realm_cx) let global_root = global);
-    rooted!(&in(realm_cx) let sandbox_root = sandbox);
+    // Phase 1: collect the realm global's post-baseline writes. The walk runs
+    // inside the realm's AutoRealm (same-compartment receiver); values are
+    // pinned in rooted traceable boxes across the realm switch below
+    // (stale-rval UB class, e206).
+    let writes: Vec<(::std::string::String, RootedTraceableBox<Heap<JS::Value>>)> = {
+        rooted!(&in(cx) let global_h = global);
+        let mut realm = AutoRealm::new_from_handle(cx, global_h.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+        let raw_cx = unsafe { realm_cx.raw_cx() };
+        let mut writes = Vec::new();
+        crate::for_each_string_property(raw_cx, global_h.handle().into(), |key, _id, val, got| {
+            if !got {
+                return;
+            }
+            if baseline.iter().any(|b| b == key) {
+                return;
+            }
+            let heap_val = RootedTraceableBox::from_box(Heap::boxed(val));
+            writes.push((key.to_string(), heap_val));
+        });
+        writes
+    };
 
-    crate::for_each_string_property(raw_cx, global_root.handle().into(), |key, id, val, got| {
-        if baseline.iter().any(|b| b == key) {
-            return;
+    // Phase 2: caller's compartment. The mutable handle targets the rooted
+    // copy — JS_WrapValue allocates the CCW and may trigger GC (e206).
+    let raw_cx = unsafe { cx.raw_cx() };
+    rooted!(&in(cx) let sandbox_root = sandbox);
+    for (key, heap_val) in &writes {
+        let c_key = bun_core::ZBox::from_bytes(key.as_bytes());
+        if c_key.as_ptr().is_null() {
+            continue;
         }
-        if !got {
-            return;
+        let heap_inner: &Heap<JS::Value> = &**heap_val;
+        rooted!(&in(cx) let mut val_root = heap_inner.get());
+        if !unsafe { JS_WrapValue(raw_cx, val_root.handle_mut().into()) } {
+            return false;
         }
-        // Set through the cross-compartment wrapper onto the caller-realm
-        // sandbox object; SM wraps realm-owned values automatically.
-        rooted!(&in(realm_cx) let val_root = val);
         unsafe {
-            JS_SetPropertyById(
+            JS_SetProperty(
                 raw_cx,
                 sandbox_root.handle().into(),
-                id,
+                c_key.as_ptr(),
                 val_root.handle().into(),
             );
         }
-    });
+    }
+    true
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -1330,46 +1416,45 @@ unsafe extern "C" fn vm_run_in_new_context(cx: *mut JSContext, argc: u32, vp: *m
         } else {
             UndefinedValue()
         };
-        let opts_val =
-            if raw_opts.is_undefined() || is_plain_options_object(cx, raw_opts) {
-                raw_opts
+        let opts_val = if raw_opts.is_undefined() || is_plain_options_object(cx, raw_opts) {
+            raw_opts
+        } else {
+            rooted!(&in(cx_ref) let spread = w2::JS_NewPlainObject(cx_ref));
+            if spread.get().is_null() {
+                UndefinedValue()
             } else {
-                rooted!(&in(cx_ref) let spread = w2::JS_NewPlainObject(cx_ref));
-                if spread.get().is_null() {
-                    UndefinedValue()
-                } else {
-                    if raw_opts.is_string() {
-                        rooted!(&in(cx_ref) let fv = raw_opts);
+                if raw_opts.is_string() {
+                    rooted!(&in(cx_ref) let fv = raw_opts);
+                    JS_DefineProperty(
+                        cx,
+                        spread.handle().into(),
+                        c"filename".as_ptr(),
+                        fv.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                } else if raw_opts.is_object() {
+                    // array/function: copy own enumerable string keys.
+                    let props = collect_sandbox_properties(cx_ref, raw_opts.to_object());
+                    for (key, hv) in &props {
+                        let c_key = bun_core::ZBox::from_bytes(key.as_bytes());
+                        if c_key.as_ptr().is_null() {
+                            continue;
+                        }
+                        // Deref to the inner Heap for the bindgen Handle
+                        // (same note as define_properties_on_global).
+                        let heap_inner: &Heap<JS::Value> = &**hv;
                         JS_DefineProperty(
                             cx,
                             spread.handle().into(),
-                            c"filename".as_ptr(),
-                            fv.handle().into(),
+                            c_key.as_ptr(),
+                            unsafe { heap_inner.handle() },
                             JSPROP_ENUMERATE as u32,
                         );
-                    } else if raw_opts.is_object() {
-                        // array/function: copy own enumerable string keys.
-                        let props = collect_sandbox_properties(cx_ref, raw_opts.to_object());
-                        for (key, hv) in &props {
-                            let c_key = bun_core::ZBox::from_bytes(key.as_bytes());
-                            if c_key.as_ptr().is_null() {
-                                continue;
-                            }
-                            // Deref to the inner Heap for the bindgen Handle
-                            // (same note as define_properties_on_global).
-                            let heap_inner: &Heap<JS::Value> = &**hv;
-                            JS_DefineProperty(
-                                cx,
-                                spread.handle().into(),
-                                c_key.as_ptr(),
-                                unsafe { heap_inner.handle() },
-                                JSPROP_ENUMERATE as u32,
-                            );
-                        }
                     }
-                    ObjectValue(spread.get())
                 }
-            };
+                ObjectValue(spread.get())
+            }
+        };
         let mut ctx_vp = [
             UndefinedValue(),
             UndefinedValue(),
@@ -1417,8 +1502,11 @@ unsafe extern "C" fn vm_run_in_new_context(cx: *mut JSContext, argc: u32, vp: *m
     };
 
     // Write-through (sandbox → global): pick up properties added to the
-    // sandbox object since createContext before evaluating.
-    sync_sandbox_into_global(cx_ref, sandbox, sandbox_global);
+    // sandbox object since createContext before evaluating. Propagate wrap
+    // failure — a pending exception must surface as a thrown error.
+    if !sync_sandbox_into_global(cx_ref, sandbox, sandbox_global) {
+        return false;
+    }
 
     // Enter the sandbox Realm, evaluate code, return result.
     rooted!(&in(cx_ref) let global_h = sandbox_global);
@@ -1452,10 +1540,29 @@ unsafe extern "C" fn vm_run_in_new_context(cx: *mut JSContext, argc: u32, vp: *m
     }
 
     // Write-through (global → sandbox): vm writes land on the sandbox object.
+    // Propagate wrap failure — the pending exception must surface, and a
+    // `true` return with a pending exception is UB at the JSAPI layer.
     if let Some(baseline) = get_context_baseline(cx, sandbox) {
-        copy_global_writes_to_sandbox(cx_ref, sandbox_global, sandbox, &baseline);
+        if !copy_global_writes_to_sandbox(cx_ref, sandbox_global, sandbox, &baseline) {
+            return false;
+        }
     }
 
+    // Wrap the evaluation result back into the caller's compartment
+    // (REQ-ENG-011): the value was produced in the sandbox realm, and a raw
+    // cross-compartment object handed to caller-realm code breaks the
+    // same-compartment invariant that realm-local constructors assert —
+    // `new Uint8Array(runInNewContext('new ArrayBuffer(4)'))` reached
+    // TypedArrayObject::fromBufferSameCompartment's unconditional releaseCheck
+    // and MOZ_Crashed ("Compartment mismatch"). JS_WrapValue installs (or
+    // reuses) a cross-compartment wrapper, so later realm-local construction
+    // over it dispatches onto SM's fromBufferWrapped cross-realm path —
+    // Node semantics: live binding (shared object, never a clone). The
+    // mutable handle targets the rooted slot: JS_WrapValue allocates (CCW)
+    // and may trigger GC (stale-rval UB class, e206).
+    if !JS_WrapValue(cx, rval.handle_mut().into()) {
+        return false;
+    }
     args.rval().set(rval.get());
     true
 }
@@ -1518,8 +1625,11 @@ unsafe extern "C" fn vm_run_in_context(cx: *mut JSContext, argc: u32, vp: *mut J
         "vm.js".to_string()
     };
 
-    // Write-through (sandbox → global) before evaluating.
-    sync_sandbox_into_global(cx_ref, sandbox.get(), sandbox_global);
+    // Write-through (sandbox → global) before evaluating. Propagate wrap
+    // failure — a pending exception must surface as a thrown error.
+    if !sync_sandbox_into_global(cx_ref, sandbox.get(), sandbox_global) {
+        return false;
+    }
 
     rooted!(&in(cx_ref) let global_h = sandbox_global);
     rooted!(&in(cx_ref) let mut rval = UndefinedValue());
@@ -1549,11 +1659,22 @@ unsafe extern "C" fn vm_run_in_context(cx: *mut JSContext, argc: u32, vp: *mut J
         }
     }
 
-    // Write-through (global → sandbox).
+    // Write-through (global → sandbox) — propagate wrap failure (pending
+    // exception must surface; `true` with a pending exception is UB).
     if let Some(baseline) = get_context_baseline(cx, sandbox.get()) {
-        copy_global_writes_to_sandbox(cx_ref, sandbox_global, sandbox.get(), &baseline);
+        if !copy_global_writes_to_sandbox(cx_ref, sandbox_global, sandbox.get(), &baseline) {
+            return false;
+        }
     }
 
+    // Wrap the evaluation result back into the caller's compartment
+    // (REQ-ENG-011 — same releaseCheck class as runInNewContext; see the
+    // full rationale at the vm_run_in_new_context return). JS_WrapValue
+    // produces/reuses a cross-compartment wrapper: live binding preserved,
+    // realm-local constructors dispatch to the cross-realm path.
+    if !JS_WrapValue(cx, rval.handle_mut().into()) {
+        return false;
+    }
     args.rval().set(rval.get());
     true
 }
@@ -1798,10 +1919,7 @@ unsafe extern "C" fn vm_script_ctor(cx: *mut JSContext, argc: u32, vp: *mut JSVa
             .unwrap_or_else(|_| ::std::ffi::CString::new("vm.js").unwrap());
         let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr() as *const _, 1);
         if opts.is_null() {
-            JS_ReportErrorUTF8(
-                cx,
-                c"Script: failed to allocate compile options".as_ptr(),
-            );
+            JS_ReportErrorUTF8(cx, c"Script: failed to allocate compile options".as_ptr());
             return false;
         }
         let mut src = mozjs::rust::transform_str_to_source_text(&code);
@@ -2059,8 +2177,11 @@ unsafe extern "C" fn vm_script_run_in_context(
 
     // Enter sandbox Realm, evaluate code.
     // Write-through (sandbox → global) first: properties added to the sandbox
-    // object since createContext must be visible inside the realm.
-    sync_sandbox_into_global(cx_ref, sandbox.get(), global_ptr);
+    // object since createContext must be visible inside the realm. Propagate
+    // wrap failure — a pending exception must surface as a thrown error.
+    if !sync_sandbox_into_global(cx_ref, sandbox.get(), global_ptr) {
+        return false;
+    }
 
     rooted!(&in(cx_ref) let global_h = global_ptr);
     rooted!(&in(cx_ref) let mut rval = UndefinedValue());
@@ -2092,10 +2213,19 @@ unsafe extern "C" fn vm_script_run_in_context(
 
     // Write-through (global → sandbox): assignments inside the script land on
     // the contextified sandbox object (the vm contract this function owes).
+    // Propagate wrap failure — pending exception must surface.
     if let Some(baseline) = get_context_baseline(cx, sandbox.get()) {
-        copy_global_writes_to_sandbox(cx_ref, global_ptr, sandbox.get(), &baseline);
+        if !copy_global_writes_to_sandbox(cx_ref, global_ptr, sandbox.get(), &baseline) {
+            return false;
+        }
     }
 
+    // Wrap the evaluation result back into the caller's compartment
+    // (REQ-ENG-011 — same releaseCheck class as runInNewContext; see the
+    // full rationale at the vm_run_in_new_context return).
+    if !JS_WrapValue(cx, rval.handle_mut().into()) {
+        return false;
+    }
     args.rval().set(rval.get());
     true
 }
@@ -2196,8 +2326,11 @@ unsafe extern "C" fn vm_script_run_in_new_context(
     // Enter sandbox Realm, evaluate code.
     // Write-through (sandbox → global) first, then evaluate, then copy
     // vm writes back onto the sandbox object (same contract as
-    // vm.runInNewContext / Script.runInContext).
-    sync_sandbox_into_global(cx_ref, sandbox, sandbox_global);
+    // vm.runInNewContext / Script.runInContext). Propagate wrap failure —
+    // a pending exception must surface as a thrown error.
+    if !sync_sandbox_into_global(cx_ref, sandbox, sandbox_global) {
+        return false;
+    }
 
     rooted!(&in(cx_ref) let global_h = sandbox_global);
     rooted!(&in(cx_ref) let mut rval = UndefinedValue());
@@ -2228,9 +2361,17 @@ unsafe extern "C" fn vm_script_run_in_new_context(
     }
 
     if let Some(baseline) = get_context_baseline(cx, sandbox) {
-        copy_global_writes_to_sandbox(cx_ref, sandbox_global, sandbox, &baseline);
+        if !copy_global_writes_to_sandbox(cx_ref, sandbox_global, sandbox, &baseline) {
+            return false;
+        }
     }
 
+    // Wrap the evaluation result back into the caller's compartment
+    // (REQ-ENG-011 — same releaseCheck class as runInNewContext; see the
+    // full rationale at the vm_run_in_new_context return).
+    if !JS_WrapValue(cx, rval.handle_mut().into()) {
+        return false;
+    }
     args.rval().set(rval.get());
     true
 }

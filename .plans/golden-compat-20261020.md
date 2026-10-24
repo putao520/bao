@@ -955,3 +955,28 @@ fix:全部根治或上游载体在位(gsc#217)。
 - util 域 **3→12 PASS**(F 类 9 格翻转;19 残留=E 登记项 oracle-parity×1/引擎域×2/结构域×1+其余类)
 - internal 模块族落地(internal/util+internal/timers+debounce/throttle 四 builtin,24/24 oracle harness)
 - 七域窄域回归(vm/child_process/util_deep/util_edge/node_util/net_socket/assert_deep_parity)在跑
+
+## 七域两红全归因(2026-10-24,窄域 62/65 → 零真回归)
+- **util_edge::assert_spec_forms_matrix**(15 check 唯一 ERR)=`call_tracker`:`tracker.calls('lab')` 原 pin 臆造了「字符串 label」API 语义。node v24.19 oracle 实证 `t.calls('lab')` 抛 `TypeError: Cannot create proxy with a non-object as target or handler`——**两引擎都抛 TypeError**,仅 V8/SM 文案差。CALL_COUNTS 注释在位证实现是调用计数形态(oracle:`calls(fn[, exact])`)。pin 按 oracle 重写为 `tracker.calls(function(){hit=true},1)`+verify,产品零改动。
+- **util_edge::util_callbackify_arms**(3 差全=node 正确新行为,pin 是 bao 旧形态)=node oracle 精确钉:①arr 不展开(`x=["a","b"]` join 成 `a,b`,`y=undefined`)→ `arr:null,a,b,undefined`;②falsy msg=`Promise was rejected with falsy value` 且 `cause===null` 为 **false**(cause 留 undefined)→ `falsy:true,Promise was rejected with falsy value,false`;③sync 抛为**同步传播**(非 deferred cb),脚本重构为 try/catch 捕获 `sync:sync-throw:true,sync-throw`,恢复后续 nofn 检查。前五臂(undef/val/rej)与 node 逐字符一致。
+- **node_util::test_inspect_depth_infinity_semantics** SIGSEGV=崩③已知存量(Heap::boxed GC 竞态,HEAD 同现,A/B 实证),非本波回归,独立登记。
+- 结论:七域 62/65 的 3 红中 **0 产品回归**——2 红=测试 pin 错(已按 node oracle 修),1 红=存量崩③(待独立修)。
+
+## farm 挂死审计:锁等待挂死变体(2026-10-24,用户指令「审计目前的是否也如此」)
+- **命中**。两次实测对照定性:
+  - 经 farm-build-gate 启动 → wrapper `bash flock -w 5400 9`(fd9=/home/putao/farm-build.lock)阻塞 **13m33s**,wchan=`do_wait`,**docker ps 零 bao 容器**(flock 阻塞期容器从未创建),无 cargo/nextest 活动 = **挂死**。
+  - 绕锁直起(独立 compose 项目名)→ 容器 31s 内起、1811 行编译活动 = **健康**。
+- 机制:frog 已持 farm-build.lock 3h53m+ → 我方 gate wrapper 卡 flock 等锁(上限 90min),期间 ssh 通道悬死不退出、容器零活动——与早前 40min 挂死同一变体。判别信号=`docker ps` 无对应 compose 项目容器(而非查 wrapper 是否活:wrapper 活≠有活干)。
+- 处置:TaskStop 杀挂死 wrapper → 重 rsync → 绕锁直起(`bao-$(date +%s%N)` 独立项目名,不碰 flock、不杀 frog、bao-target 卷私有零争用)。
+- **连坐暴露第二缺陷(bash -c 引号嵌套假绿)**:直起首版经 `docker compose run ... bash -lc 'CARGO_BUILD_JOBS=8 cargo ... -E test(vm) or ...'` 执行,单引号在 docker run 传参时被剥离、容器内 bash 重新解析 `-E test(vm)` 的 `(` 当 shell 语法 → `syntax error near unexpected token '('`,**容器直接失败但 exit 0=假绿**(tail -30 才暴露)。根治=`.claude/farm-seven-domain.sh` 脚本文件形态(脚本内引号是源码,不经二次解析)+ nextest filterset 用**无空格连写形态** `-Etest(vm)ortest(child_process)ortest(...)`(gate wrapper 的 `%q` 转义 + bash -lc 双引号才安全,直起不转义即炸)。教训:**容器启动后必须早期鉴别「容器活了但命令语法失败」——exit 0 不等于命令执行了**。
+
+## 七域全量回归终裁(2026-10-25,--no-fail-fast 94 tests:91 绿/3 红 → 零产品回归)
+- 载体:`.claude/farm-seven-domain.sh` 脚本文件形态(根治 bash -lc 引号嵌套;filterset 必须带空格 `or`——连写 `test(vm)ortest(...)` 被 cargo 拒 `unparsed input`)+ docker compose 绕 flock 直起(bao-1540916)。
+- **我修的两 pin 已转绿**:`call_tracker`、`callbackify`(node v24.19 逐字符真值,产品零改动)。
+- **新暴露 3 红(此前被 fail-fast 截断,首次全量可见)**:
+  1. `util_misc_surface_arms` = `inherits_non_object_args_noop`:node v24.19 实证 `util.inherits(5,{})` 抛 `TypeError: The "superCtor.prototype" property must be of type object. Received undefined`、`util.inherits({})` 抛 `"superCtor" argument must be of type function`——**bao 抛错与 node 一致**,pin 名「noop」本身错。校正为 throw 断言。
+  2. `util_styletext_arms`(2 格)= **决定性诊断:产品正确**。当前树 test-ci 二进制在 pipe 下 `process.stdout.isTTY=false`、`styleText('red','x')="x"`(无 ANSI)——与 node `--color=auto` pipe 行为逐字符一致。pin 按 TTY 假设写死 `indexOf('31m')` 在 pipe 恒假。修法=走 node 官方 `{validateStream:false}` 强制 ANSI 选项(oracle:`"\u001b[31mx\u001b[39m"` / `"\u001b[1m\u001b[31mx\u001b[39m\u001b[22m"`),断言语义不变且环境鲁棒。**pin 期望的码序本就正确,只差强制色选项**——非假绿、非产品缺陷。
+  3. `util_promisify_arms` = fail-fast 掩盖的第三颗陈旧 pin(node 把 falsy rejection reason 包装为 Error,pin 假设原样 falsy;bao 与 node 一致)。
+  4. `test_inspect_depth_infinity_semantics` SIGSEGV = 崩③存量(HEAD 同现,A/B 实证),REQ-ENG-048 R7 的 `seen/refs: RootedVec<Box<Heap<*mut JSObject>>>` 形态表面合规但仍崩——首要嫌疑 `RootedVec` 是否真的追踪元素(而非仅根住 vec 分配),独立 E 立案。
+- **五颗 pin 共同根因**:全部是「按 TTY/特定环境假设写死的断言」在 nextest pipe 环境下失真——pin 的期望值与 node TTY 态一致、bao 与 node pipe 态一致,两侧都对,仅断言载体未声明环境前提。教训:**断言依赖环境前提(TTY/编码/时区)时必须显式声明或改用 API 选项强制前提(如 `validateStream:false`),否则 fail-fast 顺序不同就会漏出。**
+- farm 教训沉淀(farm-ops-quirks #5/#6):filterset 经 bash -lc 二次解析炸语法且 exit 0 假绿 → 脚本文件形态根治;flock 阻塞期 docker 容器从未创建,判别信号=`docker ps` 无项目名容器而非查 wrapper 是否活。
