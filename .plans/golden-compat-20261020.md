@@ -936,3 +936,10 @@ F 断言值差×12=util 面正餐(format -0/inherits descriptor/stripVT 残差/s
 sweep:两族横扫各自完成(84 evidence codemod/107+130 全形态归一/契约 10 条入库)。
 fix:全部根治或上游载体在位(gsc#217)。
 残留核验(residualZero):窄域 110/110 绿+deep 51/53+SPEC 四指标全 0+物理残留 0;入库/上报后零新增同族失败。残留=0。
+
+## ✅ SPEC 追平三波闭环(2026-10-24,用户指令「代码跑在 SPEC 前面,根治」)
+- 波1 4058a866d:机械修复(attr-order 224/xref 11/结构 70/CS-2 18/注册表 2011 ghost)+status 修正+Part C 断链 11/11
+- 波2 bf3cb00f3:150 rename+ENG#13 撞号裁决(013=TLSSocket/049=Bun.file)+259 全形态归一+src 两腿 755 处 codemod(原子)
+- 波3 5fa110a30:84 TEST 锚回填(file::fn 证据链)——**TV-2 102→10,四指标全 0**
+- 残留 10=E 定性诚实缺口(servo 承载面×7/wasi 负契约/流程型)——可见债务不假锚
+- 下一面:崩①修复(cp_poll 64KB 栈缓冲移出,node_child_process.rs)
