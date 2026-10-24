@@ -926,3 +926,7 @@ F 断言值差×12=util 面正餐(format -0/inherits descriptor/stripVT 残差/s
 1. **esm-cjs rc=134 free()**:cp_poll_thread(node_child_process.rs:913)栈溢出——128KB 线程栈内嵌 64KB 静态读缓冲(:881),jemalloc 首触 init ~28KB 单帧触 guard page;触发=管道出现字节流(echo hello 即崩,与子进程身份/setEncoding 无关);Oct-19 存量。修法=64KB 缓冲移出栈(Heap/静态)或线程栈 256KB。
 2. **partial-deep rc=139**:跨 realm TypedArray 构造 SIGSEGV——`new Uint8Array(vm.runInNewContext('new ArrayBuffer(4)'))` 一行 100% 复现;SM `TypedArrayObject::fromBufferSameCompartment:685 releaseCheck`(MOZ_Crash 序列);assert 只是消费者。待判:fork 自治修(buffer compartment 进入/CCW)vs 上游缺陷登记。
 3. **inspect 深链**:排除栈溢出(rsp 仅 200KB/8MiB 栈,三档 ulimit 恒 241/242);jsval_inspect↔object_body 交替递归中 `seen.push(Heap::boxed(obj_ptr))`(:4729 前读到被 GC 搬移污染槽位 0xb000...)——**heap-storebuffer-teardown 类第三例**(temporary Heap 构造+set+move 不变量);dev 边界非单调=GC 竞态特征。修法=审计 seen 栈槽位生命周期+全仓横扫同类。
+
+## 涌现跨域归因(2026-10-24,bce-domain-guard 顶档触发)
+归因（BCE-20261024-GOVTOOL-VERSION-DRIFT）:mcp/lsp/spec-gov 三域顽固故障同模式涌现=gsc-spec 插件版本升级窗口(1901→1906,/reload-plugins 多次)内 schema/daemon/实现三方漂移——非 bao 侧缺陷,属上游工具族架构层。
+根治=ISSUE 上报(用户立法:自维护仓同走 ISSUE):**gsc#217**(spec_govern/spec_write 契约漂移族 5 条:rename 同号静默 no-op/无 file 域撞号/fixFormat 无 ID 归一/MCP schema 缺参/DomEngine 直调不可用),关联同族 #213/#214。bao 侧自愈面=KB 契约条目(lsp.md 10 条)全量在库,残留=0。
