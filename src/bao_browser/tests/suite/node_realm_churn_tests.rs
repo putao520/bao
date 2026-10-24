@@ -1,4 +1,4 @@
-// @trace TEST-BRW-003 [req:REQ-BRW-003] [level:e2e]
+// @trace TEST-BRW-3 [req:REQ-BRW-003] [level:e2e]
 // W26 (W21a evidence, commit b911642f): one churn page's
 // create+navigate+close lifecycle wrongly cleared a LONG-LIVED page's
 // NODE_REALM_BY_WEBVIEW registration — the survivor's next evaluate_js hit

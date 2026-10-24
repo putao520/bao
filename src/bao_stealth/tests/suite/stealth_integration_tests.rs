@@ -1,5 +1,5 @@
 #![allow(unused_comparisons, unused_variables)]
-// @trace TEST-STL-001~007-INT [req:REQ-STL-001~007] [level:unit]
+// @trace TEST-STL-1~007-INT [req:REQ-STL-001~007] [level:unit]
 // Stealth integration tests: JS injection content validation, profile cross-consistency,
 // fingerprint computation determinism
 

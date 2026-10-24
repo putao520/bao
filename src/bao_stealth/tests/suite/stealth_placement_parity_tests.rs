@@ -1,4 +1,4 @@
-// @trace TEST-STL-007 [req:REQ-STL-007] [level:integration]
+// @trace TEST-STL-7 [req:REQ-STL-007] [level:integration]
 //
 // e148 Chromium-parity placement lock for the engine stealth getters.
 //

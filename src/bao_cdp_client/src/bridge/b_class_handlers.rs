@@ -46,7 +46,7 @@ use super::eval_synthesizer::{build_iife, build_iife_with_args};
 use super::servo_backend::ServoBackend;
 
 // ────────────────────────────────────────────────────────────────────
-// 通用 JSON 助手 — REQ-ARCH-1:单一实现落点 `bridge/mod.rs`,
+// 通用 JSON 助手 — REQ-ARCH-001:单一实现落点 `bridge/mod.rs`,
 // 本模块经 `use super::{...}` 引用(纯结构变换,行为零变化)。
 // ────────────────────────────────────────────────────────────────────
 use super::{get_i64, get_opt_bool, get_opt_i64, get_opt_str, get_str, unit_ok};
@@ -91,7 +91,7 @@ fn eval_iife(
 /// `objectId`,以给定 body 在元素上跑 `Runtime.callFunctionOn`(零参数),
 /// 返回 CDP-compatible JSON。
 ///
-/// REQ-ARCH-1:多个 element 谓词 handler 逐字节同形(仅 JS `body` 不同),
+/// REQ-ARCH-001:多个 element 谓词 handler 逐字节同形(仅 JS `body` 不同),
 /// 提取为单一 helper;各 handler 仅保留自身 `body` 字面量。
 fn call_function_on_element(
     backend: &dyn ServoBackend,
@@ -1301,7 +1301,7 @@ pub fn js_handle_as_element(
     Ok(json!({ "isElement": false }))
 }
 
-/// JSHandle.dispose — Runtime.releaseObject(REQ-ARCH-1:直接委托 a_class
+/// JSHandle.dispose — Runtime.releaseObject(REQ-ARCH-001:直接委托 a_class
 /// 同名 handler,消除逐字节重复实现)。
 ///
 /// @trace REQ-BAO-API-005 [method:JSHandle.dispose]
@@ -1315,7 +1315,7 @@ pub fn js_handle_dispose(
 
 /// JSHandle.evaluate / evaluateHandle 共享体 — `Runtime.callFunctionOn`。
 ///
-/// REQ-ARCH-1:两 handler 逐字节同形,提取为本模块私有 helper(共享
+/// REQ-ARCH-001:两 handler 逐字节同形,提取为本模块私有 helper(共享
 /// objectId/func/args 抽取 + callFunctionOn + CDP JSON 组装)。
 fn js_handle_call_function(
     backend: &dyn ServoBackend,
@@ -1626,7 +1626,7 @@ mod tests {
 
     // ── ElementHandle ──
     //
-    // REQ-ARCH-1 豁免:下方 element_*_uses_call_function_on / js_handle_*/
+    // REQ-ARCH-001 豁免:下方 element_*_uses_call_function_on / js_handle_*/
     // screenshot 类测试为「每 handler 一条最小烟测」的测试惯例——相似仅因
     // 断言形态统一(backend() + 单调用 + assert)。这是逐 handler 覆盖必要
     // 的测试结构(合并即丧失按 method 的失败定位),非重复建设,登记豁免。

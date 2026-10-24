@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-CLUSTER [req:REQ-ENG-006] [level:e2e]
+// @trace TEST-ENG-6-CLUSTER [req:REQ-ENG-006] [level:e2e]
 // cluster worker.kill() regression (SILENT: kill never killed):
 //   * child-side — the PosixStdio::Ipc spawn path clones the worker while
 //     the C++ spawner holds all signals blocked, so the worker inherited an

@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-TIMERS [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-TIMERS [req:REQ-ENG-007] [level:integration]
 // Integration tests for node:timers API (REQ-ENG-007)
 
 use bao_engine::context::JsContext;

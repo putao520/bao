@@ -228,7 +228,7 @@ for (var s = 0; s < sheets.length; s++) {
         for (var si = 0; si < selectors.length; si++) {
             var sel = selectors[si].replace(/^\s+|\s+$/g, "");
             if (!sel) continue;
-            try { if (el.matches(sel)) matching.push(si); } catch (e2) { /* REQ-ARCH-1: CSSOM Element.matches() throws ("not a valid selector") only on a non-standard/invalid selector token (e.g. a vendor pseudo); registered semantic = that token never matches, so the rule is skipped while the request still succeeds. Swallowing here is the spec-correct "no match", not a hidden failure. */ }
+            try { if (el.matches(sel)) matching.push(si); } catch (e2) { /* REQ-ARCH-001: CSSOM Element.matches() throws ("not a valid selector") only on a non-standard/invalid selector token (e.g. a vendor pseudo); registered semantic = that token never matches, so the rule is skipped while the request still succeeds. Swallowing here is the spec-correct "no match", not a hidden failure. */ }
         }
         if (matching.length === 0) continue;
         rules.push({

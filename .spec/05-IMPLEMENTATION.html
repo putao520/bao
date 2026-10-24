@@ -65,7 +65,7 @@
       <h2>§2 Phase 1: SpiderMonkey 替换 JSC</h2>
       <!-- ============================================================ -->
 
-      <div id="req-impl-01" data-req="REQ-IMPL-01" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-api="GET /impl/phase1-status" data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-BUN-COMPAT">
+      <div id="req-impl-01" data-req="REQ-IMPL-001" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-api="GET /impl/phase1-status" data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-BUN-COMPAT">
         <h3>Phase 1 详细任务（已完成）</h3>
 
         <h4>1.1 集成 mozjs crate</h4>
@@ -203,7 +203,7 @@
 
         <h4>1.6 异步 Fetch/HTTP 事件循环集成(FetchTasklet 事件驱动范式)</h4>
         <p>
-          REQ-ENG-010 任务分解,对应 CF-FETCH-ASYNC-001 控制流 DD-1~DD-7 设计决策 + DEC-ENG-002 执行偏差修正
+          REQ-ENG-010 任务分解,对应 CF-FETCH-ASYNC-001 控制流 DD-1~DD-7 设计决策 + DEC-ENG-2 执行偏差修正
           DD-8~DD-12。改动域限定 bao_runtime。S2审计状态:BLOCKED(Task#50 未完成),存在双重基础设施缺陷,需执行 DD-8~DD-12
           修正。
         </p>
@@ -313,16 +313,16 @@
 
         <h4>验收标准</h4>
         <ul>
-          <li id="176/176-integration-tests-通过" data-criterion="176/176 integration tests 通过" data-criterion-id="REQ-IMPL-01-C1">
+          <li id="176/176-integration-tests-通过" data-criterion="176/176 integration tests 通过" data-criterion-id="REQ-IMPL-001-C1">
             176/176 integration tests 通过
           </li>
-          <li id="webassembly-原生支持" data-criterion="WebAssembly 原生支持" data-criterion-id="REQ-IMPL-01-C2">
+          <li id="webassembly-原生支持" data-criterion="WebAssembly 原生支持" data-criterion-id="REQ-IMPL-001-C2">
             WebAssembly 原生支持
           </li>
-          <li id="bun.build/bun.test/bun.serve/bun.spawn-等-api-正常" data-criterion="Bun.build/Bun.test/Bun.serve/Bun.spawn 等 API 正常" data-criterion-id="REQ-IMPL-01-C3">
+          <li id="bun.build/bun.test/bun.serve/bun.spawn-等-api-正常" data-criterion="Bun.build/Bun.test/Bun.serve/Bun.spawn 等 API 正常" data-criterion-id="REQ-IMPL-001-C3">
             Bun.build/Bun.test/Bun.serve/Bun.spawn 等 API 正常
           </li>
-          <li id="mozjs-crate-集成且-jscontext-生命周期管理完整" data-criterion="mozjs crate 集成且 JSContext 生命周期管理完整" data-criterion-id="REQ-IMPL-01-C4">
+          <li id="mozjs-crate-集成且-jscontext-生命周期管理完整" data-criterion="mozjs crate 集成且 JSContext 生命周期管理完整" data-criterion-id="REQ-IMPL-001-C4">
             mozjs crate 集成且 JSContext 生命周期管理完整
           </li>
         </ul>
@@ -343,13 +343,13 @@
             <li>grep -rn "JS_NewContext\|JS_DestroyContext" src/bao_engine/src/ 显示 JSContext 生命周期管理完整</li>
           </ol>
         </div>
-      <p data-xref-type="req" data-xref-id="REQ-IMPL-01">关联实体: <a data-xref-type="entity" data-xref-id="baoruntime" href="./04-DATA-MODEL#baoruntime">BaoRuntime</a>, <a data-xref-type="entity" data-xref-id="modulesource" href="./04-DATA-MODEL#modulesource">ModuleSource</a>, <a data-xref-type="entity" data-xref-id="jscallback" href="./04-DATA-MODEL#jscallback">JsCallback</a></p></div>
+      <p data-xref-type="req" data-xref-id="REQ-IMPL-001">关联实体: <a data-xref-type="entity" data-xref-id="baoruntime" href="./04-DATA-MODEL#baoruntime">BaoRuntime</a>, <a data-xref-type="entity" data-xref-id="modulesource" href="./04-DATA-MODEL#modulesource">ModuleSource</a>, <a data-xref-type="entity" data-xref-id="jscallback" href="./04-DATA-MODEL#jscallback">JsCallback</a></p></div>
 
       <!-- ============================================================ -->
       <h2>§3 Phase 2: servo 引擎集成 + 渲染</h2>
       <!-- ============================================================ -->
 
-      <div id="req-impl-02" data-req="REQ-IMPL-02" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-api="GET /impl/phase2-status" data-groundedin="PRD-REQ-HEADLESS-BROWSER,PRD-REQ-UNIFIED-RUNTIME">
+      <div id="req-impl-02" data-req="REQ-IMPL-002" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-api="GET /impl/phase2-status" data-groundedin="PRD-REQ-HEADLESS-BROWSER,PRD-REQ-UNIFIED-RUNTIME">
         <h3>Phase 2 详细任务</h3>
 
         <h4>2.1 servo path 依赖集成</h4>
@@ -484,19 +484,19 @@
         <ul>
           <h4>验收标准</h4>
           <ul>
-            <li id="bao-browser---url=https://example.com-启动正常" data-criterion="bao browser --url=https://example.com 启动正常" data-criterion-id="REQ-IMPL-02-C1">
+            <li id="bao-browser---url=https://example.com-启动正常" data-criterion="bao browser --url=https://example.com 启动正常" data-criterion-id="REQ-IMPL-002-C1">
               bao browser --url=https://example.com 启动正常
             </li>
-            <li id="页面-html-加载完成，dom-树构建正确" data-criterion="页面 HTML 加载完成，DOM 树构建正确" data-criterion-id="REQ-IMPL-02-C2">
+            <li id="页面-html-加载完成，dom-树构建正确" data-criterion="页面 HTML 加载完成，DOM 树构建正确" data-criterion-id="REQ-IMPL-002-C2">
               页面 HTML 加载完成，DOM 树构建正确（servo Stylo + LayoutThread 内置）
             </li>
-            <li id="截图输出-png/jpeg/webp" data-criterion="截图输出 PNG/JPEG/WebP" data-criterion-id="REQ-IMPL-02-C3">
+            <li id="截图输出-png/jpeg/webp" data-criterion="截图输出 PNG/JPEG/WebP" data-criterion-id="REQ-IMPL-002-C3">
               截图输出 PNG/JPEG/WebP（servo webrender 渲染）
             </li>
-            <li id="console/require-等-bao-全局对象在-servo-jscontext-中可用" data-criterion="console/require 等 Bao 全局对象在 servo JSContext 中可用" data-criterion-id="REQ-IMPL-02-C4">
+            <li id="console/require-等-bao-全局对象在-servo-jscontext-中可用" data-criterion="console/require 等 Bao 全局对象在 servo JSContext 中可用" data-criterion-id="REQ-IMPL-002-C4">
               console/require 等 Bao 全局对象在 servo JSContext 中可用（融合验证）
             </li>
-            <li id="web-api-+-node.js-api-同一-jscontext-共存" data-criterion="Web API + Node.js API 同一 JSContext 共存" data-criterion-id="REQ-IMPL-02-C5">
+            <li id="web-api-+-node.js-api-同一-jscontext-共存" data-criterion="Web API + Node.js API 同一 JSContext 共存" data-criterion-id="REQ-IMPL-002-C5">
               Web API + Node.js API 同一 JSContext 共存
             </li>
           </ul>
@@ -522,13 +522,13 @@
             <li>Web API + Node.js API 同一 JSContext 共存测试通过</li>
           </ol>
         </div>
-      <p data-xref-type="req" data-xref-id="REQ-IMPL-02">关联实体: <a data-xref-type="entity" data-xref-id="browsercontext" href="./04-DATA-MODEL#browsercontext">BrowserContext</a>, <a data-xref-type="entity" data-xref-id="pagehandle" href="./04-DATA-MODEL#pagehandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="viewport" href="./04-DATA-MODEL#viewport">Viewport</a></p></div>
+      <p data-xref-type="req" data-xref-id="REQ-IMPL-002">关联实体: <a data-xref-type="entity" data-xref-id="browsercontext" href="./04-DATA-MODEL#browsercontext">BrowserContext</a>, <a data-xref-type="entity" data-xref-id="pagehandle" href="./04-DATA-MODEL#pagehandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="viewport" href="./04-DATA-MODEL#viewport">Viewport</a></p></div>
 
       <!-- ============================================================ -->
       <h2>§4 Phase 3: CDP Server</h2>
       <!-- ============================================================ -->
 
-      <div id="req-impl-03" data-req="REQ-IMPL-03" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="CdpRouter,CdpSession,CdpServer" data-req-api="GET /impl/phase3-status" data-groundedin="PRD-REQ-CDP-CONNECT">
+      <div id="req-impl-03" data-req="REQ-IMPL-003" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="CdpRouter,CdpSession,CdpServer" data-req-api="GET /impl/phase3-status" data-groundedin="PRD-REQ-CDP-CONNECT">
         <h3>Phase 3 详细任务</h3>
         <table>
           <tr>
@@ -595,22 +595,22 @@
 
         <h4>验收标准</h4>
         <ul>
-          <li id="playwright-成功连接-cdp-websocket" data-criterion="Playwright 成功连接 CDP WebSocket" data-criterion-id="REQ-IMPL-03-C1">
+          <li id="playwright-成功连接-cdp-websocket" data-criterion="Playwright 成功连接 CDP WebSocket" data-criterion-id="REQ-IMPL-003-C1">
             Playwright 成功连接 CDP WebSocket
           </li>
-          <li id="page.navigate-导航正常" data-criterion="Page.navigate 导航正常" data-criterion-id="REQ-IMPL-03-C2">
+          <li id="page.navigate-导航正常" data-criterion="Page.navigate 导航正常" data-criterion-id="REQ-IMPL-003-C2">
             Page.navigate 导航正常
           </li>
-          <li id="runtime.evaluate-执行-js-正常" data-criterion="Runtime.evaluate 执行 JS 正常" data-criterion-id="REQ-IMPL-03-C3">
+          <li id="runtime.evaluate-执行-js-正常" data-criterion="Runtime.evaluate 执行 JS 正常" data-criterion-id="REQ-IMPL-003-C3">
             Runtime.evaluate 执行 JS 正常
           </li>
-          <li id="dom.queryselector-查询正常" data-criterion="DOM.querySelector 查询正常" data-criterion-id="REQ-IMPL-03-C4">
+          <li id="dom.queryselector-查询正常" data-criterion="DOM.querySelector 查询正常" data-criterion-id="REQ-IMPL-003-C4">
             DOM.querySelector 查询正常
           </li>
-          <li id="page.capturescreenshot-截图正常" data-criterion="Page.captureScreenshot 截图正常" data-criterion-id="REQ-IMPL-03-C5">
+          <li id="page.capturescreenshot-截图正常" data-criterion="Page.captureScreenshot 截图正常" data-criterion-id="REQ-IMPL-003-C5">
             Page.captureScreenshot 截图正常
           </li>
-          <li id="11-个-cdp-domain-全部路由正常" data-criterion="11 个 CDP Domain 全部路由正常" data-criterion-id="REQ-IMPL-03-C6">
+          <li id="11-个-cdp-domain-全部路由正常" data-criterion="11 个 CDP Domain 全部路由正常" data-criterion-id="REQ-IMPL-003-C6">
             11 个 CDP Domain 全部路由正常
           </li>
         </ul>
@@ -635,13 +635,13 @@
             <li>11 个 CDP Domain 全部路由测试通过 (grep -c "DomainHandler" src/bao_cdp/src/ ≥ 11)</li>
           </ol>
         </div>
-      <p data-xref-type="req" data-xref-id="REQ-IMPL-03">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="cdpsession" href="./04-DATA-MODEL#cdpsession">CdpSession</a>, <a data-xref-type="entity" data-xref-id="cdpserver" href="./06-CDP-SERVER#cdpserver">CdpServer</a></p></div>
+      <p data-xref-type="req" data-xref-id="REQ-IMPL-003">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="cdpsession" href="./04-DATA-MODEL#cdpsession">CdpSession</a>, <a data-xref-type="entity" data-xref-id="cdpserver" href="./06-CDP-SERVER#cdpserver">CdpServer</a></p></div>
 
       <!-- ============================================================ -->
       <h2>§5 Phase 4: Stealth 反指纹</h2>
       <!-- ============================================================ -->
 
-      <div id="req-impl-04" data-req="REQ-IMPL-04" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="TlsProfile,StealthProfile,NavigatorProfile" data-req-api="GET /impl/phase4-status" data-groundedin="PRD-REQ-STEALTH-NET,PRD-REQ-STEALTH-PAGE,PRD-REQ-STEALTH-AUTO,PRD-REQ-STEALTH-BEHAVIOR">
+      <div id="req-impl-04" data-req="REQ-IMPL-004" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="TlsProfile,StealthProfile,NavigatorProfile" data-req-api="GET /impl/phase4-status" data-groundedin="PRD-REQ-STEALTH-NET,PRD-REQ-STEALTH-PAGE,PRD-REQ-STEALTH-AUTO,PRD-REQ-STEALTH-BEHAVIOR">
         <h3>Phase 4 详细任务</h3>
         <table>
           <tr>
@@ -713,22 +713,22 @@
 
         <h4>验收标准</h4>
         <ul>
-          <li id="tls-ja3/ja4-哈希匹配-firefox" data-criterion="TLS JA3/JA4 哈希匹配 Firefox" data-criterion-id="REQ-IMPL-04-C1">
+          <li id="tls-ja3/ja4-哈希匹配-firefox" data-criterion="TLS JA3/JA4 哈希匹配 Firefox" data-criterion-id="REQ-IMPL-004-C1">
             TLS JA3/JA4 哈希匹配 Firefox
           </li>
-          <li id="http/2-akamai-指纹匹配-firefox" data-criterion="HTTP/2 AKAMAI 指纹匹配 Firefox" data-criterion-id="REQ-IMPL-04-C2">
+          <li id="http/2-akamai-指纹匹配-firefox" data-criterion="HTTP/2 AKAMAI 指纹匹配 Firefox" data-criterion-id="REQ-IMPL-004-C2">
             HTTP/2 AKAMAI 指纹匹配 Firefox
           </li>
-          <li id="canvas-噪声对人类不可见但每次不同" data-criterion="Canvas 噪声对人类不可见但每次不同" data-criterion-id="REQ-IMPL-04-C3">
+          <li id="canvas-噪声对人类不可见但每次不同" data-criterion="Canvas 噪声对人类不可见但每次不同" data-criterion-id="REQ-IMPL-004-C3">
             Canvas 噪声对人类不可见但每次不同（确定性种子保证一致性）
           </li>
-          <li id="navigator.webdriver-===-false" data-criterion="navigator.webdriver === false" data-criterion-id="REQ-IMPL-04-C4">
+          <li id="navigator.webdriver-===-false" data-criterion="navigator.webdriver === false" data-criterion-id="REQ-IMPL-004-C4">
             navigator.webdriver === false（SM 引擎层设置，JS 层无法覆盖）
           </li>
-          <li id="指纹检测网站识别率-≤-5%" data-criterion="指纹检测网站识别率 ≤ 5%" data-criterion-id="REQ-IMPL-04-C5">
+          <li id="指纹检测网站识别率-≤-5%" data-criterion="指纹检测网站识别率 ≤ 5%" data-criterion-id="REQ-IMPL-004-C5">
             指纹检测网站识别率 ≤ 5%
           </li>
-          <li id="行为模拟轨迹自然（贝塞尔鼠标/节奏打字/特征滚动）" data-criterion="行为模拟轨迹自然（贝塞尔鼠标/节奏打字/特征滚动）" data-criterion-id="REQ-IMPL-04-C6">
+          <li id="行为模拟轨迹自然（贝塞尔鼠标/节奏打字/特征滚动）" data-criterion="行为模拟轨迹自然（贝塞尔鼠标/节奏打字/特征滚动）" data-criterion-id="REQ-IMPL-004-C6">
             行为模拟轨迹自然（贝塞尔鼠标/节奏打字/特征滚动）
           </li>
         </ul>
@@ -755,13 +755,13 @@
             <li>cargo test -p bao_stealth --test behavior_deep_tests 通过 (贝塞尔鼠标/节奏打字/特征滚动)</li>
           </ol>
         </div>
-      <p data-xref-type="req" data-xref-id="REQ-IMPL-04">关联实体: <a data-xref-type="entity" data-xref-id="tlsprofile" href="./04-DATA-MODEL#tlsprofile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="navigatorprofile" href="./04-DATA-MODEL#navigatorprofile">NavigatorProfile</a></p></div>
+      <p data-xref-type="req" data-xref-id="REQ-IMPL-004">关联实体: <a data-xref-type="entity" data-xref-id="tlsprofile" href="./04-DATA-MODEL#tlsprofile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="navigatorprofile" href="./04-DATA-MODEL#navigatorprofile">NavigatorProfile</a></p></div>
 
       <!-- ============================================================ -->
       <h2>§6 Phase 5: 集成测试与发布</h2>
       <!-- ============================================================ -->
 
-      <div id="req-impl-05" data-req="REQ-IMPL-05" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="PagePool,CdpRouter,Permission" data-req-api="GET /impl/phase5-status" data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-BUN-COMPAT,PRD-REQ-CDP-CONNECT">
+      <div id="req-impl-05" data-req="REQ-IMPL-005" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="PagePool,CdpRouter,Permission" data-req-api="GET /impl/phase5-status" data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-BUN-COMPAT,PRD-REQ-CDP-CONNECT">
         <h3>Phase 5 详细任务</h3>
         <table>
           <tr>
@@ -812,22 +812,22 @@
 
         <h4>验收标准</h4>
         <ul>
-          <li id="spidermonkey-+-servo-+-cdp-+-stealth-全能力联合测试通过" data-criterion="SpiderMonkey + servo + CDP + Stealth 全能力联合测试通过" data-criterion-id="REQ-IMPL-05-C1">
+          <li id="spidermonkey-+-servo-+-cdp-+-stealth-全能力联合测试通过" data-criterion="SpiderMonkey + servo + CDP + Stealth 全能力联合测试通过" data-criterion-id="REQ-IMPL-005-C1">
             SpiderMonkey + servo + CDP + Stealth 全能力联合测试通过
           </li>
-          <li id="bun-测试套件在-bao-上运行-≥-90%-通过" data-criterion="Bun 测试套件在 Bao 上运行 ≥ 90% 通过" data-criterion-id="REQ-IMPL-05-C2">
+          <li id="bun-测试套件在-bao-上运行-≥-90%-通过" data-criterion="Bun 测试套件在 Bao 上运行 ≥ 90% 通过" data-criterion-id="REQ-IMPL-005-C2">
             Bun 测试套件在 Bao 上运行 ≥ 90% 通过
           </li>
-          <li id="playwright-完整-api-兼容性测试通过" data-criterion="Playwright 完整 API 兼容性测试通过" data-criterion-id="REQ-IMPL-05-C3">
+          <li id="playwright-完整-api-兼容性测试通过" data-criterion="Playwright 完整 API 兼容性测试通过" data-criterion-id="REQ-IMPL-005-C3">
             Playwright 完整 API 兼容性测试通过
           </li>
-          <li id="性能基准：启动延迟-<-2s、截图延迟-<-500ms、内存开销-<-200mb" data-criterion="性能基准：启动延迟 < 2s、截图延迟 < 500ms、内存开销 < 200MB" data-criterion-id="REQ-IMPL-05-C4">
+          <li id="性能基准：启动延迟-<-2s、截图延迟-<-500ms、内存开销-<-200mb" data-criterion="性能基准：启动延迟 < 2s、截图延迟 < 500ms、内存开销 < 200MB" data-criterion-id="REQ-IMPL-005-C4">
             性能基准：启动延迟 &lt; 2s、截图延迟 &lt; 500ms、内存开销 &lt; 200MB
           </li>
-          <li id="长时间运行-24h-内存增长-<-10%" data-criterion="长时间运行 24h 内存增长 < 10%" data-criterion-id="REQ-IMPL-05-C5">
+          <li id="长时间运行-24h-内存增长-<-10%" data-criterion="长时间运行 24h 内存增长 < 10%" data-criterion-id="REQ-IMPL-005-C5">
             长时间运行 24h 内存增长 &lt; 10%
           </li>
-          <li id="跨平台构建通过：linux-x64-/-macos-x64+aarch64-/-windows-x64" data-criterion="跨平台构建通过：Linux x64 / macOS x64+aarch64 / Windows x64" data-criterion-id="REQ-IMPL-05-C6">
+          <li id="跨平台构建通过：linux-x64-/-macos-x64+aarch64-/-windows-x64" data-criterion="跨平台构建通过：Linux x64 / macOS x64+aarch64 / Windows x64" data-criterion-id="REQ-IMPL-005-C6">
             跨平台构建通过：Linux x64 / macOS x64+aarch64 / Windows x64
           </li>
         </ul>
@@ -842,7 +842,7 @@
             <li>cargo build --release --target x86_64-unknown-linux-gnu 通过 (Linux x64)</li>
           </ol>
         </div>
-      <p data-xref-type="req" data-xref-id="REQ-IMPL-05">关联实体: <a data-xref-type="entity" data-xref-id="pagepool" href="./04-DATA-MODEL#pagepool">PagePool</a>, <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="permission" href="./04-DATA-MODEL#permission">Permission</a></p></div>
+      <p data-xref-type="req" data-xref-id="REQ-IMPL-005">关联实体: <a data-xref-type="entity" data-xref-id="pagepool" href="./04-DATA-MODEL#pagepool">PagePool</a>, <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="permission" href="./04-DATA-MODEL#permission">Permission</a></p></div>
 
       <!-- ============================================================ -->
       <h2>§7 复用分析</h2>
@@ -1011,36 +1011,36 @@
     </main>
     <section id="testing" data-tests-section="">
       <h2>测试用例</h2>
-      <div id="test-impl-001" data-test="TEST-IMPL-001" data-req-ref="REQ-IMPL-01" data-test-categories="unit">
-        <h4>TEST-IMPL-001: REQ-IMPL-01 单元测试</h4>
+      <div id="test-impl-001" data-test="TEST-IMPL-1" data-req-ref="REQ-IMPL-001" data-test-categories="unit">
+        <h4>TEST-IMPL-1: REQ-IMPL-001 单元测试</h4>
         <p>
           关联真实测试: src/bao_engine/tests/codegen_boundary_tests.rs (Phase 1 mozjs 集成 + JSContext 生命周期) +
           src/bao_runtime/tests/runtime_api_boundary_tests.rs
         </p>
       </div>
-      <div id="test-impl-002" data-test="TEST-IMPL-002" data-req-ref="REQ-IMPL-02" data-test-categories="unit">
-        <h4>TEST-IMPL-002: REQ-IMPL-02 单元测试</h4>
+      <div id="test-impl-002" data-test="TEST-IMPL-2" data-req-ref="REQ-IMPL-002" data-test-categories="unit">
+        <h4>TEST-IMPL-2: REQ-IMPL-002 单元测试</h4>
         <p>
           关联真实测试: src/bao_browser/tests/bao_cli_e2e_tests.rs (Phase 2 bao browser + servo + JSContext 融合 E2E) +
           src/bao_browser/tests/rendering_pipeline_tests.rs
         </p>
       </div>
-      <div id="test-impl-003" data-test="TEST-IMPL-003" data-req-ref="REQ-IMPL-03" data-test-categories="unit">
-        <h4>TEST-IMPL-003: REQ-IMPL-03 单元测试</h4>
+      <div id="test-impl-003" data-test="TEST-IMPL-3" data-req-ref="REQ-IMPL-003" data-test-categories="unit">
+        <h4>TEST-IMPL-3: REQ-IMPL-003 单元测试</h4>
         <p>
           关联真实测试: src/bao_cdp_client/tests/cdp_conformance/ 全部 11 domain (Phase 3 CDP Server + Playwright 兼容)
         </p>
       </div>
-      <div id="test-impl-004" data-test="TEST-IMPL-004" data-req-ref="REQ-IMPL-04" data-test-categories="unit">
-        <h4>TEST-IMPL-004: REQ-IMPL-04 单元测试</h4>
+      <div id="test-impl-004" data-test="TEST-IMPL-4" data-req-ref="REQ-IMPL-004" data-test-categories="unit">
+        <h4>TEST-IMPL-4: REQ-IMPL-004 单元测试</h4>
         <p>
           关联真实测试: src/bao_stealth/tests/tls_ja3_ja4_suite_deep_tests.rs + http2_fingerprint_deep_tests.rs +
           canvas_noise_deep_tests.rs + headless_fingerprint_hiding_tests.rs + behavior_deep_tests.rs (Phase 4 Stealth
           全能力)
         </p>
       </div>
-      <div id="test-impl-005" data-test="TEST-IMPL-005" data-req-ref="REQ-IMPL-05" data-test-categories="unit">
-        <h4>TEST-IMPL-005: REQ-IMPL-05 单元测试</h4>
+      <div id="test-impl-005" data-test="TEST-IMPL-5" data-req-ref="REQ-IMPL-005" data-test-categories="unit">
+        <h4>TEST-IMPL-5: REQ-IMPL-005 单元测试</h4>
         <p>
           关联真实测试: src/bao_browser/tests/realworld_full_stack_tests.rs (Phase 5 全模块联调) +
           src/bao_cdp_client/tests/e2e_playwright_compat.rs (Playwright 兼容) + 全 workspace cargo test 通过

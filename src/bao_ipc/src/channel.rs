@@ -1,4 +1,4 @@
-//! @trace REQ-ARCH-3
+//! @trace REQ-ARCH-003
 //!
 //! Channel constructors for the unified MPMC substrate. Contract semantics
 //! live on the crate root docs; discriminating tests live in

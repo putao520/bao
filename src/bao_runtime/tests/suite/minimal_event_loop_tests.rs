@@ -1,4 +1,4 @@
-// @trace TEST-ENG-004 [req:REQ-ENG-004] [level:integration]
+// @trace TEST-ENG-4 [req:REQ-ENG-004] [level:integration]
 // P1-A Stage 1 prerequisite validation: prove `bun_event_loop::MiniEventLoop`
 // is usable from the bao_runtime crate (same thread, no JS engine). When P1-A
 // lands, drain_and_check will use this same API to replace TimerHeap+epoll.

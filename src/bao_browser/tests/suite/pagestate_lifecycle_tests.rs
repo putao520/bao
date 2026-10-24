@@ -1,4 +1,4 @@
-// @trace TEST-BRW-001 [req:REQ-BRW-001] [sm:PageLifecycle] [level:e2e]
+// @trace TEST-BRW-1 [req:REQ-BRW-001] [sm:PageLifecycle] [level:e2e]
 // BCE (PageState never left Navigating, 2026-08-19) regression:
 // the stored state machine had NO writer for the SPEC 02-SYSTEM
 // PageLifecycle `Navigating → Interactive on load_complete` transition —
@@ -202,7 +202,7 @@ fn verbatim_readme_path1_no_external_pump() {
 // W16 #15-B: PageLifecycle explicit state machine — Tier I (e2e edges) and
 // Tier S (shutdown). The transition table itself is exhaustively unit-tested
 // in page.rs (`page_lifecycle_transition_matrix_exhaustive_48_cells`).
-// @trace TEST-BRW-001 [req:REQ-BRW-001] [sm:PageLifecycle] [level:e2e]
+// @trace TEST-BRW-1 [req:REQ-BRW-001] [sm:PageLifecycle] [level:e2e]
 // ═══════════════════════════════════════════════════════════════════════
 
 /// A listener whose responses are parked far beyond the test window: the

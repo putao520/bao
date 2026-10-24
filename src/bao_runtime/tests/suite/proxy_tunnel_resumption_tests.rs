@@ -1,4 +1,4 @@
-// @trace TEST-STL-001-RESUME [req:REQ-STL-001] [level:integration]
+// @trace TEST-STL-1-RESUME [req:REQ-STL-001] [level:integration]
 //
 // CONNECT-proxy e2e for the ProxyTunnel session-resumption wiring: two
 // https requests through a local CONNECT proxy to the same TLS target

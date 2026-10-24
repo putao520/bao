@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-C12 [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6-C12 [req:REQ-ENG-006] [level:integration]
 // C12 line-coverage wave for src/bao_runtime/src/bun_api.rs — residual gap
 // after C2 (fresh-lcov gap ≈ 1200 lines; spawn/serve/ws/file faces + process
 // edges). Characterization truth sources: local node v24.19.0 oracle, Bun

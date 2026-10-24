@@ -1,8 +1,8 @@
-// @trace TEST-ARCH-3-WORKER-CHANNEL-SUBSTRATE [req:REQ-ARCH-3] [level:integration]
+// @trace TEST-ARCH-3-WORKER-CHANNEL-SUBSTRATE [req:REQ-ARCH-003] [level:integration]
 //
-// REQ-ARCH-3 wave R2 discriminators for the node_worker_threads dual-channel
+// REQ-ARCH-003 wave R2 discriminators for the node_worker_threads dual-channel
 // substrate swap (std::sync::mpsc → bao_ipc unbounded; payloads stay
-// structured-clone bytes per DEC-WK-005, never JSObject pointers). Pins the
+// structured-clone bytes per DEC-WK-5, never JSObject pointers). Pins the
 // two contract parity faces the swap must preserve:
 //   1. Terminate message-order FIFO — data messages enqueued before
 //      Terminate are consumed in send order before the worker loop breaks.

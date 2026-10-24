@@ -1,4 +1,4 @@
-// @trace TEST-ENG-002-CODEGEN-BND [req:REQ-ENG-002] [level:unit]
+// @trace TEST-ENG-2-CODEGEN-BND [req:REQ-ENG-002] [level:unit]
 // Codegen boundary tests: accessor parsing, generate_module output, collect_specs categorization,
 // multi-class isolation, edge cases in extract helpers.
 

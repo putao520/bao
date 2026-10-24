@@ -242,7 +242,7 @@ unsafe extern "C" fn rl_create_interface(cx: *mut JSContext, argc: u32, vp: *mut
 
 /// Shared close/pause/resume core: identical receiver handling + boolean
 /// property write + return-this; the three faces differ only in which flag
-/// they set (REQ-ARCH-1 duplicate convergence).
+/// they set (REQ-ARCH-001 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn rl_flag(
     cx: *mut JSContext,

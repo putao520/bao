@@ -1,4 +1,4 @@
-// @trace TEST-ENG-005-MODULE-API [req:REQ-ENG-005] [bug:BUG-ENG-365] [level:integration]
+// @trace TEST-ENG-5-MODULE-API [req:REQ-ENG-005] [bug:BUG-ENG-365] [level:integration]
 //
 // Integration tests for SM Module API compliance (BUG-ENG-365).
 // Covers:

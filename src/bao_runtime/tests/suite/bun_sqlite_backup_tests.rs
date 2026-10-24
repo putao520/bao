@@ -1,4 +1,4 @@
-// @trace TEST-ENG-008-SQLITE [req:REQ-ENG-008] [level:integration]
+// @trace TEST-ENG-8-SQLITE [req:REQ-ENG-008] [level:integration]
 // Database.backup(path) Promise contract tests — Bun truth:
 //   backup(destination) → Promise<string>, resolving with the destination
 //   path once the VACUUM INTO snapshot is written; runtime failures reject.

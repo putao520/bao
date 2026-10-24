@@ -1,11 +1,11 @@
-// @trace TEST-ENG-006-WS-C10 [req:REQ-BRW-12,REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6-WS-C10 [req:REQ-BRW-012,REQ-ENG-006] [level:integration]
 //
 // C10 coverage-convergence wave: the remaining JS-reachable error/boundary
-// paths of web_api.rs (REQ-BRW-12 WebSocket API + the web-API gap faces
+// paths of web_api.rs (REQ-BRW-012 WebSocket API + the web-API gap faces
 // registered in .plans/coverage-governance-20261017.md) that the ws_edge /
 // ws_async / subtle_edge carriers never reach:
 //
-//   web_api.rs WebSocket face (REQ-BRW-12 event + close contract):
+//   web_api.rs WebSocket face (REQ-BRW-012 event + close contract):
 //   - wss:// (Tls) read_message arms never driven by the async happy path:
 //     masked server frame (take_mask arm), Ping→pong echo written back over
 //     TLS (push_masked_len + apply_mask + TlsStream::write), unsolicited

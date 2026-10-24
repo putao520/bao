@@ -1,4 +1,4 @@
-// @trace TEST-CLI-001-NPM-MANIFEST-PARSE [req:REQ-CLI-001] [level:unit]
+// @trace TEST-CLI-1-NPM-MANIFEST-PARSE [req:REQ-CLI-001] [level:unit]
 // Upstream bun install manifest-parser regressions, re-expressed on the
 // Rust surface (upstream test/cli/install/bun-install-registry.test.ts and
 // bun-install.test.ts are not absorbed; their assertions run against

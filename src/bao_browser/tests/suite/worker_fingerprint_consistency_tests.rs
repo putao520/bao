@@ -1,11 +1,11 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:12..17] [level:integration]
+// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:12..17] [level:integration]
 // Servo-native Worker live fingerprint-consistency tests for REQ-BRW-004
 // criteria #12 (navigator 一致), #16 (无原生泄漏), #17 (跨线程对比一致).
 //
 // SPEC criteria under test:
 //   C12: "CRIT-STL-WK navigator 一致: worker 内 navigator.userAgent/platform/
 //         hardwareConcurrency/language(s) === 主线程对应值 (关联 NFR-STL-WORKER-1
-//         / DEC-WK-007)"
+//         / DEC-WK-7)"
 //   C16: "CRIT-STL-WK 无原生泄漏: worker 内不存在任何未经 stealth 覆盖的 servo
 //         原生指纹值 (与无 stealth 基线对比应不同)"
 //   C17: "CRIT-STL-WK 跨线程对比一致: new Worker 后 worker 回传指纹摘要 ===

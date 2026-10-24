@@ -1,4 +1,4 @@
-// @trace TEST-BRW-002-JS-POPUP-LOAD [req:REQ-BRW-002] [level:e2e]
+// @trace TEST-BRW-2-JS-POPUP-LOAD [req:REQ-BRW-002] [level:e2e]
 // Top-level `javascript:` URL navigation load-completion E2E (REQ-BRW-002,
 // e59 D1 attribution): a popup opened with a `javascript:` URL whose script
 // does NOT return a string creates no new document, so the popup stays on its

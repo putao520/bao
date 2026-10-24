@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-HTTP [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-HTTP [req:REQ-ENG-007] [level:integration]
 // Integration tests for node:http and node:https API surface (REQ-ENG-007)
 
 use std::io::{Read, Write};
@@ -615,7 +615,7 @@ fn test_node_http2_client_binary_body_roundtrip() {
     bun_runtime::shutdown_thread_sm();
 }
 
-// @trace TEST-ENG-007-HTTP [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-HTTP [req:REQ-ENG-007] [level:integration]
 // Test lock for upstream oven-sh/bun 519963edc8 (node:http: a thrown
 // dispatch reads the role of its response from the role bit). Upstream's
 // crash lived in the #43557 queued-response/current-response grant

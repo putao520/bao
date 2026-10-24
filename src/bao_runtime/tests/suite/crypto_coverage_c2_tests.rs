@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-CRYPTO-C2 [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-7-CRYPTO-C2 [req:REQ-ENG-006] [level:integration]
 // 行覆盖率收敛波 C2 — node_crypto.rs 算法变体与错误分支补测。
 // 覆盖目标(源码逐块定位的非 subtle 面):createHash/Hmac 全算法与错误臂、
 // cipher/decipher 全算法族(update 编码形态/GCM AAD+tag/错误臂)、Sign/Verify

@@ -1,4 +1,4 @@
-// @trace TEST-STL-007-CONFIG [req:REQ-STL-007] [level:unit]
+// @trace TEST-STL-7-CONFIG [req:REQ-STL-007] [level:unit]
 // StealthProfile configuration integration: BaoConfig → BrowserConfig → PageConfig → runtime_bridge
 
 use bao_browser::{BaoConfig, BrowserConfig, PageConfig};

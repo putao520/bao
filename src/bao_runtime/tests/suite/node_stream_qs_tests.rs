@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-STR [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-STR [req:REQ-ENG-007] [level:integration]
 // Integration tests for node:stream and node:querystring API (REQ-ENG-007)
 // All JS assertions in one eval() call.
 

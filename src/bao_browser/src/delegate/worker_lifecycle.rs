@@ -164,12 +164,12 @@ const WORKER_TEARDOWN_TIMEOUT_MS: u64 = 5000;
 /// and bao_stealth's DashMap (which is thread-safe). No JSObject references
 /// are accessed.
 ///
-/// Per DEC-WK-001 (BCE-20260627-008), the bypass `bao_engine::WebWorker`
+/// Per DEC-WK-1 (BCE-20260627-008), the bypass `bao_engine::WebWorker`
 /// path is removed; termination is dispatched through servo's native
 /// DedicatedWorkerControlMsg path (DF-WK-6).
 ///
 /// @trace REQ-BRW-004 [entity:Worker] [criterion:18]
-/// @trace DEC-WK-001 servo-native terminate (DF-WK-6)
+/// @trace DEC-WK-1 servo-native terminate (DF-WK-6)
 pub fn crash_safe_teardown_worker(
     handle: &WorkerHandle,
     path: WorkerTeardownPath,
@@ -200,7 +200,7 @@ pub fn crash_safe_teardown_worker(
     // GC'd or when worker.terminate() is called from page JS.
     //
     // @trace REQ-BRW-004 [criterion:18] 线程 join 无悬挂
-    // @trace DEC-WK-001 servo-native terminate (DF-WK-6)
+    // @trace DEC-WK-1 servo-native terminate (DF-WK-6)
     let thread_joined = true;
 
     // Step 4: Mark the Worker as terminated.
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_crash_safe_teardown_no_web_worker() {
-        // Test crash-safe teardown for a servo DOM Worker (DEC-WK-001 native path)
+        // Test crash-safe teardown for a servo DOM Worker (DEC-WK-1 native path)
         let handle = WorkerHandle::new("worker.js".to_string());
         let result = crash_safe_teardown_worker(&handle, WorkerTeardownPath::Terminate);
         assert!(result.closing_flag_set);

@@ -3,7 +3,7 @@
 //! 这是 TASK-2 的实现。`Transport` trait 把 CDP JSON-RPC 帧与底层传输
 //! (InMemory / WebSocket)解耦,具体两种实现:
 //! - [`in_memory::InMemoryTransport`]:通过 `InMemoryBridge` trait 抽象与 servo
-//!   ScriptThread 通信(servo WebView `!Send`,不可跨线程直调,DEC-CDP-002)。
+//!   ScriptThread 通信(servo WebView `!Send`,不可跨线程直调,DEC-CDP-2)。
 //!   TASK-3 替换为真实的 `CDPRdpBridge`(桥接 servo devtools_traits RDP)。
 //! - [`ws::WebSocketTransport`]:通过 `bun_uws::ws_client::WebSocketClient`
 //!   完成 RFC 6455 握手与帧编解码(client-side masking),通过

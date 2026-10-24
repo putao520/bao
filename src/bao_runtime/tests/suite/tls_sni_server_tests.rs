@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-SNI [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-SNI [req:REQ-ENG-007] [level:integration]
 //
 // Integration tests for the node:tls server SNICallback root-cure:
 //   1. sni_two_domains — SNICallback dispatch selects the cert per SNI name

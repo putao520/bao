@@ -2602,7 +2602,7 @@ mod tests {
     use super::*;
     use std::os::unix::ffi::OsStrExt as _;
 
-    // @trace TEST-CLI-001-COPYFILE-HARDLINK [req:REQ-CLI-001] [level:unit]
+    // @trace TEST-CLI-1-COPYFILE-HARDLINK [req:REQ-CLI-001] [level:unit]
     //
     // Regression for upstream bun 30f8159888 (#41228): the copy backend's
     // destination open must not truncate a destination that hardlinks the

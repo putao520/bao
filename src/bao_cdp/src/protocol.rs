@@ -3037,7 +3037,7 @@ fn handle_service_worker(
     }
 }
 
-// @trace TEST-CDP-001 [req:REQ-CDP-001] [level:unit] [nfr:TMG-CDP-01]
+// @trace TEST-CDP-1 [req:REQ-CDP-001] [level:unit] [nfr:TMG-CDP-01]
 #[cfg(test)]
 mod tests {
     use super::*;

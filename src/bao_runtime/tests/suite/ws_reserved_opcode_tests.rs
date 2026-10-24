@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-WS-PROTOCOL [req:REQ-BRW-12,REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6-WS-PROTOCOL [req:REQ-BRW-012,REQ-ENG-006] [level:integration]
 //
 // RFC 6455 §5.2/§5.4 protocol semantics (node v24.19.0 oracle:
 // /tmp/ws-oracle/probe.mjs) for the shared web_api WebSocket read loop:

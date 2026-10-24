@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-BLOB [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-BLOB [req:REQ-ENG-007] [level:integration]
 // Test lock for upstream oven-sh/bun e29a7ca47c (Blob: return only the
 // slice when consuming a slice's stream after the Blobs were collected).
 //

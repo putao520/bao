@@ -16,7 +16,7 @@
 
 use crate::error::BrowserError;
 use crate::page::PageHandle;
-// NOTE: bao_engine::WebWorker bypass removed per DEC-WK-001 BCE-20260627-008.
+// NOTE: bao_engine::WebWorker bypass removed per DEC-WK-1 BCE-20260627-008.
 // Workers now route through servo's native Worker::Constructor.
 use bao_ipc;
 use dashmap::DashMap;
@@ -2054,17 +2054,17 @@ unsafe fn install_all_native(
 /// `getParameter` into literal `undefined` (evidence:
 /// `.claude/prompts/brw004-getparameter-evidence.md`).
 //
-// DEC-WK-001 / TASK-1 (双轨收敛): Also registers a servo-native Worker scope
+// DEC-WK-1 / TASK-1 (双轨收敛): Also registers a servo-native Worker scope
 // callback via `servo::register_worker_scope_callback`. When a Worker is
 // created via servo's DOM `new Worker(url)` (https/http URLs), this callback
 // fires on the Worker thread after servo constructs the Worker global and
 // installs bao's DedicatedWorkerGlobalScope APIs + stealth profile inheritance
 // (the same `worker_scope_init_native` path used by the bao_engine::WebWorker
-// bypass). This realizes DEC-WK-001's "servo-native Worker path" without
-// abandoning the bypass (DEC-WK-003 dual-track isolation).
+// bypass). This realizes DEC-WK-1's "servo-native Worker path" without
+// abandoning the bypass (DEC-WK-3 dual-track isolation).
 //
-// @trace DEC-WK-001 servo-native Worker path
-// @trace DEC-WK-003 dual-track: bypass (CLI/data:) vs native (https/http)
+// @trace DEC-WK-1 servo-native Worker path
+// @trace DEC-WK-3 dual-track: bypass (CLI/data:) vs native (https/http)
 // @trace REQ-BRW-004 [entity:Worker] [criterion:1,3,7] servo Worker scope
 pub fn inject_all_with_profile(
     page: &PageHandle,
@@ -2087,7 +2087,7 @@ pub fn inject_all_with_profile(
     // criterion #18 backfill); this page-init registration only covers workers
     // created by page script directly (`new Worker()` in page JS), which have
     // no bao-side handle to backfill.
-    // @trace DEC-WK-001 servo-native Worker path (vendor patch drain)
+    // @trace DEC-WK-1 servo-native Worker path (vendor patch drain)
     // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK stealth inheritance
     let webview_id = page
         .webview_id()
@@ -2098,7 +2098,7 @@ pub fn inject_all_with_profile(
 }
 
 /// Register a servo-native Worker scope callback via the vendor patch
-/// `servo::register_worker_scope_callback` (DEC-WK-001 / TASK-1).
+/// `servo::register_worker_scope_callback` (DEC-WK-1 / TASK-1).
 ///
 /// The callback is queued in servo's WebViewId-keyed
 /// `EMBEDDER_WORKER_SCOPE_CALLBACKS` vector and drained once per Worker scope
@@ -2115,7 +2115,7 @@ pub fn inject_all_with_profile(
 ///
 /// What the callback does (mirrors `worker_scope_init_native` for the bypass):
 ///   - Install stealth profile inheritance keyed by the Worker global's address
-///     (DEC-WK-007 / CRIT-STL-WK: Worker navigator/Canvas/WebGL/Audio match
+///     (DEC-WK-7 / CRIT-STL-WK: Worker navigator/Canvas/WebGL/Audio match
 ///     parent page).
 ///   - If `global_addr_slot` is provided, backfill the Worker global's address
 ///     into the owning WorkerHandle's slot on the callback's first run so the
@@ -2125,7 +2125,7 @@ pub fn inject_all_with_profile(
 /// Note: lifecycle natives (self.close/importScripts) are installed by servo
 /// upstream's DedicatedWorkerGlobalScope binding for native Workers, so the
 /// bao bypass's `install_worker_lifecycle_natives` is NOT needed here — it is
-/// only needed for bao_engine::WebWorker (DEC-WK-003 dual-track).
+/// only needed for bao_engine::WebWorker (DEC-WK-3 dual-track).
 ///
 /// # Arguments
 /// * `webview_id` - The page's WebViewId the callback is bound to; the worker
@@ -2138,8 +2138,8 @@ pub fn inject_all_with_profile(
 ///   `None` for the page-init registration covering page-script-created
 ///   Workers, which have no bao-side handle.
 ///
-/// @trace DEC-WK-001 servo-native Worker path (vendor patch)
-/// @trace DEC-WK-003 dual-track isolation (bypass not abandoned)
+/// @trace DEC-WK-1 servo-native Worker path (vendor patch)
+/// @trace DEC-WK-3 dual-track isolation (bypass not abandoned)
 /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8,12..17]
 pub fn register_worker_scope_callback_native(
     webview_id: servo::WebViewId,
@@ -2165,7 +2165,7 @@ pub fn register_worker_scope_callback_native(
             if raw_cx.is_null() || raw_global.is_null() {
                 log::warn!(
                     "[register_worker_scope_callback_native] NULL cx/global — \
-                     skipping Worker scope init (DEC-WK-001)"
+                     skipping Worker scope init (DEC-WK-1)"
                 );
                 return;
             }
@@ -2181,8 +2181,8 @@ pub fn register_worker_scope_callback_native(
             }
             log::debug!(
                 "[register_worker_scope_callback_native] servo-native Worker \
-                 scope created — installing bao stealth + Web APIs (DEC-WK-001 / \
-                 DEC-WK-003 dual-track)"
+                 scope created — installing bao stealth + Web APIs (DEC-WK-1 / \
+                 DEC-WK-3 dual-track)"
             );
             unsafe {
                 worker_scope_init_native(raw_cx, raw_global, &config);
@@ -2214,7 +2214,7 @@ pub fn register_worker_scope_callback_native(
 /// (`create_worker_with_url`), which remains consume-once.
 ///
 /// @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK per-Worker delivery
-/// @trace DEC-WK-001 servo-native Worker path (vendor patch)
+/// @trace DEC-WK-1 servo-native Worker path (vendor patch)
 pub fn register_worker_scope_injector_native(
     webview_id: servo::WebViewId,
     profile: Option<bao_stealth::StealthProfile>,
@@ -2269,7 +2269,7 @@ pub fn register_worker_scope_injector_native(
 /// Type alias for the Worker scope initialization callback.
 ///
 /// A boxed closure that runs on the Worker thread to install APIs and stealth
-/// properties on the Worker's global object (DEC-WK-001 native path).
+/// properties on the Worker's global object (DEC-WK-1 native path).
 ///
 /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
 /// @trace REQ-BRW-004 [criterion:12..17] stealth consistency
@@ -4190,7 +4190,7 @@ mod tests {
     }
 
     // ── REQ-SEC-002/003: Runtime bridge security structural verification ──
-    // @trace TEST-SEC-003 [req:REQ-SEC-001,REQ-SEC-002,REQ-SEC-003] [level:unit]
+    // @trace TEST-SEC-3 [req:REQ-SEC-001,REQ-SEC-002,REQ-SEC-003] [level:unit]
 
     /// End offset of `install_all_native` in this file's source: the next
     /// top-level item after `func_start` (first hit among the boundary
@@ -4281,7 +4281,7 @@ mod tests {
     /// BCE-20260627-009: servo's DedicatedWorkerGlobalScope provides Web APIs
     /// natively via its resource thread; Bao's duplicate installation caused
     /// SIGSEGV in js::Atomize (Compartment not entered) and promise execution
-    /// model conflicts. stealth getter install (DEC-WK-007) is the only allowed
+    /// model conflicts. stealth getter install (DEC-WK-7) is the only allowed
     /// installation in worker scope_init.
     #[test]
     fn worker_scope_init_native_is_stealth_only() {
@@ -4297,10 +4297,10 @@ mod tests {
             .min(5000);
         let func_body = &source[func_start..func_start + search_end];
 
-        // stealth getter install MUST be present (DEC-WK-007)
+        // stealth getter install MUST be present (DEC-WK-7)
         assert!(
             func_body.contains("install_stealth_props"),
-            "BCE-20260627-009 REGRESSION: worker_scope_init_native must install stealth props (DEC-WK-007)"
+            "BCE-20260627-009 REGRESSION: worker_scope_init_native must install stealth props (DEC-WK-7)"
         );
 
         // Web APIs MUST NOT be present — servo DedicatedWorkerGlobalScope provides them natively
@@ -4522,7 +4522,7 @@ mod tests {
         );
     }
 
-    // ── TEST-SEC-003: Node API Sandbox Isolation ────────────────────────
+    // ── TEST-SEC-3: Node API Sandbox Isolation ────────────────────────
 
     /// Verify WEB_POLYFILLS exists and does NOT contain Node.js API names.
     /// REQ-SEC-003: Page Realm fallback polyfills must NOT include Node APIs.

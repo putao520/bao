@@ -1,4 +1,4 @@
-// @trace TEST-ENG-011-EDGE [req:REQ-ENG-011] [level:integration]
+// @trace TEST-ENG-11-EDGE [req:REQ-ENG-011] [level:integration]
 //
 // C8b line-coverage wave: node_vm.rs uncovered branches — Node validateObject
 // ERR_INVALID_ARG_TYPE faces on every entry point, string-shorthand filename

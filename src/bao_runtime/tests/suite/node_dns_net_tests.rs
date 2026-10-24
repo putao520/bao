@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-DNS [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-DNS [req:REQ-ENG-007] [level:integration]
 // Integration tests for node:dns and node:net API (REQ-ENG-007)
 
 use bao_engine::context::JsContext;

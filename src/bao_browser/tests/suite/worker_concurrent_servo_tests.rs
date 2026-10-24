@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:18] [level:integration]
+// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:18] [level:integration]
 // Servo-native Worker concurrent teardown tests for REQ-BRW-004 criterion #18.
 //
 // SPEC C18 criterion:

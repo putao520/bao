@@ -2229,7 +2229,7 @@ mod tests {
     }
 
     /// Test aid helper: asserts a hook JS producer emits a well-formed IIFE.
-    /// Extracted during the REQ-ARCH-1 duplicate hygiene wave, shared by the
+    /// Extracted during the REQ-ARCH-001 duplicate hygiene wave, shared by the
     /// consolidated `webrtc_and_timing_js_are_valid_iife` case (the former
     /// per-hook `*_is_valid_iife` bodies were byte-identical after identifier
     /// normalization).

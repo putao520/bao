@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006 [req:REQ-ENG-006] [level:e2e]
+// @trace TEST-ENG-6 [req:REQ-ENG-006] [level:e2e]
 // Bun.build JS-face end-to-end (REQ-ENG-006): the JS call → BuildTasklet
 // (worker thread, full bun_bundler pipeline) → ConcurrentTask resolve on the
 // JS thread. Asserts the upstream BuildOutput contract at the byte level:

@@ -1,5 +1,5 @@
-// @trace TEST-ENG-007-GC [req:REQ-ENG-007] [level:unit]
-// @trace TEST-STL-001-HTTP [req:REQ-STL-001] [level:unit]
+// @trace TEST-ENG-7-GC [req:REQ-ENG-007] [level:unit]
+// @trace TEST-STL-1-HTTP [req:REQ-STL-001] [level:unit]
 // Unit tests for gc_store (via require caching) and stealth_http (Rust-level API)
 
 use bao_engine::context::JsContext;

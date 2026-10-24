@@ -1,4 +1,4 @@
-// @trace TEST-ENG-003-TEARDOWN [req:REQ-ENG-003] [level:integration]
+// @trace TEST-ENG-3-TEARDOWN [req:REQ-ENG-003] [level:integration]
 // Teardown forensics: isolate which JS surface leaves a dangling exact stack
 // root that AVs in JS::RootingContext::traceStackRoots at the destroy-time
 // GC (Windows real machine, W8 深修② residual).

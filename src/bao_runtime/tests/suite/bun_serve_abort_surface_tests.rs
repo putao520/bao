@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006 [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6 [req:REQ-ENG-006] [level:integration]
 // domain-check a4ed5948b8(own-idiom fix): Bun.serve abort surface + in-spin
 // timer settle. Two regressions guarded:
 //

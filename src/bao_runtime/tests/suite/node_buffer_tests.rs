@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-BUF [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-BUF [req:REQ-ENG-007] [level:integration]
 // Integration tests for node:buffer API (REQ-ENG-007)
 // All JS assertions in one eval() call.
 
@@ -152,7 +152,7 @@ fn test_node_buffer_all() {
     bun_runtime::shutdown_thread_sm();
 }
 
-// @trace TEST-ENG-007-BUF [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-BUF [req:REQ-ENG-007] [level:integration]
 // Test lock for upstream oven-sh/bun aa8307619d: the per-encoding Buffer
 // *Write methods reject a non-string value (ERR_INVALID_ARG_TYPE, "argument
 // must be a string") and never coerce it. Order follows Node:

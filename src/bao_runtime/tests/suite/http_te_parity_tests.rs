@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-HTTP-TE-PARITY [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-HTTP-TE-PARITY [req:REQ-ENG-007] [level:integration]
 // Behavioral parity split for HTTP/1.0 + Transfer-Encoding (RFC 9112 6.1,
 // upstream Bun bdb738222): Bun.serve/Bun.listen reject the request outright
 // with 400 INVALID_TRANSFER_ENCODING; node:http keeps Node llhttp semantics

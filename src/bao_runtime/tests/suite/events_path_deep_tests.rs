@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-EVENTS-PATH-DEEP [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-EVENTS-PATH-DEEP [req:REQ-ENG-007] [level:integration]
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]

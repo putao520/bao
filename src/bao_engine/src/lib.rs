@@ -73,7 +73,7 @@ pub use bun_sm::module_loader::{
 
 // ─── Worker re-exports from bun_sm (REQ-BRW-004) ──────────────────────
 // @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope]
-// NOTE: WebWorker bypass removed per DEC-WK-001 BCE-20260627-008.
+// NOTE: WebWorker bypass removed per DEC-WK-1 BCE-20260627-008.
 // Workers route through servo's native Worker::Constructor. The bypass's
 // ScopeInitFn / StructuredClone* / install_worker_lifecycle_natives types
 // are no longer needed — servo's DedicatedWorkerGlobalScope binding installs

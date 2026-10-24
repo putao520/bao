@@ -18,7 +18,7 @@
 //!   端到端模拟 servo 端 push → CDP client 端 recv,验证完整链路
 //!
 //! @trace REQ-BAO-API-003 [level:integration]
-//! @trace TEST-BAO-API-003
+//! @trace TEST-BAO-API-3
 
 use std::collections::HashMap;
 use std::sync::Arc;

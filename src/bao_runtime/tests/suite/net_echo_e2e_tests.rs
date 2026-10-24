@@ -1,5 +1,5 @@
-// @trace TEST-ENG-007 [req:REQ-ENG-007] [level:e2e]
-// @trace REQ-ENG-23 [req:REQ-ENG-23] [level:e2e] — Node.js net TCP 真实往返 echo(server 与 client 全 JS,真实 TCP)+ peer FIN end 事件
+// @trace TEST-ENG-7 [req:REQ-ENG-007] [level:e2e]
+// @trace REQ-ENG-023 [req:REQ-ENG-023] [level:e2e] — Node.js net TCP 真实往返 echo(server 与 client 全 JS,真实 TCP)+ peer FIN end 事件
 // node:net echo over a REAL TCP roundtrip — server AND client entirely in JS
 // (require('net')), driven by the unified event loop. Rooted from the
 // IIFE/bridge sweep (bbe20a81), which left two gaps plus one masked bug this

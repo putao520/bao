@@ -1,4 +1,4 @@
-// @trace TEST-ENG-005-C12 [req:REQ-ENG-005] [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-5-C12 [req:REQ-ENG-005] [req:REQ-ENG-006] [level:integration]
 // C12 line-coverage wave for src/bao_runtime/src/globals.rs — residual gap
 // after C3 (fresh-lcov gap ≈ 1253 lines; Buffer family arms + structuredClone
 // transfer + the REQ-SEC-002 scope-values install face).

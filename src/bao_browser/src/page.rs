@@ -2830,7 +2830,7 @@ mod tests {
     }
 
     // ── REQ-SEC-002/003: IIFE-scoped Node API isolation verification ──
-    // @trace TEST-SEC-002 [req:REQ-SEC-002,REQ-SEC-003] [level:unit]
+    // @trace TEST-SEC-2 [req:REQ-SEC-002,REQ-SEC-003] [level:unit]
     // Security model: evaluate_js wraps scripts in IIFE with Node API parameters.
     // Node APIs (require, process, Buffer, etc.) are IIFE parameters, not global vars.
     // After IIFE returns, the parameters are gone — page JS cannot see them.

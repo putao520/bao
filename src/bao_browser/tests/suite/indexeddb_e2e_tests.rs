@@ -1,4 +1,4 @@
-// @trace TEST-BRW-001-IDB [req:REQ-BRW-001] [level:e2e]
+// @trace TEST-BRW-1-IDB [req:REQ-BRW-001] [level:e2e]
 // indexedDB end-to-end over servo's REAL IDB implementation.
 //
 // Upstream `dom_indexeddb_enabled` defaults to false (experimental); bao is

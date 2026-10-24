@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-NET-OPTIONS [req:REQ-ENG-007] [level:e2e]
+// @trace TEST-ENG-7-NET-OPTIONS [req:REQ-ENG-007] [level:e2e]
 // node:net options-form regression (SIGSEGV class):
 //
 //   1. `net.connect({ port, host }, cb)` — the options object used to be

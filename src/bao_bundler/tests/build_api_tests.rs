@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006 [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6 [req:REQ-ENG-006] [level:integration]
 // Rust-level probe for the Bun.build native driver (`build_api::run_bundle`
 // via `install()`): drives the full bun_bundler BundleV2 pipeline on a plain
 // test thread — no JSContext — so pipeline breakage is diagnosable without

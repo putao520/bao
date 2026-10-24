@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:2,6,8] [level:integration]
+// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:2,6,8] [level:integration]
 // Browser-realm live coverage for REQ-BRW-004 C2/C6/C8 (v47 V-batch ③:
 // SPEC criterion text promised page→Worker postMessage, structured-clone
 // exchange, importScripts and worker-realm crypto/performance/location —

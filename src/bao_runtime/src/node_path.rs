@@ -9,7 +9,7 @@ use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
 // return_string is the crate-wide single source in node_crypto
-// (REQ-ARCH-1 duplicate convergence).
+// (REQ-ARCH-001 duplicate convergence).
 use crate::node_crypto::return_string;
 use crate::require::cache_builtin;
 
@@ -2207,7 +2207,7 @@ unsafe extern "C" fn win32_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut J
 
 /// Shared `path.parse` core: identical arg handling + result object shape;
 /// the win32/posix faces differ only in the algorithm core consulted
-/// (REQ-ARCH-1 duplicate convergence).
+/// (REQ-ARCH-001 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn path_parse_impl(
     cx: *mut JSContext,

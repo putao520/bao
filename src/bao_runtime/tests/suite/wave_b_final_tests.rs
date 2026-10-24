@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007 [req:REQ-ENG-006 REQ-ENG-007 REQ-ENG-009] [level:integration]
+// @trace TEST-ENG-7 [req:REQ-ENG-006 REQ-ENG-007 REQ-ENG-009] [level:integration]
 //
 // 终局 Wave B:node/ffi/sqlite/杂项域残留 — 8 silent-fake 修复 + 3 missing 补齐
 // 的行为回归。每项驱动 REAL 路径并断言可观察行为(无 typeof-only 检查)。

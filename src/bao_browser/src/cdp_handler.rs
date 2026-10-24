@@ -621,7 +621,7 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
                 .unwrap_or_else(|| bao_cdp::servo_bridge::DEFAULT_BROWSER_CONTEXT_ID.to_string());
             with_page(pool, &target_id, |page| {
                 // Real worker registry: the per-webview scope tables populated
-                // by Worker construction (DEC-WK-001 native path). Every entry
+                // by Worker construction (DEC-WK-1 native path). Every entry
                 // is a live Dedicated/Shared Worker owned by this page — no
                 // synthetic worker-N ids.
                 let state = page.webview_state();
@@ -761,7 +761,7 @@ where
 /// Format: "script_url::scope" (double-colon separator).
 /// Example: "sw.js::/" or "https://example.com/sw.js::/app/"
 ///
-/// @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8
+/// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
 fn parse_sw_registration_id(registration_id: &str) -> Result<ServiceWorkerRegistrationId, String> {
     let parts: Vec<&str> = registration_id.splitn(2, "::").collect();
     if parts.len() != 2 {
@@ -777,9 +777,9 @@ fn parse_sw_registration_id(registration_id: &str) -> Result<ServiceWorkerRegist
 
 /// Serialize ServiceWorkerHandle to CDP JSON format.
 ///
-/// @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8 C6
+/// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8 C6
 fn sw_registration_to_json(handle: ServiceWorkerHandle) -> Value {
-    // Per DEC-WK-008: fetch interception mode is tracked but servo upstream
+    // Per DEC-WK-8: fetch interception mode is tracked but servo upstream
     // does not dispatch FetchEvent yet. CDP exposes the mode regardless.
     let is_active = handle.registration_state() == ServiceWorkerRegistrationState::Activated;
     serde_json::json!({
@@ -2589,7 +2589,7 @@ const DEBUGGER_SETUP: &str = r#"
         else if (env.scopeKind === 'function') cdpType = 'local';
         else cdpType = 'closure';
         var cls = 'Object';
-        try { if (env.object) cls = env.object.class || 'Object'; } catch (e) { /* REQ-ARCH-1: CDP RemoteObject className is optional; reflective read throws -> keep 'Object' default (spec-correct, request still succeeds). */ }
+        try { if (env.object) cls = env.object.class || 'Object'; } catch (e) { /* REQ-ARCH-001: CDP RemoteObject className is optional; reflective read throws -> keep 'Object' default (spec-correct, request still succeeds). */ }
         return { type: cdpType, object: { type: 'object', className: cls } };
     };
 
@@ -2604,11 +2604,11 @@ const DEBUGGER_SETUP: &str = r#"
         try {
             if (f.callee && typeof f.callee.name === 'string' && f.callee.name)
                 info.functionName = f.callee.name;
-        } catch (e) { /* REQ-ARCH-1: functionName is best-effort; callee.name read throws -> keep '(anonymous)' default. */ }
+        } catch (e) { /* REQ-ARCH-001: functionName is best-effort; callee.name read throws -> keep '(anonymous)' default. */ }
         try {
             var s = f.script;
             if (s && f.offset !== undefined) info.location = g.__bao_dbg_cdp_loc(s, f.offset);
-        } catch (e) { /* REQ-ARCH-1: location is best-effort; script/offset read throws -> keep zero-location default. */ }
+        } catch (e) { /* REQ-ARCH-001: location is best-effort; script/offset read throws -> keep zero-location default. */ }
         try {
             var env = f.environment;
             var chain = [];
@@ -2617,8 +2617,8 @@ const DEBUGGER_SETUP: &str = r#"
                 env = env.parent;
             }
             info.scopeChain = chain;
-        } catch (e) { /* REQ-ARCH-1: scopeChain is best-effort; environment walk throws -> keep empty-chain default. */ }
-        try { info.this = g.__bao_dbg_val(f.this); } catch (e) { /* REQ-ARCH-1: this-binding reflection throw -> keep undefined default. */ }
+        } catch (e) { /* REQ-ARCH-001: scopeChain is best-effort; environment walk throws -> keep empty-chain default. */ }
+        try { info.this = g.__bao_dbg_val(f.this); } catch (e) { /* REQ-ARCH-001: this-binding reflection throw -> keep undefined default. */ }
         return info;
     };
 
@@ -2704,7 +2704,7 @@ fn cmd_debugger_disable(page: &PageHandle) -> Result<Value, String> {
     // Tear down hooks + all breakpoints this Debugger owns. The debuggee
     // attachment stays (dropping it would force a full JIT recompile cycle
     // for a later re-enable); with no hooks installed, no events fire.
-    let js = "(function() { try { if (__bao_dbg) { var scripts = __bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) { try { scripts[i].clearAllBreakpoints(); } catch (e) { /* REQ-ARCH-1: per-script best-effort clearAllBreakpoints during teardown; a stale script must not fail the whole disable. */ } } __bao_dbg.onNewScript = undefined; __bao_dbg.onDebuggerStatement = undefined; __bao_dbg.onEnterFrame = undefined; __bao_dbg = null; __bao_dbg_active = false; } } catch (e) { throw e; } })()";
+    let js = "(function() { try { if (__bao_dbg) { var scripts = __bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) { try { scripts[i].clearAllBreakpoints(); } catch (e) { /* REQ-ARCH-001: per-script best-effort clearAllBreakpoints during teardown; a stale script must not fail the whole disable. */ } } __bao_dbg.onNewScript = undefined; __bao_dbg.onDebuggerStatement = undefined; __bao_dbg.onEnterFrame = undefined; __bao_dbg = null; __bao_dbg_active = false; } } catch (e) { throw e; } })()";
     let _ = page.evaluate_js(js).map_err(to_browser_error)?;
     Ok(serde_json::json!({}))
 }
@@ -2884,12 +2884,12 @@ fn cmd_debugger_get_environment(page: &PageHandle) -> Result<Value, String> {
     var env = f.environment;
     while (env && envs.length < 50) {
         var e = {type: env.type, scopeKind: null, names: [], namesTruncated: false, variables: {}};
-        try { e.scopeKind = env.scopeKind; } catch (err) { /* REQ-ARCH-1: scopeKind is optional; reflective read throws -> null default. */ }
+        try { e.scopeKind = env.scopeKind; } catch (err) { /* REQ-ARCH-001: scopeKind is optional; reflective read throws -> null default. */ }
         try {
             var names = env.names() || [];
             if (names.length > 50) { names = names.slice(0, 50); e.namesTruncated = true; }
             e.names = names;
-        } catch (err) { /* REQ-ARCH-1: env.names() can throw on a restricted env -> empty-names default; request still succeeds. */ }
+        } catch (err) { /* REQ-ARCH-001: env.names() can throw on a restricted env -> empty-names default; request still succeeds. */ }
         for (var i = 0; i < e.names.length; i++) {
             try {
                 var v = env.getVariable(e.names[i]);
@@ -3259,7 +3259,7 @@ const CDP_REGISTRY_PRELUDE: &str = r#"(function() {
         else if (sub === 'node') { try { desc = v.nodeName.toLowerCase() + (v.id ? '#' + v.id : ''); } catch (e2) { desc = String(v.nodeName); } }
         else { try { desc = String(v); } catch (e2) { desc = 'Object'; } }
         var cn = 'Object';
-        try { if (v.constructor && v.constructor.name) cn = v.constructor.name; } catch (e2) { /* REQ-ARCH-1: className is optional; constructor.name read throws -> keep 'Object' default. */ }
+        try { if (v.constructor && v.constructor.name) cn = v.constructor.name; } catch (e2) { /* REQ-ARCH-001: className is optional; constructor.name read throws -> keep 'Object' default. */ }
         ro = { type: 'object', className: cn, description: desc, objectId: alloc(v, group) };
         if (sub) ro.subtype = sub;
       }
@@ -4851,12 +4851,12 @@ mod tests {
         );
     }
 
-    // ─── ServiceWorker registration JSON serialization (REQ-BRW-4 C6/C19, DF-WK-8) ───
-    // @trace REQ-BRW-4 [entity:ServiceWorker] [criterion:6] [criterion:19]
+    // ─── ServiceWorker registration JSON serialization (REQ-BRW-004 C6/C19, DF-WK-8) ───
+    // @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:6] [criterion:19]
 
     #[test]
     fn sw_registration_id_parses_double_colon_format() {
-        // @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8
+        // @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
         let id = super::parse_sw_registration_id("sw.js::/").unwrap();
         assert_eq!(id.script_url, "sw.js");
         assert_eq!(id.scope, "/");
@@ -4877,7 +4877,7 @@ mod tests {
 
     #[test]
     fn sw_registration_to_json_activated() {
-        // @trace REQ-BRW-4 [entity:ServiceWorker] [criterion:6] [criterion:19] DF-WK-8
+        // @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:6] [criterion:19] DF-WK-8
         let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
         handle.transition_state(ServiceWorkerRegistrationState::Activated);
         handle.enable_fetch_interception();
@@ -4888,7 +4888,7 @@ mod tests {
         assert_eq!(json_val["scope"], "/");
         assert_eq!(json_val["state"], "activated");
         assert_eq!(json_val["isActive"], true);
-        // Per DEC-WK-008: fetch interception mode tracked in registry even
+        // Per DEC-WK-8: fetch interception mode tracked in registry even
         // though servo upstream does not dispatch FetchEvent yet.
         assert_eq!(json_val["isFetchIntercepting"], true);
     }
@@ -4905,7 +4905,7 @@ mod tests {
 
     #[test]
     fn sw_registration_to_json_all_states() {
-        // @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8
+        // @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
         let states_and_expected = vec![
             (ServiceWorkerRegistrationState::Idle, "idle"),
             (ServiceWorkerRegistrationState::Installing, "installing"),
@@ -4924,7 +4924,7 @@ mod tests {
 
     #[test]
     fn sw_registration_terminate_disables_fetch_interception() {
-        // @trace REQ-BRW-4 [entity:ServiceWorker] [criterion:19] DF-WK-8
+        // @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:19] DF-WK-8
         // SPEC criterion #19: "terminate 后正确注销"
         let handle = ServiceWorkerHandle::new("sw.js".to_string(), "/".to_string(), None);
         handle.enable_fetch_interception();
@@ -4948,7 +4948,7 @@ mod tests {
 
     #[test]
     fn sw_registration_stealth_profile_inherited() {
-        // @trace REQ-BRW-4 [entity:ServiceWorker] [criterion:19] DF-WK-10
+        // @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:19] DF-WK-10
         // SPEC: SW must inherit registering page's stealth profile.
         let profile = bao_stealth::StealthProfile::chrome_default();
         let handle =

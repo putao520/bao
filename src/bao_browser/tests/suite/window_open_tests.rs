@@ -1,4 +1,4 @@
-// @trace TEST-LIB-001-WINDOW-OPEN [req:REQ-LIB-001] [level:e2e]
+// @trace TEST-LIB-1-WINDOW-OPEN [req:REQ-LIB-001] [level:e2e]
 // window.open popup landing E2E (REQ-LIB-001): the
 // `BaoWebViewDelegate::request_create_new` no-op root fix.
 //

@@ -1,4 +1,4 @@
-// @trace TEST-STL-007-EDGE [req:REQ-STL-007] [level:integration]
+// @trace TEST-STL-7-EDGE [req:REQ-STL-007] [level:integration]
 //
 // Coverage-shortfall tests for bao_stealth/src/engine_props.rs (SPEC
 // 02-SYSTEM engine-layer stealth properties face): the install paths and

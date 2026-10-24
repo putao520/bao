@@ -1,5 +1,5 @@
-// @trace REQ-ENG-27 [level:integration]
-// node:repl module surface (REQ-ENG-27) — observes the shipped behavior of
+// @trace REQ-ENG-027 [level:integration]
+// node:repl module surface (REQ-ENG-027) — observes the shipped behavior of
 // `src/bao_runtime/src/node_repl.rs` (a Bun-parity stub: the module object
 // exposes start/REPLServer/builtinModules so importers do not crash; the
 // interactive REPL itself is not implemented — `start()` throws).

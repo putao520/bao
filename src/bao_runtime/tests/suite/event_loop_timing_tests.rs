@@ -1,4 +1,4 @@
-// @trace TEST-ENG-004-PROCESS [req:REQ-ENG-004@PROCESS] [level:system]
+// @trace TEST-ENG-4-PROCESS [req:REQ-ENG-004@PROCESS] [level:system]
 // @trace REQ-ENG-004@PROCESS [level:system]
 // @trace TMG-LOOP-001 [timing:max_interval_ms]
 //

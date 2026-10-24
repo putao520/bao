@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-UTIL-TTY-LIB-C17 [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-UTIL-TTY-LIB-C17 [req:REQ-ENG-007] [level:integration]
 //
 // C17 line-coverage wave: node_util.rs + node_tty.rs + lib.rs residual gaps.
 // Baseline gap ledger (coverage-governance-20261017.md「缺口结构」):

@@ -30,7 +30,7 @@
 //!   debugger_handlers::debugger_set_breakpoint_by_url
 //!       ↓
 //!   ServoBackend::debugger_set_breakpoint_by_url
-//!       ↓ (crossbeam channel per DEC-CDP-002)
+//!       ↓ (crossbeam channel per DEC-CDP-2)
 //!   DevtoolScriptControlMsg::SetBreakpoint
 //!       ↓
 //!   script_thread.rs:2322 → fire_set_breakpoint(cx, ...)
@@ -57,7 +57,7 @@ use super::error::BridgeError;
 use super::servo_backend::ServoBackend;
 
 // ────────────────────────────────────────────────────────────────────
-// 通用 JSON 助手 — REQ-ARCH-1:get_str/get_opt_str 单一实现落点
+// 通用 JSON 助手 — REQ-ARCH-001:get_str/get_opt_str 单一实现落点
 // `bridge/mod.rs`(本模块经 `use super::{...}` 引用);get_opt_u32
 // 为本模块独有形态,保持本地。
 // ────────────────────────────────────────────────────────────────────
@@ -622,7 +622,7 @@ mod tests {
             .any(|(_, m, p)| m == "debugger_resume" && p == "Resume()"));
     }
 
-    // REQ-ARCH-1 豁免:step_over/step_into/step_out 路由测试为「每 step
+    // REQ-ARCH-001 豁免:step_over/step_into/step_out 路由测试为「每 step
     // 动作一条路由钉」的测试惯例——相似仅因断言形态统一(log 含对应
     // Resume action);合并即丧失按 action 的失败定位,非重复建设。
 

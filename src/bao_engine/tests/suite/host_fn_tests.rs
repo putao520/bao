@@ -1,4 +1,4 @@
-// @trace TEST-ENG-003-HOSTFN [req:REQ-ENG-003] [level:unit]
+// @trace TEST-ENG-3-HOSTFN [req:REQ-ENG-003] [level:unit]
 // Unit tests for bao_engine host_fn: ArgReader, define_host_fn!, console, call_function
 
 use bao_engine::context::JsContext;

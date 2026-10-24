@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-URL-FORMAT-QUERY [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-URL-FORMAT-QUERY [req:REQ-ENG-007] [level:integration]
 // url.format({query: object}) — query-object serialization into search,
 // with every expectation pinned to Node 24 ground truth (`node -e` output
 // captured 2026-08-17). Inputs pin `protocol`/`host` explicitly: the two
@@ -126,7 +126,7 @@ fn test_url_format_query_object() {
         results
     );
     eprintln!(
-        "[PASS] TEST-ENG-007-URL-FORMAT-QUERY: {} checks vs Node 24 ground truth",
+        "[PASS] TEST-ENG-7-URL-FORMAT-QUERY: {} checks vs Node 24 ground truth",
         results.lines().count()
     );
     bun_runtime::shutdown_thread_sm();

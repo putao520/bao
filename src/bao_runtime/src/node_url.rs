@@ -2433,7 +2433,7 @@ unsafe fn sp_make_iterator(cx: *mut JSContext, snapshot: *mut JSObject) -> *mut 
 
 /// Shared keys()/values() core: identical this-binding + snapshot-iterator
 /// delivery; the two faces differ only in which half of each pair is
-/// projected (REQ-ARCH-1 duplicate convergence).
+/// projected (REQ-ARCH-001 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn sp_projection_iter(
     cx: *mut JSContext,

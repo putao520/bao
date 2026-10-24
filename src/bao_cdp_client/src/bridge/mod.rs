@@ -72,7 +72,7 @@ pub use servo_backend::{
 // ────────────────────────────────────────────────────────────────────
 // 通用 JSON 参数助手 —— bridge 层共享单一实现。
 //
-// REQ-ARCH-1 卫生波次:原 `a_class_handlers` / `b_class_handlers` /
+// REQ-ARCH-001 卫生波次:原 `a_class_handlers` / `b_class_handlers` /
 // `debugger_handlers` 三处逐字节重复的副本已收敛到本模块单一
 // `pub(crate)` 位置,各 handler 模块经 `use super::{...}` 引用。
 // 纯结构变换,行为零变化(函数体逐字节等价)。
@@ -140,7 +140,7 @@ pub(crate) fn get_array<'a>(params: &'a Value, key: &str) -> Result<&'a Vec<Valu
 /// enable/disable/dispose 类 handler 共享体 —— backend 单元操作成功后返回
 /// 空对象 CDP 响应(`Value::Object({})`),失败则传播 `BridgeError`。
 ///
-/// REQ-ARCH-1:多个 handler 逐字节同形(`op()?; Ok(Value::Object(Default::default()))`),
+/// REQ-ARCH-001:多个 handler 逐字节同形(`op()?; Ok(Value::Object(Default::default()))`),
 /// 提取为单一 helper(行为零变化)。
 pub(crate) fn unit_ok(r: Result<(), BridgeError>) -> Result<Value, BridgeError> {
     r?;

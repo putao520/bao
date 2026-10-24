@@ -505,11 +505,11 @@ unsafe fn populate_bun_object(
     unsafe {
         crate::bun_glob_api::install(cx, bun_obj);
     }
-    // @trace REQ-ENG-19 [api:Bun.Transpiler] — TS/JSX 转译器 (bun_transpiler_api)。
+    // @trace REQ-ENG-019 [api:Bun.Transpiler] — TS/JSX 转译器 (bun_transpiler_api)。
     unsafe {
         crate::bun_transpiler_api::install(cx, bun_obj);
     }
-    // @trace REQ-ENG-21 [api:Bun.DNSResolver] — DNS 查询器 (bun_dns_resolver_api)。
+    // @trace REQ-ENG-021 [api:Bun.DNSResolver] — DNS 查询器 (bun_dns_resolver_api)。
     unsafe {
         crate::bun_dns_resolver_api::install(cx, bun_obj);
     }
@@ -618,7 +618,7 @@ unsafe fn populate_bun_object(
     unsafe {
         crate::bun_shell::install_bun_shell(cx, bun_obj);
     }
-    // @trace REQ-ENG-14 [api:Bun.password] — password hashing (argon2id/bcrypt)
+    // @trace REQ-ENG-014 [api:Bun.password] — password hashing (argon2id/bcrypt)
     unsafe {
         crate::bun_password::install(cx, bun_obj);
     }

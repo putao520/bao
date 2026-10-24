@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:12..17] [level:integration]
+// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:12..17] [level:integration]
 // SharedWorker enablement + per-Worker stealth delivery live tests (REQ-BRW-004
 // third worker scope, user ruling "we are already independent" — e82).
 //

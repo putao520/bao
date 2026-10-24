@@ -1,4 +1,4 @@
-// @trace TEST-ENG-001-ES [req:REQ-ENG-001] [level:integration]
+// @trace TEST-ENG-1-ES [req:REQ-ENG-001] [level:integration]
 // ES Language feature tests: verify SpiderMonkey engine supports key JS features
 
 use bao_engine::context::JsContext;

@@ -128,7 +128,7 @@ fn dispatch(
 /// existing-page arm of the same path; this pins the NEW-target arm
 /// (`emit_target_created_attached`), which Playwright's
 /// context.new_page() depends on.
-// @trace TEST-CDP-008 [req:REQ-CDP-008] [level:unit]
+// @trace TEST-CDP-8 [req:REQ-CDP-008] [level:unit]
 #[test]
 fn set_auto_attach_then_create_target_emits_attached_to_target() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
@@ -209,7 +209,7 @@ fn set_auto_attach_then_create_target_emits_attached_to_target() {
 /// (Chrome shape: untagged, params naming the closed session). The puppeteer
 /// W40 S11 page.close() stall pin: without the detach signal the client
 /// resolves page.close() on the session-detach notification and hangs forever.
-// @trace TEST-CDP-008 [req:REQ-CDP-008] [level:unit]
+// @trace TEST-CDP-8 [req:REQ-CDP-008] [level:unit]
 #[test]
 fn close_target_emits_target_destroyed_and_detached_events() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
@@ -338,7 +338,7 @@ fn close_target_emits_target_destroyed_and_detached_events() {
 /// closeTarget even when auto-attach was never enabled — close semantics are
 /// independent of auto-attach (Chrome shape). And when auto-attach IS off, a
 /// created target emits NO attachedToTarget (the C3 arm stays silent).
-// @trace TEST-CDP-008 [req:REQ-CDP-008] [level:unit]
+// @trace TEST-CDP-8 [req:REQ-CDP-008] [level:unit]
 #[test]
 fn target_lifecycle_events_respect_auto_attach_gate() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));

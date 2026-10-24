@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-DNS-C13 [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-DNS-C13 [req:REQ-ENG-007] [level:integration]
 //
 // C13 line-coverage wave for src/bao_runtime/src/node_dns.rs — the residual
 // gap after C4 (node_dns_coverage_c4_tests): module-level resolve4/resolve6

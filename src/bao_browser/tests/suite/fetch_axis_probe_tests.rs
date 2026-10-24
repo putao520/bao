@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:19] [level:integration]
+// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:19] [level:integration]
 // Three-axis fetch probe matrix — page/worker realm async fetch settlement.
 //
 // Provenance (e39/e40 P0 attribution wave, 2026-09-09): a page-realm async

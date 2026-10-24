@@ -7,7 +7,7 @@
 //   - Each Worker spawns a std::thread that calls Runtime::new(handle) to get
 //     its own thread-local JSContext. No cross-thread JSObject sharing.
 //   - Messages cross threads as SpiderMonkey structured-clone bytes over
-//     bao_ipc unbounded channels (REQ-ARCH-3 unified MPMC substrate; Node
+//     bao_ipc unbounded channels (REQ-ARCH-003 unified MPMC substrate; Node
 //     semantics: postMessage = structured clone, NOT JSON —
 //     TypedArray/Map/Set/Date/BigInt/cyclic objects keep their types).
 //   - Worker JS objects (postMessage/terminate/threadId) are native host fns.
@@ -63,7 +63,7 @@ struct WorkerHandle {
     /// registry form kept from the std-mpsc era: bao_ipc (crossbeam)
     /// `Receiver` is `Sync`, so the lock is uncontended today — unwrapping
     /// it is the separately-ruled optional optimization, not part of this
-    /// migration's parity face (REQ-ARCH-3 wave R2).
+    /// migration's parity face (REQ-ARCH-003 wave R2).
     main_rx: Option<::std::sync::Mutex<bao_ipc::Receiver<WorkerToMainMessage>>>,
     /// B1 (用户裁决 2026-09-17 A): creating NodeRuntime's cleanup token,
     /// stamped at registration via `crate::runtime::current_runtime_token()`.
@@ -1004,7 +1004,7 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
     // Allocate thread ID.
     let thread_id = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
 
-    // Create channels — bao_ipc unbounded (REQ-ARCH-3 unified MPMC
+    // Create channels — bao_ipc unbounded (REQ-ARCH-003 unified MPMC
     // substrate): send never blocks, FIFO per producer, drain-then-close
     // when every sender drops (the worker loop's `Err(_)` exit arm and the
     // main-side post-death drain both ride these two faces).

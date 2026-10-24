@@ -1,9 +1,9 @@
 // REQ-CDP-003: CDP module public API — server entry + WS / JSON-RPC codec
 // @trace REQ-CDP-001 [entity:CdpRouter] [entity:CdpServer]
 // @trace REQ-PURE-009 [level:library] [entity:HttpServer,HttpServerConfig]
-// @trace REQ-IMPL-03 [level:library] (CDP server = Phase 3)
+// @trace REQ-IMPL-003 [level:library] (CDP server = Phase 3)
 //
-// TASK-6 (DEC-CDP-001): evaluate_js 注入式 domain handler 已删除,
+// TASK-6 (DEC-CDP-1): evaluate_js 注入式 domain handler 已删除,
 // CDP 命令分发由 bao_cdp_client::CDPRdpBridge 接管。本 crate 退化为
 // 对外 CDP server 入口(Playwright 兼容)+ 基础设施(RFC 6455 codec、
 // JSON-RPC 编解码、Target 路由),被 bao_cdp_client 复用。

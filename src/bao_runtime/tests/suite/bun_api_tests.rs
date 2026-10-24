@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006 [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6 [req:REQ-ENG-006] [level:integration]
 // Integration tests for Bun.* / Bao.* API (REQ-ENG-006)
 //
 // All tests run in a single #[test] function to avoid mozjs Runtime

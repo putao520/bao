@@ -1,4 +1,4 @@
-// @trace TEST-BRW-003 [req:REQ-BRW-003] [level:e2e]
+// @trace TEST-BRW-3 [req:REQ-BRW-003] [level:e2e]
 // BCE regression (P0 browser startup panic, servo error.rs:74):
 // "swallowed JSAPI failure leaves a pending exception on the servo
 // ScriptThread context". The original trigger face: capability probes

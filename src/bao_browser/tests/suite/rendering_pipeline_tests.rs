@@ -1,4 +1,4 @@
-// @trace TEST-BRW-002-RENDER [req:REQ-BRW-002] [level:unit]
+// @trace TEST-BRW-2-RENDER [req:REQ-BRW-002] [level:unit]
 // Rendering pipeline tests: image encode/decode, viewport, screenshot formats, gradient patterns
 
 use bao_browser::{BaoConfig, ScreenshotFormat};

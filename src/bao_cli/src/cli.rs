@@ -1,8 +1,8 @@
-// @trace REQ-IMPL-01: Phase 1 SpiderMonkey engine replacement (completed)
-// @trace REQ-IMPL-02: Phase 2 servo engine integration + rendering (completed)
-// @trace REQ-IMPL-03: Phase 3 CDP Server implementation (completed)
-// @trace REQ-IMPL-04: Phase 4 Stealth anti-fingerprinting (completed)
-// @trace REQ-IMPL-05: Phase 5 Integration testing and release (completed)
+// @trace REQ-IMPL-001: Phase 1 SpiderMonkey engine replacement (completed)
+// @trace REQ-IMPL-002: Phase 2 servo engine integration + rendering (completed)
+// @trace REQ-IMPL-003: Phase 3 CDP Server implementation (completed)
+// @trace REQ-IMPL-004: Phase 4 Stealth anti-fingerprinting (completed)
+// @trace REQ-IMPL-005: Phase 5 Integration testing and release (completed)
 // @trace REQ-ENG-006: Bun API adaptation — bao test runner execution/report/exit-code (run_test_file)
 
 use bao_browser::BrowserConfig;

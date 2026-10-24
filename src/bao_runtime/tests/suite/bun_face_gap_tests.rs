@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-FACEGAP [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6-FACEGAP [req:REQ-ENG-006] [level:integration]
 // Zero-coverage Bun.* / crypto face gap tests: global crypto.randomUUID(),
 // Bun.fileURLToPath (incl. roundtrip with Bun.pathToFileURL), Bun.escapeHTML,
 // Bun.deepLink (explicit not-implemented contract), the plain Bun.gzip /

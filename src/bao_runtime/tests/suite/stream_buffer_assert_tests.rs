@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-STREAM [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-STREAM [req:REQ-ENG-007] [level:integration]
 // Deep tests for stream, buffer, assert, tty modules — single test for mozjs single-init.
 
 use bao_engine::context::JsContext;

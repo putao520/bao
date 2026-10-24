@@ -49,7 +49,7 @@ use bun_sys::FdExt;
 use crate::require::cache_builtin;
 
 // ─── Async child state: bao_ipc push model (wave F5) ───────────────────────
-// @trace REQ-ARCH-3 [entity:ChildProcess] [api:__cp_drain/__cp_poll_exit/peek_output/poll_exit_info]
+// @trace REQ-ARCH-003 [entity:ChildProcess] [api:__cp_drain/__cp_poll_exit/peek_output/poll_exit_info]
 // The fd drain face is unchanged (per-child `cp-poll-{pid}` OS thread, ruling
 // 2026-10-15 ③: IO stream face stays). What flipped is the PUBLICATION face:
 // the old `Arc<Mutex<AsyncChildState>>` cross-thread shared struct — drain
@@ -7175,7 +7175,7 @@ mod tests {
 }
 
 
-/// F5 discriminating tests (REQ-ARCH-3): the push-model publication face.
+/// F5 discriminating tests (REQ-ARCH-003): the push-model publication face.
 /// In-crate `#[cfg(test)]` (not tests/suite) — these drive the registry
 /// directly (`pub(crate)` items) and need no JS engine; nextest runs each in
 /// its own process so the engine-singleton lock discipline is untouched.

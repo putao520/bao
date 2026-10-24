@@ -983,7 +983,7 @@ mod tests {
         }
     }
 
-    // @trace TEST-CDP-005 [req:REQ-CDP-005] [level:unit]
+    // @trace TEST-CDP-5 [req:REQ-CDP-005] [level:unit]
     #[test]
     fn attach_to_target_mints_real_unique_sessions() {
         let (tx, rx) = bridge_channel(Duration::from_secs(2));
@@ -1351,7 +1351,7 @@ mod tests {
 
     // ── Target 路由波 pins (REQ-CDP-004): targeted delivery ────────────
 
-    // @trace TEST-CDP-004 [req:REQ-CDP-004] [level:unit]
+    // @trace TEST-CDP-4 [req:REQ-CDP-004] [level:unit]
     #[test]
     fn broadcast_for_target_delivers_only_to_sessions_attached_to_the_target() {
         let (tx, _rx) = bridge_channel(Duration::from_millis(100));
@@ -1421,7 +1421,7 @@ mod tests {
         assert_eq!(session_events[1].1, "Page.frameStartedLoading");
     }
 
-    // @trace TEST-CDP-004 [req:REQ-CDP-004] [level:unit]
+    // @trace TEST-CDP-4 [req:REQ-CDP-004] [level:unit]
     #[test]
     fn broadcast_for_target_miss_is_dropped_not_broadcast() {
         // Target 路由波: the W49 fallback (untagged broadcast + tagged copy

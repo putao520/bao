@@ -613,7 +613,7 @@
           <span data-xref-type="req" data-xref-id="REQ-CDS-003">REQ-CDS-003</span>,
           <span data-xref-type="req" data-xref-id="REQ-CDS-007">REQ-CDS-007</span>
         </p>
-      <p data-xref-type="entity" data-xref-id="CdpServer">关联需求: <span data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</span>, <span data-xref-type="req" data-xref-id="REQ-IMPL-03">REQ-IMPL-03</span></p></div>
+      <p data-xref-type="entity" data-xref-id="CdpServer">关联需求: <span data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</span>, <span data-xref-type="req" data-xref-id="REQ-IMPL-003">REQ-IMPL-003</span></p></div>
 
       <div id="cdpsessiongeneric" data-entity="CdpSessionGeneric" data-entity-model-type="relational" data-field-session_id="string;required;会话唯一标识（16 位 hex）" data-field-target_id="string;required;关联的 Target ID" data-field-websocket="WebSocket;required;WebSocket 连接">
         ;required;已启用的 CDP domain 集合" data-field-state="enum[Created, Active, Closing, Closed];required;Session
@@ -1207,8 +1207,8 @@ bao_cdp/
       <h2>§12 测试策略</h2>
       <!-- ============================================================ -->
 
-      <section id="test-cds-001" data-test="TEST-CDS-001" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive" data-test-level="unit">
-        <h3>TEST-CDS-001: HTTP 发现端点</h3>
+      <section id="test-cds-001" data-test="TEST-CDS-1" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive" data-test-level="unit">
+        <h3>TEST-CDS-1: HTTP 发现端点</h3>
         <p>
           <strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-001">REQ-CDS-001</span>
           <span data-xref-type="req" data-xref-id="REQ-CDS-008">REQ-CDS-008</span>
@@ -1229,8 +1229,8 @@ bao_cdp/
         </ul>
       </section>
 
-      <section id="test-cds-002" data-test="TEST-CDS-002" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive" data-test-level="unit">
-        <h3>TEST-CDS-002: WebSocket 握手与消息收发</h3>
+      <section id="test-cds-002" data-test="TEST-CDS-2" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive" data-test-level="unit">
+        <h3>TEST-CDS-2: WebSocket 握手与消息收发</h3>
         <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-001">REQ-CDS-001</span></p>
         <p><strong>测试类型</strong>: 正向测试</p>
         <h4>测试步骤</h4>
@@ -1248,8 +1248,8 @@ bao_cdp/
         </ul>
       </section>
 
-      <section id="test-cds-003" data-test="TEST-CDS-003" data-req-ref="REQ-CDP-002" data-test-categories="unit,positive" data-test-level="unit">
-        <h3>TEST-CDS-003: DomainHandler 注册与分发</h3>
+      <section id="test-cds-003" data-test="TEST-CDS-3" data-req-ref="REQ-CDP-002" data-test-categories="unit,positive" data-test-level="unit">
+        <h3>TEST-CDS-3: DomainHandler 注册与分发</h3>
         <p>
           <strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-004">REQ-CDS-004</span>
           <span data-xref-type="req" data-xref-id="REQ-CDS-006">REQ-CDS-006</span>
@@ -1270,8 +1270,8 @@ bao_cdp/
         </ul>
       </section>
 
-      <section id="test-cds-004" data-test="TEST-CDS-004" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive" data-test-level="unit">
-        <h3>TEST-CDS-004: Session 创建与销毁</h3>
+      <section id="test-cds-004" data-test="TEST-CDS-4" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive" data-test-level="unit">
+        <h3>TEST-CDS-4: Session 创建与销毁</h3>
         <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-003">REQ-CDS-003</span></p>
         <p><strong>测试类型</strong>: 正向测试</p>
         <h4>测试步骤</h4>
@@ -1289,8 +1289,8 @@ bao_cdp/
         </ul>
       </section>
 
-      <section id="test-cds-005" data-test="TEST-CDS-005" data-req-ref="REQ-CDP-006" data-test-categories="unit,positive" data-test-level="unit">
-        <h3>TEST-CDS-005: 事件广播与过滤</h3>
+      <section id="test-cds-005" data-test="TEST-CDS-5" data-req-ref="REQ-CDP-006" data-test-categories="unit,positive" data-test-level="unit">
+        <h3>TEST-CDS-5: 事件广播与过滤</h3>
         <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-005">REQ-CDS-005</span></p>
         <p><strong>测试类型</strong>: 正向测试</p>
         <h4>测试步骤</h4>
@@ -1309,8 +1309,8 @@ bao_cdp/
         </ul>
       </section>
 
-      <section id="test-cds-006" data-test="TEST-CDS-006" data-req-ref="REQ-CDP-001" data-test-categories="integration,positive" data-test-level="integration">
-        <h3>TEST-CDS-006: Playwright 端到端连接</h3>
+      <section id="test-cds-006" data-test="TEST-CDS-6" data-req-ref="REQ-CDP-001" data-test-categories="integration,positive" data-test-level="integration">
+        <h3>TEST-CDS-6: Playwright 端到端连接</h3>
         <p>
           <strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-001">REQ-CDS-001</span>
           <span data-xref-type="req" data-xref-id="REQ-CDS-004">REQ-CDS-004</span>
@@ -1330,8 +1330,8 @@ bao_cdp/
         </ul>
       </section>
 
-      <section id="test-cds-007" data-test="TEST-CDS-007" data-req-ref="REQ-CDP-008" data-test-categories="integration,positive" data-test-level="integration">
-        <h3>TEST-CDS-007: 多 Session 并发</h3>
+      <section id="test-cds-007" data-test="TEST-CDS-7" data-req-ref="REQ-CDP-008" data-test-categories="integration,positive" data-test-level="integration">
+        <h3>TEST-CDS-7: 多 Session 并发</h3>
         <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-007">REQ-CDS-007</span></p>
         <p><strong>测试类型</strong>: 集成测试</p>
         <h4>测试步骤</h4>
@@ -1348,8 +1348,8 @@ bao_cdp/
         </ul>
       </section>
 
-      <section id="test-cds-008" data-test="TEST-CDS-008" data-req-ref="REQ-CDP-008" data-test-categories="integration,positive" data-test-level="integration">
-        <h3>TEST-CDS-008: Target 创建/关闭/列表</h3>
+      <section id="test-cds-008" data-test="TEST-CDS-8" data-req-ref="REQ-CDP-008" data-test-categories="integration,positive" data-test-level="integration">
+        <h3>TEST-CDS-8: Target 创建/关闭/列表</h3>
         <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-002">REQ-CDS-002</span></p>
         <p><strong>测试类型</strong>: 集成测试</p>
         <h4>测试步骤</h4>

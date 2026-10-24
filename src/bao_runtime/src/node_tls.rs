@@ -960,7 +960,7 @@ fn tls_driver_main(wake_read_fd: drv::Raw) {
     };
 
     loop {
-        // ── 1. take commands (e201 REQ-ARCH-1: extracted to
+        // ── 1. take commands (e201 REQ-ARCH-001: extracted to
         // `tls_driver_take_commands`) ──────────────────────────────────
         tls_driver_take_commands(&handle, &mut servers, &mut conns, &mut remove_queue);
         tls_driver_retire_servers(&mut servers, &mut conns, &mut remove_queue);
@@ -970,14 +970,14 @@ fn tls_driver_main(wake_read_fd: drv::Raw) {
         // "no servers, no conns" after spawn but before the command landed
         // and exit, leaving every later listener unserved.
 
-        // ── 2. build poll set (e201 REQ-ARCH-1: extracted to
+        // ── 2. build poll set (e201 REQ-ARCH-001: extracted to
         // `tls_driver_build_poll_set`) ─────────────────────────────────────
         let (mut fds, targets) = tls_driver_build_poll_set(wake_read_fd, &servers, &conns);
 
         // ── 3. timeout: block indefinitely (the wake pipe covers commands
         //       and JS-side writes; conn fds cover I/O) unless an SNI
         //       deadline is pending — the parked conn needs no I/O wake,
-        //       only the deadline check. e201 REQ-ARCH-1: extracted to
+        //       only the deadline check. e201 REQ-ARCH-001: extracted to
         //       `tls_driver_sni_timeout` ──────────────────────────────────
         let timeout_ms: i32 = tls_driver_sni_timeout(&conns);
 
@@ -1017,7 +1017,7 @@ fn tls_driver_main(wake_read_fd: drv::Raw) {
 /// synchronous handshake already failed (ClientError is queued by
 /// `tls_conn_drive`); `RemoveServer` is deferred to the retire pass.
 ///
-/// e201 REQ-ARCH-1: extracted from `tls_driver_main` (control flow and lock
+/// e201 REQ-ARCH-001: extracted from `tls_driver_main` (control flow and lock
 /// scope unchanged — the `cmds` mutex is held exactly as long as the
 /// original inline block held it).
 fn tls_driver_take_commands(
@@ -1071,7 +1071,7 @@ fn tls_driver_take_commands(
 /// Step-1.5: retire removed servers — finish every connection of the dead
 /// server, drop its listener, and report ServerClosed.
 ///
-/// e201 REQ-ARCH-1: extracted from `tls_driver_main` (control flow
+/// e201 REQ-ARCH-001: extracted from `tls_driver_main` (control flow
 /// unchanged).
 fn tls_driver_retire_servers(
     servers: &mut HashMap<u64, DriverServer>,
@@ -1101,7 +1101,7 @@ fn tls_driver_retire_servers(
 /// every listening server, then every live conn (POLLIN unless parked for
 /// SNI or finishing; POLLOUT when output is buffered).
 ///
-/// e201 REQ-ARCH-1: extracted from `tls_driver_main` (control flow
+/// e201 REQ-ARCH-001: extracted from `tls_driver_main` (control flow
 /// unchanged).
 fn tls_driver_build_poll_set(
     wake_read_fd: drv::Raw,
@@ -1148,7 +1148,7 @@ fn tls_driver_build_poll_set(
 /// and JS-side writes; conn fds cover I/O) unless an SNI deadline is
 /// pending: the parked conn needs no I/O wake, only the deadline check.
 ///
-/// e201 REQ-ARCH-1: extracted from `tls_driver_main` (control flow
+/// e201 REQ-ARCH-001: extracted from `tls_driver_main` (control flow
 /// unchanged, including the defensive clamp).
 fn tls_driver_sni_timeout(conns: &HashMap<u64, DriverConn>) -> i32 {
     let mut timeout_ms: i32 = -1;

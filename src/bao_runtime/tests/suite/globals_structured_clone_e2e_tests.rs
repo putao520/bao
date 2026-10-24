@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-SC [req:REQ-ENG-006] [level:e2e]
+// @trace TEST-ENG-6-SC [req:REQ-ENG-006] [level:e2e]
 // structuredClone fidelity e2e — the global now rides SpiderMonkey's
 // JS_WriteStructuredClone / JS_ReadStructuredClone (the same engine facility
 // worker postMessage uses). These tests pin the classes the old

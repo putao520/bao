@@ -9,7 +9,7 @@
 // Why channels: servo's WebView is !Send (Rc<RefCell<>>),
 // so all WebView operations must happen on the main thread.
 
-// REQ-ARCH-3 (wave F2b): the channel substrate is bao_ipc — the unified MPMC
+// REQ-ARCH-003 (wave F2b): the channel substrate is bao_ipc — the unified MPMC
 // facade over crossbeam-channel. The public API (bridge_channel / send /
 // send_fire_and_forget / is_alive / recv_and_process / try_process / drain) is
 // frozen; only the plumbing underneath swapped. The request channel is
@@ -687,7 +687,7 @@ pub struct BridgeResponse {
 /// channel's message type: `BridgeReceiver::select_receiver` exposes the raw
 /// receiver for a `bao_ipc::Select` registration, and a request consumed
 /// there is handed back through [`BridgeReceiver::process_request`]
-/// (REQ-ARCH-3 wave F2c).
+/// (REQ-ARCH-003 wave F2c).
 pub struct BridgeRequest {
     command: BridgeCommand,
     responder: Sender<BridgeResponse>,
@@ -695,7 +695,7 @@ pub struct BridgeRequest {
 
 /// Handle for the CDP server to send commands to the main thread.
 ///
-/// Channel substrate: bao_ipc (crossbeam) — REQ-ARCH-3.
+/// Channel substrate: bao_ipc (crossbeam) — REQ-ARCH-003.
 pub struct BridgeSender {
     tx: Sender<BridgeRequest>,
     timeout: Duration,
@@ -703,7 +703,7 @@ pub struct BridgeSender {
 
 /// Handle for the main thread to receive and process commands from CDP.
 ///
-/// Channel substrate: bao_ipc (crossbeam) — REQ-ARCH-3.
+/// Channel substrate: bao_ipc (crossbeam) — REQ-ARCH-003.
 pub struct BridgeReceiver {
     rx: Receiver<BridgeRequest>,
 }
@@ -711,7 +711,7 @@ pub struct BridgeReceiver {
 /// Create a new bridge channel pair.
 ///
 /// The request channel is the bao_ipc (crossbeam) unbounded MPMC channel
-/// (@trace REQ-ARCH-3), byte-parity with the previous `std::sync::mpsc` async
+/// (@trace REQ-ARCH-003), byte-parity with the previous `std::sync::mpsc` async
 /// channel: multi-producer, no backpressure, closes when the last half drops.
 pub fn bridge_channel(timeout: Duration) -> (BridgeSender, BridgeReceiver) {
     let (tx, rx) = unbounded();
@@ -815,7 +815,7 @@ impl BridgeReceiver {
     }
 
     /// The raw receiver handle for a `bao_ipc::Select` registration
-    /// (REQ-ARCH-3 wave F2c): the pump's tail parks on BOTH the servo event
+    /// (REQ-ARCH-003 wave F2c): the pump's tail parks on BOTH the servo event
     /// queue and this bridge queue, waking on whichever message lands first
     /// instead of waiting out the deadline for the next iteration's head
     /// drain. The same reference must be passed back to
@@ -826,7 +826,7 @@ impl BridgeReceiver {
     }
 
     /// Process a request consumed outside the standard drain faces — the
-    /// `bao_ipc::Select` wake path (REQ-ARCH-3 wave F2c): run the command
+    /// `bao_ipc::Select` wake path (REQ-ARCH-003 wave F2c): run the command
     /// through `handler` and route the response back to the waiting sender.
     /// Same body as [`Self::drain`]'s per-command handling, one request.
     pub fn process_request(
@@ -848,7 +848,7 @@ impl std::clone::Clone for BridgeSender {
     }
 }
 
-// @trace TEST-CDP-003 [req:REQ-CDP-003] [level:unit] [nfr:TMG-CDP-01]
+// @trace TEST-CDP-3 [req:REQ-CDP-003] [level:unit] [nfr:TMG-CDP-01]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1415,14 +1415,14 @@ mod tests {
         assert_eq!(regs[0]["fetchInterceptActive"], true);
     }
 
-    // ─── REQ-ARCH-3 F2b discrimination: bao_ipc substrate behaviour ──────
+    // ─── REQ-ARCH-003 F2b discrimination: bao_ipc substrate behaviour ──────
 
     // While the receiver is parked inside recv_and_process (10s window), a
     // cross-thread send must reach the handler through the bao_ipc substrate
     // with bounded wake latency: 100 rounds, max send→handler wall time
     // < 2ms. crossbeam's futex wake is µs-scale; a polling-substrate
     // regression (or accidental backpressure) blows past this bound.
-    // @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:unit]
+    // @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:unit]
     #[test]
     fn recv_and_process_wake_latency_max_under_2ms() {
         const ROUNDS: usize = 100;
@@ -1481,7 +1481,7 @@ mod tests {
     // drain consumes exactly the queued commands across cloned
     // multi-producer senders (the MPMC face of the bao_ipc substrate) and
     // reports 0 on the follow-up drain — no loss, no duplication.
-    // @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:unit]
+    // @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:unit]
     #[test]
     fn drain_counts_multi_producer_queue_exactly() {
         let (sender, receiver) = bridge_channel(TIMEOUT);

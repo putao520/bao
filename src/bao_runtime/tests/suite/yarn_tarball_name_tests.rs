@@ -1,4 +1,4 @@
-// @trace TEST-CLI-001-YARN-TARBALL-NAME [req:REQ-CLI-001] [level:unit]
+// @trace TEST-CLI-1-YARN-TARBALL-NAME [req:REQ-CLI-001] [level:unit]
 // Upstream bun 643b957b42 "install: fix yarn.lock migration panic on tarball
 // URLs with '/-/' right after the host (#43189)" — the yarn v1 migrator's
 // `name_to_use` block searched the resolved URL for "/-/" and for

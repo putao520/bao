@@ -1,5 +1,5 @@
-// @trace TEST-BAO-API-017/018 [req:REQ-BAO-API-017,REQ-BAO-API-018] [level:integration]
-// @trace REQ-ENG-18 [req:REQ-ENG-18] [level:integration] — Bun.shell Shell API(同源 REQ-BAO-API-018,Shell/$ 解释器语义载体:Bun.$ template/数组双形态+ShellOutput)
+// @trace TEST-BAO-API-17/018 [req:REQ-BAO-API-017,REQ-BAO-API-018] [level:integration]
+// @trace REQ-ENG-018 [req:REQ-ENG-018] [level:integration] — Bun.shell Shell API(同源 REQ-BAO-API-018,Shell/$ 解释器语义载体:Bun.$ template/数组双形态+ShellOutput)
 // P0 surface regressions (v-surface audit wave):
 //
 // 1. Bun.$ — template AND direct-array invocations SIGSEGV'd in
@@ -418,7 +418,7 @@ fn bun_connect_refused_rejects_and_terminates_socket() {
 
 // ──────────────────── Item 4: Bun.Shell class surface ────────────────────
 
-/// REQ-ENG-18 / REQ-BAO-API-018 AC C1+C2 direct probes (C3-C8 ride on the
+/// REQ-ENG-018 / REQ-BAO-API-018 AC C1+C2 direct probes (C3-C8 ride on the
 /// Bun.$ tests above): `Bun.Shell` must be installed as a function on the
 /// Bun object, and constructing one must yield a ShellInterpreter instance —
 /// the constructor stamps a numeric _shellId and installs the run/setenv/cd

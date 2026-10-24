@@ -59,7 +59,7 @@ fn get_loop() -> *mut Loop {
 
 // The three JS-plumbing helpers below (`extract_js_callback` /
 // `cleanup_gc_key` / `build_sockaddr`) are the crate-wide single source for
-// the listen/connect/udpSocket faces — bun_udp imports them (REQ-ARCH-1
+// the listen/connect/udpSocket faces — bun_udp imports them (REQ-ARCH-001
 // duplicate convergence; they were byte-identical copies).
 
 /// Extract a JS function callback from a property on a JS object.

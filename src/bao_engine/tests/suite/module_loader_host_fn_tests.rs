@@ -1,5 +1,5 @@
-// @trace TEST-ENG-005-MODLOAD [req:REQ-ENG-005] [level:unit]
-// @trace TEST-ENG-003-HOSTFN2 [req:REQ-ENG-003] [level:unit]
+// @trace TEST-ENG-5-MODLOAD [req:REQ-ENG-005] [level:unit]
+// @trace TEST-ENG-3-HOSTFN2 [req:REQ-ENG-003] [level:unit]
 //
 // Integration tests for bao_engine module_loader and host_fn.
 //

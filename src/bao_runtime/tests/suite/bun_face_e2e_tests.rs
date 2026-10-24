@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006 [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6 [req:REQ-ENG-006] [level:integration]
 // Bun-face completion wave e2e: Bun.hash / nanoseconds / env / inspect /
 // main / spawnSync / peek / stringWidth / Mime / TOML / YAML / JSONC /
 // RegExp.escape / Glob / readableStreamToArray / tcpSocket /

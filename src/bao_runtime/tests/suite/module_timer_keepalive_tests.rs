@@ -1,4 +1,4 @@
-// @trace TEST-ENG-010-MODULE-KEEPALIVE [req:REQ-ENG-010 REQ-ENG-006] [level:e2e]
+// @trace TEST-ENG-10-MODULE-KEEPALIVE [req:REQ-ENG-010 REQ-ENG-006] [level:e2e]
 // CLI timer keepalive for ESM entry files (Node process-semantics parity).
 //
 // Root cause: the four `eval_module*` post-eval hook pumps in

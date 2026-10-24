@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-SNI [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-SNI [req:REQ-ENG-007] [level:integration]
 //
 // In-process TLS loopback (memory-BIO, no network): isolates the bridge
 // handshake from the node:tls driver. Drives a TlsServer against a

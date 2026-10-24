@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-UNCAUGHT [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6-UNCAUGHT [req:REQ-ENG-006] [level:integration]
 //
 // Unified uncaught-exception / unhandled-rejection routing — Node semantics:
 //   - timer throw (setTimeout/setImmediate callback)          → timers path

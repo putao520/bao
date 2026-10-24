@@ -1,4 +1,4 @@
-// @trace TEST-ENG-001-ERR [req:REQ-ENG-001] [level:unit]
+// @trace TEST-ENG-1-ERR [req:REQ-ENG-001] [level:unit]
 // Deep tests for bao_engine error handling: error types, try/catch, async errors, stack traces
 // Single test function due to mozjs single-init constraint.
 

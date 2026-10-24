@@ -1,4 +1,4 @@
-// @trace REQ-ENG-14 [api:Bun.password] — password hashing (argon2id/argon2i/argon2d/bcrypt).
+// @trace REQ-ENG-014 [api:Bun.password] — password hashing (argon2id/argon2i/argon2d/bcrypt).
 //
 // Bridges workspace `rust-argon2` and `bcrypt` crates to SpiderMonkey host
 // functions. Bun.password is a namespace object with four methods:

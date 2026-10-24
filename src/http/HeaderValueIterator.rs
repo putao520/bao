@@ -71,7 +71,7 @@ pub fn fold_transfer_encoding(value: &[u8], coding: &mut Encoding) -> Result<(),
 
 #[cfg(test)]
 mod tests {
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit] — upstream bun 83913e746a
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit] — upstream bun 83913e746a
     use super::{Encoding, HeaderValueIterator, fold_transfer_encoding};
 
     fn fold(value: &[u8]) -> Result<Encoding, bun_core::Error> {

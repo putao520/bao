@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-BUN-API-C2 [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-7-BUN-API-C2 [req:REQ-ENG-006] [level:integration]
 // 行覆盖率收敛波 C2 — bun_api.rs Bun.* 命名空间少用面与错误分支补测。
 // 覆盖目标(源码逐块定位):Bun.gzip/deflate/inflate/gunzip 四面与错误臂、
 // gzipSync/gunzipSync/deflateSync/inflateSync 别名、Bun.CryptoHasher 全算法

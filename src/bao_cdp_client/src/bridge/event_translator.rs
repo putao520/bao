@@ -33,7 +33,7 @@
 //! 阻塞,由 `run_with_bridge` 泵排空)。本结构的有界 drop-newest 语义只作用
 //! 于其自持的 channel。
 //!
-//! ## 线程模型(DEC-CDP-002)
+//! ## 线程模型(DEC-CDP-2)
 //!
 //! 事件产生线程调用 `on_console_message` 等方法时,`try_send` 到物理有界
 //! channel;`bao_ipc::Sender` 可克隆、可跨线程投递,持有方可位于任意线程。
@@ -1365,7 +1365,7 @@ impl EventSubscriber {
 
     // ── FrameInfo 类 ─────────────────────────────────────────────────
     //
-    // REQ-ARCH-1 豁免:on_frame_started/stopped_loading 等事件回调为
+    // REQ-ARCH-001 豁免:on_frame_started/stopped_loading 等事件回调为
     // 「每 CDP 事件一个 typed emitter」惯例——相似仅因 push 单变体形态;
     // 参数化会抹掉各事件的类型区分(反 KISS),登记豁免。
 

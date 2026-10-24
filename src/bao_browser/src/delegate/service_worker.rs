@@ -355,7 +355,7 @@ pub struct ServiceWorkerGlobalScopeState {
 /// Unlike DedicatedWorker (one parent page) and SharedWorker (first connecting page),
 /// ServiceWorker inherits from the REGISTERING page — the page that called
 /// navigator.serviceWorker.register(url, {scope}). The profile is fixed for the
-/// ServiceWorker's lifetime (per DEC-WK-007).
+/// ServiceWorker's lifetime (per DEC-WK-7).
 ///
 /// @trace REQ-BRW-004 [entity:ServiceWorkerGlobalScope] [criterion:19] DF-WK-10
 #[derive(Debug, Clone)]

@@ -1,4 +1,4 @@
-// @trace TEST-BRW-002-POPUP-GLOBAL-MISLABEL [req:REQ-BRW-002] [level:e2e]
+// @trace TEST-BRW-2-POPUP-GLOBAL-MISLABEL [req:REQ-BRW-002] [level:e2e]
 // Popup double-load / shared-Window DEAD_GLOBALS mislabel E2E (REQ-BRW-002,
 // e63 插针 latent face): a `window.open` popup's first REAL document reuses
 // the initial about:blank document's Window object

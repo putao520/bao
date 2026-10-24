@@ -1,4 +1,4 @@
-//! Pump-tail event-driven wake discriminants (REQ-ARCH-3, wave F2a).
+//! Pump-tail event-driven wake discriminants (REQ-ARCH-003, wave F2a).
 //!
 //! The three run loops' tail wait changed shape: fixed `sleep(1ms)` poll →
 //! bounded park on the servo event queue (`recv_timeout(1ms)`, the deadline
@@ -17,7 +17,7 @@
 //!    instantly-returning dead queue; delivered events are never dropped by
 //!    the wake splice.
 //!
-//! F2c (REQ-ARCH-3): the `run_with_bridge` tail grew a SECOND leg — the CDP
+//! F2c (REQ-ARCH-003): the `run_with_bridge` tail grew a SECOND leg — the CDP
 //! bridge command queue. It now parks on BOTH queues through
 //! `bao_ipc::Select` and wakes on whichever message lands first:
 //!
@@ -31,7 +31,7 @@
 //!    leg's wake; with both legs dead the tail degrades to the plain timed
 //!    sleep.
 //!
-//! @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:e2e]
+//! @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:e2e]
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -337,7 +337,7 @@ fn delegate_park_delivers_event_and_disconnected_park_degrades_to_sleep() {
     );
 }
 
-// ─── F2c (REQ-ARCH-3): the two-channel tail (servo events + CDP bridge) ───
+// ─── F2c (REQ-ARCH-003): the two-channel tail (servo events + CDP bridge) ───
 
 /// One iteration of the exact `run_with_bridge` F2c tail shape — the mirror
 /// of the crate-private `park_for_event_or_bridge` (`bao_ipc::Select` over

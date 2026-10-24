@@ -1,5 +1,5 @@
-// @trace TEST-CLI-001 [req:REQ-CLI-001] [level:integration]
-// @trace TEST-LIB-003 [req:REQ-LIB-003] [level:integration]
+// @trace TEST-CLI-1 [req:REQ-CLI-001] [level:integration]
+// @trace TEST-LIB-3 [req:REQ-LIB-003] [level:integration]
 // Integration tests for CLI brand (bao) and CDP dual-layer abstraction API
 
 use bao_engine::context::JsContext;

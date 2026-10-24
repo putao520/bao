@@ -1,4 +1,4 @@
-// @trace TEST-LIB-004-PERM [req:REQ-LIB-004] [level:unit]
+// @trace TEST-LIB-4-PERM [req:REQ-LIB-004] [level:unit]
 // Permission boundary tests: subdomain matching, env/run booleans, Display, guard modes
 
 use bao_browser::{Permission, PermissionDenied, PermissionGuard};

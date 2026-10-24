@@ -1,4 +1,4 @@
-// @trace TEST-SEC-001 TEST-SEC-002 TEST-SEC-003 [req:REQ-SEC-001,REQ-SEC-002,REQ-SEC-003] [level:integration]
+// @trace TEST-SEC-1 TEST-SEC-2 TEST-SEC-3 [req:REQ-SEC-001,REQ-SEC-002,REQ-SEC-003] [level:integration]
 // Security sandbox tests — CORS disable, dual-layer JS model, Node API isolation.
 //
 // Architecture:
@@ -2188,7 +2188,7 @@ fn scenario_advanced_reflection_cross_realm_attacks(pool: &PagePool, report: &mu
 
 // ---------------------------------------------------------------------------
 // REQ-SEC-003 Integration: Full lifecycle Node API sandbox verification
-// @trace TEST-SEC-003 [req:REQ-SEC-003] [level:integration]
+// @trace TEST-SEC-3 [req:REQ-SEC-003] [level:integration]
 // Tests multi-module collaboration: BrowserRuntime → PagePool → PageHandle → evaluate_js/evaluate_js_web
 // ---------------------------------------------------------------------------
 

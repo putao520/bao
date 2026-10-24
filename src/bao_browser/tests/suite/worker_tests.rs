@@ -1,5 +1,5 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004,REQ-BRW-4] [level:unit,integration]
-// Worker integration & acceptance tests for REQ-BRW-004 (Dedicated Worker) + REQ-BRW-4 (Worker/SharedWorker/ServiceWorker).
+// @trace TEST-BRW-4 [req:REQ-BRW-004,REQ-BRW-004] [level:unit,integration]
+// Worker integration & acceptance tests for REQ-BRW-004 (Dedicated Worker) + REQ-BRW-004 (Worker/SharedWorker/ServiceWorker).
 //
 // Tests cover:
 //   - WorkerHandle lifecycle (new / terminate / mark_terminated / is_closing / is_terminated)
@@ -906,10 +906,10 @@ fn test_is_javascript_mime_type_case_insensitive() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// §14 SharedWorker types (REQ-BRW-4)
+// §14 SharedWorker types (REQ-BRW-004)
 // ═══════════════════════════════════════════════════════════════════════
 
-/// @trace REQ-BRW-4 [entity:SharedWorker] SharedWorkerId construction
+/// @trace REQ-BRW-004 [entity:SharedWorker] SharedWorkerId construction
 #[test]
 fn test_shared_worker_id_construction() {
     let id = SharedWorkerId {
@@ -920,7 +920,7 @@ fn test_shared_worker_id_construction() {
     assert_eq!(id.name, "my-shared-worker");
 }
 
-/// @trace REQ-BRW-4 [entity:SharedWorker] SharedWorkerHandle lifecycle
+/// @trace REQ-BRW-004 [entity:SharedWorker] SharedWorkerHandle lifecycle
 #[test]
 fn test_shared_worker_handle_lifecycle() {
     let handle = SharedWorkerHandle::new("https://example.com/shared.js".into(), "sw-name".into());
@@ -949,7 +949,7 @@ fn test_shared_worker_handle_lifecycle() {
     assert!(handle.is_terminated());
 }
 
-/// @trace REQ-BRW-4 [entity:SharedWorker] SharedWorkerHandle page disconnect
+/// @trace REQ-BRW-004 [entity:SharedWorker] SharedWorkerHandle page disconnect
 #[test]
 fn test_shared_worker_handle_page_disconnect() {
     let handle = SharedWorkerHandle::new("sw.js".into(), "".into());
@@ -962,7 +962,7 @@ fn test_shared_worker_handle_page_disconnect() {
     assert_eq!(handle.connected_page_count(), 1);
 }
 
-/// @trace REQ-BRW-4 [entity:SharedWorkerGlobalScope] SharedWorkerGlobalScopeState
+/// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope] SharedWorkerGlobalScopeState
 #[test]
 fn test_shared_worker_global_scope_state() {
     let config = SharedWorkerScopeConfig::default();
@@ -985,7 +985,7 @@ fn test_shared_worker_global_scope_state() {
     assert_eq!(scope2.connect_count, 1);
 }
 
-/// @trace REQ-BRW-4 [entity:SharedWorker] SharedWorkerConnectEvent
+/// @trace REQ-BRW-004 [entity:SharedWorker] SharedWorkerConnectEvent
 #[test]
 fn test_shared_worker_connect_event() {
     let event = SharedWorkerConnectEvent {
@@ -999,7 +999,7 @@ fn test_shared_worker_connect_event() {
     assert_eq!(event.page_url, "https://example.com/page1");
 }
 
-/// @trace REQ-BRW-4 [entity:SharedWorker] SharedWorkerScopeConfig default
+/// @trace REQ-BRW-004 [entity:SharedWorker] SharedWorkerScopeConfig default
 #[test]
 fn test_shared_worker_scope_config_default() {
     let config = SharedWorkerScopeConfig::default();
@@ -1008,7 +1008,7 @@ fn test_shared_worker_scope_config_default() {
     assert!(config.hardware_concurrency >= 1);
 }
 
-/// @trace REQ-BRW-4 [criterion:12] StealthProfile → SharedWorkerScopeConfig conversion
+/// @trace REQ-BRW-004 [criterion:12] StealthProfile → SharedWorkerScopeConfig conversion
 #[test]
 fn test_stealth_profile_to_shared_worker_scope_config() {
     let profile = bao_stealth::StealthProfile::chrome_default();
@@ -1213,10 +1213,10 @@ fn test_worker_script_load_state_variants() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// §19 SharedWorkerPortRef (REQ-BRW-4)
+// §19 SharedWorkerPortRef (REQ-BRW-004)
 // ═══════════════════════════════════════════════════════════════════════
 
-/// @trace REQ-BRW-4 [entity:SharedWorker] SharedWorkerPortRef construction
+/// @trace REQ-BRW-004 [entity:SharedWorker] SharedWorkerPortRef construction
 #[test]
 fn test_shared_worker_port_ref_construction() {
     let handle = SharedWorkerHandle::new("port-ref.js".into(), "port-test".into());

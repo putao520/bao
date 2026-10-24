@@ -660,7 +660,7 @@ unsafe extern "C" fn tty_write_stream_write(cx: *mut JSContext, argc: u32, vp: *
 /// Shared no-op ref()/unref() core — both return `this` for object receivers
 /// (Node parity: TTY streams have no external handle to ref/unref). The two
 /// registered faces are observationally identical by design
-/// (REQ-ARCH-1 duplicate convergence).
+/// (REQ-ARCH-001 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn tty_return_this(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);

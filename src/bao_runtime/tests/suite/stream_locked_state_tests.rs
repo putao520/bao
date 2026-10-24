@@ -1,4 +1,4 @@
-// @trace TEST-ENG-005-LOCKED-STATE [req:REQ-ENG-005] [level:integration]
+// @trace TEST-ENG-5-LOCKED-STATE [req:REQ-ENG-005] [level:integration]
 //
 // absorb bun 30787ebeab regression gate: locked-stream errors of cancel /
 // pipeTo / pipeThrough must carry code ERR_INVALID_STATE with the Node.js

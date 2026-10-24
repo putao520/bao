@@ -91,7 +91,7 @@ REQ 列表:REQ-BAO-API-001 ~ REQ-BAO-API-008
 ### TASK-8: 端到端测试
 - SPEC: 全部 [验收] | 文件: src/bao_cdp_client/tests/{e2e_internal_servo.rs, e2e_external_chrome.rs, e2e_playwright_compat.rs, injection_defense.rs, event_coverage.rs} | 实现: ① e2e_internal_servo.rs:Browser::connect("memory://bao") + page.goto + screenshot + cookie + click 完整流程 ② e2e_external_chrome.rs:Browser::connect("ws://127.0.0.1:9222") 连真实 Chrome,完整自动化流程 ③ e2e_playwright_compat.rs:启动 bao_cdp CDP server,Playwright(Node.js)连接,完整自动化流程 ④ injection_defense.rs:52 个 B 类 method 的 JS 注入防御测试 ⑤ event_coverage.rs:7 类 servo 事件 → CDP event 端到端验证 | 验收: 全部测试通过 + 0 注入漏洞 + Playwright 兼容性 E2E 通过 | 依赖: TASK-4, TASK-5, TASK-7 | 状态: pending
 - 复用锚点:
-  - spec: [TEST-CDP-001~008(已有), TEST-BAO-API-001~008(待新建)]
+  - spec: [TEST-CDP-001~008(已有), TEST-BAO-API-1~008(待新建)]
   - code: [bao_cdp/tests/ws_resilience_tests.rs(参考 CDP 测试模式)]
   - code: [bao_browser/tests/(参考 servo 真链路测试)]
   - pattern: [real servo + real Chrome 双链路测试]

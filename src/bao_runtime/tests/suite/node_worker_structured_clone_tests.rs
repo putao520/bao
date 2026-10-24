@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-WORKER-SC [req:REQ-ENG-006] [level:e2e]
+// @trace TEST-ENG-6-WORKER-SC [req:REQ-ENG-006] [level:e2e]
 //
 // Worker postMessage structured-clone type-fidelity tests (real OS-thread
 // workers, real mpsc wire): main serializes → worker deserializes → worker

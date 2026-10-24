@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-WS-EDGE [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6-WS-EDGE [req:REQ-ENG-006] [level:integration]
 //
 // Coverage-shortfall tests for web_api.rs WebSocket face (REQ-ENG-006): the
 // real wire paths the shape-only probes never reach —
@@ -395,7 +395,7 @@ fn ws_constructor_and_lifecycle_error_paths() {
     );
 }
 
-/// ws_send argument conversion (REQ-BRW-12 C3): node v24.19.0 oracle — a
+/// ws_send argument conversion (REQ-BRW-012 C3): node v24.19.0 oracle — a
 /// non-string send() argument is stringified per ES ToString and transmitted
 /// as a text frame (123 → "123", null → "null", {toString} → that result);
 /// a throwing conversion (Symbol) propagates as a JS exception. The old

@@ -90,7 +90,7 @@ fn parse_der_to_pkey(der: &[u8]) -> Result<*mut EVP_PKEY, CryptoError> {
 }
 
 impl Signer {
-    // REQ-ARCH-1 duplicate exemption (registered 2026-10-16): from_pkcs8_pem /
+    // REQ-ARCH-001 duplicate exemption (registered 2026-10-16): from_pkcs8_pem /
     // from_pkcs8_der share only the 3-line `Ok(Signer { pkey, algo })`
     // constructor tail; the bodies are semantically separate parse backends
     // (PEM text via PEM_read_bio_PrivateKey vs DER binary via

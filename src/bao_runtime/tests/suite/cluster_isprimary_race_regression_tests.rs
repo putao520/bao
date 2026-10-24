@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-CLUSTER [req:REQ-ENG-006] [level:e2e+integration]
+// @trace TEST-ENG-6-CLUSTER [req:REQ-ENG-006] [level:e2e+integration]
 // #64 regression: cluster.isPrimary non-deterministic flip-to-false.
 //
 // Root cause class (pre-fix): the worker classification froze LAZILY at the

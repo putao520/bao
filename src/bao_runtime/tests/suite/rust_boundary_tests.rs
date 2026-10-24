@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-BOUNDARY [req:REQ-ENG-007,REQ-LIB-004] [level:unit]
+// @trace TEST-ENG-7-BOUNDARY [req:REQ-ENG-007,REQ-LIB-004] [level:unit]
 // Pure Rust boundary tests for bao_runtime modules that don't require JSContext.
 // Tests permission_bridge, node_os::sys_info, stealth_http pure functions.
 

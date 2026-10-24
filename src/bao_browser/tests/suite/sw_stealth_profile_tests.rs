@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:19] [level:integration]
+// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:19] [level:integration]
 // REQ-BRW-004 C19 three-subclause live coverage (V-batch v47 ③: the SPEC
 // subclauses beyond the already-green mediation/controller mechanics had
 // ZERO tests — this file lands one live test per subclause):

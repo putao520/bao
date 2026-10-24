@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-EXIT [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6-EXIT [req:REQ-ENG-006] [level:integration]
 // process.on('exit') dispatch — Node semantics (upstream 18391f652):
 // listeners run in registration order at orderly exit, each receiving the
 // exit code; a throwing listener does not stop later ones; process.exitCode

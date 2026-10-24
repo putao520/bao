@@ -2012,7 +2012,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 mod tests {
     use super::*;
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_vtable_is_complete() {
         // Verify all critical vtable slots are populated.
@@ -2036,7 +2036,7 @@ mod tests {
         );
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_get_loop_returns_non_null() {
         bao_uloop::force_link();
@@ -2047,7 +2047,7 @@ mod tests {
         );
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_pending_write_empty() {
         let pw = NetPendingWrite::default();
@@ -2055,7 +2055,7 @@ mod tests {
         assert_eq!(pw.len, 0);
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_pending_write_set_and_clear() {
         let mut pw = NetPendingWrite::default();
@@ -2066,7 +2066,7 @@ mod tests {
         assert!(pw.is_empty());
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_pending_write_set_empty_data() {
         let mut pw = NetPendingWrite::default();
@@ -2075,7 +2075,7 @@ mod tests {
         assert!(pw.is_empty());
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_pending_write_overwrite() {
         let mut pw = NetPendingWrite::default();
@@ -2085,14 +2085,14 @@ mod tests {
         pw.clear();
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_cleanup_does_not_panic() {
         let _cleanup = NetCleanup;
         // Drop should not panic even with empty state.
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_socket_kind_tcp() {
         // Verify we use a valid SocketKind for plain TCP.
@@ -2100,14 +2100,14 @@ mod tests {
         assert_ne!(kind, SocketKind::Invalid);
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_close_code_normal() {
         // Verify CloseCode::normal is 0 (matches C enum).
         assert_eq!(CloseCode::normal as i32, 0);
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_js_source_contains_ptr_not_fd() {
         // Verify JS source uses _ptr instead of _fd.
@@ -2118,7 +2118,7 @@ mod tests {
         assert!(!NET_JS.contains("_fd"), "JS must not use _fd");
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_js_source_contains_all_exports() {
         for name in &[
@@ -2137,7 +2137,7 @@ mod tests {
         }
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_socket_ext_layout() {
         // Verify NetSocketExt is repr(C) and has expected size.
@@ -2145,7 +2145,7 @@ mod tests {
         assert!(::std::mem::size_of::<NetSocketExt>() >= ::std::mem::size_of::<u8>());
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_ensure_server_group_creates_valid_group() {
         bao_uloop::force_link();
@@ -2161,7 +2161,7 @@ mod tests {
 
     // ──── extended unit tests ────
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_vtable_callback_signatures_match_dispatch() {
         // Verify VTable callback types match bao_uloop dispatch expectations.
@@ -2179,7 +2179,7 @@ mod tests {
         assert!(NET_VTABLE.on_fd.is_none());
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_pending_write_large_data() {
         let mut pw = NetPendingWrite::default();
@@ -2191,7 +2191,7 @@ mod tests {
         assert!(pw.is_empty());
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_pending_write_reuse_buffer() {
         let mut pw = NetPendingWrite::default();
@@ -2203,7 +2203,7 @@ mod tests {
         pw.clear();
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_cleanup_clears_all_thread_local_state() {
         bao_uloop::force_link();
@@ -2231,14 +2231,14 @@ mod tests {
         NET_SOCKETS.with(|s| assert!(s.borrow().is_empty()));
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_connect_result_initial_state() {
         CONNECT_RESULT.with(|r| assert!(r.get().is_none(), "initial CONNECT_RESULT is None"));
         CONNECT_ERROR.with(|e| assert!(!e.get(), "initial CONNECT_ERROR is false"));
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_connect_result_set_and_reset() {
         CONNECT_RESULT.with(|r| r.set(Some(42)));
@@ -2247,7 +2247,7 @@ mod tests {
         assert!(CONNECT_RESULT.with(|r| r.get()).is_none());
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_connect_error_set_and_reset() {
         CONNECT_ERROR.with(|e| e.set(true));
@@ -2256,7 +2256,7 @@ mod tests {
         assert!(!CONNECT_ERROR.with(|e| e.get()));
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_js_socket_methods_exist() {
         // Verify JS Socket class has expected method names
@@ -2266,7 +2266,7 @@ mod tests {
         assert!(NET_JS.contains("Socket.prototype.destroy"));
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_js_server_methods_exist() {
         // Verify JS Server class has expected method names
@@ -2275,7 +2275,7 @@ mod tests {
         assert!(NET_JS.contains("Server.prototype.address"));
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_js_net_native_functions() {
         // Verify JS code references native helper functions
@@ -2285,7 +2285,7 @@ mod tests {
         assert!(NET_JS.contains("__net_close"));
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_js_isip_validation_logic() {
         // Verify isIP JS logic checks IPv4 format
@@ -2295,7 +2295,7 @@ mod tests {
         assert!(NET_JS.contains("0 <= n && n <= 255") || NET_JS.contains("n < 0 || n > 255"));
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_socket_ext_default_is_zero() {
         let ext = NetSocketExt {
@@ -2306,7 +2306,7 @@ mod tests {
         assert!(ext.pending_write.is_empty());
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_socket_ext_client_flag() {
         let ext = NetSocketExt {
@@ -2316,7 +2316,7 @@ mod tests {
         assert_eq!(ext.is_client, 1);
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_thread_local_hashmap_operations() {
         // Test basic HashMap operations on thread-local NET_SOCKETS
@@ -2335,7 +2335,7 @@ mod tests {
         NET_SOCKETS.with(|m| m.borrow_mut().clear());
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_thread_local_listen_socket_vec_operations() {
         NET_LISTEN_SOCKETS.with(|l| {
@@ -2353,7 +2353,7 @@ mod tests {
         NET_LISTEN_SOCKETS.with(|l| l.borrow_mut().clear());
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_net_pending_write_drop_does_not_double_free() {
         // Create and drop multiple times — should not panic or double-free
@@ -2365,7 +2365,7 @@ mod tests {
         drop(pw);
     }
 
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]
     #[test]
     fn test_multiple_server_groups_in_thread_local() {
         bao_uloop::force_link();

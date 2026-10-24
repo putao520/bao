@@ -1,4 +1,4 @@
-//! @trace REQ-ARCH-3
+//! @trace REQ-ARCH-003
 //!
 //! Discriminating tests for the bao_ipc MPMC substrate contract: MPMC
 //! no-loss / no-dup delivery, bounded backpressure, close semantics, clone

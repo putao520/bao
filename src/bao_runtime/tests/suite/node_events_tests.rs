@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-EV [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-EV [req:REQ-ENG-007] [level:integration]
 // Integration tests for node:events API (REQ-ENG-007)
 // All JS assertions in one eval() call.
 
@@ -169,7 +169,7 @@ fn test_node_events_all() {
     bun_runtime::shutdown_thread_sm();
 }
 
-// @trace TEST-ENG-007-EV [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-EV [req:REQ-ENG-007] [level:integration]
 // Same-object NESTED emits — the EmitterState single-owner invariant
 // regression. get_state used to consume the prop-owned Box
 // (`*Box::from_raw`) while the hidden prop kept pointing at the freed

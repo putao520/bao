@@ -2890,7 +2890,7 @@ mod tests {
     /// libffi closure is constructed and exposes a non-null C code pointer.
     /// Uses null JSContext/JSObject — the closure is not invoked, so the
     /// trampoline's null-guard short-circuits any dispatch.
-    /// @trace REQ-ENG-009 [test:TEST-ENG-009]
+    /// @trace REQ-ENG-009 [test:TEST-ENG-9]
     #[test]
     fn test_ffi_callback_constructs_nonnull_code_ptr() {
         let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut(), Vec::new(), TypeSpec::Void);
@@ -2902,7 +2902,7 @@ mod tests {
 
     /// REQ-ENG-009 acceptance #2: code_ptr() is stable across calls while the
     /// FfiCallback is alive.
-    /// @trace REQ-ENG-009 [test:TEST-ENG-009]
+    /// @trace REQ-ENG-009 [test:TEST-ENG-9]
     #[test]
     fn test_ffi_callback_code_ptr_is_stable() {
         let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut(), Vec::new(), TypeSpec::Void);
@@ -2914,7 +2914,7 @@ mod tests {
     /// REQ-ENG-009 acceptance #2: dropping an FfiCallback releases the libffi
     /// closure without panicking. Exercises the drop order invariant
     /// (closure drops before userdata).
-    /// @trace REQ-ENG-009 [test:TEST-ENG-009]
+    /// @trace REQ-ENG-009 [test:TEST-ENG-9]
     #[test]
     fn test_ffi_callback_drop_does_not_panic() {
         let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut(), Vec::new(), TypeSpec::Void);
@@ -2924,7 +2924,7 @@ mod tests {
 
     /// REQ-ENG-009 acceptance #2: multiple callbacks coexist, each with a
     /// distinct code pointer.
-    /// @trace REQ-ENG-009 [test:TEST-ENG-009]
+    /// @trace REQ-ENG-009 [test:TEST-ENG-9]
     #[test]
     fn test_ffi_callback_multiple_distinct_pointers() {
         let cb1 = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut(), Vec::new(), TypeSpec::Void);
@@ -2938,7 +2938,7 @@ mod tests {
 
     /// REQ-ENG-009 acceptance #2: invoking the trampoline with null userdata is
     /// a safe no-op (the null-guard short-circuits before touching JS).
-    /// @trace REQ-ENG-009 [test:TEST-ENG-009]
+    /// @trace REQ-ENG-009 [test:TEST-ENG-9]
     #[test]
     fn test_ffi_callback_dispatch_null_userdata_is_noop() {
         let cb = FfiCallback::new(::std::ptr::null_mut(), ::std::ptr::null_mut(), Vec::new(), TypeSpec::Void);

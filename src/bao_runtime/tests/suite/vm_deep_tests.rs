@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-VM-DEEP [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-VM-DEEP [req:REQ-ENG-007] [level:integration]
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
@@ -161,7 +161,7 @@ fn test_vm_deep() {
     bun_runtime::shutdown_thread_sm();
 }
 
-// @trace TEST-ENG-011 [req:REQ-ENG-011] [level:integration]
+// @trace TEST-ENG-11 [req:REQ-ENG-011] [level:integration]
 // REQ-ENG-011 criterion 3: `vm.Script.runInContext()` switches to the TARGET
 // realm. One Script instance is compiled once (syntax-checked in the
 // constructor) and then run in two different contextified sandboxes: each
@@ -254,7 +254,7 @@ fn test_vm_script_run_in_context_two_contexts_isolated() {
     bun_runtime::shutdown_thread_sm();
 }
 
-// @trace TEST-ENG-011 [req:REQ-ENG-011] [level:integration]
+// @trace TEST-ENG-11 [req:REQ-ENG-011] [level:integration]
 // REQ-ENG-011 criterion 3, caller-realm isolation face: the Script body runs
 // in the TARGET realm — the caller realm's globals are invisible from inside,
 // the script's own globals never leak back into the caller, and a plain

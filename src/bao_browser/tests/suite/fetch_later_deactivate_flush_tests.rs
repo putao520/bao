@@ -1,4 +1,4 @@
-// @trace TEST-BRW-002 [req:REQ-BRW-002] [level:e2e]
+// @trace TEST-BRW-2 [req:REQ-BRW-002] [level:e2e]
 // fetchLater deactivate-flush (third flush exit) RED→GREEN lock —
 // WPT fetch/fetch-later/send-on-deactivate.https.window.html residual shapes,
 // carrier-local mirror (subtests 3/4/5: navigate-away w/o BFCache must flush

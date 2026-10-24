@@ -1,11 +1,11 @@
 // @trace REQ-BRW-001 [entity:BrowserContext] [entity:PageHandle]
 // @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope]
-// @trace REQ-BRW-4 [entity:Worker] [entity:SharedWorker] [entity:ServiceWorker]
+// @trace REQ-BRW-004 [entity:Worker] [entity:SharedWorker] [entity:ServiceWorker]
 // @trace REQ-CLI-002
 #![allow(dead_code, unused_imports)]
 // REQ-BRW-001: Browser engine integration with servo
 // REQ-BRW-004: Worker constructor bridging to Page Realm (DF-WK-11)
-// REQ-BRW-4: Worker/SharedWorker/ServiceWorker constructors on JS global object
+// REQ-BRW-004: Worker/SharedWorker/ServiceWorker constructors on JS global object
 // REQ-CLI-002: bao browser 子命令 → servo 初始化 + CDP 端口输出
 // REQ-LIB-004: BrowserRuntime top-level coordinator
 mod browser_context;
@@ -110,7 +110,7 @@ pub fn servo_event_pumped_total() -> u64 {
 /// site built on this helper participates in the emitted==pumped assertion
 /// (`run_with_bridge` and the suite pump-shape harnesses alike).
 ///
-/// The queue is the unified MPMC substrate (REQ-ARCH-3, `bao_ipc::unbounded`)
+/// The queue is the unified MPMC substrate (REQ-ARCH-003, `bao_ipc::unbounded`)
 /// — the REQ-CDP-004 reliable-queue legislation (never blocks, never drops)
 /// is unchanged by the migration.
 ///
@@ -123,12 +123,12 @@ pub fn drain_servo_events(
 }
 
 /// [`drain_servo_events`] with one already-received event spliced in front of
-/// the queue drain — the pump-tail park face (REQ-ARCH-3): the tail's
+/// the queue drain — the pump-tail park face (REQ-ARCH-003): the tail's
 /// `recv_timeout` consumed the first event to wake, and this hands it through
 /// the same `handle` in FIFO order. A received event is never dropped by the
 /// park.
 ///
-/// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+/// @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:library]
 pub(crate) fn drain_servo_events_starting(
     servo_event_rx: &bao_ipc::Receiver<ServoEvent>,
     first: Option<ServoEvent>,
@@ -151,7 +151,7 @@ pub(crate) fn drain_servo_events_starting(
     }
 }
 
-/// Park the pump tail on the servo event queue for `budget` (REQ-ARCH-3):
+/// Park the pump tail on the servo event queue for `budget` (REQ-ARCH-003):
 /// block until the next ServoEvent arrives or the budget elapses, whichever
 /// first. A cross-thread `send` during the park wakes the pump immediately —
 /// event latency drops from the fixed 1ms poll's worst-case full budget to
@@ -165,7 +165,7 @@ pub(crate) fn drain_servo_events_starting(
 /// 2026-10-03). The 1ms deadline itself is the servo spin cadence contract —
 /// never raised.
 ///
-/// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+/// @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:library]
 pub(crate) fn park_for_event(
     servo_event_rx: Option<&bao_ipc::Receiver<ServoEvent>>,
     budget: Duration,
@@ -184,7 +184,7 @@ pub(crate) fn park_for_event(
     }
 }
 
-/// The two-channel pump-tail park (REQ-ARCH-3 wave F2c): the
+/// The two-channel pump-tail park (REQ-ARCH-003 wave F2c): the
 /// [`park_for_event`] wait extended to the CDP bridge leg — block until a
 /// ServoEvent (servo event queue) OR a BridgeRequest (bridge command queue)
 /// lands, whichever first, with the same 1ms deadline (the servo spin cadence
@@ -207,7 +207,7 @@ pub(crate) fn park_for_event(
 /// immediate wake. With no live channel left the call degrades to the plain
 /// budget sleep, exactly [`park_for_event`]'s disconnected face.
 ///
-/// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+/// @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:library]
 pub(crate) fn park_for_event_or_bridge(
     servo_event_rx: &bao_ipc::Receiver<ServoEvent>,
     servo_live: &mut bool,
@@ -721,7 +721,7 @@ impl BrowserRuntime {
         // `servo_delegate.event_tx()`).
         // @trace REQ-LIB-003 [req:REQ-LIB-003]
         // @trace REQ-LIB-002 [req:REQ-LIB-002]
-        // The queue is the unified MPMC substrate (REQ-ARCH-3): bao_ipc
+        // The queue is the unified MPMC substrate (REQ-ARCH-003): bao_ipc
         // unbounded — the REQ-CDP-004 reliable-queue semantics (never blocks,
         // never drops) carry over unchanged from the former std mpsc.
         let (servo_event_tx, servo_event_rx) = bao_ipc::unbounded::<ServoEvent>();
@@ -843,7 +843,7 @@ impl BrowserRuntime {
     /// This is the primary entry point for the Worker constructor bridging
     /// Create a Dedicated Worker via servo's native Worker::Constructor.
     ///
-    /// Per DEC-WK-001 (BCE-20260627-008), bao no longer spawns a
+    /// Per DEC-WK-1 (BCE-20260627-008), bao no longer spawns a
     /// `bao_engine::WebWorker` bypass thread. Instead, this method dispatches
     /// `new Worker(url)` into the page via servo's DOM binding, and servo
     /// constructs the Worker thread + DedicatedWorkerGlobalScope internally.
@@ -865,9 +865,9 @@ impl BrowserRuntime {
     /// scripts, callers should materialize a `data:`/`blob:` URL and pass it
     /// here (or call `create_worker_with_url`).
     ///
-    /// @trace DEC-WK-001 servo-native Worker path (bypass removed)
+    /// @trace DEC-WK-1 servo-native Worker path (bypass removed)
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:1..10] [criterion:12..18]
-    /// @trace REQ-BRW-4 [criterion:C1..C4]
+    /// @trace REQ-BRW-004 [criterion:C1..C4]
     pub fn create_worker(
         &self,
         page: &PageHandle,
@@ -879,7 +879,7 @@ impl BrowserRuntime {
     /// Create a Dedicated Worker with a script URL resolved by servo's native
     /// script loading pipeline.
     ///
-    /// Per DEC-WK-001 (BCE-20260627-008) the bypass `bao_engine::WebWorker`
+    /// Per DEC-WK-1 (BCE-20260627-008) the bypass `bao_engine::WebWorker`
     /// path is removed. The Worker is constructed by servo's DOM
     /// `Worker::Constructor` when `new Worker(url)` is evaluated in the page.
     /// This method:
@@ -891,9 +891,9 @@ impl BrowserRuntime {
     ///   4. Tracks the Worker with AutoCloseWorker (criterion #10).
     ///   5. Dispatches `new Worker(url)` into the page via servo's DOM binding.
     ///
-    /// @trace DEC-WK-001 servo-native Worker path (bypass removed)
+    /// @trace DEC-WK-1 servo-native Worker path (bypass removed)
     /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
-    /// @trace REQ-BRW-4 [criterion:C1..C4]
+    /// @trace REQ-BRW-004 [criterion:C1..C4]
     pub fn create_worker_with_url(
         &self,
         page: &PageHandle,
@@ -927,7 +927,7 @@ impl BrowserRuntime {
         // page's queued callback). Registered strictly before the
         // `new Worker(url)` dispatch so the callback is queued when servo's
         // Worker thread drains EMBEDDER_WORKER_SCOPE_CALLBACKS at scope
-        // construction (DEC-WK-001). On the callback's first run the Worker
+        // construction (DEC-WK-1). On the callback's first run the Worker
         // global's address is backfilled into the handle and the page's
         // stealth profile is installed (criteria #12-17).
         // @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
@@ -978,7 +978,7 @@ impl BrowserRuntime {
         // (fetch → MIME check → decode → compile) and spawns the Worker thread
         // internally; bao's scope callback fires on the Worker thread to install
         // DedicatedWorkerGlobalScope APIs + stealth properties (criteria #8, #12-17).
-        // @trace DEC-WK-001 servo-native Worker path
+        // @trace DEC-WK-1 servo-native Worker path
         // @trace REQ-BRW-004 [criterion:1] new Worker(url) creates worker thread
         // @trace REQ-BRW-004 [DF-WK-2] Worker script loading pipeline
         let new_worker_js = format!(
@@ -993,7 +993,7 @@ impl BrowserRuntime {
         })?;
 
         log::debug!(
-            "[bao] dispatched new Worker({:?}) via servo DOM (tracked via AutoCloseWorker, DEC-WK-001 native path)",
+            "[bao] dispatched new Worker({:?}) via servo DOM (tracked via AutoCloseWorker, DEC-WK-1 native path)",
             url
         );
 
@@ -1013,12 +1013,12 @@ impl BrowserRuntime {
     /// Set the console log forwarding channel on the servo delegate.
     /// Console messages from servo will be sent to this channel.
     ///
-    /// On the unified MPMC substrate (`bao_ipc::Sender`, REQ-ARCH-3 wave R3 —
+    /// On the unified MPMC substrate (`bao_ipc::Sender`, REQ-ARCH-003 wave R3 —
     /// the F2a deferral is closed): pair with `bao_ipc::unbounded()`; the
     /// paired receiver is consumed by `CdpServer::set_console_receiver`,
     /// which took the same substrate in the same wave — one channel pair
     /// cannot span two substrate implementations.
-    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    /// @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:library]
     pub fn set_console_log_channel(&self, tx: bao_ipc::Sender<cdp_server::ConsoleMessage>) {
         self.delegate.set_console_log_tx(tx.clone());
         // Retro-propagate to every existing page's webview state, exactly
@@ -1047,7 +1047,7 @@ impl BrowserRuntime {
     /// must live on each state, not only the runtime-level delegate.
     ///
     /// The sender is the unified MPMC substrate's (`bao_ipc::Sender`,
-    /// REQ-ARCH-3); pair it with `bao_ipc::unbounded()` — the REQ-CDP-004
+    /// REQ-ARCH-003); pair it with `bao_ipc::unbounded()` — the REQ-CDP-004
     /// reliable-queue semantics (never blocks, never drops) require the
     /// unbounded constructor.
     ///
@@ -1200,7 +1200,7 @@ impl BrowserRuntime {
             // switches, e26 evidence 2026-10-03). At N concurrent wptrunner
             // browsers that is N cores of pure spin amplifying scheduler
             // contention machine-wide. The former fixed 1ms sleep kept drain
-            // latency ≤1ms at ~0.1% of a core; the REQ-ARCH-3 event-driven
+            // latency ≤1ms at ~0.1% of a core; the REQ-ARCH-003 event-driven
             // park keeps the SAME 1ms deadline (the servo spin cadence
             // contract) but wakes early when the runtime-owned event queue
             // stirs, and degrades back to the plain sleep when that receiver
@@ -1252,7 +1252,7 @@ impl BrowserRuntime {
             // (the bounded pump face stays waitFor*-live).
             self.delegate.drain_runtime_events();
             // Bounded park — same cadence rationale as `run` (yield_now burned
-            // a full core for the whole pump duration). REQ-ARCH-3
+            // a full core for the whole pump duration). REQ-ARCH-003
             // event-driven wake on the runtime-owned queue, 1ms deadline
             // unchanged.
             self.delegate.park_runtime_events(Duration::from_millis(1));
@@ -1261,7 +1261,7 @@ impl BrowserRuntime {
 
     /// Run with a CDP bridge that processes commands during the event loop.
     /// Also drains ServoEvent from the real event queue (Path B — unbounded
-    /// reliable queue on the unified MPMC substrate, REQ-ARCH-3
+    /// reliable queue on the unified MPMC substrate, REQ-ARCH-003
     /// `bao_ipc::unbounded`) and broadcasts translated CdpEvents via the
     /// shared EventBroadcaster.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
@@ -1274,7 +1274,7 @@ impl BrowserRuntime {
     ) -> Result<(), BrowserError> {
         let max_wait = Duration::from_secs(3600);
         let start = std::time::Instant::now();
-        // Per-channel tail-park liveness (REQ-ARCH-3 F2c): flipped to false by
+        // Per-channel tail-park liveness (REQ-ARCH-003 F2c): flipped to false by
         // `park_for_event_or_bridge` when a queue surfaces Disconnected
         // (sender half gone — embedder `set_event_channel` replacement /
         // bridge teardown), so the dead queue is gated out of later parks.
@@ -1332,7 +1332,7 @@ impl BrowserRuntime {
             .flatten()
             .collect();
             // The per-iteration translate+broadcast body, shared by the
-            // in-iteration drain AND the tail-park splice (REQ-ARCH-3): an
+            // in-iteration drain AND the tail-park splice (REQ-ARCH-003): an
             // event that wakes the park must flow through the exact same
             // path. Copy closure — every capture is a shared borrow.
             let translate_and_broadcast = |servo_event: ServoEvent| {
@@ -1368,7 +1368,7 @@ impl BrowserRuntime {
 
             // Bounded two-channel park — same cadence rationale as `run`
             // (yield_now burned a full core for the whole pump duration; 1ms
-            // keeps latency negligible). REQ-ARCH-3 event-driven wake on BOTH
+            // keeps latency negligible). REQ-ARCH-003 event-driven wake on BOTH
             // legs (F2c): the park returns as soon as a ServoEvent OR a CDP
             // bridge command arrives. A consumed servo event is spliced into
             // the SAME drain body below (never dropped, in-iteration drain
@@ -1564,19 +1564,19 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
         let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
 
         // Create console log forwarding channel: servo delegate → CDP Log domain.
-        // Unified MPMC substrate (REQ-ARCH-3, wave R3 — the F2a deferral is
+        // Unified MPMC substrate (REQ-ARCH-003, wave R3 — the F2a deferral is
         // closed): the receiver half is consumed by
         // `CdpServer::set_console_receiver` (cdp-server), which took the same
         // substrate in the same wave — one channel pair cannot span two
         // substrate implementations. Unbounded: the delegate's send sites are
         // fire-and-forget console observability and must never stall the
         // servo script thread on CDP delivery.
-        // @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+        // @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:library]
         let (console_tx, console_rx) = bao_ipc::unbounded::<cdp_server::ConsoleMessage>();
         runtime.set_console_log_channel(console_tx);
 
         // Real event queue (Path B): unbounded reliable queue on the unified
-        // MPMC substrate (REQ-ARCH-3, bao_ipc::unbounded) — the servo
+        // MPMC substrate (REQ-ARCH-003, bao_ipc::unbounded) — the servo
         // delegate pushes ServoEvents that `run_with_bridge` drains and
         // translates. Delivery is lossless by construction (REQ-CDP-004);
         // the emitted/pumped probe pair (delegate.rs / the pump loop below)

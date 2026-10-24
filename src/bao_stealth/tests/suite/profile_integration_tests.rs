@@ -1,4 +1,4 @@
-// @trace TEST-STL-007 [req:REQ-STL-007] [level:unit]
+// @trace TEST-STL-7 [req:REQ-STL-007] [level:unit]
 // @trace TEST-STL-008 [req:REQ-STL-004] [level:unit]
 // @trace TEST-STL-009 [req:REQ-STL-003] [level:unit]
 // @trace TEST-STL-010 [req:REQ-STL-005] [level:unit]

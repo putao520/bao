@@ -135,14 +135,14 @@ pub struct BaoWebViewState {
     /// evaluate_js checks this flag and refreshes stale DOM proxies before executing scripts.
     pub dom_proxies_dirty: bool,
     /// Channel for forwarding per-webview console messages to CDP Log domain.
-    /// Unified MPMC substrate (REQ-ARCH-3, wave R3) — this is the same
+    /// Unified MPMC substrate (REQ-ARCH-003, wave R3) — this is the same
     /// channel pair the servo delegate and `CdpServer::set_console_receiver`
     /// share (propagated at page creation), so all holders took the
     /// substrate in the same wave.
-    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    /// @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:library]
     pub console_log_tx: Option<Sender<ConsoleMessage>>,
     /// Real event queue sender (Path B): reliable unbounded queue (bao_ipc,
-    /// REQ-ARCH-3) to the pump.
+    /// REQ-ARCH-003) to the pump.
     /// When set, events are also pushed here in addition to console_log_tx.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     pub event_tx: Option<Sender<ServoEvent>>,
@@ -207,7 +207,7 @@ pub struct BaoWebViewState {
     /// and lifecycle management (DF-WK-2: script loading pipeline).
     /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
     pub(super) worker_script_load_states: HashMap<WorkerId, WorkerScriptLoadState>,
-    /// Active WorkerHandle references keyed by WorkerId (DEC-WK-001).
+    /// Active WorkerHandle references keyed by WorkerId (DEC-WK-1).
     /// These track Workers created via servo's native Worker::Constructor.
     /// The WorkerHandle holds closing/terminated flags + global_addr for
     /// REALM_PROFILES cleanup. The actual thread lifecycle is managed by servo.
@@ -707,7 +707,7 @@ impl BaoWebViewState {
         let thread_joined = if self.web_workers.contains_key(worker_id) {
             // Removing the WorkerHandle from the map just drops the handle.
             // The actual Worker thread join is handled by servo's Worker::drop
-            // (DEC-WK-001 native path) when the servo Worker DOM object is GC'd.
+            // (DEC-WK-1 native path) when the servo Worker DOM object is GC'd.
             self.web_workers.remove(worker_id);
             true
         } else {
@@ -747,7 +747,7 @@ impl BaoWebViewState {
         self.dedicated_worker_scopes.insert(worker_id, scope);
     }
 
-    /// Register a WorkerHandle reference for the given WorkerId (DEC-WK-001).
+    /// Register a WorkerHandle reference for the given WorkerId (DEC-WK-1).
     ///
     /// The WorkerHandle tracks the Worker's closing/terminated flags +
     /// global_addr for REALM_PROFILES cleanup. Storing it here keeps the
@@ -1470,7 +1470,7 @@ impl BaoWebViewState {
     /// Set the SharedWorker scope config from the first connecting page's StealthProfile.
     ///
     /// DF-WK-9: SharedWorkerGlobalScope inherits the first connecting page's
-    /// StealthProfile and it remains fixed for the worker's lifetime (per DEC-WK-007).
+    /// StealthProfile and it remains fixed for the worker's lifetime (per DEC-WK-7).
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope] [criterion:12..17] DF-WK-9
     pub fn set_shared_worker_scope_config(

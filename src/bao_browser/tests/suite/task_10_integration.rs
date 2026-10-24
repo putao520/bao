@@ -1,17 +1,17 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004,REQ-BRW-4] [level:integration,acceptance]
+// @trace TEST-BRW-4 [req:REQ-BRW-004,REQ-BRW-004] [level:integration,acceptance]
 // TASK-10: 集成与验收测试
 //
 // Integration tests (require BrowserRuntime):
-// - ServiceWorker: type exports + handle lifecycle + stealth inheritance + fetch boundary (REQ-BRW-4 C6/C19)
-// - SharedWorker: handle lifecycle + connect/disconnect (REQ-BRW-4 C5/DF-WK-7)
+// - ServiceWorker: type exports + handle lifecycle + stealth inheritance + fetch boundary (REQ-BRW-004 C6/C19)
+// - SharedWorker: handle lifecycle + connect/disconnect (REQ-BRW-004 C5/DF-WK-7)
 // - Crash-safe: concurrent Worker create-destroy loop (REQ-BRW-004 C18)
 // - Stealth consistency: WorkerScopeConfig from StealthProfile (REQ-BRW-004 C12)
 //
 // @trace REQ-BRW-004 [entity:Worker] [entity:ServiceWorker] [entity:SharedWorker] [entity:ServiceWorkerGlobalScope]
-// @trace REQ-BRW-4 [entity:Worker] [entity:SharedWorker] [entity:ServiceWorker]
-// @trace DEC-WK-001 [servo原生路径验证] [vendor/dedicatedworkerglobalscope.rs:532]
-// @trace DEC-WK-007 [Stealth Profile: Arc<StealthProfile> 共享]
-// @trace DEC-WK-008 [ServiceWorker fetch 拦截]
+// @trace REQ-BRW-004 [entity:Worker] [entity:SharedWorker] [entity:ServiceWorker]
+// @trace DEC-WK-1 [servo原生路径验证] [vendor/dedicatedworkerglobalscope.rs:532]
+// @trace DEC-WK-7 [Stealth Profile: Arc<StealthProfile> 共享]
+// @trace DEC-WK-8 [ServiceWorker fetch 拦截]
 // @trace NFR-MEMSAF-001 [单线程串行化契约] ✓ atomic flags
 // @trace NFR-THREAD-SAFETY [禁止跨线程JSObject裸指针] ✓ 仅Arc<AtomicBool>/Arc<Mutex<State>>/String/StealthProfile(Arc)
 // @trace WorkerScopeFingerprintConsistency [navigator 一致性] ✓ StealthProfile::from() 传递所有属性
@@ -25,7 +25,7 @@ use bao_browser::{
 use bao_stealth::StealthProfile;
 
 // ═══════════════════════════════════════════════════════════════════════
-// $1 ServiceWorker type exports (REQ-BRW-4 entity:ServiceWorker)
+// $1 ServiceWorker type exports (REQ-BRW-004 entity:ServiceWorker)
 // ═══════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -40,10 +40,10 @@ fn test_service_worker_types_export() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// $2 ServiceWorkerHandle lifecycle (REQ-BRW-4 DF-WK-8)
+// $2 ServiceWorkerHandle lifecycle (REQ-BRW-004 DF-WK-8)
 // ═══════════════════════════════════════════════════════════════════════
 
-/// @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8
+/// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
 #[test]
 fn test_service_worker_handle_new_starts_installing() {
     let handle = ServiceWorkerHandle::new("https://example.com/sw.js".into(), "/".into(), None);
@@ -57,7 +57,7 @@ fn test_service_worker_handle_new_starts_installing() {
     );
 }
 
-/// @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8
+/// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
 #[test]
 fn test_service_worker_state_transitions() {
     let handle = ServiceWorkerHandle::new("sw2.js".into(), "/api/".into(), None);
@@ -87,7 +87,7 @@ fn test_service_worker_state_transitions() {
     );
 }
 
-/// @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8
+/// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
 #[test]
 fn test_service_worker_handle_terminate() {
     let handle = ServiceWorkerHandle::new("sw3.js".into(), "/".into(), None);
@@ -102,7 +102,7 @@ fn test_service_worker_handle_terminate() {
     assert!(handle.is_terminated());
 }
 
-/// @trace REQ-BRW-4 [entity:ServiceWorker] [criterion:19]
+/// @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:19]
 #[test]
 fn test_service_worker_fetch_interception() {
     let handle = ServiceWorkerHandle::new("sw4.js".into(), "/".into(), None);
@@ -123,7 +123,7 @@ fn test_service_worker_fetch_interception() {
     );
 }
 
-/// @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8
+/// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
 ///
 /// Test ServiceWorkerRegistrationId equality and hashing (used for HashMap/DashMap key).
 #[test]
@@ -146,10 +146,10 @@ fn test_service_worker_registration_id_equality() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// $3 SharedWorkerHandle lifecycle (REQ-BRW-4 C5 / DF-WK-7)
+// $3 SharedWorkerHandle lifecycle (REQ-BRW-004 C5 / DF-WK-7)
 // ═══════════════════════════════════════════════════════════════════════
 
-/// @trace REQ-BRW-4 [entity:SharedWorker] DF-WK-7
+/// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
 #[test]
 fn test_shared_worker_handle_new() {
     let handle = SharedWorkerHandle::new("shared.js".into(), "my-shared".into());
@@ -158,7 +158,7 @@ fn test_shared_worker_handle_new() {
     assert_eq!(handle.connected_page_count(), 0);
 }
 
-/// @trace REQ-BRW-4 [entity:SharedWorker] DF-WK-7
+/// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
 #[test]
 fn test_shared_worker_page_connect_disconnect() {
     let handle = SharedWorkerHandle::new("shared2.js".into(), "".into());
@@ -177,7 +177,7 @@ fn test_shared_worker_page_connect_disconnect() {
     assert_eq!(handle.connected_page_count(), 0);
 }
 
-/// @trace REQ-BRW-4 [entity:SharedWorker] DF-WK-7
+/// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
 #[test]
 fn test_shared_worker_close_and_terminate() {
     let handle = SharedWorkerHandle::new("shared3.js".into(), "".into());

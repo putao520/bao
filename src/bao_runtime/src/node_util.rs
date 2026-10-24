@@ -21,7 +21,7 @@ use crate::require::cache_builtin;
 // to a leading parameter: util's own face passes 0, util.types passes the
 // local `enumerate` binding).
 //
-// e201 REQ-ARCH-1: renamed to the domain-neutral `register_js_functions!`
+// e201 REQ-ARCH-001: renamed to the domain-neutral `register_js_functions!`
 // and crate-shared so node_fs's registration walls reuse the same form.
 macro_rules! register_js_functions {
     ($cx:expr, $obj:expr, $attrs:expr; $(($cname:expr, $fn:ident, $nargs:expr))*) => {
@@ -559,7 +559,7 @@ t.isCryptoKey=function(){return false};
 /// `util.types` extended checkers and the styleText/isDeepStrictEqual
 /// extensions are both attached through this factory pattern).
 ///
-/// e201 REQ-ARCH-1: shared body of the two inline factory blocks that used
+/// e201 REQ-ARCH-001: shared body of the two inline factory blocks that used
 /// to live in `install_util` (byte-identical control flow; only the source
 /// text, compile filename, and target object differed). Evaluation result
 /// is ignored by both callers, matching the original behavior.
@@ -7130,7 +7130,7 @@ unsafe extern "C" fn util_inherits(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 /// module (Node identity contract: `util.TextEncoder === globalThis.TextEncoder`
 /// is true).
 ///
-/// e201 REQ-ARCH-1: extracted from `install_util` (control flow unchanged;
+/// e201 REQ-ARCH-001: extracted from `install_util` (control flow unchanged;
 /// the `global.is_null()` nest level became a guard clause).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn install_util_text_codecs(

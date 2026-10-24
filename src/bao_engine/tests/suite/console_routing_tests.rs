@@ -1,4 +1,4 @@
-// @trace TEST-ENG-003-HOSTFN-CONSOLE [req:REQ-ENG-003] [level:integration]
+// @trace TEST-ENG-3-HOSTFN-CONSOLE [req:REQ-ENG-003] [level:integration]
 // Bootstrap console (bun_sm::host_fn::install_console — the console every
 // bare bao_engine realm gets before any global_setup) stream routing, Node
 // semantics: log/info/debug/dir/table/timeEnd/count → stdout; warn/error/

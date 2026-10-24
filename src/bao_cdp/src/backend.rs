@@ -183,7 +183,7 @@ fn response_outcome_for_id(
     Some(Ok(resp.get("result").cloned().unwrap_or(serde_json::json!({}))))
 }
 
-// @trace TEST-CDP-004 [req:REQ-CDP-001] [level:unit] [nfr:TMG-CDP-01]
+// @trace TEST-CDP-4 [req:REQ-CDP-001] [level:unit] [nfr:TMG-CDP-01]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,6 +1,6 @@
-// @trace TEST-DEPLOY-SRV [req:REQ-DEPLOY-1] [level:integration]
+// @trace TEST-DEPLOY-SRV [req:REQ-DEPLOY-001] [level:integration]
 //
-// REQ-DEPLOY-1 — x86_64-unknown-linux-musl in the v1 Supported target matrix.
+// REQ-DEPLOY-001 — x86_64-unknown-linux-musl in the v1 Supported target matrix.
 //
 // Scope note: most criteria of this REQ are build/infra-level (rustup target,
 // musl cross cc/sysroot, mozjs/BoringSSL/uWS/servo musl link, the registry-only
@@ -31,7 +31,7 @@ fn repo_root() -> PathBuf {
 fn read_repo_file(rel: &str) -> String {
     let path = repo_root().join(rel);
     std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("required REQ-DEPLOY-1 artifact missing: {} ({})", path.display(), e))
+        .unwrap_or_else(|e| panic!("required REQ-DEPLOY-001 artifact missing: {} ({})", path.display(), e))
 }
 
 /// Criterion 7 — the target matrix is documented with explicit statuses and
@@ -135,7 +135,7 @@ fn req_deploy_1_test_platform_inside_declared_matrix() {
             "running platform must be in the documented matrix"
         );
     } else {
-        // Out of the v1 matrix (macOS/Windows/aarch64): REQ-DEPLOY-1 scopes
+        // Out of the v1 matrix (macOS/Windows/aarch64): REQ-DEPLOY-001 scopes
         // those to a later ruling, so there is nothing to assert here.
     }
 }

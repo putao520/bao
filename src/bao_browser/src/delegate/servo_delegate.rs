@@ -23,7 +23,7 @@ use crate::{drain_servo_events_starting, park_for_event};
 
 // ─── ServoEvent real 路径可靠投递(REQ-CDP-004 / REQ-CDP-006) ───────
 //
-// 通道形态:**无界可靠队列**(`bao_ipc::unbounded`,REQ-ARCH-3 统一 MPMC
+// 通道形态:**无界可靠队列**(`bao_ipc::unbounded`,REQ-ARCH-003 统一 MPMC
 // 底座;迁移自 std::sync::mpsc,语义零变)——`send` 永不
 // 阻塞、永不丢弃(drop-newest 已根除),单队列 FIFO 天然保序。
 //
@@ -78,12 +78,12 @@ pub struct BaoServoDelegate {
     last_error: RefCell<Option<String>>,
     /// Channel for forwarding console messages to CDP Log domain.
     /// Set via `set_console_log_tx` when CDP server starts. On the unified
-    /// MPMC substrate (REQ-ARCH-3, wave R3 — same channel pair the CdpServer
+    /// MPMC substrate (REQ-ARCH-003, wave R3 — same channel pair the CdpServer
     /// consumes, so both sides took the substrate in the same wave).
-    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    /// @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:library]
     console_log_tx: RefCell<Option<Sender<ConsoleMessage>>>,
     /// Real event queue sender (Path B): reliable unbounded queue (bao_ipc,
-    /// REQ-ARCH-3) to the pump.
+    /// REQ-ARCH-003) to the pump.
     /// When set, console/url/load callbacks also push structured events here.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     event_tx: RefCell<Option<Sender<ServoEvent>>>,
@@ -144,14 +144,14 @@ impl BaoServoDelegate {
 
     /// Set the channel for forwarding console messages to CDP.
     /// Called when CDP server starts.
-    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    /// @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:library]
     pub fn set_console_log_tx(&self, tx: Sender<ConsoleMessage>) {
         *self.console_log_tx.borrow_mut() = Some(tx);
     }
 
     /// Get a clone of the console log sender, if one has been set.
     /// Used to propagate the channel to per-webview state.
-    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    /// @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:library]
     pub fn console_log_tx(&self) -> Option<Sender<ConsoleMessage>> {
         self.console_log_tx.borrow().clone()
     }
@@ -202,10 +202,10 @@ impl BaoServoDelegate {
     }
 
     /// [`Self::drain_runtime_events`] with one already-received event spliced
-    /// in front of the queue drain — the pump-tail park face (REQ-ARCH-3):
+    /// in front of the queue drain — the pump-tail park face (REQ-ARCH-003):
     /// `recv_timeout` consumed the first event to wake, and the same
     /// translate→tap path sees every event in FIFO order.
-    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3]
+    /// @trace REQ-ARCH-003 [req:REQ-ARCH-003]
     pub(crate) fn drain_runtime_events_starting(&self, first: Option<ServoEvent>) {
         let tap = self.event_tap.borrow().clone();
         let rx = self.event_rx.borrow();
@@ -225,7 +225,7 @@ impl BaoServoDelegate {
         });
     }
 
-    /// Park the pump tail on the runtime-owned event queue (REQ-ARCH-3): block
+    /// Park the pump tail on the runtime-owned event queue (REQ-ARCH-003): block
     /// up to `budget` for the next ServoEvent, then drain everything that
     /// arrived — the waker plus whatever queued behind it — through the same
     /// translate→tap path as [`Self::drain_runtime_events`]. The 1ms deadline
@@ -237,7 +237,7 @@ impl BaoServoDelegate {
     /// a dead queue returns from `recv_timeout` instantly, which would
     /// resurrect the full-core spin the bounded tail exists to prevent (e26
     /// evidence 2026-10-03).
-    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3]
+    /// @trace REQ-ARCH-003 [req:REQ-ARCH-003]
     /// @trace REQ-LIB-002 [req:REQ-LIB-002]
     pub fn park_runtime_events(&self, budget: std::time::Duration) {
         // Clone the receiver (cheap — the bao_ipc substrate's receiver is an

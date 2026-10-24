@@ -1,5 +1,5 @@
-// @trace REQ-ENG-19 [api:Bun.Transpiler]
-// Bun.Transpiler — TypeScript/JSX 转译 API(SPEC REQ-ENG-19 C1-C5,内核 bun_transpiler crate)。
+// @trace REQ-ENG-019 [api:Bun.Transpiler]
+// Bun.Transpiler — TypeScript/JSX 转译 API(SPEC REQ-ENG-019 C1-C5,内核 bun_transpiler crate)。
 //
 // 桥接 workspace `bun_transpiler` crate(零修改复用):`transpile_ts` 用 SWC
 // 官方 TypeScript strip 管线(resolver → strip → hygiene → fixer)做

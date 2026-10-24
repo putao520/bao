@@ -1,6 +1,6 @@
 //! TASK-2 integration tests for InMemoryTransport.
 //!
-//! Validates DEC-CDP-002: crossbeam-channel-like / std::sync::mpsc bridge
+//! Validates DEC-CDP-2: crossbeam-channel-like / std::sync::mpsc bridge
 //! between CDP client and servo ScriptThread (!Send). Uses mock InMemoryBridge
 //! implementations (TASK-3 will swap in real CDPRdpBridge).
 //!

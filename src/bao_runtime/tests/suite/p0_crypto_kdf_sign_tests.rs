@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-CRYPTO [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-CRYPTO [req:REQ-ENG-007] [level:integration]
 // P0 vector-level regression tests for the two crypto silent-fakes fixed in
 // this wave (v-surface audit):
 //   1. scryptSync returned all-zero bytes for every input (the KDF result was

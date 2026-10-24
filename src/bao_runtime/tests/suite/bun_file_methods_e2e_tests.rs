@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006 [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6 [req:REQ-ENG-006] [level:integration]
 // Bun.file BunFile read-method family e2e: text()/json()/arrayBuffer()/
 // slice() over REAL temp files — roundtrips (UTF-8 multibyte, exact bytes),
 // missing-file ENOENT rejections (promise reject + sync slice throw), the fd

@@ -1,6 +1,6 @@
-// @trace TEST-CDS-006 [req:REQ-CDS-001] [level:integration]
-// @trace TEST-CDS-007 [req:REQ-CDS-002] [level:integration]
-// @trace TEST-CDS-008 [req:REQ-CDS-003] [level:integration]
+// @trace TEST-CDS-6 [req:REQ-CDS-001] [level:integration]
+// @trace TEST-CDS-7 [req:REQ-CDS-002] [level:integration]
+// @trace TEST-CDS-8 [req:REQ-CDS-003] [level:integration]
 
 use cdp_server::{CdpError, CdpServer, DomainHandler, DomainRegistry, EventSender, ServerConfig};
 use serde_json::{json, Value};

@@ -1,4 +1,4 @@
-// @trace TEST-BRW-002 [req:REQ-BRW-002] [level:integration]
+// @trace TEST-BRW-2 [req:REQ-BRW-002] [level:integration]
 // AudioWorklet 段(1) script-skeleton live tests — REQ-BRW-002 fork自治面.
 //
 // Provenance (e89, user ruling 2026-10-05 "自研吧"): upstream servo has zero

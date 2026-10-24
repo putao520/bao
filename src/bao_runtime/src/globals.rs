@@ -6817,7 +6817,7 @@ mod tests {
     }
 
     // ── REQ-SEC-003: API split structural verification ────────────────────
-    // @trace TEST-SEC-003 [req:REQ-SEC-001,REQ-SEC-002,REQ-SEC-003] [level:unit]
+    // @trace TEST-SEC-3 [req:REQ-SEC-001,REQ-SEC-002,REQ-SEC-003] [level:unit]
     //
     // These tests verify the CODE STRUCTURE guarantees that Node APIs are
     // not on the page global. Runtime verification requires servo and is

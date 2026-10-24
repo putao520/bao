@@ -1,4 +1,4 @@
-//! TEST-CLI-001 — REQ-CLI-001 bao 命令品牌替换
+//! TEST-CLI-1 — REQ-CLI-001 bao 命令品牌替换
 //!
 //! 验收标准覆盖:
 //!   #1 执行文件 (run / eval / module-eval / file)
@@ -36,7 +36,7 @@ use bao_cli::install;
 // §1 入口签名固化 (验收 #1/#2/#3/#5 根: bao → bao_cli::cli::run → handlers)
 // ============================================================================
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 验收 #1/#2/#3/#5: `run()` 入口存在、签名为 `fn() -> Result<(), i32>`、
 /// 可被 bao_bin 直接转发。这是 bao → bao_cli → 各 handler 分发链的根。
 ///
@@ -53,7 +53,7 @@ fn run_entry_point_exists_with_correct_signature() {
     let _ = _run;
 }
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 验收 #4: install 子模块存在且 `run_install` 入口可寻址.
 /// bao install / bao add 走 crate::install::run_install() → bun_runtime::install.
 ///
@@ -69,7 +69,7 @@ fn install_handler_is_addressable() {
     let _ = _install;
 }
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 对抗: 验证 install 模块是 pub 的 (bao_cli::install 可被外部寻址)。
 /// lib.rs 必须 `pub mod install;` — 若有人改成私有, 本测试编译失败。
 /// 这是 C4 (bao install 安装依赖) 的可达性证据。
@@ -79,7 +79,7 @@ fn install_module_is_pub_exported() {
     let _ = bao_cli::install::run_install as fn() -> Result<(), i32>;
 }
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 对抗: 验证 cli 模块是 pub 的 (bao_cli::cli 可被 bao_bin 寻址)。
 /// lib.rs 必须 `pub mod cli;` — 若有人改成私有, bao_bin 编译失败,
 /// 但本测试在测试阶段就先报警。
@@ -92,7 +92,7 @@ fn cli_module_is_pub_exported() {
 // §2 完整命令面断言 (验收 #1-#5: Commands 枚举不可缩水)
 // ============================================================================
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 验收 #1/#2/#3/#4/#5: Commands 枚举覆盖全部 5 个 bao 子命令。
 ///
 /// 此测试固化我们对命令面的认知 — run/build/test/install/browser 五个
@@ -185,7 +185,7 @@ fn dispatch_subcommands_parse_correctly() {
     }
 }
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 验收 #1 (eval 变体): bao 支持顶层 `-e`/`--eval` (Bun-compatible)。
 /// Cli 结构体声明了 `#[arg(short, long)] eval: Option<String>`,
 /// 这是 Bun 上游测试 harness `bunExe() -e script` 形式的等价入口。
@@ -223,7 +223,7 @@ fn top_level_eval_flag_is_in_command_surface() {
 // §3 内部 crate 名守恒 (验收 #6: bun_* 不变)
 // ============================================================================
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 验收 #6 (C6): 内部 crate 名保持 bun_* 不变。
 ///
 /// Bao 的命名契约: 用户品牌 `bao`, 但内部 Rust crate 沿用 `bun_*` (上游兼容)。
@@ -251,7 +251,7 @@ fn internal_crate_names_remain_bun_prefixed() {
     let _ = _proof_bun_runtime_dep::NodeRuntime::new;
 }
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 对抗 (C6 边界): 验证 bao_cli 不存在「伪 bao_* 内部 crate」。
 /// Bao 项目只有 bao_engine/bao_browser/bao_cdp/bao_stealth/bao_cli/bao_bin/
 /// bao_bundler/bao_runtime (后几个是适配层), 不应出现 bao_<内部功能> 重命名。
@@ -276,7 +276,7 @@ fn install_delegates_to_bun_runtime_not_renamed() {
 // §4 bao_bin 转发链守恒 (验收 #1-#5: bao → bao_cli::cli::run)
 // ============================================================================
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 对抗: 固化 bao_bin → bao_cli::cli::run 转发契约。
 /// bao_bin/src/main.rs 的全部内容是:
 ///   ```text
@@ -314,7 +314,7 @@ fn bao_bin_can_forward_to_cli_run() {
 // §5 BAO_* 环境变量别名契约 (验收 #7: BAO_* 作为 BUN_* 别名)
 // ============================================================================
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 验收 #7 (C7): BAO_* 环境变量作为 BUN_* 的别名。
 ///
 /// 别名在读取层解析 (issue #32 / B0 census row 16): `bun_core::getenv_z`
@@ -414,7 +414,7 @@ fn bao_env_vars_aliased_to_bun_at_runtime_init() {
     }
 }
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 验收 #7 (C7) 边界: BUN_* 已存在时, BAO_* 不覆盖它。
 /// 读取层语义 (`getenv_z`: 显式 BUN_ 命中即返回, 不查 BAO_ 回退) +
 /// JS 枚举面语义 (宿主已有 BUN_<SUFFIX> 时, 快照不用 BAO_ 值覆盖它):
@@ -492,7 +492,7 @@ fn bao_env_vars_do_not_override_existing_bun_vars() {
 // §6 边界条件: 错误码语义固化
 // ============================================================================
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 边界: 固化 bao_cli::cli::run 的错误码语义。
 /// SPEC 约定 (cli.rs run() 实现): 所有失败路径返回 `Err(1)` (非零退出码)。
 /// bao_bin 转发为 `process::exit(1)` — Unix 语义「非零 = 失败」。
@@ -532,7 +532,7 @@ fn run_error_code_carries_process_exit_semantics() {
 
 use bao_cli::compat::{self, Domain};
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 四域解析快照锁: sections/rows/status 计数 == INVENTORY SSOT 的实测值。
 /// INVENTORY 更新 → 本测试同步更新 = 契约锁 (防解析器静默破损,
 /// 与 COMMAND_SURFACE 同哲学)。数字来源: W14 实现波对四 SSOT 的逐行解析。
@@ -602,7 +602,7 @@ fn compat_domain_reports_parse_with_locked_counts() {
     assert!(!r.anchors.is_empty(), "web anchors table parsed");
 }
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// --json 合法性: 四域单域 + 无参根形态都是合法 JSON 且字段齐全。
 #[test]
 fn compat_json_output_is_valid_and_complete() {
@@ -639,7 +639,7 @@ fn compat_json_output_is_valid_and_complete() {
     );
 }
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 渲染无 panic 面: 四域 text+JSON 与无参 text 根全调一遍 (纯函数,毫秒级)。
 #[test]
 fn compat_render_never_panics() {
@@ -653,7 +653,7 @@ fn compat_render_never_panics() {
     assert!(!compat::render_text_root(&reports).is_empty());
 }
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 分类规则单元 (合成内容, 走 parse_content_for_test seam):
 /// 分隔行跳过 / cell 数违约响亮报错 / 未知 status 进 Unclassified 桶 /
 /// 复合 cell worst-of 归劣 / ack 形态优先于裸前缀 / cdp 非分派域加权。
@@ -696,7 +696,7 @@ fn compat_parser_contract_rules() {
     let _ = Status::Supported; // type witness
 }
 
-/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// @trace REQ-CLI-001 [test:TEST-CLI-1]
 /// 退出码契约: 报告命令成功恒 0 (观测面, bao doctor 同类);
 /// run() 签名固化 (mirror §1 函数指针手法)。
 #[test]

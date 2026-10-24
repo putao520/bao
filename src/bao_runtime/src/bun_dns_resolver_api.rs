@@ -1,5 +1,5 @@
-// @trace REQ-ENG-21 [api:Bun.DNSResolver]
-// Bun.DNSResolver — DNS 查询 API(SPEC REQ-ENG-21 C1-C4,内核 bun_dns crate)。
+// @trace REQ-ENG-021 [api:Bun.DNSResolver]
+// Bun.DNSResolver — DNS 查询 API(SPEC REQ-ENG-021 C1-C4,内核 bun_dns crate)。
 //
 // 桥接 workspace `bun_dns` crate(零修改复用):GetAddrInfo/Options/Family
 // 类型化请求模型 + 进程级共享 DNS cache(`bun_dns::cache`,与 node:dns

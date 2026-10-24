@@ -34,9 +34,9 @@ pub struct CdpServer {
     /// Receiver for typed console messages forwarded from servo delegates.
     /// Each message is either a structured CDP event (ConsoleMessage::Event)
     /// or a plain log (ConsoleMessage::Log). Carried on the unified MPMC
-    /// substrate (REQ-ARCH-3, wave R3) — the paired sender lives in
+    /// substrate (REQ-ARCH-003, wave R3) — the paired sender lives in
     /// bao_browser's delegates.
-    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    /// @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:library]
     console_rx: Option<bao_ipc::Receiver<ConsoleMessage>>,
 }
 
@@ -83,10 +83,10 @@ impl CdpServer {
 
     /// Set the typed console message receiver. Messages are ConsoleMessage
     /// variants forwarded from servo's show_console_message callbacks. The
-    /// channel pair lives on the unified MPMC substrate (REQ-ARCH-3, wave
+    /// channel pair lives on the unified MPMC substrate (REQ-ARCH-003, wave
     /// R3): pair with `bao_ipc::unbounded()` — std-mpsc's unbounded channel
     /// maps to the substrate's unbounded constructor one-to-one.
-    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    /// @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:library]
     pub fn set_console_receiver(&mut self, rx: bao_ipc::Receiver<ConsoleMessage>) {
         self.console_rx = Some(rx);
     }
@@ -184,12 +184,12 @@ impl CdpServer {
         Ok(())
     }
 
-    /// The run loop's console consumption face (REQ-ARCH-3, wave R3): drain
+    /// The run loop's console consumption face (REQ-ARCH-003, wave R3): drain
     /// the `console_rx` substrate channel and broadcast each message. Extracted
     /// as a named seam so the latency-parity test drives the exact face `run()`
     /// drives each iteration — the substrate swap (std mpsc → bao_ipc) must
     /// leave this drain's semantics (drain-to-empty, FIFO order) byte-identical.
-    /// @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:library]
+    /// @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:library]
     fn drain_console_messages(&mut self) {
         if let Some(ref rx) = self.console_rx {
             while let Ok(msg) = rx.try_recv() {
@@ -778,7 +778,7 @@ mod tests {
         assert_eq!(count, 8);
     }
 
-    // REQ-ARCH-3 wave R3 latency-parity discriminator (AC5 行为零回归): a
+    // REQ-ARCH-003 wave R3 latency-parity discriminator (AC5 行为零回归): a
     // console message handed across threads — the same handoff shape as the
     // servo ScriptThread callback → CdpServer run-loop thread — must reach
     // the run loop's consumption face (the try_recv drain inside
@@ -787,7 +787,7 @@ mod tests {
     // (send never blocks: the unbounded constructor preserves the
     // fire-and-forget contract the lossy-by-design send sites rely on) or
     // FIFO ordering.
-    // @trace REQ-ARCH-3 [req:REQ-ARCH-3] [level:unit]
+    // @trace REQ-ARCH-003 [req:REQ-ARCH-003] [level:unit]
     #[test]
     fn cdp_server_console_end_to_end_delivery_latency_and_order_parity() {
         const ROUNDS: usize = 100;

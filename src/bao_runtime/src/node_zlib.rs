@@ -281,7 +281,7 @@ pub(crate) unsafe extern "C" fn zlib_deflate_sync(cx: *mut JSContext, argc: u32,
 /// Shared inflate-family core: identical arg extraction + checked-decompress
 /// delivery; the four faces differ only in the zlib windowBits mode
 /// (15 = zlib, -15 = raw, 16 = single-member gzip, 47 = auto-detect)
-/// (REQ-ARCH-1 duplicate convergence).
+/// (REQ-ARCH-001 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_inflate_wbits(
     cx: *mut JSContext,

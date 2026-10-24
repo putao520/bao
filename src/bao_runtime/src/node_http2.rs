@@ -29,7 +29,7 @@ use bun_uws_sys::socket_context::BunSocketContextOptions;
 
 use crate::gc_store::{gc_store_get_ns, gc_store_insert_ns, gc_store_remove_ns};
 // define_int_prop is the crate-wide single source in node_constants
-// (REQ-ARCH-1 duplicate convergence).
+// (REQ-ARCH-001 duplicate convergence).
 use crate::node_constants::define_int_prop;
 use crate::require::cache_builtin;
 

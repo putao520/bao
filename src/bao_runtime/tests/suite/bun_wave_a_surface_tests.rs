@@ -1,5 +1,5 @@
-// @trace TEST-ENG-006 [req:REQ-ENG-006] [level:integration]
-// @trace REQ-ENG-18 [req:REQ-ENG-18] [level:integration] — Bun.shell Shell API(同源 REQ-BAO-API-018,Shell/$ 解释器语义载体:Bun.$ await/ShellOutput/ShellError 退出码面)
+// @trace TEST-ENG-6 [req:REQ-ENG-006] [level:integration]
+// @trace REQ-ENG-018 [req:REQ-ENG-018] [level:integration] — Bun.shell Shell API(同源 REQ-BAO-API-018,Shell/$ 解释器语义载体:Bun.$ await/ShellOutput/ShellError 退出码面)
 // Final-wave surface tests: Bun.$ Promise face, Bun.file URL/fd forms,
 // Bun.Mime, CryptoHasher/SHA constructors, Bun.serve custom response
 // headers, Bun.serve WebSocket handshake, zlib sync aliases, semver.order.

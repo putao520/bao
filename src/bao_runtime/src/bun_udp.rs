@@ -52,7 +52,7 @@ fn get_loop() -> *mut Loop {
 // ──────────────────── JS helpers ────────────────────
 
 // `extract_js_callback` / `cleanup_gc_key` / `build_sockaddr` are shared with
-// bun_listen (crate-wide single source; REQ-ARCH-1 duplicate convergence).
+// bun_listen (crate-wide single source; REQ-ARCH-001 duplicate convergence).
 
 /// Invoke a JS callback stored in GcStore by key.
 /// Passes `args` as arguments to the JS function. Returns `true` on success.

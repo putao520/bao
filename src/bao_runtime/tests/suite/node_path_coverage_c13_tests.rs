@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-PATH-C13 [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-PATH-C13 [req:REQ-ENG-007] [level:integration]
 //
 // C13 line-coverage wave for src/bao_runtime/src/node_path.rs — the residual
 // gap after node_path_tests / path_deep_tests / C5 (error arms + basic

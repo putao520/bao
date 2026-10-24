@@ -1,4 +1,4 @@
-// @trace TEST-LIB-006-LIFECYCLE [req:REQ-LIB-001,REQ-LIB-002,REQ-BRW-001,REQ-BRW-002] [level:unit]
+// @trace TEST-LIB-6-LIFECYCLE [req:REQ-LIB-001,REQ-LIB-002,REQ-BRW-001,REQ-BRW-002] [level:unit]
 // PageHandle lifecycle + rendering pipeline + PageState + error path tests
 // NOTE: servo Opts is single-init, so BrowserRuntime tests remain in cross_crate_integration_tests.rs
 // This file tests pure data types and encode_image only.

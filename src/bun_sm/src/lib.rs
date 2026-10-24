@@ -148,7 +148,7 @@ pub use module_loader::{
 };
 pub use system_error::SysErrorJsc;
 pub use system_error::SystemError;
-// NOTE: WebWorker re-export removed per DEC-WK-001 BCE-20260627-008.
+// NOTE: WebWorker re-export removed per DEC-WK-1 BCE-20260627-008.
 // Workers now route through servo's native Worker::Constructor via register_worker_scope_callback.
 pub use async_module::{AsyncModule, InitOpts as AsyncModuleInitOpts, Queue as AsyncModuleQueue};
 pub use c_api::c;

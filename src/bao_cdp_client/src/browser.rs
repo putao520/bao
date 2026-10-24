@@ -1,6 +1,6 @@
 //! Browser 入口 — `Browser::connect(url)` 通过 URL scheme 路由到三种 transport。
 //!
-//! 路由规则(DEC-URL-001):
+//! 路由规则(DEC-URL-1):
 //! - `memory://...` → `connect_in_memory` → InMemoryTransport
 //! - `ws://...` / `wss://...` → `connect_ws` → WebSocketTransport(直连)
 //! - `http://...` / `https://...` → `connect_http_discover` → 先 GET `/json/version` 发现 ws endpoint 再连
@@ -96,7 +96,7 @@ pub fn process_memory_bridge() -> Option<Arc<dyn InMemoryBridge>> {
 // Lifecycle: no teardown — a sender whose client dropped is detected by the
 // pusher via the send error (channel receiver gone) and treated as "client
 // vanished" (fail-closed upstream), and any newer connect replaces the slot.
-// Substrate: bao_ipc Sender (REQ-ARCH-3 unified MPMC substrate, wave R1) —
+// Substrate: bao_ipc Sender (REQ-ARCH-003 unified MPMC substrate, wave R1) —
 // Clone + Send + Sync, same send/Err-on-disconnect shape as the former
 // std::sync::mpsc Sender.
 static PROCESS_MEMORY_EVENT_SENDER: std::sync::Mutex<
@@ -629,7 +629,7 @@ mod tests {
         assert!(!b.has_connection());
     }
 
-    // REQ-ARCH-1 豁免:connect_* 错误路径测试为「每错误变体一条钉」的测试
+    // REQ-ARCH-001 豁免:connect_* 错误路径测试为「每错误变体一条钉」的测试
     // 惯例——相似仅因断言形态统一(matches! 变体判定),合并即丧失按变体的
     // 失败定位,非重复建设。
 

@@ -1,5 +1,5 @@
-// @trace TEST-ENG-21 [req:REQ-ENG-21] [level:integration]
-// Bun.DNSResolver 验收标准逐条测试(SPEC REQ-ENG-21 C1-C4),按验收标准
+// @trace TEST-ENG-21 [req:REQ-ENG-021] [level:integration]
+// Bun.DNSResolver 验收标准逐条测试(SPEC REQ-ENG-021 C1-C4),按验收标准
 // 一条一测函数:
 //   c1_surface            — C1 typeof Bun.DNSResolver === 'function'(默认真跑)
 //   c2_constructor        — C2 new Bun.DNSResolver() 创建解析器(默认真跑)

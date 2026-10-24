@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-UWS-LINK [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6-UWS-LINK [req:REQ-ENG-006] [level:integration]
 // Regression test for BUG-352: uws_create_app Rust stub was overriding C++ implementation.
 //
 // Before BUG-352 fix:

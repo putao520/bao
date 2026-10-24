@@ -48,7 +48,7 @@ const _: () = {
     }
 };
 
-// REQ-ARCH-3 (bao_ipc substrate): BridgeReceiver is Send + Sync — the
+// REQ-ARCH-003 (bao_ipc substrate): BridgeReceiver is Send + Sync — the
 // substrate's Receiver is an arc handle, unlike the old std mpsc Receiver
 // (!Sync) this bridge used to wrap.
 

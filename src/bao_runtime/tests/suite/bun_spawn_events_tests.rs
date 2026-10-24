@@ -2,7 +2,7 @@
 // the windows product correctly resolves these to ENOENT — cover on unix.
 #![cfg(unix)]
 
-// @trace TEST-ENG-005 [req:REQ-ENG-005] [level:integration]
+// @trace TEST-ENG-5 [req:REQ-ENG-005] [level:integration]
 // Bun.spawn event surface (child_process.spawn parity + Bun docs contract):
 //   * command shapes — the PRIMARY array form Bun.spawn(["exe", ...args], opts?)
 //     plus the { cmd: [...] } / { cmd: "exe", args: [...] } object forms (the

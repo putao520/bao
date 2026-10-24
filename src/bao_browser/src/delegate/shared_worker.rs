@@ -472,7 +472,7 @@ pub struct SharedWorkerConnectEvent {
 /// DF-WK-9: SharedWorkerGlobalScope inherits the parent page's StealthProfile.
 /// Unlike DedicatedWorker (one parent page), SharedWorker may be connected
 /// from multiple pages. The profile is set on first connection and remains
-/// fixed for the worker's lifetime (per DEC-WK-007).
+/// fixed for the worker's lifetime (per DEC-WK-7).
 ///
 /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope] [criterion:12..17] DF-WK-9
 #[derive(Debug, Clone)]

@@ -144,7 +144,7 @@ mod tests {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
-    // @trace TEST-CDS-005 [req:REQ-CDS-005] [level:unit]
+    // @trace TEST-CDS-5 [req:REQ-CDS-005] [level:unit]
     #[test]
     fn new_with_empty_sessions_no_panic() {
         let _broadcaster = EventBroadcaster::new(empty_session_map());
@@ -210,7 +210,7 @@ mod tests {
         handle.outbox.lock().unwrap().len()
     }
 
-    // @trace TEST-CDS-005 [req:REQ-CDS-005] [level:unit]
+    // @trace TEST-CDS-5 [req:REQ-CDS-005] [level:unit]
     // @trace REQ-CDP-004 [req:REQ-CDP-004] [level:unit]
     #[test]
     fn send_page_event_delivers_only_to_matching_page_endpoints() {

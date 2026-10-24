@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-FS-WATCH [req:REQ-ENG-007] [level:e2e]
+// @trace TEST-ENG-7-FS-WATCH [req:REQ-ENG-007] [level:e2e]
 // Real-event regression for fs.watch / fs.watchFile (BCE: silent-fake
 // eradication). The former implementation returned an EventEmitter-shaped
 // object with NO backend — registration succeeded and every file/directory

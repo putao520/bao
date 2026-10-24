@@ -54,7 +54,7 @@ pub enum BridgeScreenshotFormat {
 impl BridgeScreenshotFormat {
     /// 从 CDP format 字符串解析,默认 Png。
     ///
-    /// REQ-ARCH-1 豁免:与 `types::ScreenshotFormat::from_cdp` 形态同,但
+    /// REQ-ARCH-001 豁免:与 `types::ScreenshotFormat::from_cdp` 形态同,但
     /// 二者是**两个独立的公共类型**(bridge 侧 `BridgeScreenshotFormat`
     /// 与公共 API 面 `ScreenshotFormat`),各自需要解析方法;映射语义相同
     /// 是设计一致性要求,非重复建设(合并会破坏类型边界或公共 API 面)。
@@ -1195,7 +1195,7 @@ impl ServoBackend for MockServoBackend {
         Ok(())
     }
 
-    // REQ-ARCH-1 豁免:Mock 的 enable/disable 等方法体形如
+    // REQ-ARCH-001 豁免:Mock 的 enable/disable 等方法体形如
     // `self.log(target_id, "<method>", ""); Ok(())`——相似源于「记录调用 +
     // 空返回」的 mock 惯例,且 <method> 字面量逐方法不同;参数化会抹掉
     // 调用日志的方法区分(测试断言依赖逐方法日志),非重复建设。

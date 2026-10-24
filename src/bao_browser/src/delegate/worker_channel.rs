@@ -491,7 +491,7 @@ pub(super) fn drain_worker_rx(rx: &Receiver<WorkerStructuredMessage>) -> WorkerD
 // @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
 //
 // WorkerChannelBridge + WorkerChannelEndpoints carry raw serialized bytes
-// between page and Worker threads. Per DEC-WK-001 (BCE-20260627-008) the
+// between page and Worker threads. Per DEC-WK-1 (BCE-20260627-008) the
 // bypass bao_engine::WebWorker (and its StructuredCloneReceiver/Sender trait
 // adapters) is removed; the bridge now only feeds CDP observability +
 // message logging, since servo owns the Worker thread and its postMessage.

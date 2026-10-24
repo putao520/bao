@@ -77,7 +77,7 @@ pub fn check_net(host: &str) -> ::std::result::Result<(), String> {
 
 /// Shared boolean-permission gate: `check_env`/`check_run` differ only in
 /// which flag they consult and the denial label they report
-/// (REQ-ARCH-1 duplicate convergence).
+/// (REQ-ARCH-001 duplicate convergence).
 fn check_flag(allowed: bool, denied: &str) -> ::std::result::Result<(), String> {
     if allowed {
         Ok(())

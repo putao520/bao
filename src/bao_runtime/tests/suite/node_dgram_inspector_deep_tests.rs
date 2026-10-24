@@ -1,7 +1,7 @@
-// @trace TEST-ENG-007-DGRAM-INSPECTOR [req:REQ-ENG-007] [level:integration]
-// @trace REQ-ENG-40 [req:REQ-ENG-40] [level:integration] — Node.js dgram 模块 UDP 面(require('dgram')/createSocket)
-// @trace REQ-ENG-23 [req:REQ-ENG-23] [level:e2e] — dgram bind/send/'message' 127.0.0.1 真 UDP 往返
-//   (SPEC 锚 = REQ-ENG-23「Node.js net 模块 (TCP/IPC)」关联面;REQ-ENG-40 为文本交叉引用。
+// @trace TEST-ENG-7-DGRAM-INSPECTOR [req:REQ-ENG-007] [level:integration]
+// @trace REQ-ENG-040 [req:REQ-ENG-040] [level:integration] — Node.js dgram 模块 UDP 面(require('dgram')/createSocket)
+// @trace REQ-ENG-023 [req:REQ-ENG-023] [level:e2e] — dgram bind/send/'message' 127.0.0.1 真 UDP 往返
+//   (SPEC 锚 = REQ-ENG-023「Node.js net 模块 (TCP/IPC)」关联面;REQ-ENG-040 为文本交叉引用。
 //    coverage-audit-eng-20261014 G2-3 补缺:此前文件仅 require + relaxed typeof,
 //    bind/send/on('message') 零命中。)
 //

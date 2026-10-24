@@ -1,4 +1,4 @@
-// @trace TEST-ENG-001-BND [req:REQ-ENG-001] [level:integration]
+// @trace TEST-ENG-1-BND [req:REQ-ENG-001] [level:integration]
 // JS engine API boundary tests: globalThis, type coercion, edge cases
 
 use bao_engine::context::JsContext;

@@ -1,4 +1,4 @@
-// @trace TEST-CDS-001-PROTO [req:REQ-CDS-001~008] [level:unit]
+// @trace TEST-CDS-1-PROTO [req:REQ-CDS-001~008] [level:unit]
 // CDP protocol conformance: message types, serialization, transport parsing,
 // server config. Covers JSON-RPC 2.0 round-trip, error code constants,
 // transport HTTP-path parsers (close/activate/new), WebSocket upgrade

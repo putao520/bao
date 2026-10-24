@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-RUNTIME-CLEANUP [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6-RUNTIME-CLEANUP [req:REQ-ENG-006] [level:integration]
 //
 // B1 slice 2 段一(用户裁决 2026-09-17 A「drop 时未 close 资源必须 close」):
 // NodeRuntime::drop must terminate every dgram UDP socket the runtime owns

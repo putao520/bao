@@ -1,7 +1,7 @@
 // @trace REQ-ENG-011 [api:vm.createContext / vm.runInNewContext / vm.Script]
 //! node:vm module — SpiderMonkey Realm-isolated sandbox implementation.
 //!
-//! ## Architecture (DEC-ENG-003)
+//! ## Architecture (DEC-ENG-3)
 //!
 //! Each `vm.createContext(sandbox)` creates an independent SpiderMonkey
 //! Compartment via `JS_NewGlobalObject`. The sandbox object's properties are

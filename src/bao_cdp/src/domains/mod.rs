@@ -1,6 +1,6 @@
 // @trace REQ-CDP-008 [entity:ServoTargetProvider]
 //
-// TASK-6 (DEC-CDP-001): 11 个 evaluate_js 注入式 domain handler 已废弃并删除,
+// TASK-6 (DEC-CDP-1): 11 个 evaluate_js 注入式 domain handler 已废弃并删除,
 // CDP 命令分发统一由 bao_cdp_client::CDPRdpBridge 接管。本模块仅保留
 // `ServoTargetProvider`,因为它是 CdpServer 启动 Playwright 兼容服务时
 // 必需的 TargetProvider(通过 `set_target_provider` 注入),独立于 domain
@@ -146,7 +146,7 @@ impl cdp_server::TargetProvider for ServoTargetProvider {
     }
 }
 
-// @trace TEST-CDP-008 [req:REQ-CDP-008] [level:unit]
+// @trace TEST-CDP-8 [req:REQ-CDP-008] [level:unit]
 #[cfg(test)]
 mod tests {
     use super::*;

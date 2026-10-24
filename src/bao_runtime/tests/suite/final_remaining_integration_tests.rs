@@ -255,7 +255,7 @@ fn test_tls_socket_once_fires_only_once() {
     bun_runtime::shutdown_thread_sm();
 }
 
-// ─── T8: CDP enum dispatch (REMOVED in TASK-6, DEC-CDP-001) ─────────────
+// ─── T8: CDP enum dispatch (REMOVED in TASK-6, DEC-CDP-1) ─────────────
 //
 // The DomainDispatch enum and register_all_domains_* helpers were removed:
 // evaluate_js 注入式 domain handlers are deprecated in favor of

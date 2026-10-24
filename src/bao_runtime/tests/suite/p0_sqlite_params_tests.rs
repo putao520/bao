@@ -1,4 +1,4 @@
-// @trace TEST-ENG-008-SQLITE [req:REQ-ENG-008] [level:integration]
+// @trace TEST-ENG-8-SQLITE [req:REQ-ENG-008] [level:integration]
 // P0 vector-level regression tests for the bun:sqlite parameter-binding
 // silent-fake (v-surface audit): statement run/get/all and database query/run
 // called stmt.execute([])/stmt.query([]) — JS arguments were never forwarded,

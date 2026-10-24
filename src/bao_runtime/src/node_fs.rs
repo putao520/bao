@@ -972,7 +972,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     unsafe {
-        // Sync methods (e201 REQ-ARCH-1: table-driven registration — each row
+        // Sync methods (e201 REQ-ARCH-001: table-driven registration — each row
         // expands to the exact JS_DefineFunction call the handwritten wall used;
         // same order, same attrs)
         register_js_functions!(cx, fs_obj, JSPROP_ENUMERATE as u32;
@@ -1184,7 +1184,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 /// the promise-based methods directly on it (same natives as `fs.promises`)
 /// plus the FileHandle constructor, cached under "fs/promises".
 ///
-/// e201 REQ-ARCH-1: extracted from `install` (control flow unchanged; the
+/// e201 REQ-ARCH-001: extracted from `install` (control flow unchanged; the
 /// registration wall collapsed to the shared table macro).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn install_fs_promises_subpath(cx: &mut mozjs::context::JSContext) {
@@ -1236,7 +1236,7 @@ unsafe fn install_fs_promises_subpath(cx: &mut mozjs::context::JSContext) {
 /// object in its closure; both globals are deleted right after evaluation
 /// (the captured references stay alive) so no extra API surface remains.
 ///
-/// e201 REQ-ARCH-1: extracted from `install` (control flow unchanged; the
+/// e201 REQ-ARCH-001: extracted from `install` (control flow unchanged; the
 /// `global.is_null()` nest level became a guard clause).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn install_fs_stream_polyfill(
@@ -3267,7 +3267,7 @@ fn fsw_recursive_mode(_recursive: bool) -> notify::RecursiveMode {
 }
 
 /// One directory stat-poll registration (platform worker mains). Hoisted to
-/// module level from the two fn-local copies (e201 REQ-ARCH-1) so the shared
+/// module level from the two fn-local copies (e201 REQ-ARCH-001) so the shared
 /// command-drain helper can name it; fields unchanged.
 struct PollSpec {
     id: u64,
@@ -3280,7 +3280,7 @@ struct PollSpec {
 /// Fire queued StatChange events for every poll whose deadline elapsed and
 /// re-arm each fired poll. Shared tail of both platform worker mains.
 ///
-/// e201 REQ-ARCH-1: extracted from the two worker mains (text-identical
+/// e201 REQ-ARCH-001: extracted from the two worker mains (text-identical
 /// control flow).
 fn fsw_poll_due_dispatch(shared: &Arc<Mutex<FswShared>>, polls: &mut Vec<PollSpec>) {
     let now = monotonic_ms();
@@ -3311,7 +3311,7 @@ fn fsw_poll_due_dispatch(shared: &Arc<Mutex<FswShared>>, polls: &mut Vec<PollSpe
 /// available; a poisoned lock drops the event exactly as the inline
 /// `if let Ok` form did.
 ///
-/// e201 REQ-ARCH-1: keeps `fsw_poll_due_dispatch` within the P-2 nesting
+/// e201 REQ-ARCH-001: keeps `fsw_poll_due_dispatch` within the P-2 nesting
 /// red line (the `PendingFsEvent::StatChange` literal cost one level).
 fn fsw_queue_stat_change(
     shared: &Arc<Mutex<FswShared>>,
@@ -3333,7 +3333,7 @@ fn fsw_queue_stat_change(
 /// as in the original inline form, the remaining commands of a shutdown
 /// batch are intentionally not applied.
 ///
-/// e201 REQ-ARCH-1: shared body of the two platform worker mains
+/// e201 REQ-ARCH-001: shared body of the two platform worker mains
 /// (text-identical control flow), extracted so both hosts stay shallow.
 fn fsw_take_commands(shared: &Arc<Mutex<FswShared>>, polls: &mut Vec<PollSpec>) -> bool {
     let mut commands: VecDeque<FswCommand> = VecDeque::new();
@@ -3375,7 +3375,7 @@ fn fsw_take_commands(shared: &Arc<Mutex<FswShared>>, polls: &mut Vec<PollSpec>) 
 fn fsw_worker_main(shared: Arc<Mutex<FswShared>>, poll_cv: Arc<::std::sync::Condvar>) {
     let mut polls: Vec<PollSpec> = Vec::new();
     loop {
-        // Apply pending commands under a short lock (e201 REQ-ARCH-1:
+        // Apply pending commands under a short lock (e201 REQ-ARCH-001:
         // extracted to `fsw_take_commands`; shutdown batch not applied, as
         // before).
         if fsw_take_commands(&shared, &mut polls) {
@@ -3396,7 +3396,7 @@ fn fsw_worker_main(shared: Arc<Mutex<FswShared>>, poll_cv: Arc<::std::sync::Cond
         let guard = shared.lock().unwrap_or_else(|e| e.into_inner());
         let _ = poll_cv.wait_timeout(guard, ::std::time::Duration::from_millis(timeout_ms));
 
-        // Due stat polls (e201 REQ-ARCH-1: extracted to `fsw_poll_due_dispatch`).
+        // Due stat polls (e201 REQ-ARCH-001: extracted to `fsw_poll_due_dispatch`).
         fsw_poll_due_dispatch(&shared, &mut polls);
     }
 }
@@ -4281,7 +4281,7 @@ unsafe extern "C" fn fs_chown(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
 /// Shared fd-lifecycle syscall core: `close`/`fsync` run the same
 /// fd-extraction + error delivery and differ only in the syscall
 /// (unix-only; the non-unix faces short-circuit to undefined exactly as
-/// before). REQ-ARCH-1 duplicate convergence.
+/// before). REQ-ARCH-001 duplicate convergence.
 #[cfg(unix)]
 unsafe fn fd_void_syscall(op: &str, fd: i32) -> i32 {
     if op == "close" {
@@ -4293,7 +4293,7 @@ unsafe fn fd_void_syscall(op: &str, fd: i32) -> i32 {
 
 /// Shared async fd-void op core (`close`/`fsync`): identical arg extraction,
 /// async spawn and sync-fallback delivery; the two faces differ only in the
-/// op label and the syscall (REQ-ARCH-1 duplicate convergence).
+/// op label and the syscall (REQ-ARCH-001 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn fs_fd_void_op(cx: *mut JSContext, argc: u32, vp: *mut JSVal, op: &'static str) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -7750,7 +7750,7 @@ unsafe extern "C" fn fs_open_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 
 /// Shared sync fd-void op core (`closeSync`/`fsyncSync`): identical arg
 /// extraction + error delivery; the two faces differ only in the op label
-/// and the syscall (REQ-ARCH-1 duplicate convergence).
+/// and the syscall (REQ-ARCH-001 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn fs_fd_void_sync_op(
     cx: *mut JSContext,
@@ -10038,7 +10038,7 @@ unsafe fn get_hidden_bool(cx: *mut JSContext, obj: *mut JSObject, prop: &str) ->
 
 /// Shared `Stats.prototype.isXxx()` core: identical receiver plumbing; the
 /// seven faces differ only in which hidden boolean slot they read
-/// (REQ-ARCH-1 duplicate convergence).
+/// (REQ-ARCH-001 duplicate convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn stats_hidden_bool_getter(
     cx: *mut JSContext,
@@ -11113,7 +11113,7 @@ unsafe extern "C" fn stats_is_symlink(cx: *mut JSContext, argc: u32, vp: *mut JS
 
 /// Shared `Dirent.prototype.isXxx()` core: identical receiver plumbing; the
 /// three faces differ only in the hidden `_typeCode` value they compare
-/// against (0=file, 1=directory, 2=symbolic link) (REQ-ARCH-1 duplicate
+/// against (0=file, 1=directory, 2=symbolic link) (REQ-ARCH-001 duplicate
 /// convergence).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn dirent_type_code_getter(

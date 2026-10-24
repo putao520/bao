@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-ZLIB-SILENT [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-ZLIB-SILENT [req:REQ-ENG-007] [level:integration]
 //
 // The two SILENT classes in node:zlib, driven at the JS surface:
 //   1. bad input swallowed — every *Sync decompressor returned undefined

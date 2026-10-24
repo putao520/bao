@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-STREAM-BYTE-PULL [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-STREAM-BYTE-PULL [req:REQ-ENG-007] [level:integration]
 // Regression gate for the WHATWG ReadableByteStreamController [[PullSteps]]
 // port in web_streams.js (byte-controller + default reader, the mixed
 // branch ReadableStreamDefaultReader.prototype.read used to park a read

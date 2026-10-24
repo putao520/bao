@@ -1,4 +1,4 @@
-// @trace REQ-CLI-3 [level:system]
+// @trace REQ-CLI-003 [level:system]
 //
 // # SM-EVOLUTION #24 S1 CLI wiring — `--timeout <ms>` + SIGINT→cancel E2E
 //
@@ -144,7 +144,7 @@ fn write_runaway_file(name: &str, body: &str) -> PathBuf {
 
 // ─── T1: top-level `-e` script entry honors the deadline ────────────────────
 
-/// @trace REQ-CLI-3 [level:e2e] — `--timeout` terminates a runaway script
+/// @trace REQ-CLI-003 [level:e2e] — `--timeout` terminates a runaway script
 /// (SM-EVOLUTION #24 S1 CLI wiring) with exit code 124 (GNU timeout
 /// convention) inside the deterministic window, and the stable termination
 /// error names the deadline.
@@ -187,7 +187,7 @@ fn timeout_terminates_runaway_top_level_eval() {
 
 // ─── T2/T3: file entries (module / script dispatch) honor the deadline ─────
 
-/// @trace REQ-CLI-3 [level:e2e] — `bao run --timeout <ms> file.mjs`: the
+/// @trace REQ-CLI-003 [level:e2e] — `bao run --timeout <ms> file.mjs`: the
 /// module file entry (run_file_with_control → eval_module_with_control,
 /// whole-entry arm incl. the post-eval pump) terminates with 124.
 #[test]
@@ -228,7 +228,7 @@ fn timeout_terminates_runaway_module_file() {
     );
 }
 
-/// @trace REQ-CLI-3 [level:e2e] — `bao run --timeout <ms> file.js`: the
+/// @trace REQ-CLI-003 [level:e2e] — `bao run --timeout <ms> file.js`: the
 /// script file entry (run_file_with_control → eval_with_control) terminates
 /// with 124 — the runtime-internal script-vs-module dispatch is preserved
 /// under control.
@@ -272,7 +272,7 @@ fn timeout_terminates_runaway_script_file() {
 
 // ─── T4: an unused deadline never fires on a fast script ───────────────────
 
-/// @trace REQ-CLI-3 [level:e2e] — a fast script under a large `--timeout`
+/// @trace REQ-CLI-003 [level:e2e] — a fast script under a large `--timeout`
 /// completes normally (exit 0, output intact): the S1 contract is that a
 /// deadline only terminates *executing* JS, never taxes a clean completion.
 #[test]
@@ -301,7 +301,7 @@ fn timeout_does_not_affect_fast_script() {
 
 // ─── T5: SIGINT cancels a runaway under --timeout (stable Cancelled 终态) ──
 
-/// @trace REQ-CLI-3 [level:e2e] — Ctrl-C equivalent (kill -INT) on a
+/// @trace REQ-CLI-003 [level:e2e] — Ctrl-C equivalent (kill -INT) on a
 /// runaway script running under `--timeout` produces the stable Cancelled
 /// terminal state: the engine terminates the script (uncatchable), the CLI
 /// surfaces "execution cancelled" on stderr and exits 130 (128+SIGINT).
@@ -348,7 +348,7 @@ fn sigint_cancels_runaway_under_timeout() {
 
 // ─── T6: WITHOUT --timeout, SIGINT keeps the default kill (行为不变) ───────
 
-/// @trace REQ-CLI-3 [level:e2e] — negative control for the "no flag →
+/// @trace REQ-CLI-003 [level:e2e] — negative control for the "no flag →
 /// byte-level unchanged" contract: without `--timeout` no bridge is
 /// installed, so kill -INT terminates bao by the default disposition —
 /// the process is KILLED BY SIGNAL 2 (not a controlled exit code).
@@ -378,7 +378,7 @@ fn sigint_without_timeout_keeps_default_kill() {
 
 // ─── T7/T8: fail-closed argument surface ────────────────────────────────────
 
-/// @trace REQ-CLI-3 [level:e2e] — `--timeout 0` is a flag mistake (an
+/// @trace REQ-CLI-003 [level:e2e] — `--timeout 0` is a flag mistake (an
 /// instant deadline): rejected by the clap value parser with exit 2, never
 /// silently accepted.
 #[test]
@@ -397,7 +397,7 @@ fn timeout_zero_is_rejected() {
     );
 }
 
-/// @trace REQ-CLI-3 [level:e2e] — `--timeout` on a non-script subcommand is
+/// @trace REQ-CLI-003 [level:e2e] — `--timeout` on a non-script subcommand is
 /// rejected fail-closed (exit 2 + message) instead of being silently ignored:
 /// the flag only drives script execution entries.
 #[test]
@@ -423,7 +423,7 @@ fn timeout_rejected_on_non_script_subcommand() {
 
 // ─── T9: `run --module -e` module eval entry honors the deadline ───────────
 
-/// @trace REQ-CLI-3 [level:e2e] — `bao run --module --timeout <ms> -e`:
+/// @trace REQ-CLI-003 [level:e2e] — `bao run --module --timeout <ms> -e`:
 /// the module eval entry (eval_module_with_control) terminates with 124.
 #[test]
 fn timeout_terminates_runaway_module_eval() {
@@ -464,7 +464,7 @@ fn timeout_terminates_runaway_module_eval() {
 
 // ─── T10/T11: 显式 process.exit(n) 在 armed --timeout 下不受优先序破坏 ──────
 
-/// @trace REQ-CLI-3 [level:e2e] — AC03 explicit-exit half: `process.exit(0)`
+/// @trace REQ-CLI-003 [level:e2e] — AC03 explicit-exit half: `process.exit(0)`
 /// under an armed (unused) `--timeout` still exits 0. The controlled-code
 /// precedence (`termination_exit` wins over the exit machinery) must never
 /// disturb an explicit, orderly exit that the control did not terminate —
@@ -495,7 +495,7 @@ fn explicit_process_exit_zero_under_armed_timeout() {
     );
 }
 
-/// @trace REQ-CLI-3 [level:e2e] — AC03 explicit-exit half, nonzero variant:
+/// @trace REQ-CLI-003 [level:e2e] — AC03 explicit-exit half, nonzero variant:
 /// `process.exit(7)` under an armed (unused) `--timeout` passes 7 through
 /// unshadowed — the precedence order must not flatten explicit nonzero exit
 /// codes onto the control mapping (124/130) either.
@@ -526,7 +526,7 @@ fn explicit_process_exit_nonzero_under_armed_timeout() {
 
 // ─── T12: 受控终止码 124 优先于 module uncaught 路由的 request_exit(1) ──────
 
-/// @trace REQ-CLI-3 [level:e2e] — AC03 precedence half: a module entry whose
+/// @trace REQ-CLI-003 [level:e2e] — AC03 precedence half: a module entry whose
 /// runaway timer callback records an unhandled rejection FIRST, then spins
 /// into the deadline. The post-interrupt rejection flush routes through the
 /// uncaught machinery, whose `request_exit(1)` side effect is observable on
@@ -582,7 +582,7 @@ fn deadline_beats_module_uncaught_request_exit_one() {
 
 // ─── T13: 受控终止码 130(SIGINT→cancel)优先于 request_exit(1) ───────────────
 
-/// @trace REQ-CLI-3 [level:e2e] — AC03 precedence half, Cancelled variant:
+/// @trace REQ-CLI-003 [level:e2e] — AC03 precedence half, Cancelled variant:
 /// the same composition under an armed `--timeout 60000`, terminated by
 /// SIGINT→cancel, must exit **130** — beating the uncaught route's
 /// `request_exit(1)` side effect (128+SIGINT is the truthful signal). The

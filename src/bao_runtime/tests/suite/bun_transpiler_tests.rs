@@ -1,5 +1,5 @@
-// @trace TEST-ENG-19 [req:REQ-ENG-19] [level:integration]
-// Bun.Transpiler 验收标准逐条测试(SPEC REQ-ENG-19 C1-C5),按验收标准
+// @trace TEST-ENG-19 [req:REQ-ENG-019] [level:integration]
+// Bun.Transpiler 验收标准逐条测试(SPEC REQ-ENG-019 C1-C5),按验收标准
 // 一条一测函数:
 //   c1_constructor_surface — C1 typeof Bun.Transpiler === 'function'
 //   c2_loader_option       — C2 new Bun.Transpiler({loader:'ts'}) 创建转译器

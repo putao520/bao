@@ -1,13 +1,13 @@
-// @trace REQ-BRW-17 [level:e2e]
-// @trace REQ-BRW-18 [level:e2e]
-// @trace REQ-BRW-19 [level:e2e]
-// @trace REQ-BRW-24 [level:e2e]
-// @trace REQ-BRW-25 [level:e2e]
-// @trace REQ-BRW-27 [level:e2e]
-// @trace REQ-BRW-30 [level:e2e]
+// @trace REQ-BRW-017 [level:e2e]
+// @trace REQ-BRW-018 [level:e2e]
+// @trace REQ-BRW-019 [level:e2e]
+// @trace REQ-BRW-024 [level:e2e]
+// @trace REQ-BRW-025 [level:e2e]
+// @trace REQ-BRW-027 [level:e2e]
+// @trace REQ-BRW-030 [level:e2e]
 //
 // ═══════════════════════════════════════════════════════════════════════════
-// 页面平台 API conformance 观测面(REQ-BRW-17/18/19/24/25/27/30)
+// 页面平台 API conformance 观测面(REQ-BRW-017/18/19/24/25/27/30)
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // **背景**:e-cover71 覆盖审计(2026-10-16)实测这批 REQ 全域 grep 零专项载体
@@ -23,7 +23,7 @@
 // **观测面 = Window Realm**(evaluate_js_web):页面脚本真实可见的 API。
 //
 // **已知实现缺口(非测试缺口,本文件不补)**:
-//   - REQ-BRW-27-C3/C4/C5 `Cache.put`/`match`/`delete`:servo vendor 的
+//   - REQ-BRW-027-C3/C4/C5 `Cache.put`/`match`/`delete`:servo vendor 的
 //     `Cache` 接口只实现了 `keys()`(Cache.webidl 仅声明 keys),三方法
 //     undefined —— 实现缺口,另立单;本文件只断言既有 C1/C2 + keys。
 
@@ -80,7 +80,7 @@ fn pump_until(page: &PageHandle, slot: &str, max_ms: u64) -> String {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// REQ-BRW-17 Notification API
+// REQ-BRW-017 Notification API
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // servo 实现:vendor/servo/components/script/dom/serviceworker/notification.rs
@@ -89,7 +89,7 @@ fn pump_until(page: &PageHandle, slot: &str, max_ms: u64) -> String {
 // webidl `[Pref=]` 门使 Notification 全局不可见。
 
 #[test]
-// @trace REQ-BRW-17 [level:e2e]
+// @trace REQ-BRW-017 [level:e2e]
 fn notification_api_surface_and_construction() {
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new failed");
     let pool: &PagePool = runtime.page_pool();
@@ -170,7 +170,7 @@ fn notification_api_surface_and_construction() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// REQ-BRW-18 IntersectionObserver
+// REQ-BRW-018 IntersectionObserver
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // servo 实现:vendor/servo/components/script/dom/intersectionobserver/ ——
@@ -178,7 +178,7 @@ fn notification_api_surface_and_construction() {
 // bao 侧翻转 `dom_intersection_observer_enabled`。
 
 #[test]
-// @trace REQ-BRW-18 [level:e2e]
+// @trace REQ-BRW-018 [level:e2e]
 fn intersection_observer_surface_and_callback() {
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new failed");
     let pool: &PagePool = runtime.page_pool();
@@ -254,14 +254,14 @@ fn intersection_observer_surface_and_callback() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// REQ-BRW-19 ResizeObserver
+// REQ-BRW-019 ResizeObserver
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // servo 实现:vendor/servo/components/script/dom/resizeobserver/,由
 // script_thread 的 resize observer steps 驱动。
 
 #[test]
-// @trace REQ-BRW-19 [level:e2e]
+// @trace REQ-BRW-019 [level:e2e]
 fn resize_observer_surface_and_callback() {
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new failed");
     let pool: &PagePool = runtime.page_pool();
@@ -351,11 +351,11 @@ fn resize_observer_surface_and_callback() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// REQ-BRW-24 Web Components (Custom Elements / Shadow DOM)
+// REQ-BRW-024 Web Components (Custom Elements / Shadow DOM)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BRW-24 [level:e2e]
+// @trace REQ-BRW-024 [level:e2e]
 fn web_components_custom_elements_and_shadow_dom() {
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new failed");
     let pool: &PagePool = runtime.page_pool();
@@ -421,11 +421,11 @@ fn web_components_custom_elements_and_shadow_dom() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// REQ-BRW-25 MutationObserver
+// REQ-BRW-025 MutationObserver
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BRW-25 [level:e2e]
+// @trace REQ-BRW-025 [level:e2e]
 fn mutation_observer_surface_and_callback() {
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new failed");
     let pool: &PagePool = runtime.page_pool();
@@ -519,7 +519,7 @@ fn mutation_observer_surface_and_callback() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// REQ-BRW-27 Cache API (CacheStorage / Cache)
+// REQ-BRW-027 Cache API (CacheStorage / Cache)
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // servo 实现:vendor/servo/components/script/dom/serviceworker/{cachestorage,cache}.rs。
@@ -530,7 +530,7 @@ fn mutation_observer_surface_and_callback() {
 // 缺口(另立单),本测试只断言既有 C1/C2 + keys,不伪造缺失方法断言。
 
 #[test]
-// @trace REQ-BRW-27 [level:e2e]
+// @trace REQ-BRW-027 [level:e2e]
 fn cache_api_caches_open_and_keys_surface() {
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new failed");
     let pool: &PagePool = runtime.page_pool();
@@ -599,7 +599,7 @@ fn cache_api_caches_open_and_keys_surface() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// REQ-BRW-30 Gamepad API
+// REQ-BRW-030 Gamepad API
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // servo 实现:vendor/servo/components/script/dom/gamepad/(Gamepad/
@@ -614,7 +614,7 @@ fn cache_api_caches_open_and_keys_surface() {
 // getGamepads() 返回空数组 = 正确行为,非缺口。
 
 #[test]
-// @trace REQ-BRW-30 [level:e2e]
+// @trace REQ-BRW-030 [level:e2e]
 fn gamepad_api_surface_headless() {
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new failed");
     let pool: &PagePool = runtime.page_pool();

@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006 [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6 [req:REQ-ENG-006] [level:integration]
 // Bun.serve response-body byte forms (SILENT: string-only body read):
 // serve_write_response_object used to read ONLY `_bodyText`, but the
 // Request/Response constructors store ArrayBuffer / typed-array / Buffer

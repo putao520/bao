@@ -1,5 +1,5 @@
-// @trace TEST-ENG-004 [req:REQ-ENG-004] [level:integration]
-// @trace TEST-ENG-001 [req:REQ-ENG-001] [level:integration]
+// @trace TEST-ENG-4 [req:REQ-ENG-004] [level:integration]
+// @trace TEST-ENG-1 [req:REQ-ENG-001] [level:integration]
 //
 // All SpiderMonkey-dependent tests run within a single #[test] function because
 // ENGINE_HANDLE is thread_local — Rust's test harness gives each #[test] its own

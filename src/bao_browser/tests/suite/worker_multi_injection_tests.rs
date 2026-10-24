@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:12..17] [level:integration]
+// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:12..17] [level:integration]
 // Multi-Worker per-Worker stealth delivery live tests (REQ-BRW-004, user
 // ruling 2026-09-09 vendor patch — e43 multi-worker gap).
 //

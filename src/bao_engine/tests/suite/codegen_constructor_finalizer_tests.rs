@@ -1,4 +1,4 @@
-// @trace TEST-ENG-002-CTOR-FIN [req:REQ-ENG-002] [level:unit]
+// @trace TEST-ENG-2-CTOR-FIN [req:REQ-ENG-002] [level:unit]
 // Tests for constructor and finalizer code generation:
 // - Constructor allocates native data via Box and stores in reserved slot
 // - Finalizer retrieves native data from reserved slot and drops via Box::from_raw

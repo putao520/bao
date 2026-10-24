@@ -2,8 +2,8 @@
 // the windows product correctly resolves these to ENOENT — cover on unix.
 #![cfg(unix)]
 
-// @trace TEST-ENG-007-CHILD-PROCESS-DEEP [req:REQ-ENG-007] [level:integration]
-// @trace REQ-ENG-46 [req:REQ-ENG-46] [level:integration] — process/子进程能力全平台真实现:child_process 模块面(spawn/exec 家族+stdio/stdin/stdout/stderr 管道)
+// @trace TEST-ENG-7-CHILD-PROCESS-DEEP [req:REQ-ENG-007] [level:integration]
+// @trace REQ-ENG-046 [req:REQ-ENG-046] [level:integration] — process/子进程能力全平台真实现:child_process 模块面(spawn/exec 家族+stdio/stdin/stdout/stderr 管道)
 
 use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;

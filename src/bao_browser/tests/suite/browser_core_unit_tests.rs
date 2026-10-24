@@ -1,4 +1,4 @@
-// @trace TEST-BRW-001~003 [req:REQ-BRW-001~003] [level:unit]
+// @trace TEST-BRW-1~003 [req:REQ-BRW-001~003] [level:unit]
 // Unit tests for bao_browser core: screenshot encode, delegate, config, permission edge cases
 
 use bao_browser::ScreenshotFormat;

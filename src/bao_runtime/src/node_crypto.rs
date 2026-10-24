@@ -719,7 +719,7 @@ unsafe fn arg_to_string(cx: *mut JSContext, val: JSVal) -> Option<String> {
     Some(crate::jsstr_to_rust_string(cx, s))
 }
 
-// Crate-wide single source (node_path imports this; REQ-ARCH-1 duplicate
+// Crate-wide single source (node_path imports this; REQ-ARCH-001 duplicate
 // convergence — the two copies were byte-identical).
 #[allow(unsafe_op_in_unsafe_fn)]
 pub(crate) unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
@@ -1484,7 +1484,7 @@ unsafe extern "C" fn crypto_pbkdf2_sync(cx: *mut JSContext, argc: u32, vp: *mut 
         None => return throw_type_error(cx, "pbkdf2Sync() digest must be a string"),
     };
 
-    // @trace REQ-ENG-007 [entity:bao_crypto] DEC-ENG-003: pbkdf2 routed to
+    // @trace REQ-ENG-007 [entity:bao_crypto] DEC-ENG-3: pbkdf2 routed to
     // bao_crypto::kdf (sha_hmac::pbkdf2 removed). Supports sha1/sha256/sha512.
     let pbkdf2_hash = match bao_crypto::kdf::parse_pbkdf2_hash(&digest_name) {
         Ok(h) => h,
@@ -5259,7 +5259,7 @@ type RsaRawOpFn = unsafe extern "C" fn(
 
 /// Shared raw-RSA core: identical buffer sizing + PKCS#1 padding + result
 /// truncation across the four faces; they differ only in the BoringSSL entry
-/// point (and the error label naming it). REQ-ARCH-1 duplicate convergence.
+/// point (and the error label naming it). REQ-ARCH-001 duplicate convergence.
 unsafe fn rsa_crypt_inner(
     op: RsaRawOpFn,
     op_name: &str,
@@ -5285,7 +5285,7 @@ unsafe fn rsa_crypt_inner(
 /// Shared PEM loader core: identical BIO/EVP_PKEY plumbing across the four
 /// faces; the public faces load via `PEM_read_bio_PUBKEY`, the private faces
 /// via `PEM_read_bio_PrivateKey`, then run the matching raw op
-/// (REQ-ARCH-1 duplicate convergence).
+/// (REQ-ARCH-001 duplicate convergence).
 fn rsa_pem_op(
     data: &[u8],
     pem: &str,
@@ -6081,7 +6081,7 @@ unsafe fn argon2_is_plain_object(cx: *mut JSContext, val: JSVal) -> bool {
 /// `name` takes a C-string literal (`&CStr`); the raw pointer is taken at
 /// the SM API boundary inside.
 ///
-/// Crate-wide single source (REQ-ARCH-1 duplicate convergence, user-authorized
+/// Crate-wide single source (REQ-ARCH-001 duplicate convergence, user-authorized
 /// boundary extension): node_tls's former `tls_socket_prop` was byte-identical
 /// and now imports this — one copy serves both call sites.
 #[allow(unsafe_op_in_unsafe_fn)]

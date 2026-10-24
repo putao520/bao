@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-URL-QUERY-EDGE [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-URL-QUERY-EDGE [req:REQ-ENG-007] [level:integration]
 // node:url / URLSearchParams query-string boundary conformance (issue #1).
 //
 // Oracle: Node v24.5.0 (`node /tmp/urlq/battery.js` ground truth captured

@@ -1,4 +1,4 @@
-// @trace TEST-ENG-008-ULOOP-EDGE [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-8-ULOOP-EDGE [req:REQ-ENG-006] [level:integration]
 //
 // Coverage-shortfall tests for the bao_uloop pub face (addrinfo.rs DNS seam,
 // lib.rs FFI entry points, poll.rs BaoPoll accessors — SPEC 02-SYSTEM

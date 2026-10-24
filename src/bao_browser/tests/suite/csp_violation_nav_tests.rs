@@ -1,4 +1,4 @@
-// @trace TEST-BRW-001 [req:REQ-BRW-001] [sm:PageLifecycle] [level:e2e]
+// @trace TEST-BRW-1 [req:REQ-BRW-001] [sm:PageLifecycle] [level:e2e]
 // Regression lock (2026-10-04, WPT fetch/metadata/report.https.sub.html):
 // a CSP-violating stylesheet subresource during navigation killed the WHOLE
 // PROCESS (SIGSEGV, wptrunner saw RemoteDisconnected ~0.3s after the

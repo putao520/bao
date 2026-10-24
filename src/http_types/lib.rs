@@ -50,7 +50,7 @@ pub fn parse_content_length_strict(value: &[u8]) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit] — upstream bun 83913e746a
+    // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit] — upstream bun 83913e746a
     use super::parse_content_length_strict;
 
     #[test]

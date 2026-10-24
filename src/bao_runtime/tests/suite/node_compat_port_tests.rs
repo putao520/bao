@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-NODECOMPAT-PORT [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-NODECOMPAT-PORT [req:REQ-ENG-007] [level:integration]
 // Ported assertions from Bun's own test suite (~/code/rust/bun/test/js/node/**
 // and test/js/bun/sqlite/**) into the bao Node.js-compat integration harness.
 // Each #[test] fn covers one API area; nextest runs each in its own process,

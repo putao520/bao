@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-FS-C1 [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-FS-C1 [req:REQ-ENG-007] [level:integration]
 //
 // C1 line-coverage wave for src/bao_runtime/src/node_fs.rs (Node.js fs 适配面).
 // 缺口面 = 错误路径分支 / 边界校验 / promises 变体 / 少用 API / watch/stream 面。

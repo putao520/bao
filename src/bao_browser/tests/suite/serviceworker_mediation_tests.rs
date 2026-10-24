@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:19] [level:integration]
+// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:19] [level:integration]
 // ServiceWorker net-layer fetch mediation live tests — REQ-BRW-004 C19 S2b.
 //
 // Verifies, on the live servo path (real registration → real SW scope → real
@@ -345,7 +345,7 @@ fn c19_sw_mediates_page_fetch_end_to_end_live() {
     );
 }
 
-/// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:19] SW re-fetch destination preservation
+/// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:19] SW re-fetch destination preservation
 /// (live) — the wire sec-fetch-dest face of `respondWith(fetch(event.request))`.
 ///
 /// The e69 forensics vehicle (mirroring WPT
@@ -499,7 +499,7 @@ fn install_e73_recorder_js() -> String {
     .to_owned()
 }
 
-/// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:19] SW→client postMessage
+/// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:19] SW→client postMessage
 /// per-client targeting (live) — the e73 `ForwardWorkerMessage.target` face.
 ///
 /// Two pages of the same origin with DIFFERENT creation URLs (`/` and
@@ -704,7 +704,7 @@ fn install_e75_recorder_js() -> String {
         .to_owned()
 }
 
-/// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:19] SW enrolled-client set
+/// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:19] SW enrolled-client set
 /// hygiene on container teardown (live) — the e75 `ClientGone` face.
 ///
 /// Two pages of the same origin with DIFFERENT creation URLs (`/` and

@@ -1,4 +1,4 @@
-// @trace TEST-ENG-005-RESOLVER-ROOT [req:REQ-ENG-005] [level:integration]
+// @trace TEST-ENG-5-RESOLVER-ROOT [req:REQ-ENG-005] [level:integration]
 //
 // B1 census row 27 (用户裁决 2026-09-18 B1「全部处理掉」): the resolver root
 // (top_level_dir) is per-runtime. It used to be a process-global written once

@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-FS-UPSTREAM [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-FS-UPSTREAM [req:REQ-ENG-007] [level:integration]
 // Regression lock for two absorbed upstream node:fs semantics:
 //
 //  1. bun 4c815c11a5 — the truncate family treats an explicit `undefined`

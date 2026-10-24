@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-C3 [req:REQ-ENG-006] [req:REQ-BAO-API-017] [level:integration]
+// @trace TEST-ENG-6-C3 [req:REQ-ENG-006] [req:REQ-BAO-API-017] [level:integration]
 // C3 line-coverage wave for src/bao_runtime/src/globals.rs (install faces).
 //
 // Branch map (source-anchored):

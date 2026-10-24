@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-DEEP [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-DEEP [req:REQ-ENG-007] [level:integration]
 // Deep tests for child_process, vm, module, zlib — single test to avoid mozjs single-init.
 
 use bao_engine::context::JsContext;

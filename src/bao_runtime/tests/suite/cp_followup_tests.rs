@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-CP-FOLLOWUP [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-CP-FOLLOWUP [req:REQ-ENG-007] [level:integration]
 //
 // 774f7088f 基线四登记项 follow-up 验证面(src/bao_runtime/src/node_child_process.rs):
 //   ① __cp_peek_exit 非消费探针 + attach_streams(build_stdio_streams)切换 —

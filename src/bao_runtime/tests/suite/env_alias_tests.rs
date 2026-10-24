@@ -1,4 +1,4 @@
-// @trace REQ-CLI-001 [test:TEST-CLI-001] [level:integration]
+// @trace REQ-CLI-001 [test:TEST-CLI-1] [level:integration]
 // BAO_* → BUN_* env alias contract after the B0 census row-16 transposition
 // (issue #32): the alias is resolved at the env read layer
 // (`bun_core::getenv_z` / `getenv_z_any_case` — a `BUN_<SUFFIX>` lookup that

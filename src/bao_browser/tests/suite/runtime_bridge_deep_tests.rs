@@ -1,4 +1,4 @@
-// @trace TEST-BRW-003 [req:REQ-BRW-003] [level:integration]
+// @trace TEST-BRW-3 [req:REQ-BRW-003] [level:integration]
 // Comprehensive tests for bao_browser::runtime_bridge — channel/queue logic only.
 // No servo dependency.  Covers: RuntimeBridge, BridgeCommand, BridgeResponse,
 // BridgeChannel, BridgeReceiver — construction, send, timeout, fire-and-forget,

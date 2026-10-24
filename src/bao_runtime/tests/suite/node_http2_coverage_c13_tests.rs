@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-H2-C13 [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-6-H2-C13 [req:REQ-ENG-007] [level:integration]
 //
 // C13 line-coverage wave for src/bao_runtime/src/node_http2.rs +
 // src/bao_runtime/src/node_http2_upgrade.rs — the residual gap after C4:

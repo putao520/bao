@@ -1,4 +1,4 @@
-// @trace TEST-ENG-008 [req:REQ-ENG-002] [level:unit]
+// @trace TEST-ENG-8 [req:REQ-ENG-002] [level:unit]
 // Codegen roundtrip tests: parse→generate→verify consistency,
 // parse_classes roundtrip, generate_all batch, generate_module,
 // PropertyKind variants, ClassDef fields, GeneratedBindings structure.

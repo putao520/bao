@@ -127,7 +127,7 @@ mod tests {
         TempDir::new().expect("create temp dir")
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_js_extension() {
         let dir = tempdir();
@@ -138,7 +138,7 @@ mod tests {
         assert_eq!(path.extension().unwrap(), "js");
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_exact_match() {
         let dir = tempdir();
@@ -148,7 +148,7 @@ mod tests {
         assert!(result.unwrap().to_str().unwrap().contains("data.json"));
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_not_found() {
         bao_uloop::force_link();
@@ -160,7 +160,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_index_js() {
         let dir = tempdir();
@@ -172,7 +172,7 @@ mod tests {
         assert!(result.unwrap().to_str().unwrap().contains("index.js"));
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_ts_extension() {
         let dir = tempdir();
@@ -181,7 +181,7 @@ mod tests {
         assert!(result.is_some());
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_absolute_path() {
         let dir = tempdir();
@@ -192,7 +192,7 @@ mod tests {
         assert!(result.is_some());
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_relative() {
         let dir = tempdir();
@@ -201,7 +201,7 @@ mod tests {
         assert!(result.is_some());
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_parent_relative() {
         let dir = tempdir();
@@ -212,7 +212,7 @@ mod tests {
         assert!(result.is_some());
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_node_modules() {
         let dir = tempdir();
@@ -224,7 +224,7 @@ mod tests {
         assert!(result.unwrap().to_str().unwrap().contains("mylib"));
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_no_base_dir_uses_cwd() {
         bao_uloop::force_link();
@@ -234,7 +234,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_mjs_extension() {
         let dir = tempdir();
@@ -244,7 +244,7 @@ mod tests {
         assert_eq!(result.unwrap().extension().unwrap(), "mjs");
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_tsx_extension() {
         let dir = tempdir();
@@ -253,7 +253,7 @@ mod tests {
         assert!(result.is_some());
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_nested_directory() {
         let dir = tempdir();
@@ -265,7 +265,7 @@ mod tests {
         assert!(result.unwrap().to_str().unwrap().contains("deep.js"));
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_package_json_main() {
         let dir = tempdir();
@@ -282,7 +282,7 @@ mod tests {
         assert!(path.to_str().unwrap().contains("index.js"));
     }
 
-    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    // @trace TEST-ENG-5 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_install_idempotent() {
         bao_uloop::force_link();

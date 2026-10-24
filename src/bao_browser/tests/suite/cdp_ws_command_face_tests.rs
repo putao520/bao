@@ -1097,7 +1097,7 @@ impl EventSender for RecordingSender {
     }
 }
 
-// @trace TEST-CDP-004 [req:REQ-CDP-004] [level:e2e]
+// @trace TEST-CDP-4 [req:REQ-CDP-004] [level:e2e]
 #[test]
 fn multi_page_target_routing_phantom_frame_probe() {
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");

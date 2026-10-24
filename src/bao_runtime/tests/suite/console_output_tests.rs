@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-CONSOLE [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6-CONSOLE [req:REQ-ENG-006] [level:integration]
 // console.* / process.stdout.write stream routing — Node semantics:
 //   log/info/debug/dir/table/timeEnd/timeLog/count/group → stdout
 //   warn/error/trace/assert (+ timer/counter warnings)      → stderr

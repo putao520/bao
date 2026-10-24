@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-SEMANTIC-PORT-SMALL [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-SEMANTIC-PORT-SMALL [req:REQ-ENG-007] [level:integration]
 //
 //! SEMANTIC-PORT small batch 2 (9-18 backlog) — four upstream Bun node-API
 //! semantic fixes triaged against the bao_runtime carriers:

@@ -1,7 +1,7 @@
 // @trace REQ-ENG-007 [entity:bao_crypto] [api:node:crypto pbkdf2Sync/scryptSync/hkdf]
-// Unified KDF routing (DEC-ENG-003): the sha_hmac::pbkdf2 module was removed;
+// Unified KDF routing (DEC-ENG-3): the sha_hmac::pbkdf2 module was removed;
 // pbkdf2Sync, scryptSync, and hkdf all route through here. scrypt.rs in
-// sha_hmac is retained per the DEC-ENG-003 carve-out.
+// sha_hmac is retained per the DEC-ENG-3 carve-out.
 use crate::CryptoError;
 use bun_boringssl_sys as bssl;
 

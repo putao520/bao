@@ -1,4 +1,4 @@
-// @trace TEST-STL-001-RESUME [req:REQ-STL-001] [level:integration]
+// @trace TEST-STL-1-RESUME [req:REQ-STL-001] [level:integration]
 //
 // In-process TLS loopback (memory-BIO, no network) proving the unified
 // session-resumption layer: same-origin reconnects resume (1-RTT / PSK),

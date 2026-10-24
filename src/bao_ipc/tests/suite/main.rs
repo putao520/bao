@@ -1,4 +1,4 @@
-//! @trace REQ-ARCH-3
+//! @trace REQ-ARCH-003
 //!
 //! Single integration harness target for `bao_ipc` (workspace test
 //! convention: one `tests/suite/main.rs` target, suites attached as modules).

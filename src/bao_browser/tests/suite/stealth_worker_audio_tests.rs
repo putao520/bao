@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:15] [level:integration]
+// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:15] [level:integration]
 // Worker-realm Web Audio (OfflineAudioContext full stack) live tests for
 // REQ-BRW-004 criterion #15 (user ruling 2026-09-09 vendor patch).
 //

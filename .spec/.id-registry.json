@@ -1,333 +1,6 @@
 {
   "version": 1,
   "types": {
-    "API": {
-      "domains": {
-        "BRW": {
-          "nextN": 6,
-          "allocated": [
-            1,
-            2,
-            3,
-            4,
-            5
-          ],
-          "deleted": []
-        },
-        "CDP": {
-          "nextN": 21,
-          "allocated": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
-            16,
-            17,
-            18,
-            19,
-            20
-          ],
-          "deleted": []
-        },
-        "CLI": {
-          "nextN": 11,
-          "allocated": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10
-          ],
-          "deleted": []
-        },
-        "ENG": {
-          "nextN": 34,
-          "allocated": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            9,
-            10,
-            11,
-            12,
-            13,
-            14,
-            15,
-            16,
-            17,
-            18,
-            19,
-            20,
-            21,
-            22,
-            23,
-            24,
-            25,
-            26,
-            27,
-            28,
-            29,
-            30,
-            31,
-            32,
-            33
-          ],
-          "deleted": []
-        },
-        "STL": {
-          "nextN": 7,
-          "allocated": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6
-          ],
-          "deleted": []
-        },
-        "WK": {
-          "nextN": 11,
-          "allocated": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10
-          ],
-          "deleted": []
-        }
-      }
-    },
-    "BUG": {
-      "domains": {
-        "BRW": {
-          "nextN": 356,
-          "allocated": [],
-          "deleted": [
-            355
-          ]
-        },
-        "CDP": {
-          "nextN": 7,
-          "allocated": [],
-          "deleted": [
-            1,
-            2,
-            6
-          ]
-        },
-        "ENG": {
-          "nextN": 371,
-          "allocated": [
-            367,
-            369
-          ],
-          "deleted": [
-            1,
-            2,
-            3,
-            4,
-            19,
-            21,
-            354,
-            365,
-            366,
-            368,
-            370
-          ]
-        },
-        "FFI-WIN64": {
-          "nextN": 2,
-          "allocated": [
-            1
-          ],
-          "deleted": []
-        },
-        "SEC": {
-          "nextN": 6,
-          "allocated": [],
-          "deleted": [
-            1,
-            2,
-            3,
-            4,
-            5
-          ]
-        },
-        "SEC-BYPASS": {
-          "nextN": 2,
-          "allocated": [],
-          "deleted": [
-            1
-          ]
-        },
-        "SPEC-CONST": {
-          "nextN": 2,
-          "allocated": [],
-          "deleted": [
-            1
-          ]
-        },
-        "STL": {
-          "nextN": 4,
-          "allocated": [],
-          "deleted": [
-            3
-          ]
-        },
-        "TEST-FLAKE": {
-          "nextN": 2,
-          "allocated": [],
-          "deleted": [
-            1
-          ]
-        },
-        "TEST-MASK": {
-          "nextN": 2,
-          "allocated": [],
-          "deleted": [
-            1
-          ]
-        },
-        "TEST-SHAPE": {
-          "nextN": 2,
-          "allocated": [],
-          "deleted": [
-            1
-          ]
-        },
-        "WIN-SOCKOWN": {
-          "nextN": 2,
-          "allocated": [
-            1
-          ],
-          "deleted": []
-        }
-      }
-    },
-    "CF": {
-      "domains": {
-        "FETCH-ASYNC": {
-          "nextN": 2,
-          "allocated": [
-            1
-          ],
-          "deleted": []
-        }
-      }
-    },
-    "DEC": {
-      "domains": {
-        "ARCH": {
-          "nextN": 2,
-          "allocated": [
-            1
-          ],
-          "deleted": []
-        },
-        "CDP": {
-          "nextN": 3,
-          "allocated": [
-            1,
-            2
-          ],
-          "deleted": []
-        },
-        "ENG": {
-          "nextN": 4,
-          "allocated": [
-            1,
-            2,
-            3
-          ],
-          "deleted": []
-        },
-        "PURE": {
-          "nextN": 3,
-          "allocated": [
-            1,
-            2
-          ],
-          "deleted": []
-        },
-        "URL": {
-          "nextN": 2,
-          "allocated": [
-            1
-          ],
-          "deleted": []
-        },
-        "WK": {
-          "nextN": 9,
-          "allocated": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8
-          ],
-          "deleted": []
-        }
-      }
-    },
-    "DF": {
-      "domains": {
-        "FETCH-ASYNC": {
-          "nextN": 2,
-          "allocated": [
-            1
-          ],
-          "deleted": []
-        },
-        "WK": {
-          "nextN": 12,
-          "allocated": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
-            11
-          ],
-          "deleted": []
-        }
-      }
-    },
-    "IF": {
-      "domains": {}
-    },
-    "MOD": {
-      "domains": {}
-    },
     "REQ": {
       "domains": {
         "ARCH": {
@@ -468,7 +141,7 @@
           "deleted": []
         },
         "ENG": {
-          "nextN": 49,
+          "nextN": 50,
           "allocated": [
             1,
             2,
@@ -517,7 +190,8 @@
             45,
             46,
             47,
-            48
+            48,
+            49
           ],
           "deleted": []
         },
@@ -3434,8 +3108,6 @@
             9,
             10,
             11,
-            412,
-            413,
             414,
             415,
             416
@@ -3528,7 +3200,9 @@
             408,
             409,
             410,
-            411
+            411,
+            412,
+            413
           ]
         },
         "ENG-FILE-BOUNDARY": {
@@ -4232,6 +3906,333 @@
             32,
             33
           ]
+        }
+      }
+    },
+    "BUG": {
+      "domains": {
+        "BRW": {
+          "nextN": 356,
+          "allocated": [],
+          "deleted": [
+            355
+          ]
+        },
+        "CDP": {
+          "nextN": 7,
+          "allocated": [],
+          "deleted": [
+            1,
+            2,
+            6
+          ]
+        },
+        "ENG": {
+          "nextN": 371,
+          "allocated": [
+            367,
+            369
+          ],
+          "deleted": [
+            1,
+            2,
+            3,
+            4,
+            19,
+            21,
+            354,
+            365,
+            366,
+            368,
+            370
+          ]
+        },
+        "FFI-WIN64": {
+          "nextN": 2,
+          "allocated": [
+            1
+          ],
+          "deleted": []
+        },
+        "SEC": {
+          "nextN": 6,
+          "allocated": [],
+          "deleted": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        "SEC-BYPASS": {
+          "nextN": 2,
+          "allocated": [],
+          "deleted": [
+            1
+          ]
+        },
+        "SPEC-CONST": {
+          "nextN": 2,
+          "allocated": [],
+          "deleted": [
+            1
+          ]
+        },
+        "STL": {
+          "nextN": 4,
+          "allocated": [],
+          "deleted": [
+            3
+          ]
+        },
+        "TEST-FLAKE": {
+          "nextN": 2,
+          "allocated": [],
+          "deleted": [
+            1
+          ]
+        },
+        "TEST-MASK": {
+          "nextN": 2,
+          "allocated": [],
+          "deleted": [
+            1
+          ]
+        },
+        "TEST-SHAPE": {
+          "nextN": 2,
+          "allocated": [],
+          "deleted": [
+            1
+          ]
+        },
+        "WIN-SOCKOWN": {
+          "nextN": 2,
+          "allocated": [
+            1
+          ],
+          "deleted": []
+        }
+      }
+    },
+    "MOD": {
+      "domains": {}
+    },
+    "IF": {
+      "domains": {}
+    },
+    "DEC": {
+      "domains": {
+        "ARCH": {
+          "nextN": 2,
+          "allocated": [
+            1
+          ],
+          "deleted": []
+        },
+        "CDP": {
+          "nextN": 3,
+          "allocated": [
+            1,
+            2
+          ],
+          "deleted": []
+        },
+        "ENG": {
+          "nextN": 4,
+          "allocated": [
+            1,
+            2,
+            3
+          ],
+          "deleted": []
+        },
+        "PURE": {
+          "nextN": 3,
+          "allocated": [
+            1,
+            2
+          ],
+          "deleted": []
+        },
+        "URL": {
+          "nextN": 2,
+          "allocated": [
+            1
+          ],
+          "deleted": []
+        },
+        "WK": {
+          "nextN": 9,
+          "allocated": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ],
+          "deleted": []
+        }
+      }
+    },
+    "DF": {
+      "domains": {
+        "FETCH-ASYNC": {
+          "nextN": 2,
+          "allocated": [
+            1
+          ],
+          "deleted": []
+        },
+        "WK": {
+          "nextN": 12,
+          "allocated": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "deleted": []
+        }
+      }
+    },
+    "CF": {
+      "domains": {
+        "FETCH-ASYNC": {
+          "nextN": 2,
+          "allocated": [
+            1
+          ],
+          "deleted": []
+        }
+      }
+    },
+    "API": {
+      "domains": {
+        "BRW": {
+          "nextN": 6,
+          "allocated": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "deleted": []
+        },
+        "CDP": {
+          "nextN": 21,
+          "allocated": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            16,
+            17,
+            18,
+            19,
+            20
+          ],
+          "deleted": []
+        },
+        "CLI": {
+          "nextN": 11,
+          "allocated": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ],
+          "deleted": []
+        },
+        "ENG": {
+          "nextN": 34,
+          "allocated": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33
+          ],
+          "deleted": []
+        },
+        "STL": {
+          "nextN": 7,
+          "allocated": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "deleted": []
+        },
+        "WK": {
+          "nextN": 11,
+          "allocated": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ],
+          "deleted": []
         }
       }
     }

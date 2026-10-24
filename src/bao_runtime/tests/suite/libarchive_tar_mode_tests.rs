@@ -2,7 +2,7 @@
 // (std::os::unix + bun_libarchive::directory_mode) — unix-only surface.
 #![cfg(unix)]
 
-// @trace TEST-CLI-001-TAR-DIR-MODE [req:REQ-CLI-001] [level:unit]
+// @trace TEST-CLI-1-TAR-DIR-MODE [req:REQ-CLI-001] [level:unit]
 // Upstream bun 5c26a6cca5 "libarchive: mask tar directory modes instead of
 // narrowing them through i32 (#41742)" — regression assertions from
 // test/js/bun/archive.test.ts, re-expressed on the Rust surface (the JS

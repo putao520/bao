@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006 [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6 [req:REQ-ENG-006] [level:integration]
 // util.promisify custom-symbol contract tests — the domain-check a1f2e22140
 // (own-idiom fix) regression.
 //

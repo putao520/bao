@@ -1,8 +1,8 @@
-// @trace TEST-CDS-001 [req:REQ-CDS-001] [level:unit]
-// @trace TEST-CDS-002 [req:REQ-CDS-004] [level:unit]
-// @trace TEST-CDS-003 [req:REQ-CDS-001] [level:unit]
-// @trace TEST-CDS-004 [req:REQ-CDS-002] [level:unit]
-// @trace TEST-CDS-005 [req:REQ-CDS-005] [level:unit]
+// @trace TEST-CDS-1 [req:REQ-CDS-001] [level:unit]
+// @trace TEST-CDS-2 [req:REQ-CDS-004] [level:unit]
+// @trace TEST-CDS-3 [req:REQ-CDS-001] [level:unit]
+// @trace TEST-CDS-4 [req:REQ-CDS-002] [level:unit]
+// @trace TEST-CDS-5 [req:REQ-CDS-005] [level:unit]
 
 use cdp_server::{CdpError, DomainHandler, DomainRegistry, EventSender, ServerConfig, TargetInfo};
 use cdp_server::{CdpEvent, CdpMessage, CdpResponse};
@@ -112,7 +112,7 @@ impl DomainHandler for TestDispatch {
 }
 
 // ===========================================================================
-// §1 Protocol parsing tests (TEST-CDS-001)
+// §1 Protocol parsing tests (TEST-CDS-1)
 // ===========================================================================
 
 fn parse_msg(raw: &str) -> Option<CdpMessage> {
@@ -161,7 +161,7 @@ fn test_parse_with_session_id() {
 }
 
 // ===========================================================================
-// §2 DomainRegistry tests (TEST-CDS-002 / REQ-CDS-004)
+// §2 DomainRegistry tests (TEST-CDS-2 / REQ-CDS-004)
 // ===========================================================================
 
 #[test]
@@ -260,7 +260,7 @@ fn test_registry_dispatch_extracts_domain() {
 }
 
 // ===========================================================================
-// §3 Transport parsing tests (TEST-CDS-003 / REQ-CDS-001)
+// §3 Transport parsing tests (TEST-CDS-3 / REQ-CDS-001)
 // ===========================================================================
 
 mod transport_tests {
@@ -293,7 +293,7 @@ mod transport_tests {
 }
 
 // ===========================================================================
-// §4 ServerConfig builder tests (TEST-CDS-004 / REQ-CDS-008)
+// §4 ServerConfig builder tests (TEST-CDS-4 / REQ-CDS-008)
 // ===========================================================================
 
 #[test]
@@ -334,7 +334,7 @@ fn test_server_config_builder_partial() {
 }
 
 // ===========================================================================
-// §5 EventSender trait contract tests (TEST-CDS-005 / REQ-CDS-005)
+// §5 EventSender trait contract tests (TEST-CDS-5 / REQ-CDS-005)
 // ===========================================================================
 
 #[test]

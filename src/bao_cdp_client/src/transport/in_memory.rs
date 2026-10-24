@@ -1,6 +1,6 @@
 //! InMemoryTransport — 同进程 servo CDP 桥接。
 //!
-//! ## 架构(DEC-CDP-002)
+//! ## 架构(DEC-CDP-2)
 //!
 //! ```text
 //!   CDP Client thread ──[Command]──> servo ScriptThread
@@ -10,7 +10,7 @@
 //!
 //! servo ScriptThread `!Send`(持有 `Rc<RefCell<...>>`),不可跨线程直调。
 //! 通过 `InMemoryBridge` trait 抽象桥接逻辑,TASK-2 提供基于 `bao_ipc`
-//! unbounded channel(REQ-ARCH-3 统一底座)的可测试实现,TASK-3 替换为真实的
+//! unbounded channel(REQ-ARCH-003 统一底座)的可测试实现,TASK-3 替换为真实的
 //! servo `CDPRdpBridge`。
 //!
 //! ## 同步语义

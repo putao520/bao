@@ -1,4 +1,4 @@
-// @trace TEST-ENG-011 [req:REQ-ENG-011] [level:integration]
+// @trace TEST-ENG-11 [req:REQ-ENG-011] [level:integration]
 // REQ-ENG-011 criterion 8: codeGeneration option disables eval/function compilation.
 // Also re-verifies criteria 5 (sandbox injection) and 6 (sandbox isolation)
 // because the codeGeneration path shares the createContext/runInNewContext

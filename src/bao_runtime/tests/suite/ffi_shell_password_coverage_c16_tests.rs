@@ -1,5 +1,5 @@
-// @trace TEST-ENG-006-C16 [req:REQ-ENG-006] [level:integration]
-// @trace TEST-ENG-011-C16 [req:REQ-ENG-011] [level:integration]
+// @trace TEST-ENG-6-C16 [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-11-C16 [req:REQ-ENG-011] [level:integration]
 //
 // C16 coverage wave — bun_password.rs / bun_ffi.rs / bun_shell.rs residual
 // branch faces, exercised through the public JS surface:

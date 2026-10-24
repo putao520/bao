@@ -655,7 +655,7 @@ impl super::servo_backend::ServoBackend for BridgeSenderBackend {
     // Network domain
     // ──────────────────────────────────────────────────────────────────
     //
-    // REQ-ARCH-1 豁免:本 impl 是 ServoBackend trait 的逐方法通道实现——
+    // REQ-ARCH-001 豁免:本 impl 是 ServoBackend trait 的逐方法通道实现——
     // 每个方法体必然形如 `send_ok(BridgeCommand::X { target_id })`;相似
     // 源于 trait 接口形态,参数化会破坏 trait 方法边界,非重复建设。
 
@@ -1160,7 +1160,7 @@ impl super::servo_backend::ServoBackend for BridgeSenderBackend {
     }
 }
 
-// @trace TEST-CDP-001 [req:REQ-CDP-001] [level:unit]
+// @trace TEST-CDP-1 [req:REQ-CDP-001] [level:unit]
 #[cfg(test)]
 mod tests {
     use super::*;

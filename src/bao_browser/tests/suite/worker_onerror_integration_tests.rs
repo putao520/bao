@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:9] [level:integration]
+// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:9] [level:integration]
 // Servo-native Worker `onerror` integration tests for REQ-BRW-004 criterion #9.
 //
 // Background (BCE-20260627-007):

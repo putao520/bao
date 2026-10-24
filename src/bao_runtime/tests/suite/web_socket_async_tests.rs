@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006-WS-ASYNC [req:REQ-ENG-006] [req:REQ-STL-001] [level:integration]
+// @trace TEST-ENG-6-WS-ASYNC [req:REQ-ENG-006] [req:REQ-STL-001] [level:integration]
 // Async page-WebSocket root fix: `new WebSocket(..)` must NOT connect on the
 // JS thread (background worker + drain pump) and the wss:// handshake must
 // apply the thread's StealthProfile (same application path as fetch()).

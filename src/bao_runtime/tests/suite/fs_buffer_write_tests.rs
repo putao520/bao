@@ -1,4 +1,4 @@
-// @trace TEST-ENG-007-FS-BUFFER [req:REQ-ENG-007] [level:integration]
+// @trace TEST-ENG-7-FS-BUFFER [req:REQ-ENG-007] [level:integration]
 // Regression test for BUG-351: fs.writeFileSync/appendFileSync silently drop Buffer data.
 // Before fix: Buffer/TypedArray data wrote 0 bytes (silent data loss).
 // After fix: Buffer bytes are extracted and written correctly.

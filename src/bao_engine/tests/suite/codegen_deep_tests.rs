@@ -1,4 +1,4 @@
-// @trace TEST-ENG-002-DEEP [req:REQ-ENG-002] [level:unit]
+// @trace TEST-ENG-2-DEEP [req:REQ-ENG-002] [level:unit]
 // Deep tests for bao_engine codegen: complex class hierarchies, edge cases, roundtrip integrity
 
 use bao_engine::codegen::*;

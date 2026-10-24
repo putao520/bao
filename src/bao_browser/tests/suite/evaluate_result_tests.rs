@@ -1,4 +1,4 @@
-// @trace TEST-SEC-002 [req:REQ-SEC-002] [level:unit]
+// @trace TEST-SEC-2 [req:REQ-SEC-002] [level:unit]
 // Tests for EvaluateResult struct and evaluate_in_node_realm return value capture.
 //
 // REQ-SEC-002: evaluate_in_node_realm must capture return values as serialized

@@ -1,6 +1,6 @@
-// @trace REQ-IMPL-05 [level:e2e]
+// @trace REQ-IMPL-005 [level:e2e]
 //
-// # REQ-IMPL-05-C4 real-binary startup/memory thresholds
+// # REQ-IMPL-005-C4 real-binary startup/memory thresholds
 //
 // Coverage-audit G3 (.plans/coverage-audit-eng-20261014.md): "启动延迟 < 2s /
 // 内存开销 < 200MB" had no crate-level threshold carrier — the numbers lived
@@ -35,9 +35,9 @@ use std::time::{Duration, Instant};
 #[path = "common/mod.rs"]
 mod common;
 
-/// REQ-IMPL-05-C4 startup budget: full real-binary run < 2s.
+/// REQ-IMPL-005-C4 startup budget: full real-binary run < 2s.
 const STARTUP_BUDGET_MS: u128 = 2_000;
-/// REQ-IMPL-05-C4 memory budget: 200MB (VmRSS reports KiB).
+/// REQ-IMPL-005-C4 memory budget: 200MB (VmRSS reports KiB).
 const MEMORY_BUDGET_KIB: u64 = 200 * 1024;
 /// Keep-alive window for the RSS sampling target (the setTimeout duration).
 const MEM_PROBE_ALIVE_MS: u64 = 1_500;
@@ -100,10 +100,10 @@ fn skip_if_no_binary() -> bool {
     }
 }
 
-// ─── 1. REQ-IMPL-05-C4 — startup latency < 2s (real binary) ────────────────
+// ─── 1. REQ-IMPL-005-C4 — startup latency < 2s (real binary) ────────────────
 
 #[test]
-// @trace REQ-IMPL-05 [criterion:REQ-IMPL-05-C4] [req:REQ-IMPL-05] [level:e2e]
+// @trace REQ-IMPL-005 [criterion:REQ-IMPL-005-C4] [req:REQ-IMPL-005] [level:e2e]
 fn startup_latency_within_2s() {
     if skip_if_no_binary() {
         return;
@@ -127,7 +127,7 @@ fn startup_latency_within_2s() {
         "eval must actually run before timing counts, stdout={stdout:?}"
     );
 
-    eprintln!("[startup-latency REQ-IMPL-05-C4] elapsed={}ms", elapsed.as_millis());
+    eprintln!("[startup-latency REQ-IMPL-005-C4] elapsed={}ms", elapsed.as_millis());
     assert!(
         elapsed.as_millis() < STARTUP_BUDGET_MS,
         "startup latency {}ms >= {STARTUP_BUDGET_MS}ms budget",
@@ -135,10 +135,10 @@ fn startup_latency_within_2s() {
     );
 }
 
-// ─── 2. REQ-IMPL-05-C4 — runtime memory overhead < 200MB (peak VmRSS) ──────
+// ─── 2. REQ-IMPL-005-C4 — runtime memory overhead < 200MB (peak VmRSS) ──────
 
 #[test]
-// @trace REQ-IMPL-05 [criterion:REQ-IMPL-05-C4] [req:REQ-IMPL-05] [level:e2e]
+// @trace REQ-IMPL-005 [criterion:REQ-IMPL-005-C4] [req:REQ-IMPL-005] [level:e2e]
 fn memory_overhead_rss_within_200mb() {
     if skip_if_no_binary() {
         return;
@@ -199,7 +199,7 @@ fn memory_overhead_rss_within_200mb() {
     }
 
     eprintln!(
-        "[memory-overhead REQ-IMPL-05-C4] peak_vm_rss={}KiB ({}MiB) budget={MEMORY_BUDGET_KIB}KiB",
+        "[memory-overhead REQ-IMPL-005-C4] peak_vm_rss={}KiB ({}MiB) budget={MEMORY_BUDGET_KIB}KiB",
         peak_kib,
         peak_kib / 1024
     );

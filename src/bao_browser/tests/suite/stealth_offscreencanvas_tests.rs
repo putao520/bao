@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:13] [criterion:14] [level:integration]
+// @trace TEST-BRW-4 [req:REQ-BRW-004] [criterion:13] [criterion:14] [level:integration]
 // OffscreenCanvas worker-realm live tests for REQ-BRW-004 criteria #13/#14.
 //
 // SPEC criterion under test:

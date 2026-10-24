@@ -1,6 +1,6 @@
-//! @trace REQ-ARCH-3
+//! @trace REQ-ARCH-003
 //!
-//! bao_ipc — Bao's unified MPMC message substrate (REQ-ARCH-3, wave F1).
+//! bao_ipc — Bao's unified MPMC message substrate (REQ-ARCH-003, wave F1).
 //!
 //! Single import point for in-process multi-producer / multi-consumer message
 //! passing: F2 (bridge migration), F3 (channel hub) and F5 (PROCESS object)
@@ -40,7 +40,7 @@ mod channel;
 
 pub use channel::{channel, unbounded};
 // `Select` + `SelectedOperation` + `SelectTimeoutError`: the substrate's
-// multi-channel wait face (REQ-ARCH-3 wave F2c pump tail — wake on whichever
+// multi-channel wait face (REQ-ARCH-003 wave F2c pump tail — wake on whichever
 // of two queues lands first). The facade doc above already cites `Select` as
 // part of the intended usable surface; this completes the re-export.
 pub use crossbeam_channel::{

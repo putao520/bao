@@ -1,4 +1,4 @@
-// @trace TEST-ENG-006 [req:REQ-ENG-006] [level:integration]
+// @trace TEST-ENG-6 [req:REQ-ENG-006] [level:integration]
 // BCE (atob binary truncation, 2026-08-18) regression pins:
 //   - web_api::atob_fn returned only the bytes up to the first NUL (a
 //     117k-char base64 WAV decoded to 8-9 bytes) — String::from_utf8_lossy
