@@ -943,3 +943,8 @@ fix:全部根治或上游载体在位(gsc#217)。
 - 波3 5fa110a30:84 TEST 锚回填(file::fn 证据链)——**TV-2 102→10,四指标全 0**
 - 残留 10=E 定性诚实缺口(servo 承载面×7/wasi 负契约/流程型)——可见债务不假锚
 - 下一面:崩①修复(cp_poll 64KB 栈缓冲移出,node_child_process.rs)
+
+## 崩①根治+崩①-b 新根因(2026-10-24 深夜)
+- **崩①(栈溢出)已根治**:E#1 修复在树(vec![0u8;65536] calloc 零栈临时,:881-893 完整归因注释+两借用点适配)。判别实证:J3(stdio ignore)全净;J1(echo+管道)EXIT 0+数据流+事件交付正常(dev 不再 stack overflow)。
+- **崩①-b(独立残留,gdb 符号化)**:pipe 字节流路径进程退出期 SIGABRT——栈=`JSClass::doFinalize(Class.h:661)→JSObject::finalize→backgroundFinalize sweep 线程→__libc_free(0x7548c8a12000)`;指针=页对齐 mmap 区基(jemalloc 域)。**根因假设=混合分配器释放**:某 native JSClass 的 finalize 回调对 Rust 全局分配器(jemalloc)分配的存储调 libc free()。触发面=pipe 路径(J3 无管道净;J1/J2 崩)。修复合同=定位该 JSClass(finalize 回调 grep 面:bao 层 JSClassDef/finalize fn),改用同分配器释放或 Box::from_raw。
+- 事故记录:E-cp-poll 两实例被误判楔死 killed(输出文件懒刷新假象),修复本身已由 E#1 落树;memory 沉淀 subagent-output-lazy-flush-not-liveness。
