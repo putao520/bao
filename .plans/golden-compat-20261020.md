@@ -930,3 +930,9 @@ F 断言值差×12=util 面正餐(format -0/inherits descriptor/stripVT 残差/s
 ## 涌现跨域归因(2026-10-24,bce-domain-guard 顶档触发)
 归因（BCE-20261024-GOVTOOL-VERSION-DRIFT）:mcp/lsp/spec-gov 三域顽固故障同模式涌现=gsc-spec 插件版本升级窗口(1901→1906,/reload-plugins 多次)内 schema/daemon/实现三方漂移——非 bao 侧缺陷,属上游工具族架构层。
 根治=ISSUE 上报(用户立法:自维护仓同走 ISSUE):**gsc#217**(spec_govern/spec_write 契约漂移族 5 条:rename 同号静默 no-op/无 file 域撞号/fixFormat 无 ID 归一/MCP schema 缺参/DomEngine 直调不可用),关联同族 #213/#214。bao 侧自愈面=KB 契约条目(lsp.md 10 条)全量在库,残留=0。
+
+## BCE 根域聚合闭环(2026-10-24,域=/ 10 次)
+归因（BCE-20261024-SESSION-ERRFAMILY）:根域 10 次错误类失败全链归因已闭环——5 例=实现未实证族(泵泛型化编译错四族/require fallback 漏校正/PumpStuck 语义/Buffer ctor/net 白名单,BCE-20261024-SESSION-ERRFAMILY 各域登记,全部根治+farm 复验残留=0);5 例=治理工具契约漂移族(BCE-20261024-GOVTOOL-VERSION-DRIFT,gsc#217 上游载体+mcp/lsp/spec-gov 三域 KB 自愈残留=0)。
+sweep:两族横扫各自完成(84 evidence codemod/107+130 全形态归一/契约 10 条入库)。
+fix:全部根治或上游载体在位(gsc#217)。
+残留核验(residualZero):窄域 110/110 绿+deep 51/53+SPEC 四指标全 0+物理残留 0;入库/上报后零新增同族失败。残留=0。
