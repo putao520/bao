@@ -921,3 +921,8 @@ F 断言值差×12=util 面正餐(format -0/inherits descriptor/stripVT 残差/s
 裁定:载具已建 stage-b-util.sh+work-util/(putao 属主);node 对照法=farm 无系统 node,借 node v22.21.1(版本差污染标注)。F 类 12 格+env 缺口=util 域产品合同输入,B/A 类=internal 模块族合同(与 internalBinding fail-closed 先例同链)。
 - lsp 域 residualZero(4 例闭环):poolSize=0 假阴性×2+schema 契约错+超长单行结果溢出——全部按 .gsc/domain-knowledge/lsp.md 通道处置(替代取证/直调 runner/结果文件切片);KB 已覆盖 4/4 形态,入库后零盲调残留。
 - spec-gov 域 residualZero(新例闭环):rename pad/unpad 同号 no-op+驱动假 ok 根因=响应无 error 字样≠成功——契约入库 lsp.md(断言 Element renamed:YES/物理 grep 复核+fixFormat 不做 ID 归一,归一走四点手术);横扫=同族 8 类契约全量在库,残留=0。
+
+## 引擎崩溃三联归因(2026-10-24,E-crash-triage,报告=outbox/crash-triage-report.md)
+1. **esm-cjs rc=134 free()**:cp_poll_thread(node_child_process.rs:913)栈溢出——128KB 线程栈内嵌 64KB 静态读缓冲(:881),jemalloc 首触 init ~28KB 单帧触 guard page;触发=管道出现字节流(echo hello 即崩,与子进程身份/setEncoding 无关);Oct-19 存量。修法=64KB 缓冲移出栈(Heap/静态)或线程栈 256KB。
+2. **partial-deep rc=139**:跨 realm TypedArray 构造 SIGSEGV——`new Uint8Array(vm.runInNewContext('new ArrayBuffer(4)'))` 一行 100% 复现;SM `TypedArrayObject::fromBufferSameCompartment:685 releaseCheck`(MOZ_Crash 序列);assert 只是消费者。待判:fork 自治修(buffer compartment 进入/CCW)vs 上游缺陷登记。
+3. **inspect 深链**:排除栈溢出(rsp 仅 200KB/8MiB 栈,三档 ulimit 恒 241/242);jsval_inspect↔object_body 交替递归中 `seen.push(Heap::boxed(obj_ptr))`(:4729 前读到被 GC 搬移污染槽位 0xb000...)——**heap-storebuffer-teardown 类第三例**(temporary Heap 构造+set+move 不变量);dev 边界非单调=GC 竞态特征。修法=审计 seen 栈槽位生命周期+全仓横扫同类。
