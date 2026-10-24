@@ -878,7 +878,19 @@ const CP_EXIT_TAIL_POLL_MS: u64 = 1;
 /// child's channel.
 #[cfg(unix)]
 fn pipe_poll_thread(mut s: CpDrainState) {
-    let mut buf = [0u8; 65536]; // 64 KiB read buffer
+    // 64 KiB read buffer, heap-allocated: this thread runs on a 128 KiB
+    // stack, and an inline 64 KiB array plus the first-touch jemalloc init
+    // frame (je_malloc_default, ~28 KiB on this thread's first allocation)
+    // blew the guard page on any pipe byte flow (dev profile overflows
+    // loudly; opt presents as a teardown-time glibc "free(): invalid
+    // pointer" abort). `vec![0u8; N]` for a zero u8 element routes through
+    // `alloc_zeroed` (calloc) with NO stack temporary in any profile —
+    // `Box::new([0u8; N])` materializes the array on the stack first (dev
+    // codegen) and overflows the same way. Allocated once per thread; the
+    // read path keeps the same single reusable buffer (read into it, copy
+    // out at the channel boundary — zero-copy semantics unchanged).
+    // @trace REQ-ENG-048
+    let mut buf = vec![0u8; 65536];
 
     loop {
         let child_exited = s.child_exited;
@@ -892,7 +904,7 @@ fn pipe_poll_thread(mut s: CpDrainState) {
         // zombified, and exit/data events never reached JS (task #21 root
         // cause; strace "passed" only because syscall overhead let waitpid
         // win the race in the last fd-processing iteration).
-        if cp_detect_exit_unix(&mut s, &mut buf) {
+        if cp_detect_exit_unix(&mut s, buf.as_mut_slice()) {
             // Exit published (or stood down after a sweep-side reap) — the
             // thread's contract is complete; the close below reclaims the
             // fds, which is what turns an orphan holder's later writes into
@@ -966,7 +978,7 @@ fn pipe_poll_thread(mut s: CpDrainState) {
             let which = fd_map[i];
             let fd = pfd.fd;
 
-            cp_service_fd(&mut s, which, fd, &mut buf);
+            cp_service_fd(&mut s, which, fd, buf.as_mut_slice());
         }
     }
 
