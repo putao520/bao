@@ -902,3 +902,9 @@ util.inspect compact:false 委托(assert IIFE inspectValue 复用+oracle 分界�
 - **波3=Part B(未执行)**:94 条 TV-2 锚回填(E 报告附 file::fn 真实测试证据链,通道=spec_write create data={domain,reqRef,categories};batchData 通道契约不明弃用,顺序单发)+9 真缺口诚实登记(BRW-23/29/39/40/41/42=servo 承载/WPT 判定注记;ENG-45=负契约;BUILDGOV-001/ARCH-4=流程型)。
 - 方案全文:.plans/spec-triage-report-20261024.md(255 行,Part A rename 映射表/B 锚表/C 方案)。
 - 工具契约沉淀:spec_write create 的 data 键={domain,title,reqRef,categories}(camelCase);id 由注册表自分配(号权 SSOT);1905 batchData 契约不明(2 次失败弃)。
+
+## BCE 闭环(2026-10-24,mcp 域·顽固档①)
+归因（BCE-20261024-MCP-CONTRACT-DRIFT）:mcp 域错误类失败 2 次根因=治理工具入参契约与 exposed schema 脱节(batchData 通道契约不明×2)——1901 源码态校验器与 1905 活体 server 双版本行为分歧,离线预检不能预测活体判定。
+横扫(sweep):search_code literal 全仓 MCP 契约消费点=唯一直调 runner(/tmp/*-driver.mjs 家族);同类签名(schema validation/batch create 参数不合法)全量收集=今日 6 类实例。
+根治(fix):契约知识批量入库(一次变换全项目消费通道)——.gsc/domain-knowledge/lsp.md 增补 6 条契约(635fbaf14+撞号陷阱/DomEngine 限制条),此后全部调用走 KB 通道禁盲试。
+残留核验(residualZero):KB 覆盖 6/6 今日实例形态,入库后零新增同类失败;主会话 commit 验证在(635fbaf14 与 mcp 域横扫提交)。
