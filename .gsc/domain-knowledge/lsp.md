@@ -99,3 +99,6 @@ spec_read(action="traverse", dir=".spec", filePath=".spec/10-REQUIREMENTS.html",
 - `spec_govern(check:fix)` 的 fixFormat 作用域:targeted(默认,需 targetFiles/errorIds)|all(需 confirmDestructive=true);exposed MCP schema 不透出 targetFiles/fixScope/confirmDestructive → 直调 runner:`import(spec/tools/spec-govern.mjs).._handleSpecGovern({...})`(参数全量可传)
 - `fixMetadataBatch` 条目形=`{filter:{attrs:{...}},set:{...}}`(非 {id,data})
 - `/reload-plugins` 后版本目录变(1901→1905),hooks/lib/task-header.mjs 可能挪窝 → 离线预检失效判定见 memory spawn-gate-version-drift-manifest
+
+- `spec_govern(rename)` 无 file 域参数:fromId 按规范化编号跨全目录匹配(会把 REQ-ENG-13 与 REQ-ENG-013 同时改到同目标=撞号!);撞号消解=先用单元素手术(镜像 applyRenames 语义:元素 id/data-req/标题/引用四点)换位,再单一匹配 rename,最后 fixTombstoneReuse:true 复活墓碑号(2026-10-24 ENG#13 裁决实操)
+- `spec_write` DOM 层(operations/selector)仅活体 MCP server 可用:直调 1901 `_handleSpecWrite` 报 DomEngine 未注入(注册时才接线)——DOM 手术要么走活体 MCP schema(若透出 operations)要么单元素文本手术+spec_govern check 全量验证兜底
