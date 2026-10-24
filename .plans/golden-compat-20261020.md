@@ -909,3 +909,13 @@ util.inspect compact:false 委托(assert IIFE inspectValue 复用+oracle 分界�
 根治(fix):契约知识批量入库(一次变换全项目消费通道)——.gsc/domain-knowledge/lsp.md 增补 6 条契约(635fbaf14+撞号陷阱/DomEngine 限制条),此后全部调用走 KB 通道禁盲试。
 残留核验(residualZero):KB 覆盖 6/6 今日实例形态,入库后零新增同类失败;主会话 commit 验证在(635fbaf14 与 mcp 域横扫提交)。
 - spec-gov 域关联闭环:spec_govern 面失败(fix fixScope 三拒/rename file 参数无效/fix 通道不解冲突)同属 BCE-20261024-MCP-CONTRACT-DRIFT 家族——契约已入库(lsp.md:fixFormat 作用域+直调 runner 通道+rename 跨目录匹配+单元素手术配方+fixTombstoneReuse 复活),横扫=同族 6 类一次入库,残留=0(入库后零新增)。
+
+## GOLDEN A util 域基线(2026-10-24,E-goldenA-util)
+31 文件:3 PASS/28 FAIL/0 TIMEOUT(inspect-long-running/primordial-monkeypatching/text-decoder 过)。失败 8 类聚类:
+A internalBinding C++ 层缺失×5(js_stream/util/contextify 面产品判定:session_domain 缺=bao 无 C++ binding 层,与 internal/test/binding 同族)
+B internal 模块缺失×6(internal/util:deprecate/emit-experimental-warning/promisify/sleep;internal/timers:debounce/throttle)
+C node:test mock.timers 缺×1
+D 载具布局缺口×1(fixtures 镜像,载具侧)
+E 产品 API/CLI 缺口×3(--enable-source-maps/os.constants.errno/vm.SourceTextModule)
+F 断言值差×12=util 面正餐(format -0/inherits descriptor/stripVT 残差/styletext/types 同引用/inspect getters/callbackify/deprecate 错形态/getcallsites/isDeepStrictEqual)
+裁定:载具已建 stage-b-util.sh+work-util/(putao 属主);node 对照法=farm 无系统 node,借 node v22.21.1(版本差污染标注)。F 类 12 格+env 缺口=util 域产品合同输入,B/A 类=internal 模块族合同(与 internalBinding fail-closed 先例同链)。
