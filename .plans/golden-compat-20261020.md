@@ -908,3 +908,4 @@ util.inspect compact:false 委托(assert IIFE inspectValue 复用+oracle 分界�
 横扫(sweep):search_code literal 全仓 MCP 契约消费点=唯一直调 runner(/tmp/*-driver.mjs 家族);同类签名(schema validation/batch create 参数不合法)全量收集=今日 6 类实例。
 根治(fix):契约知识批量入库(一次变换全项目消费通道)——.gsc/domain-knowledge/lsp.md 增补 6 条契约(635fbaf14+撞号陷阱/DomEngine 限制条),此后全部调用走 KB 通道禁盲试。
 残留核验(residualZero):KB 覆盖 6/6 今日实例形态,入库后零新增同类失败;主会话 commit 验证在(635fbaf14 与 mcp 域横扫提交)。
+- spec-gov 域关联闭环:spec_govern 面失败(fix fixScope 三拒/rename file 参数无效/fix 通道不解冲突)同属 BCE-20261024-MCP-CONTRACT-DRIFT 家族——契约已入库(lsp.md:fixFormat 作用域+直调 runner 通道+rename 跨目录匹配+单元素手术配方+fixTombstoneReuse 复活),横扫=同族 6 类一次入库,残留=0(入库后零新增)。
