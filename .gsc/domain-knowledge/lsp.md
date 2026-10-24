@@ -102,3 +102,6 @@ spec_read(action="traverse", dir=".spec", filePath=".spec/10-REQUIREMENTS.html",
 
 - `spec_govern(rename)` 无 file 域参数:fromId 按规范化编号跨全目录匹配(会把 REQ-ENG-13 与 REQ-ENG-013 同时改到同目标=撞号!);撞号消解=先用单元素手术(镜像 applyRenames 语义:元素 id/data-req/标题/引用四点)换位,再单一匹配 rename,最后 fixTombstoneReuse:true 复活墓碑号(2026-10-24 ENG#13 裁决实操)
 - `spec_write` DOM 层(operations/selector)仅活体 MCP server 可用:直调 1901 `_handleSpecWrite` 报 DomEngine 未注入(注册时才接线)——DOM 手术要么走活体 MCP schema(若透出 operations)要么单元素文本手术+spec_govern check 全量验证兜底
+
+- `spec_govern(rename)` pad/unpad 同号=normalizeId no-op:REQ-IMPL-01→001/TEST-X-001→X-1/DEC-X-001→X-1 被视为同 ID 不执行;响应含 "Element renamed: NO/Verified: FAIL" 仍无 error 字样——**驱动脚本必须断言 "Element renamed: YES" 或事后 grep 物理形态**,禁按响应无错判成功(2026-10-24 实证:150/150 假 ok 实落 90)
+- `check:fix` 的 fixFormat 只重排属性序,**不做 ID 补零/去零归一**——ID 形态归一须走单元素手术(四点:属性值/标题/href 锚/跨文件引用,引号定界替换)后以结构化 check(formatIssues 数组)复测归零

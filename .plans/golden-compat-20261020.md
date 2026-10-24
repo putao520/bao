@@ -920,3 +920,4 @@ E 产品 API/CLI 缺口×3(--enable-source-maps/os.constants.errno/vm.SourceText
 F 断言值差×12=util 面正餐(format -0/inherits descriptor/stripVT 残差/styletext/types 同引用/inspect getters/callbackify/deprecate 错形态/getcallsites/isDeepStrictEqual)
 裁定:载具已建 stage-b-util.sh+work-util/(putao 属主);node 对照法=farm 无系统 node,借 node v22.21.1(版本差污染标注)。F 类 12 格+env 缺口=util 域产品合同输入,B/A 类=internal 模块族合同(与 internalBinding fail-closed 先例同链)。
 - lsp 域 residualZero(4 例闭环):poolSize=0 假阴性×2+schema 契约错+超长单行结果溢出——全部按 .gsc/domain-knowledge/lsp.md 通道处置(替代取证/直调 runner/结果文件切片);KB 已覆盖 4/4 形态,入库后零盲调残留。
+- spec-gov 域 residualZero(新例闭环):rename pad/unpad 同号 no-op+驱动假 ok 根因=响应无 error 字样≠成功——契约入库 lsp.md(断言 Element renamed:YES/物理 grep 复核+fixFormat 不做 ID 归一,归一走四点手术);横扫=同族 8 类契约全量在库,残留=0。
