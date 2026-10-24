@@ -948,3 +948,10 @@ fix:全部根治或上游载体在位(gsc#217)。
 - **崩①(栈溢出)已根治**:E#1 修复在树(vec![0u8;65536] calloc 零栈临时,:881-893 完整归因注释+两借用点适配)。判别实证:J3(stdio ignore)全净;J1(echo+管道)EXIT 0+数据流+事件交付正常(dev 不再 stack overflow)。
 - **崩①-b(独立残留,gdb 符号化)**:pipe 字节流路径进程退出期 SIGABRT——栈=`JSClass::doFinalize(Class.h:661)→JSObject::finalize→backgroundFinalize sweep 线程→__libc_free(0x7548c8a12000)`;指针=页对齐 mmap 区基(jemalloc 域)。**根因假设=混合分配器释放**:某 native JSClass 的 finalize 回调对 Rust 全局分配器(jemalloc)分配的存储调 libc free()。触发面=pipe 路径(J3 无管道净;J1/J2 崩)。修复合同=定位该 JSClass(finalize 回调 grep 面:bao 层 JSClassDef/finalize fn),改用同分配器释放或 Box::from_raw。
 - 事故记录:E-cp-poll 两实例被误判楔死 killed(输出文件懒刷新假象),修复本身已由 E#1 落树;memory 沉淀 subagent-output-lazy-flush-not-liveness。
+
+## 四 E 并发波验证中(2026-10-24 深夜)
+- 崩①-b 判别 5/5 净(spawn echo+pipe 反复零 invalid pointer)——混合分配器根治实证(cp_drain+net_read libc::malloc 域,全仓 7 点对账,std::alloc::alloc 喂点残留=0)
+- 崩② 四向全绿(一行复现 len=4/seeding/写回/活绑定身份+突变)——JS_WrapValue CCW 封送四向(8 调用点)
+- util 域 **3→12 PASS**(F 类 9 格翻转;19 残留=E 登记项 oracle-parity×1/引擎域×2/结构域×1+其余类)
+- internal 模块族落地(internal/util+internal/timers+debounce/throttle 四 builtin,24/24 oracle harness)
+- 七域窄域回归(vm/child_process/util_deep/util_edge/node_util/net_socket/assert_deep_parity)在跑
