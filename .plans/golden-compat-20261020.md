@@ -1015,3 +1015,16 @@ fix:两段式修正后实测全通(BIN_STAGED 173786280 bytes + host stage-b 12/
 residualZero:修正形态下 EXIT=0 跑通 GOLDEN A util 复跑+七域 94/94,该签名零复发。
 历史修复轨迹:族 A 嵌套 shell 三层再解析已根治(脚本文件形态);本例是族 A 的子类=路径命名空间混写,同属「farm 调用形态契约」域——契约已沉淀 farm-ops-quirks(将补第 7 条:容器脚本只许引用 /src 与 /outbox,host 载具路径留在 host 段)。
 四要素上报:错误类失败 12 次(域 f69fc9cc-e476-469e-bd3d-f9c77da6a8e8);残留=0,本域收口。
+
+## 全量 suite 13 红归因(2026-10-25,E6-E11 六 E 收尾轮,1829/1842)
+- **dns 族 8 红=环境漂移非产品回归**:farm host /etc/resolv.conf 已被改为公共 DNS(8.8.8.8/1.1.1.1/223.5.5.5),公共上游按 RFC 6761 拒答单标签 localhost→resolve4 queryA ENOTFOUND。测试头注释(c4:5-7)明写成功断言依赖 host systemd-resolved stub(127.0.0.53 应答 A localhost=127.0.0.1)——10-18 波后 farm DNS 配置变更。判别:HEAD 时代二进制(bao-baseline 10-24 build)同红实证+lookup 面(走 /etc/hosts)正常。处置=dns 域 8 红从本波残留豁免,登记 farm 环境项(修复选项:恢复 resolv.conf 指向 systemd-resolved,或测试环境门;另行处置不阻塞本波)。
+- **5 级联红=E7 promisify/callbackify node 真值包装打破陈旧 pin**:主会话预核 2 个(callbackify falsy 旧形态 pin/promisify message 含 'promisify' 假设,node oracle 证伪),E12 并发处置中(5 项逐个 oracle 判定 pin 校正 vs 产品回归)。
+- **正项**:events 域复跑 9→14 PASS(E10 构造器形态翻 5 格,not-a-ctor 14 文件类消亡);buffer-copy panic 0 复发(E11 memmove 根治,EXIT 从 NATIVE_PANIC 变 JS 断言差);全量 1829/1842(排除环境 8 红+级联 5 红=潜在 1842/1842)。
+
+## bce-domain-guard 收口(2026-10-25 第三轮,错误类失败 13 次,顶档上报·四要素)
+归因（BCE-20261025-FARM-DNS-RESOLV-DRIFT）:第 13 次错误类失败签名=nextest `error: test run failed`(dns 8 红)——根因=farm host /etc/resolv.conf 在 10-18 后被改为公共 DNS(8.8.8.8/1.1.1.1/223.5.5.5),公共上游按 RFC 6761 拒答单标签 localhost,dns 域测试的成功断言(测试头注释明写依赖 host systemd-resolved stub 应答 A localhost=127.0.0.1)全部 ENOTFOUND。非产品缺陷:HEAD 时代二进制(bao-baseline)同红实证,lookup 面(走 /etc/hosts)正常。
+sweep:全部 8 dns 红逐个核对同签名(queryA/resolve4 ENOTFOUND 族),零其他形态;dns 域从本波残留豁免,登记 farm 环境项。
+fix:归因+豁免落账(上节);farm resolv.conf 恢复指 systemd-resolved 或测试环境门=另行处置项(涉及 farm host 全局配置,不擅动)。
+residualZero:产品侧残留=0(8 红全为环境态,排除后 1829+5 级联(E12 处置中)=0 产品未归因红)。
+历史修复轨迹:首判「E7 promisify 级联」假设被 HEAD 二进制对照证伪(级联应影响包装形态而非 ENOTFOUND 查询错)——时序还原+双二进制 A/B 是关键判据,已入 farm-ops-quirks 心法。
+四要素上报:错误类失败 13 次(域 f69fc9cc-e476-469e-bd3d-f9c77da6a8e8);残留=0,本域收口。
