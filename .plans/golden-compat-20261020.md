@@ -1001,3 +1001,17 @@ fix:全部根治或上游载体在位(gsc#217)。
   - C×5 真断言差(callbackify/format -0/getcallsites 帧数×3/promisify/stripvt/deprecate)——产品行为合同输入
   - D/E×3 载具/CLI(fixtures 镜像/--experimental-vm-modules SourceTextModule/mock.timers)
 - B' 空跑为下波最高优先:9 翻绿候选中 7 个落空全因 runner 消费面,非实现缺口——修 runner 面一次可翻多格。
+
+## B' 空跑误诊修正(2026-10-25,E6 取证,零代码改动)
+- B' 7 文件「0 passed,0 failed」经 farm 插桩复现+逐文件 grep 实证:**6 个不用 node:test**(纯顶层同步 assert 脚本,正确通过本就输出 0/0;尾部插桩 console.log 全部到达,rc=0)=**分类器误报非缺陷**;isDeepStrictEqual 有 node:test 且 test() 已被 runner 消费打出 ✓,rc=1 来自断言差(C 类)。
+- **util 域实际基线=18 PASS/13 FAIL**(12+6 修正;E9 载具分类器判据缺陷:未区分「无 node:test 纯脚本全过」与「runner 未消费」——后续基线报告分类器需加 require('node:test') 存在性判据)。
+- 连带小缺口登记(另行立任务,非本波):`bao run` 模式顶层求值完全静默(成功 console.log 不出,仅 uncaught 打印)——bao_cli run 命令输出面,与 runner 无关。
+- E6 零代码改动=正确决策:不存在「runner 用例未消费」缺口,强行修会把正确行为改坏。
+
+## bce-domain-guard 收口(2026-10-25 第二轮,错误类失败 12 次,顶档上报·四要素)
+归因（BCE-20260625-FARM-MOUNT-PATH-BOUNDARY）:第 12 次错误类失败=EXIT=127——容器内脚本引用 host 未挂载路径(golden-util-rerun.sh 在容器内调 /home/putao/build-farm/bao/golden-node/stage-b-util.sh,而 compose 只挂 /src 与 /outbox 两卷,golden-node 是 host 目录)。根因=**容器挂载边界与 host 载具路径的命名空间割裂**——farm 载具族是 host 直跑形态(E 原跑批在 host 跑 bash),容器只承载编译;混写两形态的脚本必然 127。
+sweep:全部 farm 脚本盘点(.claude/farm-*.sh + outbox/*.sh)——唯 farm-golden-util-rerun.sh 一处混写(其余 seven-domain/itype-probe 均纯容器路径);已根治为两段式(容器段=纯 /src+/outbox,stage-b 跑批挪 host bash)。同类签名(脚本内出现 /home/putao/build-farm/bao/golden-node)残留=0。
+fix:两段式修正后实测全通(BIN_STAGED 173786280 bytes + host stage-b 12/31 跑批成功)。
+residualZero:修正形态下 EXIT=0 跑通 GOLDEN A util 复跑+七域 94/94,该签名零复发。
+历史修复轨迹:族 A 嵌套 shell 三层再解析已根治(脚本文件形态);本例是族 A 的子类=路径命名空间混写,同属「farm 调用形态契约」域——契约已沉淀 farm-ops-quirks(将补第 7 条:容器脚本只许引用 /src 与 /outbox,host 载具路径留在 host 段)。
+四要素上报:错误类失败 12 次(域 f69fc9cc-e476-469e-bd3d-f9c77da6a8e8);残留=0,本域收口。
