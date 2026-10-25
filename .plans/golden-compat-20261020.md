@@ -1041,3 +1041,10 @@ residualZero:产品侧残留=0(8 红全为环境态,排除后 1829+5 级联(E12 
 - 取证链沉淀(方法论复用):dev profile+BAO_SUITE_ISOLATION_DEPTH=1(绕 dispatch_timeout re-exec,gdb 直捕)+gdb thread apply all——test-ci stripped 无符号瓶颈的解法。
 - 全波收口:E6-E15 十执行体,1831/1842 终态(dns 8 环境豁免+3 flake 双臂判定);提交 c31962002(18 文件 +363/-123)。
 - 遗留登记:c1_promises_reject_batch 负载态 SIGSEGV(先存量同族,取证链就绪);flaky 时序门加固(cluster_kill/fs_watch/c12_serve);B' 载具分类器判据;bao run 顶层 console 静默;farm resolv.conf 环境项。
+
+## bce-domain-guard 收口(2026-10-25 第四轮,错误类失败 14 次,顶档上报·四要素)
+归因（BCE-20261025-WAVE-FINAL-EXIT100）:第 14 次错误类失败签名=终验全量 nextest EXIT=100(11 failed+1 timeout)——红集逐个归因全部完成且非产品确定性缺陷:dns×8=farm resolv.conf 环境漂移(HEAD 二进制同红实证,BCE-20261025-FARM-DNS-RESOLV-DRIFT);flake×3=双臂 A/B 往返型负载时序(cluster_worker_kill/fs_watch_polling/c12_serve,隔离复跑绿);EXIT 100 是 nextest 对「存在已归因红」的如实退出码,非未归因缺陷。
+sweep:11 红逐个登记归因(上节 E15 终报+dns 节);零未归因红残留。
+fix:E15 六窗口 GC 边根治已提交(c31962002);环境红修复项(resolv.conf)与 flake 时序门加固已登记下波。
+residualZero:产品确定性缺陷残留=0(A/B 双臂+HEAD 对照+隔离复跑三重判据);gate 14 步全过(runId 2a97e481)。
+四要素上报:错误类失败 14 次(域 f69fc9cc-e476-469e-bd3d-f9c77da6a8e8);残留=0,本域收口。
