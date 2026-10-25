@@ -158,7 +158,7 @@ fn test_runtime_deep() {
         check("require_path", function() { return typeof require('path') === 'object'; });
         check("require_os", function() { return typeof require('os') === 'object'; });
         check("require_util", function() { return typeof require('util') === 'object'; });
-        check("require_events", function() { return typeof require('events') === 'object'; });
+        check("require_events", function() { return typeof require('events') === 'function'; });
         check("require_stream", function() { return typeof require('stream') === 'object'; });
         check("require_buffer", function() { return typeof require('buffer') === 'object'; });
         check("require_crypto", function() { return typeof require('crypto') === 'object'; });
@@ -186,7 +186,7 @@ fn test_runtime_deep() {
         check("require_node_path", function() { return typeof require('node:path') === 'object'; });
         check("require_node_os", function() { return typeof require('node:os') === 'object'; });
         check("require_node_util", function() { return typeof require('node:util') === 'object'; });
-        check("require_node_events", function() { return typeof require('node:events') === 'object'; });
+        check("require_node_events", function() { return typeof require('node:events') === 'function'; });
         check("require_node_stream", function() { return typeof require('node:stream') === 'object'; });
         check("require_node_buffer", function() { return typeof require('node:buffer') === 'object'; });
         check("require_node_crypto", function() { return typeof require('node:crypto') === 'object'; });

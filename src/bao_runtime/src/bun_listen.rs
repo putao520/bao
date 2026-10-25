@@ -2748,9 +2748,23 @@ unsafe extern "C" fn tcp_on_close(
     } else {
         gc_store_get(ud.cx, &sock_key)
     };
-    if !ud.cx.is_null() {
+    // (Bao, BCE) Root the socket identity ACROSS the gc_store_remove below —
+    // JS_DeleteProperty can reallocate dictionary-mode shapes (an allocation
+    // that can trigger a minor GC) and a bare pointer held across it goes
+    // stale; the ObjectValue root at the dispatch arm below would then
+    // capture an already-moved address (same UB class as the bun_serve
+    // fetch-handler dispatch SIGSEGV). Extraction after the remove is safe:
+    // no GC-capable call runs between it and the dispatch arm's re-root.
+    let sock_obj = if !ud.cx.is_null() {
+        let mut pre_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(ud.cx));
+        let pre_ref = &mut pre_cx;
+        rooted!(&in(pre_ref) let sock_pre = sock_obj.unwrap_or(::std::ptr::null_mut()));
         gc_store_remove(ud.cx, &sock_key);
-    }
+        let kept = sock_pre.get();
+        if kept.is_null() { None } else { Some(kept) }
+    } else {
+        sock_obj
+    };
 
     let code_val = Int32Value(code);
     match sock_obj {
@@ -3133,9 +3147,23 @@ unsafe extern "C" fn connect_on_close(
     } else {
         gc_store_get(ud.cx, &sock_key)
     };
-    if !ud.cx.is_null() {
+    // (Bao, BCE) Root the socket identity ACROSS the gc_store_remove below —
+    // JS_DeleteProperty can reallocate dictionary-mode shapes (an allocation
+    // that can trigger a minor GC) and a bare pointer held across it goes
+    // stale; the ObjectValue root at the dispatch arm below would then
+    // capture an already-moved address (same UB class as the bun_serve
+    // fetch-handler dispatch SIGSEGV). Extraction after the remove is safe:
+    // no GC-capable call runs between it and the dispatch arm's re-root.
+    let sock_obj = if !ud.cx.is_null() {
+        let mut pre_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(ud.cx));
+        let pre_ref = &mut pre_cx;
+        rooted!(&in(pre_ref) let sock_pre = sock_obj.unwrap_or(::std::ptr::null_mut()));
         gc_store_remove(ud.cx, &sock_key);
-    }
+        let kept = sock_pre.get();
+        if kept.is_null() { None } else { Some(kept) }
+    } else {
+        sock_obj
+    };
 
     let code_val = Int32Value(code);
     let mut delivered_with_identity = false;

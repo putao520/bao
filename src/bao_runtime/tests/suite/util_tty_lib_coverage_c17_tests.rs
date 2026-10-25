@@ -358,12 +358,20 @@ fn c17_util_oracle_parity() {
             return C.super_ === P && protoLinked === true
                 && ((new C()) instanceof P);
         });
-        // inherits argc/argument guards (owned no-op face, non-node).
+        // node v24.19.0 oracle: inherits VALIDATES both arguments and throws
+        // ERR_INVALID_ARG_TYPE — there is no no-op guard face. Each bad-arg
+        // form throws synchronously (the prior no-op pin was the old stub
+        // characterization, now stale under the real-value impl).
         check("inherits_guards", function() {
-            function C() {}
-            return util.inherits(C) === undefined
-                && util.inherits(5, {}) === undefined
-                && util.inherits({}, 5) === undefined;
+            function codeOf(fn) {
+                try { fn(); return null; } catch (e) { return e.code; }
+            }
+            return codeOf(function() { util.inherits(function C() {}); })
+                       === 'ERR_INVALID_ARG_TYPE'
+                && codeOf(function() { util.inherits(5, {}); })
+                       === 'ERR_INVALID_ARG_TYPE'
+                && codeOf(function() { util.inherits({}, 5); })
+                       === 'ERR_INVALID_ARG_TYPE';
         });
         // U7 — real proxies answer true, plain objects false. Function
         // proxies are detected too via the mozjs fork's JS_IsProxy (thin

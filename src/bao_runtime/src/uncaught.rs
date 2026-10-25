@@ -388,14 +388,21 @@ pub unsafe fn flush_pending_rejections(raw_cx: *mut JSContext) {
     for entry in entries {
         // Take the root: None = cancelled by a late Handled before flush.
         let promise = gc_store_get_ns(raw_cx, NS, &entry.gc_key);
-        gc_store_remove_ns(raw_cx, NS, &entry.gc_key);
         let Some(promise) = promise.filter(|p| !p.is_null()) else {
+            gc_store_remove_ns(raw_cx, NS, &entry.gc_key);
             continue;
         };
 
         let mut cx_ref =
             unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)) };
+        // (Bao, BCE) Root the promise BEFORE the gc_store_remove_ns below —
+        // JS_DeleteProperty can reallocate dictionary-mode shapes (an
+        // allocation that can trigger a minor GC) and a bare pointer held
+        // across it goes stale; the root below would then capture an
+        // already-moved address (same UB class as the bun_serve fetch-handler
+        // dispatch SIGSEGV).
         rooted!(&in(cx_ref) let promise_root = promise);
+        gc_store_remove_ns(raw_cx, NS, &entry.gc_key);
 
         // Read the rejection reason. GetPromiseResult unwraps the promise
         // object; enter its realm first (AutoRealm) — the flush may run in

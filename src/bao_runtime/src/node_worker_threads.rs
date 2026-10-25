@@ -2150,8 +2150,20 @@ unsafe fn pump_one_worker(cx: *mut JSContext, thread_id: u32) {
             .map(|h| h.thread.as_ref().is_some_and(|j| j.is_finished()))
             .unwrap_or(false);
 
-        let worker_obj =
+        let worker_obj_raw =
             crate::gc_store::gc_store_get_ns(cx, "worker-threads", &format!("w{}", thread_id));
+        // (Bao, BCE) Root the worker object for the WHOLE pump pass — the
+        // drain loop below allocates while it is bare (make_worker_error
+        // constructs a JS Error; worker_try_recv can run JS), and a minor GC
+        // moves the nursery-allocated worker wrapper; the emit sites' entry
+        // roots would then pin an already-moved address (same UB class as the
+        // bun_serve fetch-handler dispatch SIGSEGV). Every use reads through
+        // the root slot so a GC that moves the object is observed.
+        let mut worker_cx = mozjs::context::JSContext::from_ptr(
+            ::std::ptr::NonNull::new_unchecked(cx),
+        );
+        rooted!(&in(worker_cx) let worker_root = worker_obj_raw.unwrap_or(::std::ptr::null_mut()));
+        let has_worker = !worker_root.get().is_null();
 
         let mut saw_error = false;
         // Per-pass drain bound. Two structural reasons this cannot be an
@@ -2170,14 +2182,16 @@ unsafe fn pump_one_worker(cx: *mut JSContext, thread_id: u32) {
 
             match inc {
                 WorkerIncoming::Data => {
-                    if let Some(obj) = worker_obj {
+                    if has_worker {
+                        let obj = worker_root.get();
                         let data = rval.get();
                         emit_worker_event(cx, obj, "message", &[data]);
                     }
                 }
                 WorkerIncoming::Error(msg) => {
                     saw_error = true;
-                    if let Some(obj) = worker_obj {
+                    if has_worker {
+                        let obj = worker_root.get();
                         if let Some(err) = make_worker_error(cx, &msg) {
                             emit_worker_event(cx, obj, "error", &[err]);
                         }
@@ -2194,7 +2208,8 @@ unsafe fn pump_one_worker(cx: *mut JSContext, thread_id: u32) {
             // see a dead worker, then dispatch, then release the pump root
             // (the handle drops with the entry: sender + finished JoinHandle).
             let _ = worker_registry().remove(&thread_id);
-            if let Some(obj) = worker_obj {
+            if has_worker {
+                let obj = worker_root.get();
                 let code = if saw_error { 1 } else { 0 };
                 emit_worker_event(cx, obj, "exit", &[Int32Value(code)]);
             }

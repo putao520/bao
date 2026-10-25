@@ -26,7 +26,7 @@ fn test_node_events_all() {
             catch(e) { results.push(label + ":ERROR:" + (e.message || e)); }
         }
 
-        check("require", function() { return typeof events === 'object'; });
+        check("require", function() { return typeof events === 'function'; });
         check("EventEmitter", function() { return typeof events.EventEmitter === 'function'; });
 
         // basic on/emit

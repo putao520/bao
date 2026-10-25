@@ -35,7 +35,7 @@ fn test_require_deep() {
         check("require_assert", function() { return typeof require('assert') === 'function'; });
         check("require_buffer", function() { return typeof require('buffer') === 'object'; });
         check("require_crypto", function() { return typeof require('crypto') === 'object'; });
-        check("require_events", function() { return typeof require('events') === 'object'; });
+        check("require_events", function() { return typeof require('events') === 'function'; });
         check("require_stream", function() { return typeof require('stream') === 'object'; });
         check("require_dns", function() { return typeof require('dns') === 'object'; });
         check("require_net", function() { return typeof require('net') === 'object'; });

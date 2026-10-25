@@ -159,7 +159,7 @@ fn test_string_decoder_module_deep() {
         });
         check("require_events", function() {
             var events = require('events');
-            return typeof events === 'object';
+            return typeof events === 'function';
         });
         check("require_stream", function() {
             var stream = require('stream');

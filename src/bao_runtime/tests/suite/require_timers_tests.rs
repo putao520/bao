@@ -46,7 +46,7 @@ fn test_require_timers_all() {
 
         // === require('events') ===
         var events = require('events');
-        check("events_require", function() { return typeof events === 'object'; });
+        check("events_require", function() { return typeof events === 'function'; });
         check("events_EventEmitter", function() { return typeof events.EventEmitter === 'function'; });
 
         // === require('url') ===

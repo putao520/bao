@@ -29,7 +29,7 @@ fn test_events_path_deep() {
         var events = require('events');
 
         check("events_exists", function() { return typeof events !== 'undefined'; });
-        check("events_is_object", function() { return typeof events === 'object'; });
+        check("events_is_object", function() { return typeof events === 'function'; });
 
         // EventEmitter
         check("EventEmitter_exists", function() { return typeof events.EventEmitter === 'function'; });

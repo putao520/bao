@@ -45,6 +45,10 @@ fn test_util_callbackify_real_semantics() {
       util.callbackify(async (x) => x * 2)(21, function(err, v) {
         __cb.resolve = err ? 'ERR' : v;
       });
+      // node v24.19.0 oracle: resolved arrays are NOT spread — the array
+      // arrives as a single argument (a=[1,2,3], b=undefined, c=undefined),
+      // so [a,b,c].join(',') = "1,2,3,," (two trailing empties from the
+      // undefined b and c slots).
       util.callbackify(async () => [1, 2, 3])(function(err, a, b, c) {
         __cb.spread = err ? 'ERR' : [a, b, c].join(',');
       });
@@ -52,8 +56,14 @@ fn test_util_callbackify_real_semantics() {
         __cb.reject = err ? err.message : 'NOERR';
       });
       util.callbackify(async () => { throw 0; })(function(err) {
+        // node v24.19.0 oracle: falsy rejection reason is wrapped in an
+        // Error whose message is "Promise was rejected with falsy value";
+        // err.cause is left unset (cause === 0 is false — the wrapper does
+        // NOT re-attach the original falsy value as .cause).
         __cb.falsy = (err instanceof Error) ? (err.message + '|' + String(err.cause === 0)) : 'NOTERR';
       });
+      // node v24.19.0 oracle: a resolved undefined delivers cb(null, undefined)
+      // — arguments.length === 2, classified as 'extra' (NOT 'null-only').
       globalThis.__cb.undef = 'unset';
       util.callbackify(async () => {})(function(err) {
         __cb.undef = err ? 'ERR' : (arguments.length === 1 ? 'null-only' : 'extra');
@@ -72,7 +82,7 @@ fn test_util_callbackify_real_semantics() {
         &mut ctx,
         r#"JSON.stringify([__cb.resolve, __cb.spread, __cb.reject, __cb.falsy, __cb.undef, __cb.nocb])"#,
     );
-    assert_eq!(out, r#"[42,"1,2,3","boom","falsy rejection reason|true","null-only","THROWN"]"#);
+    assert_eq!(out, r#"[42,"1,2,3,,","boom","Promise was rejected with falsy value|false","extra","THROWN"]"#);
     bun_runtime::shutdown_thread_sm();
 }
 

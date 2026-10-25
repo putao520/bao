@@ -51,11 +51,6 @@ thread_local! {
 }
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
-    rooted!(&in(cx) let events_obj = unsafe { mozjs::rust::wrappers2::JS_NewPlainObject(cx) });
-    if events_obj.get().is_null() {
-        return;
-    }
-
     unsafe {
         rooted!(&in(cx) let global = CurrentGlobalOrNull(cx.raw_cx()));
         if global.get().is_null() {
@@ -124,11 +119,17 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
         rooted!(&in(cx) let ctor = JS_GetConstructor(cx.raw_cx(), proto_h.handle().into()));
         if !ctor.get().is_null() {
+            // Node.js exports the EventEmitter constructor itself as the
+            // module value: `require('events') === require('events').EventEmitter`.
+            // The ctor is the module return value (cached below); the
+            // `EventEmitter` key is a self-reference so both access shapes
+            // (`require('events')` and `require('events').EventEmitter`)
+            // resolve to the same function object.
             let ctor_val = ObjectValue(ctor.get());
             rooted!(&in(cx) let cv = ctor_val);
             JS_DefineProperty(
                 cx.raw_cx(),
-                events_obj.handle().into(),
+                ctor.handle().into(),
                 c"EventEmitter".as_ptr(),
                 cv.handle().into(),
                 (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
@@ -152,8 +153,9 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
             // Node.js ships `EventEmitter.defaultMaxListeners` (number, default 10)
             // and `EventEmitter.captureRejections` (boolean, default false) as
-            // writable constructor properties. Mirror those on the ctor so
-            // `require('events').EventEmitter.defaultMaxListeners === 10`.
+            // writable constructor properties. On the module export shape these
+            // live directly on the function object:
+            // `require('events').defaultMaxListeners === 10`.
             let default_max = Int32Value(10);
             rooted!(&in(cx) let dmv = default_max);
             JS_DefineProperty(
@@ -191,53 +193,35 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     );
                 }
             }
+
+            // Static event-registration helpers that node exposes on the
+            // module export (function) object:
+            //   `events.on(emitter, event, handler)` /
+            //   `events.once(emitter, event, handler)`.
+            // listenerCount / getEventListeners are defined above; on/once
+            // complete the static surface.
+            w2::JS_DefineFunction(
+                cx,
+                ctor.handle(),
+                c"on".as_ptr(),
+                Some(events_static_on),
+                3,
+                JSPROP_ENUMERATE as u32,
+            );
+            w2::JS_DefineFunction(
+                cx,
+                ctor.handle(),
+                c"once".as_ptr(),
+                Some(events_static_once),
+                3,
+                JSPROP_ENUMERATE as u32,
+            );
         }
 
-        let default_max = Int32Value(10);
-        rooted!(&in(cx) let dmv = default_max);
-        JS_DefineProperty(
-            cx.raw_cx(),
-            events_obj.handle().into(),
-            c"defaultMaxListeners".as_ptr(),
-            dmv.handle().into(),
-            (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
-        );
-
-        w2::JS_DefineFunction(
-            cx,
-            events_obj.handle(),
-            c"on".as_ptr(),
-            Some(events_static_on),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            events_obj.handle(),
-            c"once".as_ptr(),
-            Some(events_static_once),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            events_obj.handle(),
-            c"listenerCount".as_ptr(),
-            Some(events_static_listener_count),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            events_obj.handle(),
-            c"getEventListeners".as_ptr(),
-            Some(events_static_get_event_listeners),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
+        // The module IS the constructor function (node oracle: typeof === 'function',
+        // require('events') === require('events').EventEmitter).
+        cache_builtin(cx, "events", ctor.get());
     }
-
-    cache_builtin(cx, "events", events_obj.get());
 }
 
 const METHODS: &[JSFunctionSpec] = &[

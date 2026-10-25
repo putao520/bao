@@ -457,9 +457,15 @@ fn util_promisify_arms() {
                 && p.then(function(v) { return v === 'v'; });
         });
         // Non-function argument throws.
+        // node v24.19.0 oracle: message = 'The "original" argument must be of
+        // type function. Received type number (5)' (no 'promisify' substring;
+        // code = ERR_INVALID_ARG_TYPE). E7 real-value wrapper matches.
         check("promisify_non_function_throws", function() {
             try { util.promisify(5); return false; }
-            catch (e) { return String(e.message).indexOf('promisify') !== -1; }
+            catch (e) {
+                return e.code === 'ERR_INVALID_ARG_TYPE'
+                    && String(e.message).indexOf('must be of type function') !== -1;
+            }
         });
         "#,
     );

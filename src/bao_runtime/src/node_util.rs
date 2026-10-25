@@ -158,7 +158,139 @@ t.isCryptoKey=function(){return false};
         // internal/util.js inherits non-enumerable super_; inspect.js
         // getters/showHidden/protoProps/compact:3 options engine). Attached
         // on top of util_obj so they override the native placeholders.
+        //
+        // GOLDEN A util 复跑(2026-10-25)C 类修复 —— 前波把 promisify /
+        // callbackify 的重写脚本从 util_extra 撤出后,这两成员退回裸 native
+        // 壳,promisify.custom 符号属性与 callbackify 的 "original" 参数
+        // 校验(非函数输入必须同步抛 ERR_INVALID_ARG_TYPE)随之丢失
+        // (oracle:test-util-promisify 的 custom 引用恒等 +
+        // test-util-callbackify 的 Missing expected exception)。
         let util_extra_src = r#"(function(u){
+  // ── util.promisify — node v24.19 lib/internal/util.js oracle ─────────
+  // The native `util_promisify` already consumes
+  // Symbol.for('nodejs.util.promisify.custom') first (domain-check
+  // a1f2e22140), so the wrapper below only layers the pieces the native
+  // path lacks:
+  //   1. `promisify.custom` property = Symbol.for('nodejs.util.promisify.custom')
+  //      (node identity contract; test-util-promisify asserts
+  //      `promisify.custom === Symbol.for('nodejs.util.promisify.custom')`).
+  //   2. Non-callable `orig[custom]` → ERR_INVALID_ARG_TYPE
+  //      'The "util.promisify.custom" property must be of type function. …'
+  //      (node v24 oracle; the native path silently falls through).
+  //   3. Non-function `orig` → ERR_INVALID_ARG_TYPE
+  //      'The "original" argument must be of type function. …' via
+  //      determineSpecificType (test-util-promisify tail block).
+  //   4. The returned wrapper keeps orig's name/length (node descriptor
+  //      copy; oracle `promisify(fn).name === 'orig'`) and is idempotent:
+  //      `promisify(promisify(fn)) === promisify(fn)` via the node
+  //      kCustomPromisifiedSymbol self-stamp the native path removed.
+  var kPromisifyCustom = Symbol.for('nodejs.util.promisify.custom');
+  var nativePromisify = u.promisify;
+  var patchedNative = false;
+  u.promisify = function promisify(orig) {
+    if (typeof orig !== 'function') {
+      var oe = new TypeError('The "original" argument must be of type function. Received ' +
+                             determineSpecificType(orig));
+      oe.code = 'ERR_INVALID_ARG_TYPE';
+      throw oe;
+    }
+    // node consults orig[Symbol.for('nodejs.util.promisify.custom')] FIRST
+    // (own or inherited — dns/timer customs are inherited through the
+    // prototype chain) and returns it verbatim when callable;
+    // `promisify(promisify(fn)) === promisify(fn)` therefore holds for a
+    // custom-stamped fn because the second call reads the SAME stamp.
+    if (kPromisifyCustom in orig) {
+      var custom = orig[kPromisifyCustom];
+      if (custom !== undefined) {
+        if (typeof custom !== 'function') {
+          var ce = new TypeError('The "util.promisify.custom" property must be of type function. Received ' +
+                                 determineSpecificType(custom));
+          ce.code = 'ERR_INVALID_ARG_TYPE';
+          throw ce;
+        }
+        // node ALSO self-stamps the returned custom (oracle:
+        // `promisifedFn[Symbol.for('nodejs.util.promisify.custom')] === promisifedFn`)
+        // so a second promisify round-trip on it is a stable fixed point
+        // (`promisify(promisify(fn)) === promisify(fn)`).
+        try {
+          Object.defineProperty(custom, kPromisifyCustom, {
+            value: custom, configurable: true,
+          });
+        } catch (e4) {}
+        return custom;
+      }
+    }
+    if (!patchedNative) {
+      // Patch the native factory ONCE so the generic wrapper it returns
+      // self-stamps [kPromisifyCustom] = itself (node's
+      // kCustomPromisifiedSymbol idempotency contract,
+      // `promisify(promisify(fn)) === promisify(fn)`). The stamp must run
+      // BEFORE the factory's own `return` (dead code after return never
+      // executes). We therefore splice the stamp onto the return payload:
+      //   `return promisified;`  →
+      //   `return (function(w){ ...stamp w...; return w; })(promisified);`
+      // An IIFE wrapper keeps the edit source-local and avoids re-indenting
+      // the factory body. The `promisified` identifier is the factory's own
+      // generic-wrapper local (bao runtime shape: the compiled factory
+      // names the wrapper `promisified`); when the identifier differs the
+      // regex simply does not match and the stamp is skipped (fail-soft —
+      // the identity contract degrades to a fresh wrapper per call, never
+      // a wrong stamp).
+      try {
+        var nativeSrc = String(nativePromisify);
+        var retRe = /return\s+(promisified)\s*;/;
+        if (retRe.test(nativeSrc)) {
+          // Function-form replacer: a string replacement would mis-parse
+          // the `$` sequences inside the IIFE body, so the payload is
+          // assembled via a function returning the substituted text.
+          var stampedSrc = nativeSrc.replace(retRe, function(_m, ident) {
+            return 'return (function(__w){' +
+              'try { Object.defineProperty(__w, kPromisifyCustom, {' +
+              ' value: __w, configurable: true }); } catch (eS) {}' +
+              'try { var __pd = Object.getOwnPropertyDescriptors(orig);' +
+              ' if (__pd.name && typeof __pd.name.value === "string")' +
+              ' Object.defineProperty(__w, "name", { value: __pd.name.value, configurable: true });' +
+              ' if (__pd.length && typeof __pd.length.value === "number")' +
+              ' Object.defineProperty(__w, "length", { value: __pd.length.value, configurable: true });' +
+              ' } catch (eN) {}' +
+              ' return __w; })(' + ident + ');';
+          });
+          nativePromisify = eval('(' + stampedSrc + ')');
+        }
+      } catch (eP) {}
+      patchedNative = true;
+    }
+    return nativePromisify(orig);
+  };
+  try {
+    Object.defineProperty(u.promisify, 'custom', {
+      value: kPromisifyCustom,
+      writable: false, enumerable: false, configurable: true,
+    });
+  } catch (e2) {}
+  // ── util.callbackify — node v24.19 lib/util.js oracle ────────────────
+  // The native `util_callbackify` performs the "last argument must be of
+  // type function" check itself (its inlined cbSpecificType tail matches
+  // determineSpecificType), but its factory-eval fallback path silently
+  // swallows the "original" validation throw and returns undefined — the
+  // wrapper below performs the "original" check up-front so non-function
+  // inputs ALWAYS synchronously throw ERR_INVALID_ARG_TYPE
+  // (test-util-callbackify: `Missing expected exception (TypeError)`).
+  var nativeCallbackify = u.callbackify;
+  u.callbackify = function callbackify(orig) {
+    if (typeof orig !== 'function') {
+      var oe = new TypeError('The "original" argument must be of type function. Received ' +
+                             determineSpecificType(orig));
+      oe.code = 'ERR_INVALID_ARG_TYPE';
+      throw oe;
+    }
+    return nativeCallbackify(orig);
+  };
+  try {
+    Object.defineProperty(u.callbackify, 'name', {
+      value: 'callbackify', configurable: true,
+    });
+  } catch (e3) {}
   // ── node errors.js determineSpecificType (v24.19 oracle) ──────────────
   // 'Received null' / 'an instance of X' / 'type number (-0)' family — the
   // exact tail shape test-util-deprecate-invalid-code / inherits /

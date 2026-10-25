@@ -261,19 +261,20 @@ fn test_assert_diff_rendering_conformance() {
         }}
 
         // --- object diff: deepStrictEqual({{a:1,b:2}}, {{a:1,b:3}}) ---
-        // node v24.19.0 oracle (2026-10-23, local binary): the +/- diff body
-        // exists only on the STRICT deep family; the loose deepEqual probe
-        // the former pin used renders node's no-diff linkage form instead
-        // ("...loosely deep-equal: {{..}} should loosely deep-equal {{..}}").
-        // Diff body shape = the registered C8b contract (unchanged lines
-        // bare, +/- on the differing key, no element commas), the same shape
-        // the array/scalar pins above pin.
+        // node v24.19.0 oracle (2026-10-23 + 2026-10-25 re-verified, local
+        // binary): the +/- diff body exists only on the STRICT deep family;
+        // the loose deepEqual probe renders node's no-diff linkage form
+        // instead ("...loosely deep-equal: {{..}} should loosely deep-equal
+        // {{..}}"). Diff body = unchanged lines bare with trailing comma,
+        // +/- on the differing key WITHOUT trailing comma (last element),
+        // closing brace on its own line. bao actual output matches node
+        // byte-for-byte on this case (farm probe 2026-10-25).
         check("obj_diff_markers", function() {{
             var m = msgOf(function() {{ assert.deepStrictEqual({{a: 1, b: 2}}, {{a: 1, b: 3}}); }});
             return m.indexOf('Expected values to be strictly deep-equal:') >= 0
                 && m.indexOf('+ actual - expected') >= 0
                 && m.indexOf('\n  {{') >= 0
-                && m.indexOf('\n    a: 1\n') >= 0
+                && m.indexOf('\n    a: 1,\n') >= 0
                 && m.indexOf('\n+   b: 2\n') >= 0
                 && m.indexOf('\n-   b: 3\n') >= 0
                 && m.indexOf('\n  }}') >= 0;
@@ -292,35 +293,44 @@ fn test_assert_diff_rendering_conformance() {
         }});
 
         // --- array diff: deepStrictEqual([1,2,3,4], [1,5,3,9]) ---
+        // node v24.19.0 oracle: unchanged elements carry trailing comma;
+        // the last +/- diff pair ('+   4' / '-   9') has NO trailing comma
+        // (last element before closing bracket). bao matches byte-for-byte.
         check("array_diff_markers", function() {{
             var m = msgOf(function() {{ assert.deepStrictEqual([1, 2, 3, 4], [1, 5, 3, 9]); }});
             return m.indexOf('Expected values to be strictly deep-equal:') >= 0
-                && m.indexOf('\n    1\n') >= 0
-                && m.indexOf('\n+   2\n') >= 0
-                && m.indexOf('\n-   5\n') >= 0
-                && m.indexOf('\n    3\n') >= 0
+                && m.indexOf('\n    1,\n') >= 0
+                && m.indexOf('\n+   2,\n') >= 0
+                && m.indexOf('\n-   5,\n') >= 0
+                && m.indexOf('\n    3,\n') >= 0
                 && m.indexOf('\n+   4\n') >= 0
                 && m.indexOf('\n-   9\n') >= 0;
         }});
 
-        // --- string diff: multi-line strings split and diffed by line ---
+        // --- string diff: multi-line strings rendered as escaped single-line
+        // with +/- prefix and caret indicator (node getStackedDiff shape) ---
+        // node v24.19.0 oracle: strings render as '+ \'one\\ntwo\\nthree\''
+        // / '- \'one\\nTWO\\nthree\'' with caret position indicator — NOT
+        // split into per-line diff entries. bao matches byte-for-byte.
         check("string_diff_markers", function() {{
             var m = msgOf(function() {{
                 assert.deepStrictEqual('one\ntwo\nthree', 'one\nTWO\nthree');
             }});
             return m.indexOf("+ actual - expected") >= 0
-                && m.indexOf("\n  'one\n") >= 0
-                && m.indexOf('\n+   two\n') >= 0
-                && m.indexOf('\n-   TWO\n') >= 0
-                && m.indexOf("\n    three'") >= 0;
+                && m.indexOf("+ 'one\\ntwo\\nthree'") >= 0
+                && m.indexOf("- 'one\\nTWO\\nthree'") >= 0
+                && m.indexOf('^') >= 0;
         }});
 
-        // --- scalar inequality: deep* renders +/- line diff even for scalars ---
+        // --- scalar inequality: deep* renders the simple '1 !== 2' form ---
+        // node v24.19.0 oracle: numeric scalars use the !== inline form with
+        // NO '+ actual - expected' header and NO +/- line diff. bao matches
+        // byte-for-byte.
         check("scalar_diff_markers", function() {{
             var m = msgOf(function() {{ assert.deepStrictEqual(1, 2); }});
             return m.indexOf('Expected values to be strictly deep-equal:') >= 0
-                && m.indexOf('\n+ 1\n') >= 0
-                && m.indexOf('\n- 2') >= 0;
+                && m.indexOf('1 !== 2') >= 0
+                && m.indexOf('+ actual - expected') === -1;
         }});
 
         // --- scalar inequality: equal() keeps short primitives inline ---
@@ -342,33 +352,44 @@ fn test_assert_diff_rendering_conformance() {
         }});
 
         // --- strictEqual() on objects: same inspect-join with === ---
+        // node v24.19.0 oracle: strictEqual on objects promotes to
+        // strictEqualObject → '+ actual - expected' Myers diff form with
+        // 'Expected "actual" to be reference-equal to "expected":' headline.
+        // bao matches byte-for-byte (farm probe 2026-10-25).
         check("strictEqual_objects_diff", function() {{
             var m = msgOf(function() {{ assert.strictEqual({{x: 1}}, {{x: 2}}); }});
-            return m.indexOf('{{\n  x: 1\n}}') >= 0
-                && m.indexOf(' === ') >= 0
-                && m.indexOf('{{\n  x: 2\n}}') >= 0;
+            return m.indexOf('Expected "actual" to be reference-equal to "expected":') >= 0
+                && m.indexOf('+ actual - expected') >= 0
+                && m.indexOf('\n+   x: 1\n') >= 0
+                && m.indexOf('\n-   x: 2\n') >= 0;
         }});
 
-        // --- long string operands in equal(): node renders scalars inline
-        // regardless of length ---
+        // --- long string operands in strictEqual: node renders the stacked
+        // +/- form (getStackedDiff) — quoted strings prefixed by +/- ---
+        // node v24.19.0 oracle: strings exceeding kMaxShortStringLength use
+        // getStackedDiff ('+ \'…1\'\n- \'…2\'') with '+ actual - expected'
+        // header, NOT the ' === ' inline form. bao matches byte-for-byte.
         check("equal_long_string_diff", function() {{
             var long1 = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1';
             var long2 = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2';
             var m = msgOf(function() {{ assert.strictEqual(long1, long2); }});
             return m.indexOf("'" + long1 + "'") >= 0
                 && m.indexOf("'" + long2 + "'") >= 0
-                && m.indexOf(' === ') >= 0
-                && m.indexOf('+ actual - expected') === -1;
+                && m.indexOf('+ actual - expected') >= 0
+                && m.indexOf("+ '" + long1 + "'") >= 0
+                && m.indexOf("- '" + long2 + "'") >= 0;
         }});
 
         // --- nested containers diff at their own depth ---
+        // node v24.19.0 oracle: unchanged keys carry trailing comma before
+        // the nested +/- pair (k: 'same', — with comma). bao matches.
         check("nested_diff_indent", function() {{
             var m = msgOf(function() {{
                 assert.deepStrictEqual({{x: {{y: 1}}, k: 'same'}}, {{x: {{y: 2}}, k: 'same'}});
             }});
             return m.indexOf('\n+     y: 1\n') >= 0
                 && m.indexOf('\n-     y: 2\n') >= 0
-                && m.indexOf("\n    k: 'same'\n") >= 0;
+                && m.indexOf("\n    k: 'same',\n") >= 0;
         }});
 
         // --- Latin-1 / UTF-16 text survives rendering byte-exact ---
@@ -391,22 +412,30 @@ fn test_assert_diff_rendering_conformance() {
         }});
 
         // --- long equal runs collapse with an explicit marker ---
+        // node v24.19.0 oracle (2026-10-25, local binary): the long-run
+        // collapse marker is the bare form "... Skipped lines" (no count),
+        // and node DOES emit the trailing comma on diff lines ('v2', not
+        // 'v2') — both pinned verbatim below.
         check("long_run_collapsed", function() {{
             var a = Array.from({{length: 30}}, function(_, i) {{ return 'v' + i; }});
             var b = a.map(function(v, i) {{ return (i === 2 || i === 27) ? 'x' : v; }});
             var m = msgOf(function() {{ assert.deepStrictEqual(a, b); }});
-            return m.indexOf('\n+   \'v2\',\n') === -1 // no comma in own layout
-                && m.indexOf("\n+   'v2'\n") >= 0
-                && m.indexOf("\n+   'v27'\n") >= 0
-                && m.indexOf('\n-   \'x\'\n') >= 0
-                && m.indexOf('... Skipped 18 identical lines') >= 0;
+            return m.indexOf("\n+   'v2',\n") >= 0
+                && m.indexOf("\n+   'v27',\n") >= 0
+                && m.indexOf('\n-   \'x\',\n') >= 0
+                && m.indexOf('... Skipped lines') >= 0
+                && m.indexOf('... Skipped 18 identical lines') === -1;
         }});
 
-        // --- cycles render [Circular] instead of recursing forever ---
+        // --- cycles render [Circular] with ref-index annotation ---
+        // node v24.19.0 oracle: loose deepEqual on cyclic objects renders
+        // '<ref *1> {{ self: [Circular *1] }}' (annotated form, not bare
+        // '[Circular]'). bao matches byte-for-byte (farm probe 2026-10-25).
         check("cycle_no_hang", function() {{
             var o = {{}}; o.self = o;
             var m = msgOf(function() {{ assert.deepEqual(o, {{a: 1}}); }});
-            return m.indexOf('[Circular]') >= 0;
+            return m.indexOf('[Circular *1]') >= 0
+                && m.indexOf('<ref *1>') >= 0;
         }});
 
         // --- custom message still replaces the generated diff body ---

@@ -5323,6 +5323,18 @@ unsafe fn serve_dispatch_headers(st: *mut ServeRequestState) {
                 };
             }
         };
+        // (Bao, BCE) Root the handler IMMEDIATELY at acquisition, before any
+        // allocation below — the body-factory JS_CallFunctionValue, the
+        // getter-capable `stream` JS_GetProperty and serve_build_request_object
+        // (Request construction + per-header JSString allocations) can all
+        // trigger a minor GC that moves the nursery-allocated handler
+        // function; a bare pointer held across them goes stale and the
+        // rooted-at-the-call-site guard then roots an already-dangling
+        // address (gc_store_get rooting contract, gc_store.rs). Observed as
+        // the bun_serve SIGSEGV: js::Call dereferenced a garbage shape off
+        // the stale callee (#GP, non-canonical 0xf000…). Rooting after the
+        // allocations captures the stale address and protects nothing.
+        rooted!(&in(cx_ref) let handler_root = fetch_handler);
 
         // The live body stream: one ReadableStream per request WITH a body,
         // its controller captured by the factory (web_streams.js
@@ -5401,7 +5413,7 @@ unsafe fn serve_dispatch_headers(st: *mut ServeRequestState) {
         // Request. A synchronous throw answers 500 at body-complete (same
         // wire shape as the two-phase dispatch this replaces); the exception
         // is cleared, never left pending.
-        rooted!(&in(cx_ref) let handler_val = ObjectValue(fetch_handler));
+        rooted!(&in(cx_ref) let handler_val = ObjectValue(handler_root.get()));
         rooted!(&in(cx_ref) let req_val_elem = ObjectValue(req_r.get()));
         let call_args = HandleValueArray {
             length_: 1,
@@ -5624,6 +5636,19 @@ unsafe fn serve_build_request_object(
 ) -> *mut JSObject {
     let raw_cx = cx_ref.raw_cx();
 
+    // (Bao, BCE) Root the incoming body stream at FUNCTION ENTRY, before the
+    // headers loop below — js_string_from_utf8 allocates a JSString per
+    // header and can trigger a minor GC that moves the nursery-allocated
+    // stream object; rooting it only at the `body` match below captured an
+    // already-moved address (same UB class as the fetch-handler dispatch
+    // SIGSEGV).
+    rooted!(&in(cx_ref) let body_root = body.unwrap_or(::std::ptr::null_mut()));
+    if matches!(body, Some(o) if o.is_null()) {
+        // Preserve the original fail-closed arm: Some(null) is a caller
+        // contract violation, not "bodyless".
+        return ::std::ptr::null_mut();
+    }
+
     let method_str = ::std::str::from_utf8(method).unwrap_or("GET").to_string();
 
     // url — uWS exposes the request target (path + query) as a relative
@@ -5663,16 +5688,12 @@ unsafe fn serve_build_request_object(
 
     // Body — the live stream goes in as a STREAM init (binary-exact: chunks
     // enqueue as the wire delivers them; no UTF-8 lossy decode, no
-    // buffering). Bodyless requests take no body init.
-    let body_stream_val = match body {
-        None => UndefinedValue(),
-        Some(stream_obj) => {
-            if stream_obj.is_null() {
-                return ::std::ptr::null_mut();
-            }
-            rooted!(&in(cx_ref) let stream_root = stream_obj);
-            ObjectValue(stream_root.get())
-        }
+    // buffering). Bodyless requests take no body init. The stream object is
+    // already rooted at function entry (body_root).
+    let body_stream_val = if body_root.get().is_null() {
+        UndefinedValue()
+    } else {
+        ObjectValue(body_root.get())
     };
     rooted!(&in(cx_ref) let body_val = body_stream_val);
 

@@ -34,7 +34,7 @@ fn test_require_system_deep() {
         check("require_http", function() { return typeof require('http') === 'object'; });
         check("require_https", function() { return typeof require('https') === 'object'; });
         check("require_child_process", function() { return typeof require('child_process') === 'object'; });
-        check("require_events", function() { return typeof require('events') === 'object'; });
+        check("require_events", function() { return typeof require('events') === 'function'; });
         check("require_stream", function() { return typeof require('stream') === 'object'; });
         check("require_util", function() { return typeof require('util') === 'object'; });
         check("require_os", function() { return typeof require('os') === 'object'; });

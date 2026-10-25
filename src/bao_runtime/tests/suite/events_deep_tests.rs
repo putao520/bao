@@ -26,7 +26,7 @@ fn test_events_deep() {
         var events = require('events');
 
         // === events module shape ===
-        check("events_is_object", function() { return typeof events === 'object' && events !== null; });
+        check("events_is_object", function() { return typeof events === 'function' && events !== null; });
 
         // === EventEmitter constructor ===
         check("EventEmitter_exists", function() { return typeof events.EventEmitter === 'function'; });
