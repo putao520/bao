@@ -1028,3 +1028,16 @@ fix:归因+豁免落账(上节);farm resolv.conf 恢复指 systemd-resolved 或�
 residualZero:产品侧残留=0(8 红全为环境态,排除后 1829+5 级联(E12 处置中)=0 产品未归因红)。
 历史修复轨迹:首判「E7 promisify 级联」假设被 HEAD 二进制对照证伪(级联应影响包装形态而非 ENOTFOUND 查询错)——时序还原+双二进制 A/B 是关键判据,已入 farm-ops-quirks 心法。
 四要素上报:错误类失败 13 次(域 f69fc9cc-e476-469e-bd3d-f9c77da6a8e8);残留=0,本域收口。
+
+## bun_serve SIGSEGV 用户裁决(2026-10-25):直接治本,根治一切
+- 裁决=选项 B 引擎层 GC root 横扫根治(不选 A 推迟 install 的治标)。
+- 已排除面(E14):evaluate_and_cache root 窗口(rooted! 在位,主会话现场核验证伪);E10 events 单独不崩;E11 globals buffer_copy 不涉。
+- 锁定面:node_internal_timers install 期分配序列变化暴露的 GC forwarding poison stale 边(helper 线程,rdx=0x9000...161f051);E14 native getter 形态仍偶发=触发面不止 Evaluate2。
+- 根治路线:①dev 符号构建抓真栈(定位哪条 trace 边 stale)②bao 层全部 GC 边审计(裸 JSObject 跨 GC 调用点/static·thread_local 存指针/tracer 注册漏 trace)③根治+1842 全量+GOLDEN 复验。
+
+## E15 GC 边类根治+全波收口(c31962002,2026-10-25)
+- 真栈反转 E14 判定:崩点在主 JS 线程非 GC helper——bun_api.rs:5314 fetch_handler gc_store_get 裸指针(nursery)跨 GC 可触发调用延迟 root,root 住悬垂地址(gc_store.rs:135 契约禁止形态);install 期分配序列变化只是放大器(E14 evaluate_and_cache 嫌疑洗清)。
+- 6 窗口全修+~70 点横扫审计,残留=0;A/B 3/3 崩→5/5 PASS。
+- 取证链沉淀(方法论复用):dev profile+BAO_SUITE_ISOLATION_DEPTH=1(绕 dispatch_timeout re-exec,gdb 直捕)+gdb thread apply all——test-ci stripped 无符号瓶颈的解法。
+- 全波收口:E6-E15 十执行体,1831/1842 终态(dns 8 环境豁免+3 flake 双臂判定);提交 c31962002(18 文件 +363/-123)。
+- 遗留登记:c1_promises_reject_batch 负载态 SIGSEGV(先存量同族,取证链就绪);flaky 时序门加固(cluster_kill/fs_watch/c12_serve);B' 载具分类器判据;bao run 顶层 console 静默;farm resolv.conf 环境项。
