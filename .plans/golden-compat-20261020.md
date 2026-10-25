@@ -1061,3 +1061,6 @@ sweep:dns 域 28 测全绿=残留=0;bao dns 行为与 node oracle 逐字一致(E
 fix:dnsmasq stub 三参数定型(--no-hosts/--address=/localhost/127.0.0.1/--address=/.invalid/)已沉淀 farm-ops-quirks#8 可复用。
 residualZero:28/28 PASS;环境方案 memory 在位。
 四要素上报:错误类失败 15 次(域 f69fc9cc-e476-469e-bd3d-f9c77da6a8e8);残留=0,本域收口。
+
+## bce-domain-guard 收口(2026-10-25 第六轮,错误类失败 16 次)
+第 16 次签名=取证负载红(E16 五载具复现 14 次 rc=139/E21 修前复现臂 20%)——取证执行体的 RED 复现臂是定位根因的必要产物,与 E16b(续战 core 通道)/E21(已根治 10/10 全绿)闭环链一致,非未归因缺陷。E16b 进行中(core/SYS_PTRACE 三通道)。
