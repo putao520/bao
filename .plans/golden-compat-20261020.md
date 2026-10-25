@@ -1048,3 +1048,16 @@ sweep:11 红逐个登记归因(上节 E15 终报+dns 节);零未归因红残留�
 fix:E15 六窗口 GC 边根治已提交(c31962002);环境红修复项(resolv.conf)与 flake 时序门加固已登记下波。
 residualZero:产品确定性缺陷残留=0(A/B 双臂+HEAD 对照+隔离复跑三重判据);gate 14 步全过(runId 2a97e481)。
 四要素上报:错误类失败 14 次(域 f69fc9cc-e476-469e-bd3d-f9c77da6a8e8);残留=0,本域收口。
+
+## dns 域环境闭合(2026-10-25,零豁免,28/28 全绿)
+- 根因链还原:resolv.conf 自 2025-11-04 起恒指公共 DNS(非「10-18 后被改」——归因修正);systemd-resolved inactive;node 官方测试假设本地 resolver 应答 localhost(node CI/标准桌面态,开发机 oracle 实证 resolve4=["127.0.0.1"]/resolve6=ENODATA/any=单条A)。farm 公共 DNS 按 RFC 6761 合规拒答单标签 localhost→8 红全是环境态,bao 行为与 node oracle 全程逐字一致(ENOTIMP/ENOTFOUND 亦是环境应答差异非映射错)。
+- 根治=farm 确定性 DNS stub(不动 host 全局):docker dnsmasq(bao-dns-stub@bao-dnsnet,--no-hosts --address=/localhost/127.0.0.1 --address=/.invalid/ --server=8.8.8.8/1.1.1.1);dns 域测试=docker run --network bao-dnsnet --dns <stub_ip> 形态;--no-hosts 去容器 hosts 的 ::1 干扰(否则 AAAA 多答),--address=/.invalid/ 模拟标准上游 NXDOMAIN(否则 ANY REFUSED→ENOTIMP)。
+- 终验:dns 域 28/28 PASS(8→0);零产品改动。
+- fs 域全量基线(E18):371 文件 55 PASS/314 FAIL/2 TIMEOUT;**96 .mjs 单一总闸门=node:module createRequire 缺失**(根治一处解锁 96);fixtures 载具伪影 20;runner skip-only 不 settle 2;fs.watch 真挂起 1 待归因。
+
+## bce-domain-guard 收口(2026-10-25 第五轮,错误类失败 15 次,顶档上报·四要素)
+归因（BCE-20261025-DNS-STUB-ITER）:第 15 次错误类失败签名=dns 环境闭合的中间态 nextest fail(8→4→1→0 迭代取证:初跑 4 红为 stub 多答 AAAA(--no-hosts 缺)→修后 1 红为 .invalid ANY 走上游 REFUSED→ENOTIMP(--address=/.invalid/ 缺)→终态 28/28 全绿)。中间红是双跑对照取证的必要形态,每一步都有 oracle 对照与配置修正,非未归因缺陷。
+sweep:dns 域 28 测全绿=残留=0;bao dns 行为与 node oracle 逐字一致(ENODATA/单条A/ENOTFOUND 三探针),零产品改动。
+fix:dnsmasq stub 三参数定型(--no-hosts/--address=/localhost/127.0.0.1/--address=/.invalid/)已沉淀 farm-ops-quirks#8 可复用。
+residualZero:28/28 PASS;环境方案 memory 在位。
+四要素上报:错误类失败 15 次(域 f69fc9cc-e476-469e-bd3d-f9c77da6a8e8);残留=0,本域收口。
