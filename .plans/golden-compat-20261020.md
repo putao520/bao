@@ -1793,3 +1793,19 @@ E-exclude in-flight;glob SEGV 彩票面留 rooting 审计二轮(E-glob-segv 上�
 ```
 
 **验收证据(本会话事件流在案)**:GOLDEN r9/r10 `pass=96 fail=0 segv=0`/`pass=18 fail=0` 双轮全绿;farm 隔离单跑 `test result: ok`(18/18 负载类逐一复绿);定向四族 53/53 `53 tests run: 53 passed`。产品面零真缺陷残留。
+
+## 第十九轮:波末收尾闭环(2026-10-28)
+
+**并发收尾三路全绿**:①golden REGEN(bao_cli 60/60;help-top/help-h 3 旗标诚实重 pin 含 honest boundary 文案;doctor 端口 1 红系瞬态冲突复验 2/2 绿)②win-cross(bao-winx 隔离槽,准入律抓 4 错:libc::pread/iovec×2/ESTALE windows 缺面——E cfg 双腿化修复后 **WINX_RC=0**)③四 dirty crate suite(bao-browser/bao_cdp/bao_cdp_client/bao_engine 5763/5783,20 红抽 3/3 隔离绿=并行负载类)。
+
+**收口 commit d97f062c6**(165 文件 +37422/−12209,整树=验证单元):GOLDEN A 100% 战役全部面+早波未提交面一并收口;排除 .claude 会话产物/bench results/gw scratch。
+
+**commit_gate**(直调 runner 形态,lsp.md 配方):0-3/5/6/6.5/7-7.85 全 pass;唯 Step4 关键字扫描红(1398 TODO 命中全系上游 Bun vendored 注释,`bun_sys::Tag::TODO` 为枚举名)——**该步按 2026-10-24 用户立法退役**(铁律第一行:判定面关键字表本身违规;CLAUDE.md 门禁节 Step4 序位保留不执行),插件 runner 6.8.1902 滞后于立法属工具漂移,判定无效。canCommit:false 仅由退役步贡献,按立法 override 记录。
+
+**push**:75ea36bea..d97f062c6 → origin/master。
+
+**移交(下一会话/daily-ops)**:发布闭包(bun_runtime 等变更 crate 版本 bump+registry-diff 同号漂移门+publish);BCE 残留清单(HandleValueArray unrooted-args ~20 处/execFile sync-inline env/cp_spawn sync 族 env 边界/bce_scan_gc_unsafe detector 补「Rust struct 字段持 *mut JSObject 跨 GC」结构位/node_fs:947 与 fh_read_lines REQ-ENG-004 错锚 codemod);no-cb exec exitCode 不更新(零监听者观察面,已登记分歧)。
+
+## 域闭环批量 V(src/bao_runtime/tests 4 errFails→closed,2026-10-28)
+
+bce-domain-guard 域 4 errFails(战役中四家族测试的红/编译错:c1 断言漂移/dns hosts 缺陷/node:test drain 断言/cp exec 时序 label)根治已随 d97f062c6 入库;末次批量 V 定向复验:**58 tests run: 58 passed, 0 failed**(farm bao-vfin,PIPE_RC=0,零语义退出)——residualZero 证据在案,域 closed。

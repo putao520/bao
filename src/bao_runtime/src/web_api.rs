@@ -983,19 +983,25 @@ unsafe fn ws_emit(
         return;
     }
     rooted!(&in(cx_ref) let name_val = StringValue(&*name_str));
-    let mut all: Vec<JSVal> = Vec::with_capacity(3);
-    all.push(StringValue(&*name_str));
-    if has_arg {
-        // Re-read: the GC inside js_string_from_utf8 may have moved it.
-        all.push(*arg_root.handle());
-    }
-    if let ::std::option::Option::Some(b) = bool_arg {
-        all.push(BooleanValue(b));
-    }
-    let call_args = HandleValueArray {
-        length_: all.len(),
-        elements_: all.as_ptr(),
-    };
+    // (Bao, BCE) rooted arg carrier (E45 unrooted-args class, 2026-10-26
+    // sweep): the bare `HandleValueArray { elements_: all.as_ptr() }` pointed
+    // at untraced raw JSVal copies; the emit call below runs listener JS (a
+    // GC point) and a moving GC left the copies stale. Rooted Vec =
+    // tracer-visible slots, updated in place for the call window
+    // (node_events ee_emit dispatch template, Vec form).
+    rooted!(&in(cx_ref) let all_rooted: Vec<JSVal> = {
+        let mut vals: Vec<JSVal> = Vec::with_capacity(3);
+        vals.push(*name_val.handle());
+        if has_arg {
+            // Re-read: the GC inside js_string_from_utf8 may have moved it.
+            vals.push(*arg_root.handle());
+        }
+        if let ::std::option::Option::Some(b) = bool_arg {
+            vals.push(BooleanValue(b));
+        }
+        vals
+    });
+    let call_args = JS::HandleValueArray::from(&all_rooted);
     let mut rval = UndefinedValue();
     let ok = JS_CallFunctionValue(
         raw_cx,

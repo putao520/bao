@@ -1559,11 +1559,15 @@ unsafe extern "C" fn transaction_trampoline(
     // Call the user function with the wrapper's incoming args.
     rooted!(&in(cx_ref) let fn_root = trxfn_val.to_object());
     rooted!(&in(cx_ref) let fn_val = ObjectValue(fn_root.get()));
-    let mut fwd_args: Vec<JSVal> = (0..argc).map(|i| *args.get(i).ptr).collect();
-    let call_args = HandleValueArray {
-        length_: fwd_args.len(),
-        elements_: fwd_args.as_mut_ptr(),
-    };
+    // (Bao, BCE) rooted arg carrier (E45 unrooted-args class, 2026-10-26
+    // sweep): the bare `HandleValueArray { elements_: fwd_args.as_mut_ptr() }`
+    // fed untraced raw JSVal copies into the user transaction fn — arbitrary
+    // JS (a GC point); a moving GC left the copies stale. Rooted Vec =
+    // tracer-visible slots, updated in place for the call window
+    // (node_events ee_emit dispatch template, Vec form).
+    rooted!(&in(cx_ref) let fwd_args_rooted: Vec<JSVal> =
+        (0..argc).map(|i| *args.get(i).ptr).collect());
+    let call_args = JS::HandleValueArray::from(&fwd_args_rooted);
     rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
     let mut rval = UndefinedValue();
     let called = JS_CallFunctionValue(

@@ -339,11 +339,15 @@ pub unsafe fn call_function(
     rooted!(&in(wrapped_cx) let rooted_func = func);
     rooted!(&in(wrapped_cx) let rooted_this = this_obj);
 
-    let mut rooted_args: Vec<JSVal> = args.to_vec();
-    let handle_array = HandleValueArray {
-        length_: rooted_args.len(),
-        elements_: rooted_args.as_mut_ptr(),
-    };
+    // (Bao, BCE) rooted arg carrier (E45 unrooted-args class, 2026-10-26
+    // sweep): the former plain `Vec` named rooted_args was NOT rooted — the
+    // bare `HandleValueArray { elements_: as_mut_ptr() }` exposed untraced raw
+    // JSVal copies; JS_CallFunctionValue below is a GC point, and a moving GC
+    // left these copies stale from-space while the tracer never saw them. The
+    // rooted Vec keeps the slots tracer-visible for the whole call window
+    // (node_events.rs:969 verified template, Vec form).
+    rooted!(&in(wrapped_cx) let rooted_args: Vec<JSVal> = args.to_vec());
+    let handle_array = HandleValueArray::from(&rooted_args);
 
     let mut rval = UndefinedValue();
     let ok = JS_CallFunctionValue(

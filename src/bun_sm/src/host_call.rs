@@ -65,14 +65,16 @@ pub unsafe fn call_method_on_object(
     rooted!(&in(wrapped_cx) let cb_val_root = method_val);
     rooted!(&in(wrapped_cx) let global_root = global);
 
-    let call_args = if args.is_empty() {
-        mozjs::jsapi::HandleValueArray::empty()
-    } else {
-        mozjs::jsapi::HandleValueArray {
-            length_: args.len(),
-            elements_: args.as_ptr(),
-        }
-    };
+    // (Bao, BCE) rooted arg carrier (E45 unrooted-args class, 2026-10-26
+    // sweep): the old bare `HandleValueArray { elements_: args.as_ptr() }`
+    // pointed at raw JSVal copies invisible to the tracer — JS_CallFunctionValue
+    // below is a GC point, and a moving GC updated the caller's slots but not
+    // these copies, feeding stale from-space pointers into the call. The
+    // rooted Vec keeps the slots tracer-visible for the whole call window
+    // (node_events.rs:969 verified template, Vec form; an empty Vec yields
+    // length_=0 + dangling ptr, semantically identical to empty()).
+    rooted!(&in(wrapped_cx) let args_rooted = args.to_vec());
+    let call_args = mozjs::jsapi::JS::HandleValueArray::from(&args_rooted);
 
     let mut rval = mozjs::jsval::UndefinedValue();
     let rval_h = mozjs::jsapi::MutableHandle::<mozjs::jsapi::Value> {

@@ -115,12 +115,14 @@ unsafe fn invoke_js_callback(cx: *mut JSContext, cb_key: &Option<String>, args: 
         return false;
     }
 
-    // Build HandleValueArray from args slice
-    let mut rooted_args: Vec<JSVal> = args.to_vec();
-    let call_args = HandleValueArray {
-        length_: rooted_args.len(),
-        elements_: rooted_args.as_mut_ptr(),
-    };
+    // (Bao, BCE) rooted arg carrier (E45 unrooted-args class, 2026-10-26
+    // sweep): the old `Vec<JSVal>` copy (misnamed `rooted_args`) held raw
+    // JSVal bodies invisible to the tracer/write barrier; the callback below
+    // is a GC point and a moving GC left the bare HandleValueArray slots
+    // stale. Rooted Vec = tracer-visible slots, updated in place for the call
+    // window (node_events ee_emit dispatch template, Vec form).
+    rooted!(&in(cx_ref) let rooted_args: Vec<JSVal> = args.to_vec());
+    let call_args = JS::HandleValueArray::from(&rooted_args);
 
     let mut rval = UndefinedValue();
     let rval_h = MutableHandle::<Value> {

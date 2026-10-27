@@ -276,16 +276,16 @@ unsafe extern "C" fn domain_run(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     rooted!(&in(cx_ref) let fn_obj = fn_val.to_object());
     rooted!(&in(cx_ref) let fn_val_obj = ObjectValue(fn_obj.get()));
 
-    // Build additional args (after the function)
-    let extra_args: Vec<JSVal> = (1..argc).map(|i| *args.get(i).ptr).collect();
-    let call_args = if extra_args.is_empty() {
-        HandleValueArray::empty()
-    } else {
-        HandleValueArray {
-            length_: extra_args.len(),
-            elements_: extra_args.as_ptr(),
-        }
-    };
+    // Build additional args (after the function). (Bao, BCE) rooted arg
+    // carrier (E45 unrooted-args class, 2026-10-26 sweep): the bare
+    // `HandleValueArray { elements_: extra_args.as_ptr() }` fed untraced raw
+    // JSVal copies into the called fn — arbitrary JS (a GC point); a moving
+    // GC left the copies stale. Rooted Vec = tracer-visible slots, updated in
+    // place for the call window (node_events ee_emit dispatch template, Vec
+    // form); the empty case collapses into the same carrier.
+    rooted!(&in(cx_ref) let extra_args_rooted: Vec<JSVal> =
+        (1..argc).map(|i| *args.get(i).ptr).collect());
+    let call_args = JS::HandleValueArray::from(&extra_args_rooted);
 
     let mut rval = UndefinedValue();
     JS_CallFunctionValue(

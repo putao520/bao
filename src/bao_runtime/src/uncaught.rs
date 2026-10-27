@@ -319,17 +319,25 @@ unsafe fn emit_process_event(
     }
     rooted!(&in(cx_ref) let event_str_val = unsafe { StringValue(&*event_str) });
 
-    // [eventName, args[0..argc]] — rooted handles dereferenced into the
-    // stack array; the rooted! guards above outlive the call.
-    let call_vals = [
-        *event_str_val.handle(),
-        *arg0.handle(),
-        *arg1.handle(),
-    ];
-    let call_args = HandleValueArray {
-        length_: 1 + argc,
-        elements_: call_vals.as_ptr(),
-    };
+    // [eventName, args[0..argc]] — (Bao, BCE) rooted arg carrier (E45
+    // unrooted-args class, 2026-10-26 sweep): the previous stack array held
+    // COPIES of the rooted handles — the copy slots themselves were untraced,
+    // and JS_CallFunctionName's `emit` lookup (a prototype getter can run JS
+    // → GC) plus the listener dispatch could move the values while the copies
+    // stayed stale. Rooted Vec = tracer-visible slots, updated in place for
+    // the call window (node_events ee_emit dispatch template, Vec form).
+    rooted!(&in(cx_ref) let call_vals_rooted: Vec<JSVal> = {
+        let mut vals: Vec<JSVal> = Vec::with_capacity(1 + argc);
+        vals.push(*event_str_val.handle());
+        if argc > 0 {
+            vals.push(*arg0.handle());
+        }
+        if argc > 1 {
+            vals.push(*arg1.handle());
+        }
+        vals
+    });
+    let call_args = JS::HandleValueArray::from(&call_vals_rooted);
 
     let mut rval = UndefinedValue();
     let ok = unsafe {

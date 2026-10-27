@@ -476,8 +476,10 @@ fn c5_cp_sync_faces_deep_body() {
     // the file's proven settle shape (c5_cp_async_kill_and_stdin).
     ctx.set_post_eval_hook(common::bounded_drain_hook);
 
-    // Schedule the two exec-callback children and the no-callback child up
-    // front; the checks then read the recorded deliveries.
+    // Schedule the two exec-callback children, the execFile async-callback
+    // family (E-execFile wave: success / failure / buffer carrier / spawn
+    // ENOENT / maxBuffer overflow / timeout kill) and the no-callback child
+    // up front; the checks then read the recorded deliveries.
     let setup = eval_str(
         &mut ctx,
         r#"
@@ -491,6 +493,30 @@ fn c5_cp_sync_faces_deep_body() {
             globalThis.__c5cbFail = { done: true, err: err };
         });
         globalThis.__c5noCb = cp.exec("printf exec-nocb");
+        globalThis.__c5efOk = { done: false, err: "unset", out: "", errout: "unset" };
+        globalThis.__c5efRet = cp.execFile("/bin/sh", ["-c", "printf ef-ok"], function(err, so, se) {
+            globalThis.__c5efOk = { done: true, err: err, out: so, errout: se };
+        });
+        globalThis.__c5efFail = { done: false, err: "unset", out: "", errout: "unset" };
+        cp.execFile("/bin/sh", ["-c", "echo ef-boom >&2; exit 5"], function(err, so, se) {
+            globalThis.__c5efFail = { done: true, err: err, out: so, errout: se };
+        });
+        globalThis.__c5efBuf = { done: false, err: "unset", out: "unset" };
+        cp.execFile("/bin/sh", ["-c", "printf ef-bin"], { encoding: "buffer" }, function(err, so) {
+            globalThis.__c5efBuf = { done: true, err: err, out: so };
+        });
+        globalThis.__c5efEnoent = { done: false, err: "unset", out: "", errout: "unset" };
+        cp.execFile("/nonexistent-bao-c5-xyz", [], function(err, so, se) {
+            globalThis.__c5efEnoent = { done: true, err: err, out: so, errout: se };
+        });
+        globalThis.__c5efMax = { done: false, err: "unset", out: "unset" };
+        cp.execFile("/bin/sh", ["-c", "echo aaaaaaaaaaaaaaaaaaaaaaaa"], { maxBuffer: 10 }, function(err, so) {
+            globalThis.__c5efMax = { done: true, err: err, out: so };
+        });
+        globalThis.__c5efTmo = { done: false, err: "unset", out: "unset" };
+        cp.execFile("/bin/sh", ["-c", "sleep 5; echo late"], { timeout: 100 }, function(err, so) {
+            globalThis.__c5efTmo = { done: true, err: err, out: so };
+        });
         "setup-ok"
     "#,
     );
@@ -500,10 +526,13 @@ fn c5_cp_sync_faces_deep_body() {
     // pump, not on the scheduling eval — a wall-clock window with an
     // inter-eval timer drain; red within it = genuine event loss. The
     // no-callback child registers no listeners (the no-cb face), so the
-    // settle keys on the two callback deliveries only.
+    // settle keys on the exec + execFile callback deliveries only.
     let settled = common::wait_until_deadline(
         &mut ctx,
-        "(globalThis.__c5cbOk.done === true && globalThis.__c5cbFail.done === true) ? 'y' : 'n'",
+        "(globalThis.__c5cbOk.done === true && globalThis.__c5cbFail.done === true && \
+          globalThis.__c5efOk.done === true && globalThis.__c5efFail.done === true && \
+          globalThis.__c5efBuf.done === true && globalThis.__c5efEnoent.done === true && \
+          globalThis.__c5efMax.done === true && globalThis.__c5efTmo.done === true) ? 'y' : 'n'",
         60,
         10,
         eval_str,
@@ -617,13 +646,75 @@ fn c5_cp_sync_faces_deep_body() {
             catch (err) { return String(err.message).indexOf("unsupported encoding") >= 0; }
         });
 
-        // ── execFile / execFileSync ──
-        var f = cp.execFile("/bin/sh", ["-c", "printf file-ok"]);
-        check("execfile_object_stdout", function() { return typeof f.stdout === "string" && f.stdout === "file-ok"; });
-        check("execfile_exitcode_zero", function() { return f.exitCode === 0; });
-        check("execfile_pid_positive", function() { return f.pid > 0; });
-        var fnz = cp.execFile("/bin/sh", ["-c", "exit 5"]);
-        check("execfile_nonzero_exitcode", function() { return fnz.exitCode === 5; });
+        // ── execFile: async callback face (node v24.19.0 oracle 2026-10-28,
+        // E-execFile wave — the former inline spawn_sync native froze the JS
+        // thread and pinned a cmd:<file> error shape the oracle contradicts;
+        // deliveries are recorded in the setup eval above and read here, the
+        // file's proven settle shape) / execFileSync ──
+        check("execfile_cb_success", function() {
+            var r = globalThis.__c5efOk;
+            return r.done && r.err === null && r.out === "ef-ok" && r.errout === "";
+        });
+        check("execfile_cb_returns_child", function() {
+            var f = globalThis.__c5efRet;
+            return typeof f === "object" && f !== null && typeof f.pid === "number"
+                && f.exitCode === 0;
+        });
+        check("execfile_cb_fail_shape", function() {
+            // node oracle (P2 probe): message "Command failed: <file+args
+            // joined>\n<stderr>" (trailing newline stands on empty stderr),
+            // code NUMBER, killed false, signal null, cmd joined.
+            var r = globalThis.__c5efFail;
+            var e = r.err;
+            return r.done && e instanceof Error
+                && e.message === "Command failed: /bin/sh -c echo ef-boom >&2; exit 5\nef-boom\n"
+                && e.code === 5 && e.killed === false && e.signal === null
+                && e.cmd === "/bin/sh -c echo ef-boom >&2; exit 5"
+                && r.out === "" && r.errout === "ef-boom\n";
+        });
+        check("execfile_cb_encoding_buffer", function() {
+            var r = globalThis.__c5efBuf;
+            return r.done && r.err === null && Buffer.isBuffer(r.out)
+                && r.out.toString("utf8") === "ef-bin";
+        });
+        check("execfile_spawn_error_via_callback", function() {
+            // node oracle (P3/N probes): spawn-time system errors ride the
+            // callback — "spawn <path> ENOENT", code "ENOENT" string, errno
+            // -2, syscall "spawn <path>", path <path>, stdout "" stderr "";
+            // NEVER a synchronous throw when a callback exists.
+            var r = globalThis.__c5efEnoent;
+            var e = r.err;
+            return r.done && e instanceof Error
+                && e.message === "spawn /nonexistent-bao-c5-xyz ENOENT"
+                && e.code === "ENOENT" && e.errno === -2
+                && e.syscall === "spawn /nonexistent-bao-c5-xyz"
+                && e.path === "/nonexistent-bao-c5-xyz"
+                && r.out === "" && r.errout === "";
+        });
+        check("execfile_maxbuffer_truncates", function() {
+            // node oracle (A/L probes): overflow kills the child; the error
+            // carries ONLY code+cmd (no killed/signal/errno keys); stdout
+            // delivers exactly maxBuffer bytes.
+            var r = globalThis.__c5efMax;
+            var e = r.err;
+            return r.done && e instanceof Error
+                && e.message === "stdout maxBuffer length exceeded"
+                && e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+                && e.cmd === "/bin/sh -c echo aaaaaaaaaaaaaaaaaaaaaaaa"
+                && !("killed" in e)
+                && r.out === "aaaaaaaaaa";
+        });
+        check("execfile_timeout_kills", function() {
+            // node oracle (C probe): the timeout kill surfaces the
+            // Command-failed shape with killed:true + the killSignal name,
+            // code null.
+            var r = globalThis.__c5efTmo;
+            var e = r.err;
+            return r.done && e instanceof Error
+                && e.message === "Command failed: /bin/sh -c sleep 5; echo late\n"
+                && e.code === null && e.killed === true && e.signal === "SIGTERM"
+                && r.out === "";
+        });
         var fs8 = cp.execFileSync("/bin/sh", ["-c", "printf fsync-ok"], { encoding: "utf8" });
         check("execfilesync_utf8", function() { return fs8 === "fsync-ok"; });
         check("execfilesync_nonzero_throw", function() {
@@ -647,12 +738,27 @@ fn c5_cp_sync_faces_deep_body() {
             catch (err) { return String(err.message).indexOf("must be of type object") >= 0; }
         });
         check("execfile_noargs_throws", function() {
+            // node oracle (ZERO-ARGS probe): the missing file slot is the
+            // ERR_INVALID_ARG_TYPE face — "The \"file\" argument must be of
+            // type string. Received undefined".
             try { cp.execFile(); return "NO-THROW"; }
-            catch (err) { return String(err.message).indexOf("requires a file path") >= 0; }
+            catch (err) { return String(err.message).indexOf("must be of type string") >= 0; }
         });
         check("execfile_nonstring_throws", function() {
+            // node oracle (O probe): "… of type string. Received type number (42)".
             try { cp.execFile(42); return "NO-THROW"; }
-            catch (err) { return String(err.message).indexOf("requires a string file path") >= 0; }
+            catch (err) {
+                return String(err.message).indexOf("must be of type string") >= 0
+                    && String(err.message).indexOf("number") >= 0;
+            }
+        });
+        check("execfile_args_string_throws", function() {
+            // node oracle (P8): the args container must be an array — a
+            // string in the args slot throws ERR_INVALID_ARG_TYPE.
+            try { cp.execFile("/bin/sh", "not-an-array", function(){}); return "NO-THROW"; }
+            catch (err) {
+                return String(err.message).indexOf('The "args" argument must be of type object') >= 0;
+            }
         });
         check("execfilesync_noargs_throws", function() {
             try { cp.execFileSync(); return "NO-THROW"; }

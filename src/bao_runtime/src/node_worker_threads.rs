@@ -2042,16 +2042,26 @@ unsafe fn emit_worker_event(
         if event_js.is_null() {
             return;
         }
-        let mut argv: Vec<JSVal> = Vec::with_capacity(args.len() + 1);
-        argv.push(StringValue(&*event_js));
-        argv.extend_from_slice(args);
-        // The argv vec outlives the call on this stack frame; JSVals inside
-        // are already rooted values (event_js lives via its own reference
-        // kept below, payload JSVals come from rooted callers).
-        let call_args = HandleValueArray {
-            length_: argv.len(),
-            elements_: argv.as_ptr(),
-        };
+        // (Bao, BCE) rooted arg carrier (E45 unrooted-args class, 2026-10-26
+        // sweep): the previous comment claimed the copies were safe because
+        // "payload JSVals come from rooted callers" — but the array points at
+        // THIS frame's raw `Vec<JSVal>` copies, not the callers' rooted
+        // slots. JS_CallFunctionName resolves `emit` by name first (a getter
+        // on the prototype can run JS → GC) and then dispatches listener JS;
+        // a moving GC updated the callers' traced slots but left these copies
+        // stale (the eval_cjs_body / glob exclude_fn SEGV class). Rooted Vec
+        // = tracer-visible slots, updated in place for the whole call window
+        // (node_events ee_emit dispatch template, Vec form). Rooted via
+        // `realm_cx` — `cx` is mutably held by the AutoRealm above (E0502);
+        // `realm_cx` derefs the same JSContext (same raw pointer, same root
+        // stack), so the rooting surface is byte-identical.
+        rooted!(&in(realm_cx) let argv_rooted: Vec<JSVal> = {
+            let mut vals: Vec<JSVal> = Vec::with_capacity(args.len() + 1);
+            vals.push(StringValue(&*event_js));
+            vals.extend_from_slice(args);
+            vals
+        });
+        let call_args = JS::HandleValueArray::from(&argv_rooted);
         let mut rval = UndefinedValue();
         let ok = JS_CallFunctionName(
             raw_cx,

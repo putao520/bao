@@ -1681,11 +1681,15 @@ fn builtin_bridge_source_live(
     // raw-pointer deref (name_js: *mut JSString, allocated above, alive).
     let name_val = mozjs::jsval::StringValue(unsafe { &*name_js });
     rooted!(&in(cx_s) let name_val_root = name_val);
-    let args = [*name_val_root.handle()];
-    let call_args = mozjs::jsapi::HandleValueArray {
-        length_: 1,
-        elements_: args.as_ptr(),
-    };
+    // (Bao, BCE) rooted ValueArray carrier (E45 unrooted-args class,
+    // 2026-10-26 sweep): the old `args = [*name_val_root.handle()]` stack copy
+    // fed `HandleValueArray { elements_: args.as_ptr() }` — the copy is
+    // invisible to the tracer; JS_CallFunctionValue below is a GC point. The
+    // rooted ValueArray keeps the slot tracer-visible for the whole call
+    // window (node_child_process.rs:4875 verified template, ValueArray form).
+    rooted!(&in(cx_s) let call_args_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([*name_val_root.handle()]));
+    let call_args = mozjs::jsapi::JS::HandleValueArray::from(&call_args_rooted);
     rooted!(&in(cx_s) let mut rval = UndefinedValue());
     let called = unsafe {
         JS_CallFunctionValue(

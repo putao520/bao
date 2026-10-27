@@ -3200,17 +3200,23 @@ unsafe extern "C" fn http2_create_server(cx: *mut JSContext, argc: u32, vp: *mut
         UndefinedValue()
     };
 
-    let call_args_vals = [opts_arg, handler_arg];
-    let call_args = HandleValueArray {
-        length_: if argc > 1 {
-            2
-        } else if argc > 0 {
-            1
-        } else {
-            0
-        },
-        elements_: call_args_vals.as_ptr(),
-    };
+    // (Bao, BCE) rooted arg carrier (E45 unrooted-args class, 2026-10-26
+    // sweep): the bare `HandleValueArray { elements_: call_args_vals.as_ptr() }`
+    // pointed at an untraced stack copy of the caller's argv; the ctor call
+    // below runs arbitrary JS (a GC point) and a moving GC left the copies
+    // stale. Rooted Vec = tracer-visible slots, updated in place for the call
+    // window (node_events ee_emit dispatch template, Vec form).
+    rooted!(&in(cx_ref) let call_args_rooted: Vec<JSVal> = {
+        let mut vals: Vec<JSVal> = Vec::with_capacity(2);
+        if argc > 0 {
+            vals.push(opts_arg);
+        }
+        if argc > 1 {
+            vals.push(handler_arg);
+        }
+        vals
+    });
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
 
     rooted!(&in(cx_ref) let ctor_fn = ObjectValue(ctor.get()));
     let mut ctor_rval = UndefinedValue();
@@ -3351,17 +3357,21 @@ unsafe extern "C" fn http2_create_secure_server(
         UndefinedValue()
     };
 
-    let call_args_vals = [opts_arg, handler_arg];
-    let call_args = HandleValueArray {
-        length_: if argc > 1 {
-            2
-        } else if argc > 0 {
-            1
-        } else {
-            0
-        },
-        elements_: call_args_vals.as_ptr(),
-    };
+    // (Bao, BCE) rooted arg carrier (E45 unrooted-args class, 2026-10-26
+    // sweep): same bare-stack-copy defect and same rooted-Vec fix as
+    // http2_create_server above — the ctor call is a GC point and untraced
+    // copies went stale under a moving GC.
+    rooted!(&in(cx_ref) let call_args_rooted: Vec<JSVal> = {
+        let mut vals: Vec<JSVal> = Vec::with_capacity(2);
+        if argc > 0 {
+            vals.push(opts_arg);
+        }
+        if argc > 1 {
+            vals.push(handler_arg);
+        }
+        vals
+    });
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
 
     rooted!(&in(cx_ref) let ctor_fn = ObjectValue(ctor.get()));
     let mut ctor_rval = UndefinedValue();

@@ -2067,13 +2067,19 @@ unsafe fn tls_emit_js(cx: *mut JSContext, obj: *mut JSObject, name: &str, args: 
     }
     rooted!(&in(cx_ref) let emit_root = emit_val);
 
-    let mut call_vals: Vec<JSVal> = Vec::with_capacity(args.len() + 1);
-    call_vals.push(name_val.get());
-    call_vals.extend_from_slice(args);
-    let call_args = HandleValueArray {
-        length_: call_vals.len(),
-        elements_: call_vals.as_ptr(),
-    };
+    // (Bao, BCE) rooted arg carrier (E45 unrooted-args class, 2026-10-26
+    // sweep): the bare `HandleValueArray { elements_: call_vals.as_ptr() }`
+    // pointed at untraced raw JSVal copies; the emit call below runs listener
+    // JS (a GC point) and a moving GC left the copies stale. Rooted Vec =
+    // tracer-visible slots, updated in place for the call window
+    // (node_events ee_emit dispatch template, Vec form).
+    rooted!(&in(cx_ref) let call_vals_rooted: Vec<JSVal> = {
+        let mut vals: Vec<JSVal> = Vec::with_capacity(args.len() + 1);
+        vals.push(name_val.get());
+        vals.extend_from_slice(args);
+        vals
+    });
+    let call_args = JS::HandleValueArray::from(&call_vals_rooted);
     let mut rval = UndefinedValue();
     let ok = JS_CallFunctionValue(
         cx,

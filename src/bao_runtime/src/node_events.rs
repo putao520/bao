@@ -454,21 +454,52 @@ unsafe fn emitter_weakmap(cx: *mut JSContext) -> *mut JSObject {
     wm
 }
 
-/// Call a WeakMap method (`get` / `set`) with one argument. `JS_CallFunctionName`
-/// shape mirrors the node_net `__net_make_socket` precedent.
+/// Call a WeakMap method (`get` / `set`) with one argument. Shape mirrors the
+/// node_net `__net_make_socket` precedent.
+///
+/// (Bao, BCE, evreg-SIGSEGV root cause) The callee is resolved via
+/// `JS_GetProperty` BEFORE the argument carrier is populated. The previous
+/// `JS_CallFunctionName` form atomized the name internally — an allocation,
+/// i.e. a GC point — that fired *after* this call's rooted argument carrier
+/// was already populated; a nursery GC there evacuated the emitter while the
+/// carrier kept the from-space address, and the callee
+/// (`WeakMap.set` → `SetWeakMapEntryImpl` → `TryPreserveReflector`)
+/// dereferenced the forwarded cell header (farm core: word0 =
+/// `FORWARD_BIT|new_addr`, Cell.h). `JS_GetProperty` below is the last
+/// GC-capable op of the window; `JS_CallFunctionValue`'s native-invoke path
+/// (`InternalCall` → `CallJSNative`) performs no further GC before the callee
+/// reads the args, so the rooted carrier cannot go stale in flight
+/// (raw-jsval-across-GC-points class, E45 sweep completion).
 unsafe fn wm_call(cx: *mut JSContext, wm: *mut JSObject, name: *const i8, arg: JSVal) -> JSVal {
     let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let wm_root = wm);
     rooted!(&in(wrapped_cx) let arg_root = arg);
+    let mut fn_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        wm_root.handle().into(),
+        name,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut fn_val,
+        },
+    );
+    if !fn_val.is_object() {
+        // Missing/non-callable method: keep the prior failure surface
+        // (CallFunctionName would have thrown) — clear and return undefined.
+        JS_ClearPendingException(cx);
+        return UndefinedValue();
+    }
+    rooted!(&in(wrapped_cx) let fn_root = fn_val);
     // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
     rooted!(&in(wrapped_cx) let argv_rooted =
         mozjs_sys::jsgc::ValueArray::<1>::new([arg_root.get()]));
     let argv = mozjs_sys::jsapi::JS::HandleValueArray::from(&argv_rooted);
     let mut rval = UndefinedValue();
-    let ok = JS_CallFunctionName(
+    let ok = JS_CallFunctionValue(
         cx,
         wm_root.handle().into(),
-        name,
+        fn_root.handle().into(),
         &argv,
         MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
@@ -520,11 +551,16 @@ fn get_state(cx: *mut JSContext, obj: *mut JSObject) -> Option<EmitterState> {
         return None;
     }
     unsafe {
+        // (Bao, BCE, evreg-SIGSEGV) Root the caller-passed pointer BEFORE
+        // emitter_weakmap: its first-use `new WeakMap()` evaluation is a GC
+        // point, and the parameter value was copied at the call site.
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let obj_root = obj);
         let wm = emitter_weakmap(cx);
         if wm.is_null() {
             return None;
         }
-        let holder = wm_call(cx, wm, c"get".as_ptr(), ObjectValue(obj));
+        let holder = wm_call(cx, wm, c"get".as_ptr(), ObjectValue(obj_root.get()));
         if !holder.is_object() {
             return None;
         }
@@ -541,39 +577,75 @@ fn set_state(cx: *mut JSContext, obj: *mut JSObject, state: EmitterState) {
         return;
     }
     unsafe {
+        // (Bao, BCE, evreg-SIGSEGV) Root the caller-passed emitter BEFORE
+        // emitter_weakmap (first-use evaluation = GC point) — same rationale
+        // as get_state.
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let obj_root = obj);
         let wm = emitter_weakmap(cx);
         if wm.is_null() {
             return;
         }
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
         let boxed = Box::new(state);
-        let holder = w2::JS_NewObject(cx_ref, &EMITTER_HOLDER_CLASS);
+        let holder = w2::JS_NewObject(&mut wrapped_cx, &EMITTER_HOLDER_CLASS);
         if holder.is_null() {
             ::std::mem::forget(boxed);
             return;
         }
         set_slot(holder, 0, Box::into_raw(boxed) as *const ::std::os::raw::c_void);
-        rooted!(&in(wrapped_cx) let arg_val = ObjectValue(holder));
-        rooted!(&in(wrapped_cx) let key_val = ObjectValue(obj));
+        rooted!(&in(wrapped_cx) let wm_root = wm);
+        rooted!(&in(wrapped_cx) let holder_root = holder);
+        // (Bao, BCE, evreg-SIGSEGV root cause) Resolve the `set` callee BEFORE
+        // the argument carrier is populated — same rationale as wm_call: the
+        // name atomization inside JS_CallFunctionName is a GC point that fired
+        // after this call's rooted carrier held [emitter, holder], letting a
+        // nursery GC evacuate both while the carrier kept from-space addresses
+        // (WeakMap.set → TryPreserveReflector then dereferenced the forwarded
+        // header). JS_GetProperty below is the last GC-capable op of the
+        // window; the populated carrier reaches the callee through
+        // JS_CallFunctionValue's GC-free native-invoke path.
+        let mut set_fn = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            wm_root.handle().into(),
+            c"set".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut set_fn,
+            },
+        );
+        if !set_fn.is_object() {
+            // WeakMap.prototype.set is a plain native data property — a miss
+            // here means the engine exception is already pending. Propagate
+            // loudly (no fallback); the state write is dropped and the holder
+            // box dies with the object.
+            return;
+        }
+        rooted!(&in(wrapped_cx) let set_fn_root = set_fn);
+        rooted!(&in(wrapped_cx) let key_val = ObjectValue(obj_root.get()));
+        rooted!(&in(wrapped_cx) let arg_val = ObjectValue(holder_root.get()));
         // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
         rooted!(&in(wrapped_cx) let call_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
             key_val.handle().get(),
             arg_val.handle().get(),
         ]));
         let call = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_rooted);
-        rooted!(&in(wrapped_cx) let wm_root = wm);
         let mut rval = UndefinedValue();
-        let _ = JS_CallFunctionName(
+        let ok = JS_CallFunctionValue(
             cx,
             wm_root.handle().into(),
-            c"set".as_ptr(),
+            set_fn_root.handle().into(),
             &call,
             MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
                 ptr: &mut rval,
             },
         );
+        if !ok {
+            // Keep the prior fire-and-forget failure surface of the "set"
+            // write (the next ensure_state re-derives from the WeakMap).
+            JS_ClearPendingException(cx);
+        }
     }
 }
 
@@ -752,10 +824,17 @@ pub unsafe extern "C" fn ee_on(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             return true;
         }
     };
+    // (Bao, BCE, evreg-SIGSEGV) Root the callback NOW: get_callback's internal
+    // root died at its return, and everything between here and gc_store_insert
+    // (ensure_state's WeakMap.get / first-use `new WeakMap()` evaluation,
+    // JS_NewObject in set_state) is a GC point. A moving GC would leave the
+    // raw pointer in from-space; rooting it here keeps the slot GC-updated
+    // (raw-jsval-across-GC-points class, E45 sweep completion).
+    rooted!(&in(wrapped_cx) let callback_root = callback);
 
     let mut state = ensure_state(cx, this_obj_root.get());
     let key = alloc_listener_key(&event_name);
-    gc_store_insert(cx, &key, callback);
+    gc_store_insert(cx, &key, callback_root.get());
     state
         .listeners
         .entry(event_name.clone())
@@ -798,10 +877,13 @@ pub unsafe extern "C" fn ee_once(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             return true;
         }
     };
+    // (Bao, BCE, evreg-SIGSEGV) Root before the ensure_state GC window — see
+    // ee_on.
+    rooted!(&in(wrapped_cx) let callback_root = callback);
 
     let mut state = ensure_state(cx, this_obj_root.get());
     let key = alloc_listener_key(&event_name);
-    gc_store_insert(cx, &key, callback);
+    gc_store_insert(cx, &key, callback_root.get());
     state
         .listeners
         .entry(event_name.clone())
@@ -958,24 +1040,25 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         return true;
     }
 
-    let emit_args: Vec<JSVal> = if argc > 1 {
+    // (Bao, BCE) rooted arg carrier (E45 unrooted-args class, 2026-10-26
+    // sweep): the old bare `HandleValueArray { elements_: emit_args.as_ptr() }`
+    // pointed at raw JSVal copies invisible to the tracer — every listener
+    // invocation below runs arbitrary JS (a GC point), and a moving GC updated
+    // the CallArgs slots but not these copies, feeding stale from-space
+    // pointers to the NEXT listener in the loop. The rooted Vec keeps the
+    // slots tracer-visible and updated in place for the whole dispatch window
+    // (wm_call:464 / events_static_on:1384 verified template, Vec form).
+    rooted!(&in(wrapped_cx) let emit_args_rooted: Vec<JSVal> = if argc > 1 {
         (1..argc).map(|i| *args.get(i).ptr).collect()
     } else {
         Vec::new()
-    };
+    });
 
     // Node contract: `this` inside a listener is the emitter instance (the
     // canonical `this.on('x', ...)` / `this.removeListener` listener shapes
     // depend on it), NOT the global object.
 
-    let call_args = if emit_args.is_empty() {
-        HandleValueArray::empty()
-    } else {
-        HandleValueArray {
-            length_: emit_args.len(),
-            elements_: emit_args.as_ptr(),
-        }
-    };
+    let call_args = JS::HandleValueArray::from(&emit_args_rooted);
 
     let mut fired_once_keys: Vec<String> = Vec::new();
 
@@ -1093,10 +1176,13 @@ pub unsafe extern "C" fn ee_prepend(cx: *mut JSContext, argc: u32, vp: *mut JSVa
             return true;
         }
     };
+    // (Bao, BCE, evreg-SIGSEGV) Root before the ensure_state GC window — see
+    // ee_on.
+    rooted!(&in(wrapped_cx) let callback_root = callback);
 
     let mut state = ensure_state(cx, this_obj_root.get());
     let key = alloc_listener_key(&event_name);
-    gc_store_insert(cx, &key, callback);
+    gc_store_insert(cx, &key, callback_root.get());
     state
         .listeners
         .entry(event_name.clone())
@@ -1137,10 +1223,13 @@ pub unsafe extern "C" fn ee_prepend_once(cx: *mut JSContext, argc: u32, vp: *mut
             return true;
         }
     };
+    // (Bao, BCE, evreg-SIGSEGV) Root before the ensure_state GC window — see
+    // ee_on.
+    rooted!(&in(wrapped_cx) let callback_root = callback);
 
     let mut state = ensure_state(cx, this_obj_root.get());
     let key = alloc_listener_key(&event_name);
-    gc_store_insert(cx, &key, callback);
+    gc_store_insert(cx, &key, callback_root.get());
     state
         .listeners
         .entry(event_name.clone())
@@ -1704,14 +1793,20 @@ pub(crate) unsafe fn redispatch_to_js(
     // `CallArgs` exposes no length accessor in the Rust bindings — the native
     // fn's own `argc` parameter is the canonical count (bun_sqlite:1562 and
     // every other forwarding site use the signature parameter).
-    let mut elements: Vec<JSVal> = Vec::with_capacity(argc as usize);
-    for i in 0..argc {
-        elements.push(*args.get(i).ptr);
-    }
-    let call_args = HandleValueArray {
-        length_: argc as usize,
-        elements_: elements.as_ptr(),
-    };
+    // (Bao, BCE) rooted arg carrier (E45 unrooted-args class, 2026-10-26
+    // sweep): the bare `HandleValueArray { elements_: elements.as_ptr() }` fed
+    // untraced raw JSVal copies into a call that first resolves `fn`'s own
+    // property (a getter can run JS → GC) and then executes it — a moving GC
+    // left the copies stale. The rooted Vec slots are traced and updated in
+    // place for the whole call window (ee_emit dispatch template, Vec form).
+    rooted!(&in(cx_ref) let elements_rooted: Vec<JSVal> = {
+        let mut vals: Vec<JSVal> = Vec::with_capacity(argc as usize);
+        for i in 0..argc {
+            vals.push(*args.get(i).ptr);
+        }
+        vals
+    });
+    let call_args = JS::HandleValueArray::from(&elements_rooted);
     let mut rval = UndefinedValue();
     let ok = JS_CallFunctionValue(
         cx,

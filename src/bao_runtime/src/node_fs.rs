@@ -1005,7 +1005,7 @@ unsafe fn spawn_fs_async_writeback<F>(
     });
 }
 
-// @trace REQ-ENG-004 [api:fs.WriteStream|fs.ReadStream|createReadStream|createWriteStream]
+// @trace REQ-ENG-007 [api:fs.WriteStream|fs.ReadStream|createReadStream|createWriteStream]
 // — node-parity fs stream constructors: real classes (prototype.open
 // override point, subclass `.call` compat, autoDestroy, close/setEncoding/
 // destroyed faces) + fd-backed factories for FileHandle.createReadStream/
@@ -18006,7 +18006,7 @@ for (name, op, nargs) in [
 /// (fresh-handle face; node streams lazily from offset 0 — the line SEQUENCE
 /// is identical for the open-iterate-consume shape every consumer drives).
 ///
-/// @trace REQ-ENG-004 [entity:FileHandle] — proto surface (readLines was
+/// @trace REQ-ENG-007 [entity:FileHandle] — proto surface (readLines was
 /// listed in the oracle surface comment but absent from the method table).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn fh_read_lines(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
