@@ -44,6 +44,9 @@ use std::time::{Duration, Instant};
 
 use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool};
 
+#[path = "common/mod.rs"]
+mod common;
+
 const POPUP_PAGE: &str = r#"<!DOCTYPE html><html><body><script>
 globalThis.__pop = { state: "pending", ran: true };
 fetch("/marker/pop-fetch").then(
@@ -159,37 +162,50 @@ impl HttpsPopupFixture {
 
         // Port 0: the python server binds an OS-assigned port and logs it via
         // its own bind result — recover it from the ready marker + the test's
-        // own listener-free probe. Simplest reliable form: pick a port here.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("probe bind");
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        // own listener-free probe. E26 ledger class B (probe-release rebind
+        // window): a parallel suite process claiming the probed port makes
+        // python's bind fail (no /ready marker, child exits) — each attempt
+        // gets a FRESH probed port and a fresh python subprocess; the losing
+        // attempt's child is reaped before the retry.
+        let (port, child) = common::port_probe::retry_probed_port(|port| {
+            // /ready markers must never leak across attempts.
+            let _ = std::fs::remove_file(&hits_path);
+            let mut child = std::process::Command::new("python3")
+                .arg(&server_py)
+                .arg(port.to_string())
+                .arg(&cert_path)
+                .arg(&key_path)
+                .arg(&hits_path)
+                .arg(&popup_path)
+                .arg(&opener_path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn python3 TLS fixture (python3 must be on PATH)");
 
-        let child = std::process::Command::new("python3")
-            .arg(&server_py)
-            .arg(port.to_string())
-            .arg(&cert_path)
-            .arg(&key_path)
-            .arg(&hits_path)
-            .arg(&popup_path)
-            .arg(&opener_path)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn python3 TLS fixture (python3 must be on PATH)");
-
-        // Wait for the ready marker (server bound + TLS wrapped).
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if let Ok(s) = std::fs::read_to_string(&hits_path) {
-                if s.contains("/ready") {
+            // Wait for the ready marker (server bound + TLS wrapped). A dead
+            // child ends the attempt early — bind collision, not slowness.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Ok(s) = std::fs::read_to_string(&hits_path) {
+                    if s.contains("/ready") {
+                        return Some((port, child));
+                    }
+                }
+                if child.try_wait().map(|st| st.is_some()).unwrap_or(false) {
                     break;
                 }
+                if Instant::now() > deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
             }
-            if Instant::now() > deadline {
-                panic!("TLS fixture did not become ready in 10s");
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+            // Lost the race (or the fixture died): reap this attempt's
+            // python and retry on a fresh port.
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        });
 
         HttpsPopupFixture {
             port,

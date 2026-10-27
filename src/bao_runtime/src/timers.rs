@@ -2,6 +2,8 @@
 use ::std::cell::{Cell, RefCell};
 use ::std::time::Duration;
 
+use bao_engine::context::RawValueRootGuard;
+use mozjs::gc::RootedTraceableBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::{Int32Value, JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
@@ -791,11 +793,17 @@ pub fn has_pending_work() -> bool {
 /// - `raw_cx` must be a live `JSContext*` on the current thread.
 /// - `callback` must be a non-null live `JSObject*` (function object) rooted
 ///   by the caller for the duration of this call.
-/// - `args` slice must point to `JSVal`s rooted by the caller.
+/// - `args` must be call-window-rooted: a FLAT, tracer-visible slot array
+///   (`RootedTraceableBox<Vec<Heap<JSVal>>>` — post-write-barrier-pinned at
+///   stable Vec-buffer addresses and traced in the RootedTraceableSet, so a
+///   moving GC updates the buffer in place) for the duration of this call.
+///   Bare `&[JSVal]` copies are NOT a valid contract: they are invisible to
+///   both the tracer and the write barrier across the call (Bao, BCE) raw
+///   JSVal across GC points, E45 class.
 pub unsafe fn fire_js_callback_raw(
     raw_cx: *mut JSContext,
     callback: *mut JSObject,
-    args: &[JSVal],
+    args: &RootedTraceableBox<Vec<Heap<JSVal>>>,
 ) {
     unsafe {
         let global = CurrentGlobalOrNull(raw_cx);
@@ -817,12 +825,20 @@ pub unsafe fn fire_js_callback_raw(
         rooted!(&in(cx_ref) let global_root = global);
         rooted!(&in(cx_ref) let fval_root = ObjectValue(callback));
 
+        // HandleValueArray::elements_ is a plain `const Value*` (bindgen
+        // jsapi.rs): it must point at the JSVal BODIES, CONTIGUOUS.
+        // Heap<JSVal> is repr(C) over UnsafeCell<JSVal> — a flat Heap slot
+        // array IS the value array, and the traced box keeps the buffer
+        // valid across any GC the call runs (slots updated in place).
+        // (Routing it through the Handle wrappers' bytes would feed SM
+        // pointer bit patterns as Values — the args arrive as garbage
+        // doubles.)
         let args_array = if args.is_empty() {
             HandleValueArray::empty()
         } else {
             HandleValueArray {
                 length_: args.len(),
-                elements_: args.as_ptr(),
+                elements_: args.as_ptr() as *const JSVal,
             }
         };
 
@@ -871,13 +887,22 @@ fn bao_has_pending_timers() -> bool {
     has_pending_timers()
 }
 
+/// @trace REQ-ENG-004 — process.getActiveResourcesInfo read face: number of
+/// timers currently held in this thread's registry. One JS "Timeout" entry
+/// per timer (setTimeout/setInterval alike) — node v24 oracle: 2 timers +
+/// 1 interval → ["Timeout","Timeout","Timeout"]. JS thread only (thread-local
+/// registry); must be called from the JS thread.
+pub fn active_timer_count() -> usize {
+    BAO_REGISTRY.with(|r| r.borrow().len())
+}
+
 /// P1-A.3d: drain ready timers from BAO_REGISTRY (new source of truth).
 ///
 /// Pops expired timers from the intrusive heap, fires their JS callbacks,
 /// and re-arms interval timers. Uses "pop-before-fire" pattern to ensure
 /// re-entrant setTimeout/clearTimeout safety: no RefCell borrow is held
 /// across JS callback dispatch.
-fn drain_bao_timers(raw_cx: *mut JSContext) -> bool {
+pub fn drain_bao_timers(raw_cx: *mut JSContext) -> bool {
     let now_ts = Timespec::now_allow_mocked_time();
     let mut fired = false;
 
@@ -1020,6 +1045,40 @@ pub fn schedule_raw(
         delay_ms
     };
 
+    // GC-safe (Bao, BCE) raw JSVal across GC points, E45 class, 2026-10-26
+    // audit-pinned (mirrors job_queue.rs next_tick_enqueue's RawValueRootGuard
+    // contract): the marshalled args survive the schedule→fire window in a
+    // RawValueRootGuard — the SM raw root TABLE (traced by every GC, slot
+    // values updated in place on move) — not as bare JSVal copies on the
+    // Rust heap. A bare `Vec<JSVal>` field holds raw bodies invisible to
+    // both the tracer and the write barrier: after any GC in the window,
+    // fire reads swept/moved garbage.
+    //
+    // Fail-closed: a non-empty args slice that cannot be rooted (null-cx
+    // test registration, or raw-root table failure) means the callback would
+    // run with silently-wrong arguments — the timer is NOT inserted (no
+    // unrooted entry), mirroring next_tick_enqueue's degraded-host path.
+    // Rooting happens BEFORE any other registration side effect, so the
+    // early return leaves zero residue; the minted id is still handed out
+    // and clearTimeout on it no-ops.
+    let args_root = if !_args.is_empty() {
+        if cx.is_null() {
+            return id;
+        }
+        // SAFETY: cx is the live registration cx (same contract as the
+        // global_root registration below; RawValueRootGuard pins its slots
+        // in a Box, so moving the owning BaoTimeoutObject Box never moves
+        // the rooted memory — the guard's Drop releases the roots with the
+        // registered addresses).
+        let rooted = unsafe { RawValueRootGuard::new(cx, _args, c"bao_timer_args") };
+        if rooted.is_none() {
+            return id;
+        }
+        rooted
+    } else {
+        None
+    };
+
     // GC-safe: store callback in GcStore, keep only the string key.
     // Guard: test code may pass null cx; skip GC registration in that case.
     let callback_key = format!("cb_{}", id);
@@ -1033,7 +1092,7 @@ pub fn schedule_raw(
         bun_core::Timespec::now_allow_mocked_time().add_ms(effective_delay as i64);
     bao_obj.interval = interval;
     bao_obj.callback_key = ::std::option::Option::Some(callback_key);
-    bao_obj.args = _args.to_vec();
+    bao_obj.args_root = args_root;
     bao_obj.epoch = NEXT_EPOCH.with(|c| {
         let v = c.get();
         c.set(v.wrapping_add(1));
@@ -1440,8 +1499,17 @@ pub struct BaoTimeoutObject {
     /// (Doc-link residue of the BUG-ENG-360 migration: these lines still
     /// named the un-namespaced pre-migration accessors.)
     pub callback_key: ::std::option::Option<String>,
-    /// Marshalled JS arguments preserved across the schedule→fire window.
-    pub args: ::std::vec::Vec<JSVal>,
+    /// Marshalled JS arguments preserved across the schedule→fire window,
+    /// rooted in a RawValueRootGuard (the SM raw root TABLE — traced by
+    /// every GC, slot values updated in place on move). (Bao, BCE) raw
+    /// JSVal across GC points, E45 class, 2026-10-26 audit-pinned: the
+    /// previous shape was a bare `Vec<JSVal>` — raw bodies invisible to
+    /// both the tracer and the write barrier, so fire read swept/moved
+    /// garbage after any GC in the window. `dispatch` re-pins the live
+    /// slots into tracer-visible `RootedTraceableBox` roots for the call
+    /// window. None = no args, or a registration that could not root
+    /// (fail-closed: such timers are not inserted).
+    pub args_root: ::std::option::Option<RawValueRootGuard>,
     /// P1-A.3c: re-arm interval for setInterval. None = one-shot setTimeout.
     /// Set when scheduled via `setInterval`; consumed by drain logic which
     /// re-inserts the timer after firing. Mirrors Bun's
@@ -1473,7 +1541,7 @@ impl BaoTimeoutObject {
             ),
             epoch: 0,
             callback_key: ::std::option::Option::None,
-            args: ::std::vec::Vec::new(),
+            args_root: ::std::option::Option::None,
             interval: ::std::option::Option::None,
             timer_id: 0,
             global_root: ::std::option::Option::None,
@@ -1514,7 +1582,9 @@ impl BaoTimeoutObject {
     /// - `raw_cx` must be a live `JSContext*` on the current thread.
     /// - The callback retrieved from GcStore (if Some) must be a live function
     ///   object rooted on the JS global for the duration of this call.
-    /// - `self.args` slice must point to `JSVal`s rooted by the caller.
+    /// - `self.args_root` (when Some) provides the schedule-window raw
+    ///   roots; `dispatch` re-pins the live slots into call-window
+    ///   `RootedTraceableBox` roots before `fire_js_callback_raw`.
     pub unsafe fn fire_js(&mut self, raw_cx: *mut JSContext, now: &Timespec) {
         self.fire(now);
         // I-axis: dispatch into the REGISTRATION realm. The embedder pump
@@ -1568,7 +1638,34 @@ impl BaoTimeoutObject {
         if let ::std::option::Option::Some(ref key) = self.callback_key {
             if let ::std::option::Option::Some(cb) = gc_store_get_ns(raw_cx, "timer", key) {
                 if !cb.is_null() {
-                    unsafe { fire_js_callback_raw(raw_cx, cb, &self.args) };
+                    // Call-window arg roots ((Bao, BCE) raw JSVal across GC
+                    // points, E45 class; mirrors fire_js_callback_raw's
+                    // contract): read the LIVE slots out of the raw-rooted
+                    // schedule guard (a moving GC updates them in place) and
+                    // materialize them into a FLAT slot array rooted for the
+                    // dispatch window — defaults collected first (no edges),
+                    // values set in place (the post-write-barrier registers
+                    // the stable Vec buffer), then boxed into the tracer
+                    // channel (RootedTraceableSet) so a moving/compacting GC
+                    // updates the buffer in place through the whole call.
+                    // Bare JSVal copies across the call would be invisible to
+                    // both the tracer and the barrier. Slot layout: 0.. = the
+                    // marshalled args (the schedule guard holds ONLY args, no
+                    // global/callback prefix — `len()` is the arg count).
+                    let slots: Vec<Heap<JSVal>> = match self.args_root.as_ref() {
+                        ::std::option::Option::Some(guard) => {
+                            let mut slots: Vec<Heap<JSVal>> =
+                                (0..guard.len()).map(|_| Heap::default()).collect();
+                            for (i, slot) in slots.iter_mut().enumerate() {
+                                slot.set(guard.get(i));
+                            }
+                            slots
+                        }
+                        ::std::option::Option::None => Vec::new(),
+                    };
+                    let fire_args: RootedTraceableBox<Vec<Heap<JSVal>>> =
+                        RootedTraceableBox::from_box(Box::new(slots));
+                    unsafe { fire_js_callback_raw(raw_cx, cb, &fire_args) };
                 }
             }
         }
@@ -1829,7 +1926,10 @@ mod bao_timeout_tests {
             obj.callback_key.is_none(),
             "new_paused must start with no callback_key"
         );
-        assert!(obj.args.is_empty(), "new_paused must start with empty args");
+        assert!(
+            obj.args_root.is_none(),
+            "new_paused must start with no args root"
+        );
     }
 
     #[test]
@@ -1858,18 +1958,20 @@ mod bao_timeout_tests {
 
     #[test]
     fn bao_timeout_object_callback_key_field_roundtrip() {
-        // Verify callback_key/args fields can be set and read back.
+        // Verify the callback_key field can be set and read back. (The
+        // companion args face moved to `args_root`: a RawValueRootGuard
+        // needs a live cx to register, so there is no runtime-free set/read
+        // roundtrip — the schedule-time rooting contract is exercised by
+        // the engine-linked setTimeout-args conformance tests.)
         let mut obj = BaoTimeoutObject::new_paused();
         obj.callback_key = ::std::option::Option::Some("cb_42".to_string());
-        obj.args = vec![mozjs::jsval::Int32Value(42)];
 
         assert_eq!(
             obj.callback_key,
             ::std::option::Option::Some("cb_42".to_string()),
             "callback_key stores string"
         );
-        assert_eq!(obj.args.len(), 1, "args field stores JSVal vec");
-        assert_eq!(obj.args[0].to_int32(), 42, "JSVal roundtrips intact");
+        assert!(obj.args_root.is_none(), "no-cx path stores no args root");
     }
 
     #[test]
@@ -2194,21 +2296,6 @@ mod bao_timeout_tests {
         assert_eq!(obj.timer_id, 0);
         obj.timer_id = 999_999;
         assert_eq!(obj.timer_id, 999_999);
-    }
-
-    #[test]
-    fn bao_timeout_object_args_field_multiple_values() {
-        // Verify args field can store multiple JSVal values.
-        let mut obj = BaoTimeoutObject::new_paused();
-        obj.args = vec![
-            mozjs::jsval::Int32Value(1),
-            mozjs::jsval::Int32Value(2),
-            mozjs::jsval::Int32Value(3),
-        ];
-        assert_eq!(obj.args.len(), 3);
-        assert_eq!(obj.args[0].to_int32(), 1);
-        assert_eq!(obj.args[1].to_int32(), 2);
-        assert_eq!(obj.args[2].to_int32(), 3);
     }
 
     #[test]

@@ -84,7 +84,14 @@ fn scripted_responder(rx: bao_cdp::servo_bridge::BridgeReceiver) -> std::thread:
     std::thread::spawn(move || loop {
         let handled = rx.try_process(|cmd| match cmd {
             BridgeCommand::CreateTarget { .. } => BridgeResponse {
-                result: Ok(json!({ "targetId": "1" })),
+                // Mirrors the real `cmd_create_target` answer face: the
+                // browser-side registry always attributes the new page to a
+                // context (the implicit default here), and the event
+                // emitters hard-require the key.
+                result: Ok(json!({
+                    "targetId": "1",
+                    "browserContextId": "bao-default-context"
+                })),
             },
             BridgeCommand::ClosePage { .. } => BridgeResponse {
                 result: Ok(json!({ "success": true })),
@@ -372,5 +379,230 @@ fn target_lifecycle_events_respect_auto_attach_gate() {
         sender.untagged_methods().contains(&"Target.targetDestroyed".to_string()),
         "targetDestroyed must fire even with auto-attach off; got: {:?}",
         sender.untagged()
+    );
+}
+
+/// C5 (criterion 4, created→attached order): `Target.createTarget` emits
+/// `Target.targetCreated` on the untagged browser stream BEFORE the
+/// auto-attach `Target.attachedToTarget`, carrying the SAME target identity
+/// (`targetInfo.targetId` equal to the createTarget answer and to the attach
+/// payload; `attached: false` on the created notification — the target is
+/// not yet attached at creation-notification time, Chrome flat-session
+/// shape). E47 `emit_target_created_attached` discriminators
+/// (`src/bao_browser/src/ws_registry.rs`): a regression that drops the
+/// created face, reorders it after the attach, flips its `attached` flag, or
+/// diverges the two targetInfo payloads fails here.
+// @trace TEST-CDP-8 [req:REQ-CDP-008] [level:unit]
+#[test]
+fn target_created_precedes_attached_to_target_with_matching_target_info() {
+    let (tx, rx) = bridge_channel(Duration::from_secs(2));
+    let _keeper = scripted_responder(rx);
+    let registry = BaoWsRegistry::new(tx);
+    let sender = RecordingSender::new();
+
+    // Auto-attach ON (the C3 scenario) so both halves of the create entry
+    // fire and their relative order is observable.
+    let r = dispatch(
+        &registry,
+        &browser_msg(
+            "Target.setAutoAttach",
+            json!({ "autoAttach": true, "flatten": true }),
+        ),
+        &sender,
+    )
+    .expect("setAutoAttach must succeed");
+    assert_eq!(r, json!({}));
+
+    let r = dispatch(
+        &registry,
+        &browser_msg("Target.createTarget", json!({ "url": "about:blank" })),
+        &sender,
+    )
+    .expect("createTarget must succeed");
+    let new_target = r["targetId"].as_str().expect("created targetId").to_string();
+
+    let stream = sender.untagged();
+
+    // Face ①: targetCreated present exactly once, naming the created target
+    // with attached:false (creation-time semantics, not the attach state).
+    let created: Vec<(usize, &Value)> = stream
+        .iter()
+        .enumerate()
+        .filter(|(_, (m, _))| m == "Target.targetCreated")
+        .map(|(i, (_, p))| (i, p))
+        .collect();
+    assert_eq!(
+        created.len(),
+        1,
+        "exactly one targetCreated; got: {:?}",
+        stream
+    );
+    let (created_idx, created_params) = created[0];
+    assert_eq!(
+        created_params["targetInfo"]["targetId"], new_target,
+        "created notification names the bridge-created target id"
+    );
+    assert_eq!(created_params["targetInfo"]["type"], "page");
+    assert_eq!(
+        created_params["targetInfo"]["attached"], false,
+        "targetCreated must carry attached:false"
+    );
+
+    // Face ① (identity continuation): the attach names the SAME target and
+    // is the attached:true counterpart.
+    let attached: Vec<(usize, &Value)> = stream
+        .iter()
+        .enumerate()
+        .filter(|(_, (m, _))| m == "Target.attachedToTarget")
+        .map(|(i, (_, p))| (i, p))
+        .collect();
+    assert_eq!(
+        attached.len(),
+        1,
+        "exactly one attachedToTarget; got: {:?}",
+        stream
+    );
+    let (attached_idx, attached_params) = attached[0];
+    assert_eq!(
+        attached_params["targetInfo"]["targetId"], new_target,
+        "attachedToTarget targetId must equal the created notification's"
+    );
+    assert_eq!(attached_params["targetInfo"]["attached"], true);
+    assert!(
+        !attached_params["sessionId"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "attachedToTarget carries the minted routable session"
+    );
+
+    // Face ②: created BEFORE attached — the Chrome flat-session order
+    // clients sequence their session setup on.
+    assert!(
+        created_idx < attached_idx,
+        "targetCreated (index {created_idx}) must precede attachedToTarget (index {attached_idx}); got: {:?}",
+        stream
+    );
+
+    // targetInfo parity (the emitter contract: "targetInfo identical but
+    // `attached` still false on the created notification").
+    let mut created_info = created_params["targetInfo"].clone();
+    created_info.as_object_mut().unwrap().remove("attached");
+    let mut attached_info = attached_params["targetInfo"].clone();
+    attached_info.as_object_mut().unwrap().remove("attached");
+    assert_eq!(
+        created_info, attached_info,
+        "created/attached targetInfo must be identical modulo `attached`"
+    );
+
+    // The lifecycle notifications are UNTAGGED by design (file header): no
+    // session-tagged copy may leak onto any flattened-session stream.
+    let tagged_lifecycle: Vec<(String, String)> = sender
+        .tagged
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, m, _)| m == "Target.targetCreated" || m == "Target.attachedToTarget")
+        .map(|(s, m, _)| (s.clone(), m.clone()))
+        .collect();
+    assert!(
+        tagged_lifecycle.is_empty(),
+        "lifecycle notifications must not be session-tagged; got: {:?}",
+        tagged_lifecycle
+    );
+}
+
+/// C5 (criterion 4, ungated created + pair symmetry): `Target.targetCreated`
+/// is NOT gated by auto-attach — it fires even after the gate was turned on
+/// and back off (the flag's current value only controls the attach half, the
+/// created half always broadcasts). And the criterion-4 created/destroyed
+/// notification pair holds on the same identity: the closed target's
+/// `targetDestroyed` names the id the created notification announced
+/// (zero regression on the C4 close face).
+// @trace TEST-CDP-8 [req:REQ-CDP-008] [level:unit]
+#[test]
+fn target_created_fires_with_auto_attach_off_and_pairs_with_destroyed() {
+    let (tx, rx) = bridge_channel(Duration::from_secs(2));
+    let _keeper = scripted_responder(rx);
+    let registry = BaoWsRegistry::new(tx);
+    let sender = RecordingSender::new();
+
+    // Gate exercise: ON then OFF. Neither round may emit (the scripted bridge
+    // lists no pages; the off round early-returns before listing).
+    for auto in [true, false] {
+        let r = dispatch(
+            &registry,
+            &browser_msg(
+                "Target.setAutoAttach",
+                json!({ "autoAttach": auto, "flatten": true }),
+            ),
+            &sender,
+        )
+        .expect("setAutoAttach must succeed");
+        assert_eq!(r, json!({}));
+    }
+    assert!(
+        sender.untagged().is_empty(),
+        "setAutoAttach rounds must not emit without listed pages; got: {:?}",
+        sender.untagged()
+    );
+
+    // Face ③: with auto-attach OFF, createTarget STILL emits targetCreated
+    // (ungated) and ONLY that — no attachedToTarget.
+    let r = dispatch(
+        &registry,
+        &browser_msg("Target.createTarget", json!({ "url": "about:blank" })),
+        &sender,
+    )
+    .expect("createTarget must succeed with auto-attach off");
+    let new_target = r["targetId"].as_str().expect("created targetId").to_string();
+
+    let stream = sender.untagged();
+    let created: Vec<&Value> = stream
+        .iter()
+        .filter(|(m, _)| m == "Target.targetCreated")
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(
+        created.len(),
+        1,
+        "targetCreated fires with auto-attach off; got: {:?}",
+        stream
+    );
+    assert_eq!(created[0]["targetInfo"]["targetId"], new_target);
+    assert_eq!(
+        created[0]["targetInfo"]["attached"], false,
+        "ungated created notification carries attached:false too"
+    );
+    assert!(
+        !stream.iter().any(|(m, _)| m == "Target.attachedToTarget"),
+        "no attachedToTarget when auto-attach is off; got: {:?}",
+        stream
+    );
+
+    // Face ④: the destroyed half of the pair still fires for the same id.
+    let r = dispatch(
+        &registry,
+        &browser_msg("Target.closeTarget", json!({ "targetId": new_target.clone() })),
+        &sender,
+    )
+    .expect("closeTarget must succeed");
+    assert_eq!(r["success"], true);
+
+    let stream = sender.untagged();
+    let destroyed: Vec<&Value> = stream
+        .iter()
+        .filter(|(m, _)| m == "Target.targetDestroyed")
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(
+        destroyed.len(),
+        1,
+        "one targetDestroyed; got: {:?}",
+        stream
+    );
+    assert_eq!(
+        destroyed[0]["targetId"], new_target,
+        "created/destroyed pair announces the same target identity"
     );
 }

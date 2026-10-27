@@ -245,26 +245,31 @@ fn util_format_specifier_arms() {
             return util.format('%O', [1]) === '[ 1 ]';
         });
 
-        // %% escape consumes both percent signs; the %-format path returns
-        // the rendered format string WITHOUT appending unused args.
+        // %% escape consumes both percent signs; trailing args are still
+        // appended after the format-string walk (node v24.19.0 oracle,
+        // 2026-10-25 local binary: format('%%s', 1) === '%s 1'). The former
+        // pin ('%s', args dropped) predated the E34 trailing-append.
         check("format_percent_escape", function() {
-            return util.format('%%s', 1) === '%s';
+            return util.format('%%s', 1) === '%s 1';
         });
 
-        // Placeholder starvation: an exhausted specifier is consumed and
-        // renders nothing (trailing space from the literal stays).
+        // Placeholder starvation: node v24.19.0 oracle emits the exhausted
+        // specifier VERBATIM ('a %s') — the E34 verbatim form; the former
+        // pin ('a ', specifier silently dropped) predated it.
         check("format_starved_specifier", function() {
-            return util.format('%s %s', 'a') === 'a ';
+            return util.format('%s %s', 'a') === 'a %s';
         });
         // Specifier with no following arg at all: falls to the plain-join
         // path, which displays the raw string.
         check("format_dangling_specifier", function() {
             return util.format('%s') === '%s';
         });
-        // Extra args beyond the format string are dropped on the %-path
-        // (node appends them — divergence registered in the C8b report).
-        check("format_extra_args_dropped_on_format_path", function() {
-            return util.format('%s', 'a', 'b', 3) === 'a';
+        // Extra args beyond the format string are appended space-joined on
+        // the %-path (node v24.19.0 oracle: format('%s', 'a', 'b', 3) ===
+        // 'a b 3' — E34 trailing-append closed the divergence the C8b
+        // report had registered against the former drop pin).
+        check("format_extra_args_appended_on_format_path", function() {
+            return util.format('%s', 'a', 'b', 3) === 'a b 3';
         });
         // Non-format first arg: everything displayed space-joined.
         check("format_plain_join", function() {
@@ -277,12 +282,13 @@ fn util_format_specifier_arms() {
         check("format_literal_with_args", function() {
             return util.format('hello', 'world') === 'hello world';
         });
-        // Unknown specifier: '%' + char pass through; the next recognized
-        // specifier consumes the FIRST vararg (arg_idx starts at the first
-        // variadic slot).
+        // Unknown specifier: '%' + char pass through WITHOUT consuming an
+        // argument; the next recognized specifier consumes the first vararg
+        // and remaining args are appended (node v24.19.0 oracle:
+        // format('%q %s', 1, 2) === '%q 1 2').
         check("format_unknown_specifier_passthrough", function() {
             var s = util.format('%q %s', 1, 2);
-            if (s !== '%q 1') throw new Error('GOT:' + s);
+            if (s !== '%q 1 2') throw new Error('GOT:' + s);
             return true;
         });
         "#,

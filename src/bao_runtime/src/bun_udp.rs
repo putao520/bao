@@ -13,6 +13,7 @@ use ::std::ptr::{self, NonNull};
 use ::std::sync::atomic::{AtomicU64, Ordering};
 
 use bun_core::ZBox;
+use mozjs::glue::JS_GetReservedSlot;
 use mozjs::jsapi::*;
 use mozjs::jsval::{
     BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, PrivateValue, StringValue,
@@ -40,6 +41,37 @@ use bun_windows_sys::ws2_32::{
 // ──────────────────── ID counter ────────────────────
 
 static UDP_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+// ──────────────────── UDPSocket JSClass (BCE-20261025-FFI-SLOT-GATE) ────────────────────
+
+// Reserved-slot indices on UDP_SOCKET_CLASS. The UdpSocket / UdpUserData raw
+// pointers live ONLY in engine-private reserved slots: JS can neither read
+// nor write them. This retires the former `_socketPtr`/`_udPtr` own-property
+// carrier (attrs=0 writable+configurable own properties holding PrivateValue
+// — a page could assign any subnormal double, e.g. `s._socketPtr = 1e-320`,
+// whose bits pass the `(asBits & 0xFFFF000000000000) == 0` private-encoding
+// check and reach `to_private()` → wild `&*ptr` deref / arbitrary-address
+// `Box::from_raw`). A JS-visible carrier is unfixable at the bit level: any
+// x86-64 userland pointer (< 2^48) encodes to a double whose top 16 bits are
+// zero, and every such bit pattern is itself a JS-expressible double, so the
+// encoding check cannot discriminate engine-written from JS-written values.
+const SLOT_UDP_SOCKET_PTR: u32 = 0;
+const SLOT_UDP_UD_PTR: u32 = 1;
+
+/// Instance class of every UDPSocket object created by [`bun_udp_socket`].
+/// Two reserved slots (socket ptr + user-data ptr), no ops. `JS_NewObject`
+/// resolves the default proto for an op-less class to Object.prototype — the
+/// same proto `JS_NewPlainObject` gave — so the JS-visible surface is
+/// unchanged apart from the retired private properties.
+/// @trace REQ-BAO-API-017 [api:Bun.udpSocket]
+const UDP_SOCKET_CLASS: JSClass = JSClass {
+    name: c"UDPSocket".as_ptr(),
+    flags: (2 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: ::std::ptr::null(),
+    spec: ::std::ptr::null(),
+    ext: ::std::ptr::null(),
+    oOps: ::std::ptr::null(),
+};
 
 // ──────────────────── Event loop helper ────────────────────
 
@@ -178,12 +210,12 @@ unsafe fn parse_peer_addr(peer: &sockaddr_storage) -> Option<(String, u16)> {
 /// User data for Bun.udpSocket.
 /// @trace REQ-BAO-API-017 [api:Bun.udpSocket]
 #[allow(dead_code)]
-struct UdpUserData {
-    data_cb_key: Option<String>,
-    drain_cb_key: Option<String>,
-    close_cb_key: Option<String>,
-    error_cb_key: Option<String>,
-    cx: *mut JSContext,
+pub(crate) struct UdpUserData {
+    pub(crate) data_cb_key: Option<String>,
+    pub(crate) drain_cb_key: Option<String>,
+    pub(crate) close_cb_key: Option<String>,
+    pub(crate) error_cb_key: Option<String>,
+    pub(crate) cx: *mut JSContext,
     /// Promise to resolve with the UDPSocket object on successful creation.
     promise: *mut JSObject,
     /// Whether the promise has been settled (resolved or rejected).
@@ -467,8 +499,10 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     // Read actual bound port
     let bound_port = unsafe { (*udp_socket).bound_port() };
 
-    // Build JS UDPSocket object
-    rooted!(&in(cx_ref) let udp_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
+    // Build JS UDPSocket object — UDP_SOCKET_CLASS carries the two pointer
+    // reserved slots (BCE-20261025-FFI-SLOT-GATE; default proto stays
+    // Object.prototype, same as the retired JS_NewPlainObject shape)
+    rooted!(&in(cx_ref) let udp_obj = unsafe { w2::JS_NewObject(cx_ref, &UDP_SOCKET_CLASS) });
     if udp_obj.get().is_null() {
         unsafe {
             (*udp_socket).close();
@@ -483,18 +517,17 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     }
     let udp_h = udp_obj.handle().into();
 
-    // Store socket pointer as private value
+    // Store socket pointer in the engine-private reserved slot — JS can
+    // neither read nor write reserved slots (BCE-20261025-FFI-SLOT-GATE)
     let sock_val = PrivateValue(udp_socket as *const core::ffi::c_void);
-    rooted!(&in(cx_ref) let sv = sock_val);
     unsafe {
-        JS_DefineProperty(cx, udp_h, c"_socketPtr".as_ptr(), sv.handle().into(), 0);
+        JS_SetReservedSlot(udp_obj.get(), SLOT_UDP_SOCKET_PTR, &sock_val);
     }
 
-    // Store ud_ptr for cleanup
+    // Store ud_ptr for cleanup in the other reserved slot
     let ud_jsval = PrivateValue(ud_ptr as *const core::ffi::c_void);
-    rooted!(&in(cx_ref) let uv = ud_jsval);
     unsafe {
-        JS_DefineProperty(cx, udp_h, c"_udPtr".as_ptr(), uv.handle().into(), 0);
+        JS_SetReservedSlot(udp_obj.get(), SLOT_UDP_UD_PTR, &ud_jsval);
     }
 
     // Expose address info
@@ -785,41 +818,23 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                 (*socket_ptr).close();
             }
             let undef = UndefinedValue();
-            let undef_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &undef,
-            };
-            JS_SetProperty(cx, this_h, c"_socketPtr".as_ptr(), undef_h);
+            JS_SetReservedSlot(*this_h, SLOT_UDP_SOCKET_PTR, &undef);
         }
 
         // Clean up GcStore
-        cleanup_gc_key(cx, this_h, c"_dataCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_drainCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_closeCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_errorCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_dataCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_drainCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_closeCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_errorCbKey".as_ptr());
 
-        // Free user data
-        let mut ud_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_udPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ud_val,
-            },
-        );
-        if ud_val.is_double() && (ud_val.asBits_ & 0xFFFF000000000000) == 0 {
-            let ud_ptr = ud_val.to_private() as *mut UdpUserData;
-            if !ud_ptr.is_null() {
-                drop(Box::from_raw(ud_ptr));
-            }
+        // Free user data — class-gated reserved-slot read
+        // (BCE-20261025-FFI-SLOT-GATE): a foreign/forged receiver yields null
+        // and nothing is freed.
+        let ud_ptr = udp_slot_ptr(cx, this_h, SLOT_UDP_UD_PTR) as *mut UdpUserData;
+        if !ud_ptr.is_null() {
+            drop(Box::from_raw(ud_ptr));
             let undef = UndefinedValue();
-            let undef_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &undef,
-            };
-            JS_SetProperty(cx, this_h, c"_udPtr".as_ptr(), undef_h);
+            JS_SetReservedSlot(*this_h, SLOT_UDP_UD_PTR, &undef);
         }
 
         args.rval().set(UndefinedValue());
@@ -1476,79 +1491,98 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 
 // ──────────────────── Socket pointer / UD helpers ────────────────────
 
-/// Extract the UdpSocket pointer from a JS object's _socketPtr private property.
-/// @trace REQ-BAO-API-017 [api:Bun.udpSocket]
-unsafe fn get_socket_ptr(cx: *mut JSContext, obj_h: Handle<*mut JSObject>) -> *mut UdpSocket {
-    let mut sv = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj_h,
-        c"_socketPtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut sv,
-        },
-    );
-    if sv.is_double() && (sv.asBits_ & 0xFFFF000000000000) == 0 {
-        sv.to_private() as *mut UdpSocket
-    } else {
-        ::std::ptr::null_mut()
+/// Pure-boolean class gate that must run BEFORE any reserved-slot access on
+/// an object whose `this` can be foreign (BCE-20261025-FFI-SLOT-GATE class,
+/// same fix as bun_ffi `get_lib`/`get_callback` and node_url `sp_take_pairs`):
+/// `JS_GetReservedSlot` on a foreign class reads that object's fixed-slot
+/// area, where stale nursery-recycled bits pass the private-encoding /
+/// `is_object` checks and yield garbage pointers (`Box::from_raw` = free of
+/// an arbitrary address; `&*ptr` = wild deref). `JS_InstanceOf` with a null
+/// `CallArgs*` is a pure class-pointer comparison — it reports nothing and
+/// runs no user code, so the caller's own fallback stays the single behavior
+/// surface.
+/// @trace REQ-ENG-004
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn slot_gate(cx: *mut JSContext, obj: *mut JSObject, clasp: *const JSClass) -> bool {
+    unsafe {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let obj_root = obj);
+        w2::JS_InstanceOf(
+            &mut wrapped_cx,
+            obj_root.handle(),
+            clasp,
+            ::std::ptr::null_mut(),
+        )
     }
 }
 
-/// Get a shared reference to UdpUserData from a JS object's _udPtr private property.
+/// Raw pointer read out of a class-gated reserved slot. Returns null for any
+/// foreign-class receiver (proxies included — their class is the proxy class)
+/// or a cleared/undefined slot, so stale foreign bits never reach
+/// `to_private()`.
 /// @trace REQ-BAO-API-017 [api:Bun.udpSocket]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn udp_slot_ptr(
+    cx: *mut JSContext,
+    obj_h: Handle<*mut JSObject>,
+    slot: u32,
+) -> *mut ::std::os::raw::c_void {
+    unsafe {
+        if !slot_gate(cx, *obj_h, &UDP_SOCKET_CLASS) {
+            return ::std::ptr::null_mut();
+        }
+        let mut sv = UndefinedValue();
+        JS_GetReservedSlot(*obj_h, slot, &mut sv);
+        if sv.is_double() && (sv.asBits_ & 0xFFFF000000000000) == 0 {
+            sv.to_private() as *mut ::std::os::raw::c_void
+        } else {
+            ::std::ptr::null_mut()
+        }
+    }
+}
+
+/// Extract the UdpSocket pointer from the object's engine-private reserved
+/// slot (the retired `_socketPtr` own property was JS-forgeable —
+/// BCE-20261025-FFI-SLOT-GATE).
+/// @trace REQ-BAO-API-017 [api:Bun.udpSocket]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn get_socket_ptr(cx: *mut JSContext, obj_h: Handle<*mut JSObject>) -> *mut UdpSocket {
+    unsafe { udp_slot_ptr(cx, obj_h, SLOT_UDP_SOCKET_PTR) as *mut UdpSocket }
+}
+
+/// Get a shared reference to UdpUserData from the object's engine-private
+/// reserved slot.
+/// @trace REQ-BAO-API-017 [api:Bun.udpSocket]
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn get_udp_ud<'a>(
     cx: *mut JSContext,
     obj_h: Handle<*mut JSObject>,
 ) -> Option<&'a UdpUserData> {
-    let mut ud_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj_h,
-        c"_udPtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut ud_val,
-        },
-    );
-    if ud_val.is_double() && (ud_val.asBits_ & 0xFFFF000000000000) == 0 {
-        let ud_ptr = ud_val.to_private() as *mut UdpUserData;
+    unsafe {
+        let ud_ptr = udp_slot_ptr(cx, obj_h, SLOT_UDP_UD_PTR) as *mut UdpUserData;
         if !ud_ptr.is_null() {
             Some(&*ud_ptr)
         } else {
             None
         }
-    } else {
-        None
     }
 }
 
-/// Get a mutable reference to UdpUserData from a JS object's _udPtr private property.
+/// Get a mutable reference to UdpUserData from the object's engine-private
+/// reserved slot.
 /// @trace REQ-BAO-API-017 [api:Bun.udpSocket]
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn get_udp_ud_mut<'a>(
     cx: *mut JSContext,
     obj_h: Handle<*mut JSObject>,
 ) -> Option<&'a mut UdpUserData> {
-    let mut ud_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj_h,
-        c"_udPtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut ud_val,
-        },
-    );
-    if ud_val.is_double() && (ud_val.asBits_ & 0xFFFF000000000000) == 0 {
-        let ud_ptr = ud_val.to_private() as *mut UdpUserData;
+    unsafe {
+        let ud_ptr = udp_slot_ptr(cx, obj_h, SLOT_UDP_UD_PTR) as *mut UdpUserData;
         if !ud_ptr.is_null() {
             Some(&mut *ud_ptr)
         } else {
             None
         }
-    } else {
-        None
     }
 }
 

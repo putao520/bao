@@ -44,6 +44,12 @@ Options:
           Use throwaway storage for this run (upstream `--temporary-storage`; accepted for command-line parity â bao already keeps per-run state)
       --headless
           Headless mode (upstream `--headless`; bao is headless by default â accepted for command-line parity)
+      --expose-internals
+          Expose internal modules to `require()` (node parity `--expose-internals`). Accepted so node-convention subprocess vehicles start. Honest boundary: bao has no `internal/*` module namespace â `require('internal/...')` still fails MODULE_NOT_FOUND; this flag only unlocks the vehicle, it does not fake internals
+      --permission
+          Enable the permission model (node parity `--permission`). Installs the process-level `CliPermissionModel` whose only observer is the `process.permission.has` face (node v24 parity; REQ-ENG-007). Honest boundary: bao wires no child-process/wasi/... grant flags, so those scopes report no grants; fs enforcement itself (fs.* call denial) is not wired â the model is the observable allow list
+      --allow-fs-read <PATH>
+          Grant fs read access to PATH under the permission model (node parity `--allow-fs-read=<PATH>`, repeatable). Requires `--permission` (node ERR_MISSING_OPTION parity); `*` grants everything
   -v, --version
           Print the version and exit 0 (node/bun parity face: `node -v` / `bun -v` print the bare version string â no name prefix, no extra text)
   -h, --help

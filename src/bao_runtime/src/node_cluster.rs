@@ -498,9 +498,11 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // no signal delivery, so __cluster_worker_kill carries a directed
         // signal as TerminateProcess (observed by the exit poll as a plain
         // exit code, never as a signal). The shim reconstructs Node's
-        // SIGTERM-shaped (code -1, signal) exit event ONLY for deaths this
-        // runtime's own kill caused — gated on this flag so the posix path
-        // (real WIFSIGNALED shapes from __cp_poll_exit) stays byte-identical.
+        // (code null, 'SIGNAME') exit event ONLY for deaths this runtime's
+        // own kill caused — gated on this flag so the posix path (real
+        // WIFSIGNALED shapes from __cp_poll_exit, normalized from the
+        // internal wire pair at the pollWorkers outlet via
+        // cp.__cp_signal_name) stays untouched.
         let no_signals = cfg!(windows);
         rooted!(&in(cx) let no_signals_val = BooleanValue(no_signals));
         let _ = JS_DefineProperty(
@@ -1789,7 +1791,14 @@ const CLUSTER_JS: &str = r#"
       w.isDead = true;
       w.isConnected = false;
       w.exitedAfterDisconnect = !!w._disconnecting;
-      if (w.process) w.process.exitCode = (code === -1 && signal) ? null : code;
+      // @trace REQ-ENG-006 [api:node:cluster exit] — node oracle (v24.19.0,
+      // 2026-10-25 probe): code is already the normalized shape — null on a
+      // signal death, the number on a plain exit — mirrored verbatim onto
+      // the process object. pollWorkers normalizes the INTERNAL WIRE pair
+      // ([code, signum]; signal death = [-signum, signum]) into this shape
+      // at its handleExit call boundary (via cp.__cp_signal_name), so the
+      // -signal encoding never reaches this shim.
+      if (w.process) w.process.exitCode = code;
       delete cluster.workers[w.id];
       try { if (typeof w.__disconnectNative === 'function') w.__disconnectNative(); } catch (e) {}
       w.emit('exit', code, signal);
@@ -1806,8 +1815,9 @@ const CLUSTER_JS: &str = r#"
     // pid → last signal directed at it by worker.kill(). Windows only: the
     // kill native has no signal delivery (TerminateProcess), so the exit poll
     // observes a directed-kill death as a plain exit code — this record is
-    // how the death is reconstructed as Node's (code -1, signal) shape, and
-    // ONLY for deaths our own kill caused (a self-exit must stay a self-exit).
+    // how the death is reconstructed as Node's (code null, 'SIGTERM'-name)
+    // shape, and ONLY for deaths our own kill caused (a self-exit must stay
+    // a self-exit).
     var __directedKill = {};
     function pollWorkers() {
       var ids = Object.keys(cluster.workers);
@@ -1830,19 +1840,33 @@ const CLUSTER_JS: &str = r#"
           try {
             var ex = cp.__cp_poll_exit(w._pid);
             if (ex) {
-              // Windows kill-face semantics: __cluster_worker_kill terminates
-              // the process — the poll reports (terminationCode, 0). The
-              // native's fixed termination code is 1; the fingerprint check
-              // also accepts the directed signal number itself so a
-              // sig-passthrough termination code maps identically. Any other
-              // shape passes through untouched (the worker self-exited —
-              // reporting it as signal death would lie about the kill).
+              // ex is the INTERNAL WIRE pair [code, signum]: a real signal
+              // death is [-signum, signum] (no exit code), a plain exit
+              // [code, 0]. Normalize to the node oracle shape HERE — at the
+              // handleExit boundary (handleExit mirrors code onto
+              // w.process.exitCode and the 'exit' events verbatim). Windows
+              // kill-face semantics: __cluster_worker_kill terminates the
+              // process — the poll reports it as a plain exit (signum 0).
+              // The native's fixed termination code is 1; the fingerprint
+              // check also accepts the directed signal number itself so a
+              // sig-passthrough termination code maps identically. Any
+              // other shape passes through as a plain exit (the worker
+              // self-exited — reporting it as signal death would lie about
+              // the kill).
+              // @trace REQ-ENG-006 [api:node:cluster exit] — pollWorkers
+              // outlet normalization (wire → oracle at the handleExit
+              // boundary).
               var directed = cluster.__noSignals ? __directedKill[w._pid] : 0;
               if (directed && ex[1] === 0 && (ex[0] === 1 || ex[0] === directed)) {
                 delete __directedKill[w._pid];
-                handleExit(w, -1, directed);
+                handleExit(w, null, cp.__cp_signal_name(directed));
+              } else if (ex[1]) {
+                // posix real WIFSIGNALED death: wire code = -signum; a
+                // signal death has NO exit code (node oracle: null + the
+                // signal NAME string).
+                handleExit(w, null, cp.__cp_signal_name(ex[1]));
               } else {
-                handleExit(w, ex[0], ex[1]);
+                handleExit(w, ex[0], null);
               }
             }
           } catch (e) {

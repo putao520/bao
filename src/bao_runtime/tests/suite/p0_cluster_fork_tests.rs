@@ -82,7 +82,9 @@ if (cluster.isWorker) {
     // the disconnect-backstop kill's last verdict so a missing 'exit' can
     // be attributed from the final state dump.
     results.discKillOk = w._discKillOk === undefined ? null : w._discKillOk;
-    return results.exitCode !== null
+    // node v24 oracle (E39 normalization): a signal death reports
+    // exitCode=null + exitSignal=<name> — settle on either field being set.
+    return (results.exitCode !== null || results.exitSignal !== null)
       && results.msgs.some(function (m) { return m && m.type === 'pong'; });
   };
   var w = cluster.fork({ BAO_CLUSTER_PROBE_ENV: 'from-fork' });
@@ -179,8 +181,11 @@ if (cluster.isWorker) {
         "message roundtrip primary→worker→primary must complete: {}",
         final_state
     );
+    // node v24 oracle (E39): signal death → exitCode=null, exitSignal="SIGTERM".
     assert!(
-        final_state.contains("\"exitCode\":") && !final_state.contains("\"exitCode\":null"),
+        final_state.contains("\"exitSignal\":\"SIGTERM\"") || (
+            final_state.contains("\"exitCode\":") && !final_state.contains("\"exitCode\":null")
+        ),
         "worker 'exit' event must fire with the exit status: {}",
         final_state
     );

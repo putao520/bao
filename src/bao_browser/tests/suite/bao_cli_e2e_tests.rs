@@ -342,33 +342,40 @@ fn bao_cli_e2e_full_lifecycle() {
 fn bao_cli_browser_subcommand_starts() {
     let bao = bao_path();
 
-    // Act: 启动 bao browser,绑一个空闲端口
-    let port = pick_free_port();
-    let mut cmd = Command::new(&bao);
-    cmd.args(["browser", "--headless", "--cdp-port", &port.to_string()])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    // Act: 启动 bao browser,绑一个空闲端口。E26 ledger class A(probe-release
+    // rebind 窗口):probe drop 与子进程 CDP bind 之间,并行套件进程可抢占该
+    // 端口——每个 attempt 用新鲜 probe 端口重试;子进程已退出(bind 失败)或
+    // 端口连不通都判输该 attempt。probe 失败本身 loud panic(原
+    // `.unwrap_or(9922)` 固定端口静默兜底已删)。
+    let mut bound = None;
+    for _ in 0..common::port_probe::PROBE_REBIND_RETRIES {
+        let port = common::port_probe::probe_free_tcp_port();
+        let mut cmd = Command::new(&bao);
+        cmd.args(["browser", "--headless", "--cdp-port", &port.to_string()])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
-    // e204 reaping discipline: process-group spawn + PDEATHSIG + reap-on-drop
-    // (see common::GroupChild) — the assert below must not leak the engine.
-    let mut child = common::GroupChild::spawn(&mut cmd).expect("spawn bao browser");
+        // e204 reaping discipline: process-group spawn + PDEATHSIG + reap-on-drop
+        // (see common::GroupChild) — 重试环同样不得泄漏引擎进程。
+        let mut child = common::GroupChild::spawn(&mut cmd).expect("spawn bao browser");
 
-    // 给 servo + CDP server 最多 5 秒初始化
-    std::thread::sleep(Duration::from_secs(5));
+        // 给 servo + CDP server 最多 5 秒初始化
+        std::thread::sleep(Duration::from_secs(5));
 
-    // Assert: 端口可连(CDP server 已起)
-    let connected = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok();
+        // Assert(候选): 端口可连且连的是本子进程——子进程若已退出,端口属于
+        // 抢占者,连上也不算赢(赢了 rebind 竞争的判据 = connected + child 存活)。
+        let connected = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok();
+        let child_alive = child.try_wait().map_or(true, |status| status.is_none());
 
-    // 清理:e204 组级收割——断言之前先杀组+收割,断言失败不得泄漏引擎进程
-    child.kill_group();
+        // 清理:e204 组级收割——每个 attempt 都收割,重试不得泄漏引擎进程
+        child.kill_group();
 
-    assert!(connected, "bao browser --cdp-port {} must listen", port);
-}
-
-fn pick_free_port() -> u16 {
-    // OS-assigned free port
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .unwrap_or(9922)
+        if connected && child_alive {
+            bound = Some(port);
+            break;
+        }
+    }
+    // Assert: 赢得 rebind 竞争的 attempt 才算通过(budget 耗尽 = fail-closed)
+    bound
+        .expect("bao browser --cdp-port must listen on a freshly probed port within the retry budget");
 }

@@ -724,11 +724,9 @@ unsafe fn reject_promise_type_error(
             let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
             if !msg_js.is_null() {
                 rooted!(&in(cx_ref) let msg_root = StringValue(&*msg_js));
-                let elems = [msg_root.get()];
-                let call_args = HandleValueArray {
-                    length_: 1,
-                    elements_: elems.as_ptr(),
-                };
+                rooted!(&in(cx_ref) let call_args_rooted =
+                    mozjs_sys::jsgc::ValueArray::<1>::new([msg_root.get()]));
+                let call_args = JS::HandleValueArray::from(&call_args_rooted);
                 rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
                 let mut err_val = UndefinedValue();
                 let called = JS_CallFunctionValue(
@@ -920,18 +918,15 @@ unsafe fn handle_data_url_fetch(cx: *mut JSContext, args: &CallArgs, method: &st
         );
     }
 
-    let elems = [
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
         if method_upper == "HEAD" {
             UndefinedValue()
         } else {
             ObjectValue(body_arr.get())
         },
         ObjectValue(init_obj.get()),
-    ];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: elems.as_ptr(),
-    };
+    ]));
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
     rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
     let mut resp_val = UndefinedValue();
     let called = JS_CallFunctionValue(
@@ -1058,11 +1053,11 @@ unsafe fn register_abort_listener(cx: *mut JSContext, signal_val: JSVal, abort_i
         }
         rooted!(&in(cx_ref) let type_val = StringValue(&*type_js));
         rooted!(&in(cx_ref) let listener_val = ObjectValue(listener.get()));
-        let call_args_arr = [type_val.get(), listener_val.get()];
-        let call_args = HandleValueArray {
-            length_: call_args_arr.len(),
-            elements_: call_args_arr.as_ptr(),
-        };
+        rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+            type_val.get(),
+            listener_val.get(),
+        ]));
+        let call_args = JS::HandleValueArray::from(&call_args_rooted);
         let mut rval = UndefinedValue();
         let added = JS_CallFunctionName(
             cx,

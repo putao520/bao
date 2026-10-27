@@ -408,14 +408,11 @@
         <p>
           集成 servo crate 作为浏览器引擎核心，实现 ServoDelegate + WebViewDelegate trait，使用 SoftwareRenderingContext
           CPU 无头渲染。
-        </p>
+        </p><div data-criterion="ServoDelegate trait 实现完整（notify_error / show_console_message）；load_web_resource 归属 WebViewDelegate 面（webview_delegate.rs:541，2026-10-26 核验实证归属）" data-criterion-id="REQ-BRW-001-AC01">ServoDelegate trait 实现完整（notify_error / show_console_message）；load_web_resource 归属 WebViewDelegate 面（webview_delegate.rs:541，2026-10-26 核验实证归属）</div>
         <h4>验收标准</h4>
         <ul>
           <li id="libservo-以单进程模式运行（servobuilder-+-opts.multiprocess=false）" data-criterion="libservo 以单进程模式运行（ServoBuilder + opts.multiprocess=false）" data-criterion-id="REQ-BRW-001-C1">
             libservo 以单进程模式运行（ServoBuilder + opts.multiprocess=false）
-          </li>
-          <li id="servodelegate-trait-实现完整（notify-error-/-show-console-message-/-load-web-resource）" data-criterion="ServoDelegate trait 实现完整（notify_error / show_console_message / load_web_resource）" data-criterion-id="REQ-BRW-001-C2">
-            ServoDelegate trait 实现完整（notify_error / show_console_message / load_web_resource）
           </li>
           <li id="webviewdelegate-trait-实现完整（screen-geometry-/-notify-url-changed-/-notify-load-status-changed-/-notify-new-frame-ready）" data-criterion="WebViewDelegate trait 实现完整（screen_geometry / notify_url_changed / notify_load_status_changed / notify_new_frame_ready）" data-criterion-id="REQ-BRW-001-C3">
             WebViewDelegate trait 实现完整（screen_geometry / notify_url_changed / notify_load_status_changed /
@@ -967,25 +964,10 @@
 
       <div id="req-stl-001" data-req="REQ-STL-001" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="TlsProfile,StealthProfile" data-req-api="POST /stealth/tls" data-groundedin="PRD-REQ-STEALTH-NET">
         <h3>REQ-STL-001: TLS 指纹模拟</h3>
-        <p>通过 rustls cipher suite + extension 顺序配置模拟 Firefox 的 JA3/JA4 TLS 指纹。</p>
+        <p>通过 BoringSSL cipher/curves/sigalgs + extension 顺序配置下发 seed 派生的随机化 JA3/JA4 TLS 指纹（from_seed 单种子派生+连贯性桶；2026-10-21 用户裁决立法：反指纹=随机指纹，默认 context=进程级随机身份，禁以固定 profile 行为确定性反收敛于系统库）。wire 栈=BoringSSL（REQ-PURE-001 换底，原 rustls 表述废止）。</p><div data-criterion="TLS ClientHello 的 JA3 哈希由 seed 确定性派生:同 seed 同指纹(连贯性桶内稳定),异 seed 异指纹,取值落在真实浏览器指纹空间内" data-criterion-id="REQ-STL-001-AC01">TLS ClientHello 的 JA3 哈希由 seed 确定性派生:同 seed 同指纹(连贯性桶内稳定),异 seed 异指纹,取值落在真实浏览器指纹空间内</div><div data-criterion="TLS ClientHello 的 JA4 哈希由同一 seed 派生路径产出,与 JA3 保持同一指纹身份" data-criterion-id="REQ-STL-001-AC02">TLS ClientHello 的 JA4 哈希由同一 seed 派生路径产出,与 JA3 保持同一指纹身份</div><div data-criterion="密码套件顺序由派生表生成并完整下发 wire(顺序保持不重排)" data-criterion-id="REQ-STL-001-AC03">密码套件顺序由派生表生成并完整下发 wire(顺序保持不重排)</div><div data-criterion="扩展顺序由派生表生成并完整下发 wire(顺序保持不重排)" data-criterion-id="REQ-STL-001-AC04">扩展顺序由派生表生成并完整下发 wire(顺序保持不重排)</div><div data-criterion="TLS 握手成功建立连接" data-criterion-id="REQ-STL-001-AC05">TLS 握手成功建立连接</div>
         <h4>验收标准</h4>
         <ul>
-          <li id="tls-clienthello-的-ja3-哈希匹配目标-firefox-版本" data-criterion="TLS ClientHello 的 JA3 哈希匹配目标 Firefox 版本" data-criterion-id="REQ-STL-001-C1">
-            TLS ClientHello 的 JA3 哈希匹配目标 Firefox 版本
-          </li>
-          <li id="tls-clienthello-的-ja4-哈希匹配目标-firefox-版本" data-criterion="TLS ClientHello 的 JA4 哈希匹配目标 Firefox 版本" data-criterion-id="REQ-STL-001-C2">
-            TLS ClientHello 的 JA4 哈希匹配目标 Firefox 版本
-          </li>
-          <li id="密码套件顺序与-firefox-一致" data-criterion="密码套件顺序与 Firefox 一致" data-criterion-id="REQ-STL-001-C3">
-            密码套件顺序与 Firefox 一致
-          </li>
-          <li id="扩展顺序与-firefox-一致" data-criterion="扩展顺序与 Firefox 一致" data-criterion-id="REQ-STL-001-C4">
-            扩展顺序与 Firefox 一致
-          </li>
-          <li id="tls-握手成功建立连接" data-criterion="TLS 握手成功建立连接" data-criterion-id="REQ-STL-001-C5">
-            TLS 握手成功建立连接
-          </li>
-        </ul>
+          </ul>
 
         <p data-xref-type="req" data-xref-id="REQ-STL-001">关联实体: <a data-xref-type="entity" data-xref-id="tlsprofile" href="./04-DATA-MODEL#tlsprofile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-1"></span></p>
@@ -1002,22 +984,10 @@
 
       <div id="req-stl-002" data-req="REQ-STL-002" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="StealthProfile" data-req-api="POST /stealth/http2" data-groundedin="PRD-REQ-STEALTH-NET">
         <h3>REQ-STL-002: HTTP/2 指纹匹配</h3>
-        <p>通过 hyper 配置调优，使 HTTP/2 SETTINGS 帧参数匹配 Firefox。</p>
+        <p>通过 H2 fingerprint 载体（stealth_wire.rs + per-WebViewId 注册表，vendor connector STEALTH_H2_BY_WEBVIEW）下发 seed 派生的随机化 HTTP/2 SETTINGS/WINDOW_UPDATE/PRIORITY/伪头序参数（2026-10-21 用户裁决立法：反指纹=随机指纹；原 hyper 配置调优+Firefox 固定对齐表述废止）。</p><div data-criterion="HTTP/2 SETTINGS 帧参数由 seed 派生下发(落在真实浏览器参数空间)" data-criterion-id="REQ-STL-002-AC01">HTTP/2 SETTINGS 帧参数由 seed 派生下发(落在真实浏览器参数空间)</div><div data-criterion="HTTP/2 WINDOW_UPDATE 帧大小由 seed 派生下发" data-criterion-id="REQ-STL-002-AC02">HTTP/2 WINDOW_UPDATE 帧大小由 seed 派生下发</div><div data-criterion="HTTP/2 PRIORITY 帧模式由 seed 派生下发" data-criterion-id="REQ-STL-002-AC03">HTTP/2 PRIORITY 帧模式由 seed 派生下发</div><div data-criterion="HTTP/2 伪头部顺序由 seed 派生下发(顺序保持不重排)" data-criterion-id="REQ-STL-002-AC04">HTTP/2 伪头部顺序由 seed 派生下发(顺序保持不重排)</div>
         <h4>验收标准</h4>
         <ul>
-          <li id="http/2-settings-帧参数与-firefox-一致" data-criterion="HTTP/2 SETTINGS 帧参数与 Firefox 一致" data-criterion-id="REQ-STL-002-C1">
-            HTTP/2 SETTINGS 帧参数与 Firefox 一致
-          </li>
-          <li id="http/2-window-update-帧大小与-firefox-一致" data-criterion="HTTP/2 WINDOW_UPDATE 帧大小与 Firefox 一致" data-criterion-id="REQ-STL-002-C2">
-            HTTP/2 WINDOW_UPDATE 帧大小与 Firefox 一致
-          </li>
-          <li id="http/2-priority-帧模式与-firefox-一致" data-criterion="HTTP/2 PRIORITY 帧模式与 Firefox 一致" data-criterion-id="REQ-STL-002-C3">
-            HTTP/2 PRIORITY 帧模式与 Firefox 一致
-          </li>
-          <li id="http/2-伪头部顺序与-firefox-一致" data-criterion="HTTP/2 伪头部顺序与 Firefox 一致" data-criterion-id="REQ-STL-002-C4">
-            HTTP/2 伪头部顺序与 Firefox 一致
-          </li>
-        </ul>
+          </ul>
 
         <p data-xref-type="req" data-xref-id="REQ-STL-002">关联实体: <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-2"></span></p>
@@ -1025,7 +995,6 @@
           <strong>验收标准（客观可验证）：</strong>
           <ol>
             <li>cargo test -p bao_stealth --test http2_fingerprint_deep_tests 通过</li>
-            <li>HTTP/2 SETTINGS 帧参数匹配 Firefox 测试通过</li>
             <li>HTTP/2 WINDOW_UPDATE/PRIORITY 帧测试通过</li>
             <li>HTTP/2 伪头部顺序测试通过</li>
             <li>cargo test -p bao_stealth --test navigator_screen_http2_profile_deep_tests 通过</li>
@@ -2145,7 +2114,25 @@
             <li>codeGeneration 选项可禁用 eval/function 编译</li>
           </ol>
         </div>
+      </div><div id="req-web-001" data-req="REQ-WEB-001" data-req-status="implemented" data-req-domain="WEB" data-req-category="business" data-groundedin="PRD-REQ-BUN-COMPAT">
+        <h3>REQ-WEB-001: Web API 基础接口(EventTarget/Blob/BlobURL)</h3>
+        <p>
+          浏览器运行时 JS 全局的 WHATWG Web API 基础面:EventTarget/Event/CustomEvent 事件接口、Blob 二进制大对象、URL.createObjectURL/revokeObjectURL 对象 URL 注册表。与页面 realm(servo 原生)共存,Node/bun realm 经 install_all 安装(globals.rs 对应安装面)。覆盖 globals.rs 三 face 的 @trace 归属(2026-10-26 E52 呈报派生链缺口清偿)。
+        </p>
+        <h4>验收标准</h4>
+        <ul>
+          <li id="eventtarget-基础-dom-接口全局可用" data-criterion="EventTarget 基础 DOM 接口全局可用(addEventListener/removeEventListener/dispatchEvent),Event/CustomEvent 构造器与 detail 贯通" data-criterion-id="REQ-WEB-001-C1">
+            EventTarget 基础 DOM 接口全局可用(addEventListener/removeEventListener/dispatchEvent),Event/CustomEvent 构造器与 detail 贯通
+          </li>
+          <li id="blob-全局构造器可用" data-criterion="Blob 全局构造器可用(size/type 属性,arrayBuffer/text/slice/stream 方法),Blob 内容字节语义与 WHATWG 一致" data-criterion-id="REQ-WEB-001-C2">
+            Blob 全局构造器可用(size/type 属性,arrayBuffer/text/slice/stream 方法),Blob 内容字节语义与 WHATWG 一致
+          </li>
+          <li id="url-createobjecturlblob-返回可-fetch-解析的-blob-url" data-criterion="URL.createObjectURL(blob) 返回可 fetch/解析的 blob: URL,revokeObjectURL 撤销后不可再访问,生命周期与 realm 绑定" data-criterion-id="REQ-WEB-001-C3">
+            URL.createObjectURL(blob) 返回可 fetch/解析的 blob: URL,revokeObjectURL 撤销后不可再访问,生命周期与 realm 绑定
+          </li>
+        </ul>
       </div>
+
       <section id="bug-eng-367" data-bug="BUG-ENG-367" data-bug-status="resolved" data-bug-severity="critical" data-bug-type="regression" data-bug-domain="ENG" data-bug-reporter="architect" data-bug-fix-commit="BCE-007-R4+BCE-20260619-010 (fetch_api.rs/fetch_async.rs/timers.rs FetchTasklet event-driven 范式落地)" data-bug-resolved="2026-06-19" data-bug-root-cause="待补充" data-bug-req-ref="REQ-ENG-010">
         <h3>
           BUG-ENG-367: BUG-ENG-367: JS native fetch/http/https/tls API 双重基础设施缺陷(spawn_worker 未迁移 +

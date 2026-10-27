@@ -878,10 +878,12 @@ unsafe fn ws_trigger_event(
                     );
                 }
                 let ev_val = ObjectValue(event_obj.get());
-                let call_args = HandleValueArray {
-                    length_: 1,
-                    elements_: &ev_val,
-                };
+                // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED
+                // ValueArray — `&ev_val` was a bare stack copy invisible to
+                // GC (require.rs canary-pinned form).
+                rooted!(&in(cx_ref) let args_array =
+                    mozjs_sys::jsgc::ValueArray::<1>::new([ev_val]));
+                let call_args = JS::HandleValueArray::from(&args_array);
                 let mut rval = UndefinedValue();
                 let ok = JS_CallFunctionValue(
                     cx,
@@ -3690,11 +3692,11 @@ unsafe fn subtle_reject(cx: *mut JSContext, promise: *mut JSObject, msg: &str) {
         let mut err = UndefinedValue();
         if !msg_js.is_null() {
             rooted!(&in(cx_ref) let mv = StringValue(&*msg_js));
-            let elems = [*mv.handle()];
-            let call_args = HandleValueArray {
-                length_: 1,
-                elements_: elems.as_ptr(),
-            };
+            // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray
+            // across JS_CallFunctionValue (require.rs canary-pinned form).
+            rooted!(&in(cx_ref) let args_array =
+                mozjs_sys::jsgc::ValueArray::<1>::new([*mv.handle()]));
+            let call_args = JS::HandleValueArray::from(&args_array);
             let mut type_error_fn = UndefinedValue();
             JS_GetProperty(
                 cx,

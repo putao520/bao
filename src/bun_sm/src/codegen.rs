@@ -325,6 +325,9 @@ pub fn generate_bindings(class_def: &ClassDef) -> GeneratedBindings {
             r#"unsafe extern "C" fn {class_name}_finalize(gcx: *mut GCContext, obj: *mut JSObject) {{
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj, 0, &mut slot);
+    // No class gate here (BCE-20261025-FFI-SLOT-GATE judgment): a JSClassOps
+    // finalizer is invoked by the GC only on objects of this exact class —
+    // the receiver class is guaranteed by construction.
     // @trace BCE-20260618-002 — guard non-private doubles before to_private().
     // A subclass whose constructor never stored a pointer leaves slot 0
     // undefined; to_private() on undefined asserts is_double() → panic

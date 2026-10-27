@@ -33,7 +33,7 @@ fn js_escape(p: &std::path::Path) -> String {
 fn fs_rmdir_recursive_routes_through_rm() {
     let mut ctx = setup_ctx();
 
-    let base = ::std::env::temp_dir().join("bao_upstream_rmdir_recursive");
+    let base = ::std::env::temp_dir().join(format!("bao_upstream_rmdir_recursive_{}", ::std::process::id()));
     let _ = ::std::fs::remove_dir_all(&base);
     ::std::fs::create_dir_all(&base).unwrap();
 

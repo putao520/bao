@@ -75,7 +75,7 @@ fn fs_readsync_fd_roundtrip() {
 #[test]
 fn fs_glob_cwd_and_dot() {
     let mut ctx = make_ctx();
-    let dir = ::std::env::temp_dir().join("bao_wave_glob");
+    let dir = ::std::env::temp_dir().join(format!("bao_wave_glob_{}", ::std::process::id()));
     let _ = ::std::fs::remove_dir_all(&dir);
     ::std::fs::create_dir_all(dir.join("a/b")).unwrap();
     ::std::fs::write(dir.join("a/b/x.ts"), b"1").unwrap();
@@ -88,9 +88,21 @@ fn fs_glob_cwd_and_dot() {
         check('cwd-honored', function() {{
             return ts.length === 1 && ts[0] === 'a/b/x.ts';
         }});
+        // node v24.19.0 oracle (2026-10-27, /tmp/bao-oracle-c1/gw2 probe):
+        // `**/*` with dot:true does NOT match a TOP-LEVEL dotfile ("*" never
+        // crosses a dotfile boundary — even with dot:true; a dotfile is
+        // matched by a pattern segment that itself begins with '.', e.g.
+        // '.*' → ['.hidden.ts']). The former pin ("dot-includes-hidden")
+        // asserted bun-glob's dot semantics, not node's.
         var all = fs.globSync('**/*', {{ cwd: "{p}", dot: true }});
         check('dot-includes-hidden', function() {{
-            return all.indexOf('.hidden.ts') !== -1 && all.indexOf('a/b/y.txt') !== -1;
+            return all.indexOf('.hidden.ts') === -1 && all.indexOf('a/b/y.txt') !== -1;
+        }});
+        // The explicit dotfile pattern face: '.*' matches the top-level
+        // dotfile (dot-independent — a literal dot prefix overrides).
+        var dotted = fs.globSync('.*', {{ cwd: "{p}" }});
+        check('dot-pattern-matches-hidden', function() {{
+            return dotted.indexOf('.hidden.ts') !== -1;
         }});
         var nodot = fs.globSync('**/*.ts', {{ cwd: "{p}", dot: false }});
         check('nodot-excludes-hidden', function() {{ return nodot.length === 1; }});

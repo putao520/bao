@@ -202,10 +202,28 @@ fs.watchFile("{f}", {{ interval: 60 }}, function (curr, prev) {{
   __deltas.push(prev.size + '->' + curr.size);
 }});
 setTimeout(function () {{ fs.writeFileSync("{f}", "0123456789ABC"); }}, 120);
-// Deadline gate = the expected delta itself: a stat poll landing mid-write
-// can deliver "10->0" first, so a count gate (>= 1) would race the 10->13
-// assertion under load.
-globalThis.__done = function () {{ return __deltas.indexOf('10->13') !== -1; }};
+// Deadline gate = the delivered delta CHAIN, not one specific hop pair. The
+// poller snapshots `last` at registration (pre-write size 10) and updates it
+// on every delivery, so successive deltas chain (prev[i+1] === curr[i]).
+// writeFileSync is NOT atomic w.r.t. the poller thread: the O_TRUNC open
+// truncates first, and a poll landing in the truncate→write window
+// legitimately delivers a 0-size hop — the e15 fleet run observed exactly
+// ["10->0","0->13"] and starved the old single-delta gate ('10->13' never
+// in the list). The real before/after contract: first prev = 10 (pre-write
+// snapshot), last curr = 13 (post-write), chain consistent.
+globalThis.__done = function () {{
+  if (__deltas.length === 0) {{ return false; }}
+  var first = __deltas[0];
+  var last = __deltas[__deltas.length - 1];
+  if (first.indexOf('10->') !== 0) {{ return false; }}
+  if (last.lastIndexOf('->13') !== last.length - 4) {{ return false; }}
+  for (var i = 1; i < __deltas.length; i++) {{
+    var hop = __deltas[i - 1].split('->');
+    var next = __deltas[i].split('->');
+    if (hop.length !== 2 || next.length !== 2 || hop[1] !== next[0]) {{ return false; }}
+  }}
+  return true;
+}};
 'ok'
 "#,
         f = f
@@ -220,12 +238,58 @@ globalThis.__done = function () {{ return __deltas.indexOf('10->13') !== -1; }};
     let deltas = eval_string(&mut ctx, "JSON.stringify(globalThis.__deltas)");
     let _ = eval_string(&mut ctx, &format!("fs.unwatchFile('{}')", f));
     assert!(
-        got && deltas.contains("10->13"),
-        "watchFile must deliver prev.size=10 -> curr.size=13, got: {}",
+        got && stat_delta_chain_ok(&deltas),
+        "watchFile must deliver the rewrite stat chain (first prev=10, last \
+         curr=13, prev[i+1]==curr[i]; a poll landing in the O_TRUNC window \
+         legitimately adds 0-size hops), got: {}",
         deltas
     );
     let _ = std::fs::remove_dir_all(&dir);
     bun_runtime::shutdown_thread_sm();
+}
+
+/// Rust-side mirror of the JS chain gate (the assertion's source of truth):
+/// deltas like ["10->0","0->13"] — first prev=10, last curr=13, and every
+/// hop's curr equals the next hop's prev (the poller's `last` updates on
+/// every delivery). Accepts the direct "10->13" single hop as the trivial
+/// chain.
+fn stat_delta_chain_ok(deltas_json: &str) -> bool {
+    let parse = |d: &str| -> Option<(u64, u64)> {
+        let (a, b) = d.split_once("->")?;
+        Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+    };
+    let inner = deltas_json.trim().trim_start_matches('[').trim_end_matches(']');
+    if inner.trim().is_empty() {
+        return false;
+    }
+    let items: Vec<String> = inner
+        .split("\",\"")
+        .map(|s| s.trim_matches('"').trim().to_string())
+        .collect();
+    if items.is_empty() {
+        return false;
+    }
+    let Some((first_prev, _)) = parse(&items[0]) else {
+        return false;
+    };
+    let Some((_, last_curr)) = parse(&items[items.len() - 1]) else {
+        return false;
+    };
+    if first_prev != 10 || last_curr != 13 {
+        return false;
+    }
+    for pair in items.windows(2) {
+        let Some((_, curr)) = parse(&pair[0]) else {
+            return false;
+        };
+        let Some((prev, _)) = parse(&pair[1]) else {
+            return false;
+        };
+        if curr != prev {
+            return false;
+        }
+    }
+    true
 }
 
 /// w.close() must stop delivery: events after close never reach the listener.

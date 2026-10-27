@@ -92,8 +92,14 @@ enum CpEvent {
     Stdout(Vec<u8>),
     /// A chunk read from the child's stderr pipe, in stream order.
     Stderr(Vec<u8>),
-    /// Terminal status `(exit_code, signal)` — same encoding the old
-    /// `exit_info` field carried (signal deaths → code = -signal).
+    /// Terminal status `(exit_code, signal)` — the INTERNAL wire encoding
+    /// (signal deaths → code = -signal, signal = signum; 0 = plain exit).
+    /// Lossless transport only: every JS-facing producer renders the tuple
+    /// through [`normalize_exit_info`] into the node oracle shape
+    /// (`[null, "SIGTERM"]` / `[code, null]`) — the -signal encoding itself
+    /// must never surface to JS (E28: bao used to pass it through verbatim,
+    /// reporting `exit(-15, 15)` where node v24.19.0 delivers
+    /// `exit(null, "SIGTERM")`).
     Exit(i32, i32),
 }
 
@@ -1101,6 +1107,32 @@ pub(crate) fn has_live_async_children() -> bool {
         .unwrap_or(false)
 }
 
+/// @trace REQ-ENG-004 — process.getActiveResourcesInfo read face: live async
+/// child count, using the SAME "live = no Exit event pumped yet" predicate as
+/// `has_live_async_children` (pump-then-check, counted instead of folded).
+/// One "ProcessWrap" per live child — node v24 oracle: spawn → 1 ProcessWrap
+/// (the uv process handle closes at exit, so exited-but-unreaped children do
+/// not count). Global registry, thread-safe.
+pub fn active_child_process_count() -> usize {
+    CP_ASYNC_STATES
+        .lock()
+        .map(|registry| {
+            registry
+                .values()
+                .filter(|state| {
+                    state
+                        .lock()
+                        .map(|mut s| {
+                            cp_pump_rx(&mut s);
+                            !s.exit_seen
+                        })
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 /// Windows: fetch the intrusive `*mut Process` registered for a pid (the
 /// cluster kill face calls uv_process_kill through it).
 #[cfg(windows)]
@@ -1191,6 +1223,9 @@ pub(crate) fn register_async_child(
 /// the child was reaped AND its pipes fully drained (drain-before-publish —
 /// see `CpDrainState::try_push_exit`). `None` while running. Cross-module
 /// read for Bun.spawn's `_pollExitInfo` native and `proc.wait()`.
+///
+/// The tuple is the INTERNAL wire encoding (signal deaths → code = -signal);
+/// consumers render it through [`normalize_exit_info`] before it reaches JS.
 ///
 /// Reads the sticky `exit_payload`, not the take-slot: this face is
 /// documented repeatable (Bun.spawn's `_pollExitInfo` is polled), so the
@@ -1497,14 +1532,16 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             1,
             JSPROP_ENUMERATE as u32,
         );
-        w2::JS_DefineFunction(
-            cx,
-            mod_obj.handle(),
-            c"exec".as_ptr(),
-            Some(cp_exec),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
+        // `exec` is NOT a native: node v24 semantics are async (spawn the shell,
+        // return the ChildProcess immediately, fire the callback at 'close'), and
+        // the async lifecycle (pipes / drain / exit poll / kill) already lives in
+        // cp_spawn + the CP_JS ChildProcess shim. The old native ran
+        // spawn_sync::spawn INLINE on the JS thread — a blocked shell (fifo
+        // writer with no reader) froze the whole loop, and a SIGTERM forwarded to
+        // the sync child surfaced as a spurious "Command failed" (node keeps the
+        // writer alive and the callback pending). The JS face is installed in
+        // CP_JS below, on top of the wrapped async spawn.
+        // @trace REQ-ENG-007 [api:child_process.exec]
         w2::JS_DefineFunction(
             cx,
             mod_obj.handle(),
@@ -1572,6 +1609,19 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             mod_obj.handle(),
             c"__cp_peek_exit".as_ptr(),
             Some(cp_peek_exit),
+            1,
+            0,
+        );
+        // Internal: signal NUMBER → node NAME string ("SIGTERM"; unknown →
+        // "SIG<n>"). The JS exit-outlet normalization faces (the shim's emit
+        // poll and cluster's handleExit boundary) bridge the wire signum to
+        // the oracle name through this — one name table authority
+        // (cp_signal_name) for the Rust sync faces and the JS outlets both.
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"__cp_signal_name".as_ptr(),
+            Some(cp_signal_name_js),
             1,
             0,
         );
@@ -1736,6 +1786,61 @@ unsafe fn js_str_array_prop(
             }
         }
         result
+    }
+}
+
+/// @trace REQ-ENG-007 [api:child_process spawn env] — read the spawn options
+/// object's `env` property into "KEY=VALUE" byte entries (one per own
+/// enumerable string-keyed property). `None` = option absent / undefined /
+/// non-object → the caller inherits the parent environ (uniform with the
+/// parse face's tolerant cwd handling; node throws ERR_INVALID_ARG_TYPE for a
+/// non-object env, a shape no real caller passes). Value coercion mirrors the
+/// established cluster.fork(env) walk: string kept, int32/bool stringified,
+/// everything else skipped.
+unsafe fn js_env_entries(
+    cx: *mut JSContext,
+    obj_h: Handle<*mut JSObject>,
+) -> Option<Vec<Box<[u8]>>> {
+    unsafe {
+        let mut env_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj_h,
+            c"env".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut env_val,
+            },
+        );
+        if !env_val.is_object() {
+            return None;
+        }
+        let env_obj = env_val.to_object();
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let env_r = env_obj);
+        let mut entries: Vec<Box<[u8]>> = Vec::new();
+        crate::for_each_string_property(cx, env_r.handle().into(), |key, _id, v_val, got| {
+            if !got {
+                return;
+            }
+            let val_str = if v_val.is_string() {
+                Some(crate::js_to_rust_string(cx, v_val))
+            } else if v_val.is_int32() {
+                Some(v_val.to_int32().to_string())
+            } else if v_val.is_boolean() {
+                Some(if v_val.to_boolean() {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                })
+            } else {
+                None
+            };
+            if let Some(v) = val_str {
+                entries.push(format!("{}={}", key, v).into_bytes().into_boxed_slice());
+            }
+        });
+        Some(entries)
     }
 }
 
@@ -1962,6 +2067,12 @@ unsafe fn build_sync_opts_from_js(
 }
 
 /// Extract exit code from bun_spawn::Status.
+/// INTERNAL wire value for a bun_spawn Status: the exit code, with signal
+/// deaths encoded as `-signal` (the module exit-wire contract). INTERNAL
+/// ONLY — every JS-facing property renders through the oracle boundary
+/// ([`normalize_exit_info`] / [`cp_sync_status_value`]): a signal death has
+/// NO exit code (node renders null) and the signal travels as the NAME
+/// string ([`cp_signal_jsval`]).
 pub fn status_to_exit_code(status: &Status) -> i32 {
     match status {
         Status::Exited(Exited { code, signal: 0 }) => *code as i32,
@@ -2280,7 +2391,7 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     rooted!(&in(cx_ref) let opts_obj_r = opts_obj.unwrap_or_else(|| ::std::ptr::null_mut::<JSObject>()));
 
     // Parse command and args from JS arguments.
-    let (cmd, cmd_args, cwd, pipe_stdout, pipe_stderr, pipe_stdin, wants_ipc) =
+    let (cmd, cmd_args, cwd, pipe_stdout, pipe_stderr, pipe_stdin, wants_ipc, env_opt) =
         if let Some(ref cmd) = cmd_str {
             let mut a: Vec<String> = Vec::new();
             let mut c = None;
@@ -2288,6 +2399,7 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             let mut pe = true;
             let mut pi = false;
             let mut ipc = false;
+            let mut env_opt: Option<Vec<Box<[u8]>>> = None;
             // Options resolution (Node.js spawn API contract):
             //   spawn(cmd, options)        — options is arg[1] (the object)
             //   spawn(cmd, args, options)  — options is arg[2] (arg[1] is the
@@ -2340,12 +2452,26 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                 };
                 a = cargs;
                 c = js_str_prop(cx, obj_h.into(), c"cwd".as_ptr());
+                // @trace REQ-ENG-007 [api:child_process spawn env] — the env
+                // option rides the same parse face as cwd/stdio (the JS exec
+                // wrapper's contract comment promised this; dropping it made
+                // every env-injected exec (`common.escapePOSIXShell` shape)
+                // spawn a shell whose ${ESCAPED_N} stayed unexpanded → the
+                // writer died instantly and a reader blocked on the fifo
+                // forever = test-fs-read-stream deterministic wedge).
+                env_opt = js_env_entries(cx, obj_h.into());
+                if env_opt.is_none() && JS_IsExceptionPending(cx) {
+                    // Env property WALK failed (GetPropertyKeys false → SM
+                    // pending exception): propagate loudly, never exec with a
+                    // silently-wrong environment.
+                    return false;
+                }
                 ps = js_stdio_wants_pipe(cx, obj_h.into(), c"stdout".as_ptr());
                 pe = js_stdio_wants_pipe(cx, obj_h.into(), c"stderr".as_ptr());
                 pi = js_stdio_wants_pipe(cx, obj_h.into(), c"stdin".as_ptr());
                 ipc = js_wants_ipc(cx, obj_h.into());
             }
-            (cmd.clone(), a, c, ps, pe, pi, ipc)
+            (cmd.clone(), a, c, ps, pe, pi, ipc, env_opt)
         } else if opts_obj.is_some() && !opts_obj_r.get().is_null() {
             let obj_h = opts_obj_r.handle();
             let cmd = match js_str_prop(cx, obj_h.into(), c"command".as_ptr())
@@ -2361,11 +2487,18 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             };
             let cmd_args = js_str_array_prop(cx, obj_h.into(), c"args".as_ptr());
             let cwd = js_str_prop(cx, obj_h.into(), c"cwd".as_ptr());
+            // @trace REQ-ENG-007 [api:child_process spawn env] — options-object
+            // arm (fork/spawn(opts) shape): same env face as the cmd-string arm.
+            let env_opt = js_env_entries(cx, obj_h.into());
+            if env_opt.is_none() && JS_IsExceptionPending(cx) {
+                // Env property WALK failed (see cmd-string arm): propagate loudly.
+                return false;
+            }
             let ps = js_stdio_wants_pipe(cx, obj_h.into(), c"stdout".as_ptr());
             let pe = js_stdio_wants_pipe(cx, obj_h.into(), c"stderr".as_ptr());
             let pi = js_stdio_wants_pipe(cx, obj_h.into(), c"stdin".as_ptr());
             let ipc = js_wants_ipc(cx, obj_h.into());
-            (cmd, cmd_args, cwd, ps, pe, pi, ipc)
+            (cmd, cmd_args, cwd, ps, pe, pi, ipc, env_opt)
         } else {
             JS_ReportErrorUTF8(cx, c"child_process.spawn requires arguments".as_ptr());
             return false;
@@ -2383,6 +2516,40 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     } else {
         Box::new([])
     };
+
+    // @trace REQ-ENG-007 [api:child_process spawn env] — build the child envp
+    // BEFORE any pipe resource exists: an env entry containing a NUL byte is a
+    // loud JS error here (no half-owned pipes to reclaim), never a silent
+    // drop. `env` absent → inherit the parent environ (established behavior
+    // for every caller that does not pass the option); `env` present → the
+    // option REPLACES the environment wholesale (node contract: spawn `env` is
+    // not merged with process.env — callers spread process.env themselves,
+    // which is exactly what `common.escapePOSIXShell` does). NUL-terminated
+    // "KEY=VALUE" CString entries, same shape as spawn_cluster_worker.
+    let env_cstrings: Vec<::std::ffi::CString> = match env_opt.as_deref() {
+        Some(entries) => {
+            let mut v = Vec::with_capacity(entries.len());
+            for entry in entries {
+                match ::std::ffi::CString::new(entry.as_ref() as &[u8]) {
+                    Ok(c) => v.push(c),
+                    Err(_) => {
+                        JS_ReportErrorUTF8(
+                            cx,
+                            c"child_process.spawn: env entry contains NUL byte".as_ptr(),
+                        );
+                        return false;
+                    }
+                }
+            }
+            v
+        }
+        None => Vec::new(),
+    };
+    let mut envp_vec: Vec<*const ::std::ffi::c_char> = Vec::with_capacity(env_cstrings.len() + 1);
+    for c in &env_cstrings {
+        envp_vec.push(c.as_ptr());
+    }
+    envp_vec.push(::std::ptr::null());
 
     // Create pipes for stdout/stderr/stdin as needed.
     // unix: pipe(2) pairs. windows (#18, BCE-20260927-001): raw CreatePipe
@@ -2726,7 +2893,15 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         off += arg.len() + 1;
     }
     c_args.push(::std::ptr::null());
-    let envp: *const *const ::std::ffi::c_char = bun_sys::environ_ptr();
+    // @trace REQ-ENG-007 [api:child_process spawn env] — env option present →
+    // its entries (null-terminated above; an EMPTY env object is a valid EMPTY
+    // child environment, never a fallback to the parent environ); absent →
+    // parent environ.
+    let envp: *const *const ::std::ffi::c_char = if env_opt.is_some() {
+        envp_vec.as_ptr()
+    } else {
+        bun_sys::environ_ptr()
+    };
 
     // Spawn the child process.
     let spawn_result = unsafe { spawn_process(&spawn_opts, c_args.as_ptr(), envp) };
@@ -3596,11 +3771,28 @@ unsafe extern "C" fn cp_drain(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
 }
 
 // ─── Native: __cp_poll_exit(pid) ───────────────────────────────────────────
-// Returns: null (not exited), or [exitCode, signalCode] if exited.
+// Returns: null (not exited), or the INTERNAL WIRE [exit_code, signum] pair
+// if exited — a signal death is [-signal, signal], a plain exit is
+// [code, 0]. These natives are the INTERNAL consumption face (the ChildProcess
+// shim's exit poll, the stream-glue EOF detector and the cluster exit pump
+// all read the numeric slots); the node oracle shape ([null, "SIGTERM"] /
+// [code, null]) is rendered at the JS OUTLETS — the shim's emit('exit') face
+// and cluster's handleExit boundary — never here (E32 regression: normalizing
+// in the native broke every numeric consumer; the wire pins read "7,0").
 
-/// Shared `[exitCode, signalCode]` array builder for the exit-slot natives —
-/// `__cp_poll_exit` (consume-once take) and `__cp_peek_exit` (non-consuming
+/// Shared `[exit_code, signum]` WIRE array builder for the exit-slot natives
+/// — `__cp_poll_exit` (consume-once take) and `__cp_peek_exit` (non-consuming
 /// probe). `None` → NullValue.
+/// @trace REQ-ENG-048 — the pair is the LOSSLESS internal wire tuple
+/// (the [`status_to_exit_code`] encoding: signal deaths → code = -signal):
+/// the numeric slots are load-bearing for the internal consumers — the
+/// stream-glue EOF detector's signum truthiness, the cluster poll's
+/// directed-kill fingerprint (`ex[1] === 0`), and the JS outlets' signum
+/// test. The node oracle shape (`[null, "SIGTERM"]` / `[code, null]`) is
+/// rendered at the JS-facing OUTLETS (the ChildProcess shim's emit('exit')
+/// face and cluster's handleExit boundary, both via the
+/// `__cp_signal_name` bridge) — the -signal encoding itself still never
+/// surfaces past those outlets.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn cp_exit_array_value(cx: *mut JSContext, exit_info: Option<(i32, i32)>) -> JSVal {
     let Some((code, signal)) = exit_info else {
@@ -3712,6 +3904,41 @@ unsafe extern "C" fn cp_peek_exit(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         .flatten();
 
     args.rval().set(cp_exit_array_value(cx, exit_payload));
+    true
+}
+
+// ─── Native: __cp_signal_name(signum) ──────────────────────────────────────
+// JS face of the signal-name table: the wire→oracle exit normalization lives
+// in the JS OUTLETS (the ChildProcess shim's emit('exit') face and cluster's
+// handleExit boundary — both consume the INTERNAL WIRE pair from
+// __cp_poll_exit and must render a signal death as (null, "SIGTERM"-name)),
+// so the name mapping has to be reachable from JS. Single authority: this
+// bridges [`cp_signal_name`] — the same table the Rust sync faces and
+// bun_api's spawn faces use (unknown signums render as "SIG<n>", the same
+// convention everywhere).
+// @trace REQ-ENG-048 — node v24 exit-oracle parity: the JS outlets render a
+// signal death as (null, "SIGTERM"-name) via this bridge.
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cp_signal_name_js(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let sig = if argc > 0 {
+        cp_arg_i32(*args.get(0).ptr)
+    } else {
+        0
+    };
+    if sig == 0 {
+        args.rval().set(NullValue());
+        return true;
+    }
+    let name = cp_signal_name(sig);
+    let c_name = ZBox::from_bytes(name.into_bytes());
+    let js_str = JS_NewStringCopyZ(cx, c_name.as_ptr());
+    if js_str.is_null() {
+        args.rval().set(NullValue());
+    } else {
+        args.rval().set(StringValue(&*js_str));
+    }
     true
 }
 
@@ -4317,233 +4544,15 @@ unsafe fn set_nonblock(_fd: c_int, _on: bool) -> ::std::io::Result<()> {
     Ok(())
 }
 
-// ─── cp_exec — ASYNC exec (shell command, callback-based) ──────────────────
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn cp_exec(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 {
-        JS_ReportErrorUTF8(cx, c"child_process.exec requires a command string".as_ptr());
-        return false;
-    }
-
-    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
-        let c_msg = ZBox::from_bytes(e.as_bytes());
-        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
-        return false;
-    }
-
-    let cmd_val = *args.get(0).ptr;
-    if !cmd_val.is_string() {
-        JS_ReportErrorUTF8(cx, c"child_process.exec requires a string command".as_ptr());
-        return false;
-    }
-
-    let callback = if argc > 1 {
-        let cb = *args.get(1).ptr;
-        if cb.is_object() && JS_ObjectIsFunction(cb.to_object()) {
-            Some(cb.to_object())
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let cmd = crate::js_to_rust_string(cx, cmd_val);
-    let sync_opts = shell_sync_opts(&cmd);
-
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-
-    rooted!(&in(cx_ref) let callback_r = callback.unwrap_or(::std::ptr::null_mut::<JSObject>()));
-    rooted!(&in(cx_ref) let child_obj = w2::JS_NewPlainObject(cx_ref));
-    if child_obj.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    let spawn_result = match spawn_sync::spawn(&sync_opts) {
-        Ok(Ok(r)) => r,
-        Ok(Err(sys_err)) => {
-            let msg = format!("exec system error: {:?}", sys_err);
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
-            return false;
-        }
-        Err(e) => {
-            let msg = format!("exec failed: {:?}", e);
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
-            return false;
-        }
-    };
-
-    let stdout_bytes = spawn_result.stdout.clone();
-    let stderr_bytes = spawn_result.stderr.clone();
-    let exit_code = status_to_exit_code(&spawn_result.status);
-    let signal = status_to_signal(&spawn_result.status);
-    let stdout_str = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    let stderr_str = String::from_utf8_lossy(&stderr_bytes).into_owned();
-
-    let child_h = child_obj.handle().into();
-
-    let c_stdout = ZBox::from_bytes(stdout_str.as_bytes());
-    {
-        let js_str = JS_NewStringCopyZ(cx, c_stdout.as_ptr());
-        if !js_str.is_null() {
-            let v = StringValue(&*js_str);
-            rooted!(&in(cx_ref) let rv = v);
-            JS_DefineProperty(
-                cx,
-                child_h,
-                c"stdout".as_ptr(),
-                rv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-    }
-    let c_stderr = ZBox::from_bytes(stderr_str.as_bytes());
-    {
-        let js_str = JS_NewStringCopyZ(cx, c_stderr.as_ptr());
-        if !js_str.is_null() {
-            let v = StringValue(&*js_str);
-            rooted!(&in(cx_ref) let rv = v);
-            JS_DefineProperty(
-                cx,
-                child_h,
-                c"stderr".as_ptr(),
-                rv.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-    }
-    rooted!(&in(cx_ref) let ec = Int32Value(exit_code));
-    JS_DefineProperty(
-        cx,
-        child_h,
-        c"exitCode".as_ptr(),
-        ec.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-
-    let pid_v = Int32Value(spawn_result.pid as i32);
-    rooted!(&in(cx_ref) let pv = pid_v);
-    JS_DefineProperty(
-        cx,
-        child_h,
-        c"pid".as_ptr(),
-        pv.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-
-    // Call callback if provided: callback(error, stdout, stderr)
-    if callback.is_some() && !callback_r.get().is_null() {
-        rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
-
-        // node v24.19.0 oracle (2026-10-18): the exec failure callback
-        // receives a REAL Error (`instanceof Error`) whose message is
-        // "Command failed: <cmd>\n<stderr>" — the trailing newline stands
-        // even when stderr is empty — and whose properties are
-        //   code: <exit code NUMBER> (null on a signal death),
-        //   signal: null | "<SIGNAME>",
-        //   killed: false (true only when the parent called kill()),
-        //   cmd: <cmd>.
-        // The former shape ("Command failed with exit code N" on a plain
-        // object, no code/killed/signal/cmd) matched neither the literal nor
-        // the property surface.
-        let err_obj = if exit_code != 0 {
-            let msg = format!("Command failed: {}\n{}", cmd, stderr_str);
-            let e = cp_new_error_object(cx, &msg);
-            if !e.is_null() {
-                rooted!(&in(cx_ref) let e_r = e);
-                let e_h = e_r.handle().into();
-                let code_val = match signal {
-                    Some(_) => NullValue(),
-                    None => Int32Value(exit_code),
-                };
-                rooted!(&in(cx_ref) let cv = code_val);
-                JS_SetProperty(cx, e_h, c"code".as_ptr(), cv.handle().into());
-                let killed_v = BooleanValue(false);
-                rooted!(&in(cx_ref) let kv = killed_v);
-                JS_SetProperty(cx, e_h, c"killed".as_ptr(), kv.handle().into());
-                let sig_v = cp_signal_jsval(cx, signal);
-                rooted!(&in(cx_ref) let sv = sig_v);
-                JS_SetProperty(cx, e_h, c"signal".as_ptr(), sv.handle().into());
-                let c_cmd = ZBox::from_bytes(cmd.as_bytes());
-                let cmd_str = JS_NewStringCopyZ(cx, c_cmd.as_ptr());
-                if !cmd_str.is_null() {
-                    let cmd_v = StringValue(&*cmd_str);
-                    rooted!(&in(cx_ref) let cmdv = cmd_v);
-                    JS_SetProperty(cx, e_h, c"cmd".as_ptr(), cmdv.handle().into());
-                }
-            }
-            e
-        } else {
-            ::std::ptr::null_mut()
-        };
-
-        let mut call_vals: [Value; 3] = [
-            if err_obj.is_null() {
-                NullValue()
-            } else {
-                ObjectValue(err_obj)
-            },
-            UndefinedValue(),
-            UndefinedValue(),
-        ];
-        JS_GetProperty(
-            cx,
-            child_h,
-            c"stdout".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut call_vals[1],
-            },
-        );
-        JS_GetProperty(
-            cx,
-            child_h,
-            c"stderr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut call_vals[2],
-            },
-        );
-
-        rooted!(&in(cx_ref) let cv0 = call_vals[0]);
-        rooted!(&in(cx_ref) let cv1 = call_vals[1]);
-        rooted!(&in(cx_ref) let cv2 = call_vals[2]);
-        // Array of VALUES (not of `&rooted.get()` references): the old
-        // `[&cv0.get(), ...]` built an array of three POINTERS and the
-        // `as_ptr() as *const Value` cast reinterpreted them as three Values —
-        // the callback received stack addresses as NaN-boxed garbage instead
-        // of (error, stdout, stderr) (exec_cb_* reds; correct form is
-        // node_worker_threads.rs's `[data_val.get()]`).
-        let elems = [cv0.get(), cv1.get(), cv2.get()];
-        let call_args = HandleValueArray {
-            length_: 3,
-            elements_: elems.as_ptr(),
-        };
-
-        let cb_val = ObjectValue(callback_r.get());
-        rooted!(&in(cx_ref) let cb_r = cb_val);
-        let mut rval = UndefinedValue();
-        JS_CallFunctionValue(
-            cx,
-            global.handle().into(),
-            cb_r.handle().into(),
-            &call_args,
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut rval,
-            },
-        );
-    }
-
-    args.rval().set(ObjectValue(child_obj.get()));
-    true
-}
+// ─── cp_exec — REMOVED (async exec lives in CP_JS on top of cp_spawn) ──────
+// The old native ran `spawn_sync::spawn` inline on the JS thread: a blocked
+// shell (fifo writer with no reader) froze the whole event loop, and a SIGTERM
+// forwarded to the sync child surfaced as a spurious "Command failed" — node
+// keeps the writer alive and the exec callback pending until the shell reaches
+// its true terminal state. exec is now installed by CP_JS (search `cp.exec =`)
+// over the wrapped ASYNC spawn; the sync faces (execSync/execFileSync) keep
+// spawn_sync legitimately (node: they block by contract).
+// @trace REQ-ENG-007 [api:child_process.exec]
 
 // ─── execFile faces: shared helpers (node parity, oracle-pinned) ───────────
 
@@ -4763,6 +4772,46 @@ fn cp_signal_name(sig: i32) -> String {
     .to_string()
 }
 
+/// @trace REQ-ENG-048 — THE exit-tuple boundary rule (E28 归一化): classify
+/// the internal wire tuple into the oracle shape components.
+///
+///   * signal death (`signal != 0`, wire `code = -signal`) →
+///     `(None, Some(NAME))` — node v24.19.0 (live probe 2026-10-25): the exit
+///     event carries `(code = null, signal = "SIGTERM" name string)`, and a
+///     signal death has NO exit code;
+///   * plain exit → `(Some(code), None)` — `signal` is null.
+///
+/// Every JS-facing producer renders the internal tuple through this — the
+/// sync faces ([`cp_sync_status_value`], exec/execFile/spawnSync surfaces)
+/// and bun_api's Bun.spawn exit faces. The `__cp_poll_exit`/`__cp_peek_exit`
+/// natives are NOT on this list: they are the internal wire consumption face
+/// ([`cp_exit_array_value`] delivers the lossless numeric tuple); their JS
+/// consumers normalize at the outlets via the `__cp_signal_name` bridge, so
+/// the `-signal` internal encoding still never surfaces past those outlets.
+/// `None` in the tuple slots renders as JS `null`.
+pub(crate) fn normalize_exit_info(info: (i32, i32)) -> (Option<i32>, Option<String>) {
+    let (code, signal) = info;
+    if signal != 0 {
+        (None, Some(cp_signal_name(signal)))
+    } else {
+        (Some(code), None)
+    }
+}
+
+/// JS value for a sync-face `status`/`exitCode` property — node oracle: the
+/// numeric exit code, or **null on a signal death** (a signal death has no
+/// exit code; v24.19.0 probe 2026-10-25: `spawnSync` → `status=null` +
+/// `signal="SIGTERM"`, `execSync` throw → `err.status=null`). `exit_code` is
+/// the internal wire value ([`status_to_exit_code`]: signal deaths →
+/// -signal) — never surfaced verbatim.
+fn cp_sync_status_value(exit_code: i32, signal: ::std::option::Option<i32>) -> JSVal {
+    if signal.is_some() {
+        NullValue()
+    } else {
+        Int32Value(exit_code)
+    }
+}
+
 /// JS value for a sync-face `signal` property: the node signal-name string,
 /// or null when the child was not killed by a signal.
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -4828,11 +4877,10 @@ unsafe fn cp_new_error_object(cx: *mut JSContext, message: &str) -> *mut JSObjec
     }
     let mv = StringValue(&*msg_str);
     rooted!(&in(cx_ref) let mv_r = mv);
-    let elems = [mv_r.get()];
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: elems.as_ptr(),
-    };
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(cx_ref) let call_args_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([mv_r.get()]));
+    let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
 
     let mut rval = UndefinedValue();
     let ok = JS_CallFunctionValue(
@@ -5005,7 +5053,9 @@ unsafe extern "C" fn cp_exec_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         rooted!(&in(cx_ref) let err_r = err_obj);
         let err_h = err_r.handle().into();
 
-        rooted!(&in(cx_ref) let sv = Int32Value(exit_code));
+        // status: null on a signal death (node oracle — err.status mirrors
+        // spawnSync's status; the -signal wire value is never surfaced).
+        rooted!(&in(cx_ref) let sv = cp_sync_status_value(exit_code, signal));
         JS_SetProperty(cx, err_h, c"status".as_ptr(), sv.handle().into());
 
         rooted!(&in(cx_ref) let pv = Int32Value(pid as i32));
@@ -5368,7 +5418,8 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         errv_r.handle().into(),
         JSPROP_ENUMERATE as u32,
     );
-    rooted!(&in(cx_ref) let ec = Int32Value(exit_code));
+    // exitCode: null on a signal death (node ChildProcess contract).
+    rooted!(&in(cx_ref) let ec = cp_sync_status_value(exit_code, signal));
     JS_DefineProperty(
         cx,
         child_h,
@@ -5426,7 +5477,7 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         };
 
         // Array of VALUES (not of references — the exec-callback NaN-boxing
-        // lesson in cp_exec applies here too).
+        // lesson applies here too: bare stack copies reinterpret as garbage).
         let cb_err_val = if err_obj.is_null() {
             NullValue()
         } else {
@@ -5450,8 +5501,8 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 }
 
 /// Fire `callback(error, stdout, stderr)` — the shared tail of the execFile
-/// faces (completion and spawn-failure arms). Same rooted-value-array call
-/// discipline as cp_exec (three VALUES, not three pointers).
+/// faces (completion and spawn-failure arms). Rooted-value-array call
+/// discipline (three VALUES, not three pointers).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn cp_exec_file_fire_callback(
     cx: *mut JSContext,
@@ -5463,11 +5514,14 @@ unsafe fn cp_exec_file_fire_callback(
 ) {
     rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
     rooted!(&in(cx_ref) let cb_v = ObjectValue(callback));
-    let elems = [err_val, stdout_val, stderr_val];
-    let call_args = HandleValueArray {
-        length_: 3,
-        elements_: elems.as_ptr(),
-    };
+    // (Bao, BCE) rooted ValueArray carrier — the three payload JSVals were
+    // bare stack copies before; the ValueArray root traces them for the call.
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<3>::new([
+        err_val,
+        stdout_val,
+        stderr_val,
+    ]));
+    let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
     let mut rval = UndefinedValue();
     JS_CallFunctionValue(
         cx,
@@ -5656,7 +5710,9 @@ unsafe extern "C" fn cp_exec_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
         rooted!(&in(cx_ref) let err_r = err_obj);
         let err_h = err_r.handle().into();
 
-        rooted!(&in(cx_ref) let sv = Int32Value(exit_code));
+        // status: null on a signal death (node oracle — err.status mirrors
+        // spawnSync's status; the -signal wire value is never surfaced).
+        rooted!(&in(cx_ref) let sv = cp_sync_status_value(exit_code, signal));
         JS_SetProperty(cx, err_h, c"status".as_ptr(), sv.handle().into());
 
         rooted!(&in(cx_ref) let pv = Int32Value(pid as i32));
@@ -6038,6 +6094,7 @@ unsafe extern "C" fn cp_spawn_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     };
 
     let exit_code = status_to_exit_code(&spawn_result.status);
+    let signal = status_to_signal(&spawn_result.status);
     let stdout_bytes = spawn_result.stdout.clone();
     let stderr_bytes = spawn_result.stderr.clone();
 
@@ -6048,7 +6105,10 @@ unsafe extern "C" fn cp_spawn_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     }
     rooted!(&in(cx_ref) let result_r = result_obj);
 
-    let status = Int32Value(exit_code);
+    // status: null on a signal death (node v24.19.0 oracle 2026-10-25:
+    // spawnSync signal death → status=null + signal="SIGTERM"; the -signal
+    // internal wire value is never surfaced).
+    let status = cp_sync_status_value(exit_code, signal);
     rooted!(&in(cx_ref) let sv = status);
     JS_DefineProperty(
         cx,
@@ -6799,13 +6859,28 @@ const CP_JS: &str = r#"
       }
     }
 
-    // Check for child exit.
+    // Check for child exit. The native delivers the INTERNAL WIRE pair
+    // [exit_code, signum]: a signal death is [-signum, signum] (no name, no
+    // null yet), a plain exit is [code, 0]. Normalize to the node oracle
+    // shape HERE — at the emit outlet: exitCode/signalCode and the
+    // 'exit'/'close' args carry (null, "SIGTERM"-name) on a signal death and
+    // (code, null) on a plain exit (node v24 oracle, E28). The numeric wire
+    // slots stay lossless for the internal consumers (the stream-glue EOF
+    // detector's signum probe, the cluster poll's directed-kill fingerprint).
+    // @trace REQ-ENG-048 [api:child_process exit] — emit-outlet normalization.
     if (typeof cp.__cp_poll_exit === 'function') {
       var exitInfo = cp.__cp_poll_exit(pid);
       if (exitInfo) {
         this._exited = true;
-        this.exitCode = exitInfo[0];
-        this.signalCode = exitInfo[1] || null;
+        if (exitInfo[1]) {
+          // Signal death (wire code = -signum): a signal death has NO exit
+          // code — exitCode null + the signal NAME string.
+          this.exitCode = null;
+          this.signalCode = cp.__cp_signal_name(exitInfo[1]);
+        } else {
+          this.exitCode = exitInfo[0];
+          this.signalCode = null;
+        }
         // Final drain.
         var finalStdout = cp.__cp_drain ? cp.__cp_drain(pid, 0) : null;
         var finalStderr = cp.__cp_drain ? cp.__cp_drain(pid, 1) : null;
@@ -6864,6 +6939,93 @@ const CP_JS: &str = r#"
     if (!native) return native;
     return new ChildProcess(native);
   };
+
+  // ─── exec: async shell-command face over the async spawn lifecycle ───────
+  // @trace REQ-ENG-007 [api:child_process.exec]
+  //
+  // node v24.19.0 oracle (2026-10-27 probe /tmp/fsr5-probe/probe-rs7*.log):
+  // exec() spawns the shell ASYNCHRONOUSLY and returns the ChildProcess
+  // immediately; the event loop keeps ticking while the shell runs. A writer
+  // blocked on a readerless fifo (`echo x > fifo` with no reader) keeps the
+  // child alive and the callback PENDING indefinitely — node never kills the
+  // writer early and never blocks the loop behind it; when a reader appears,
+  // the write completes and the callback fires with err=null. The callback
+  // fires once at 'close' (child terminal state + stdio EOF) with
+  // (error, stdout, stderr).
+  //
+  // This face replaces the deleted cp_exec native, which ran
+  // `spawn_sync::spawn` inline on the JS thread: a blocked shell froze the
+  // whole event loop (timers / fs callbacks starved — the final-green4-r5
+  // read-stream TIMEOUT root cause), and a SIGTERM forwarded to the sync
+  // child (parent-directed, e.g. a harness timeout) surfaced as a spurious
+  // "Command failed" with signal=SIGTERM instead of staying pending.
+  //
+  // Callback error is the oracle shape pinned by cp_followup_tests /
+  // cp_path_tty_coverage_c5: a REAL Error, message
+  // "Command failed: <cmd>\n<stderr>" (the trailing newline stands even with
+  // empty stderr), code: number|null (null on a signal death), killed: false
+  // (true only when the parent called kill()), signal: null|"<SIGNAME>",
+  // cmd: <cmd>.
+  function cpDecodeChunks(chunks) {
+    var total = 0;
+    for (var i = 0; i < chunks.length; i++) total += chunks[i].byteLength;
+    var u8 = new Uint8Array(total);
+    var off = 0;
+    for (var j = 0; j < chunks.length; j++) {
+      u8.set(new Uint8Array(chunks[j]), off);
+      off += chunks[j].byteLength;
+    }
+    return Buffer.from(u8).toString('utf8');
+  }
+  cp.exec = function(cmd) {
+    if (arguments.length === 0) {
+      throw new TypeError("child_process.exec requires a command string");
+    }
+    if (typeof cmd !== 'string') {
+      throw new TypeError("child_process.exec requires a string command");
+    }
+    // node arg walk: exec(cmd[, options][, callback]) — the trailing function
+    // is the callback, an object argument is the options bag (forwarded to
+    // spawn: cwd/env/stdio work through the same parse face).
+    var callback = null;
+    var opts = null;
+    for (var i = 1; i < arguments.length; i++) {
+      var a = arguments[i];
+      if (typeof a === 'function') callback = a;
+      else if (a && typeof a === 'object') opts = a;
+    }
+    var shellArgv = (process.platform === 'win32')
+      ? ['cmd.exe', '/C', cmd]
+      : ['/bin/sh', '-c', cmd];
+    var child = cp.spawn(shellArgv[0], shellArgv.slice(1), opts || {});
+    if (callback !== null) {
+      var outChunks = [];
+      var errChunks = [];
+      // Registering the data listeners arms the shim's poll pump (_startPoll),
+      // which is what drives the 'close' delivery; registration happens in the
+      // same synchronous block as spawn, and the pump's first tick is deferred
+      // one macrotask, so no chunk can land before these listeners exist.
+      if (child.stdout) child.stdout.on('data', function(d) { outChunks.push(d); });
+      if (child.stderr) child.stderr.on('data', function(d) { errChunks.push(d); });
+      child.on('close', function(code, signal) {
+        // code/signal arrive in the node oracle shape from the shim's exit
+        // outlet (exitCode null + signal NAME on a signal death).
+        var error = null;
+        if ((code !== null && code !== 0) || signal !== null) {
+          error = new Error("Command failed: " + cmd + "\n" + cpDecodeChunks(errChunks));
+          error.code = code;
+          error.killed = child.killed;
+          error.signal = signal;
+          error.cmd = cmd;
+        }
+        callback(error, cpDecodeChunks(outChunks), cpDecodeChunks(errChunks));
+      });
+    }
+    // No-callback exec returns the live ChildProcess (node shape): stdout/
+    // stderr are stream objects, exitCode null until the child exits, and the
+    // pending child keeps the loop alive via has_live_async_children.
+    return child;
+  };
 })();
 "#;
 
@@ -6896,6 +7058,38 @@ mod tests {
     fn test_status_to_exit_code_signaled() {
         let status = Status::Signaled(15);
         assert_eq!(status_to_exit_code(&status), -15);
+    }
+
+    // @trace REQ-ENG-048 (E28 normalization): the JS-boundary rule — a
+    // signal death carries NO exit code (None → JS null) and the signal NAME
+    // string; a plain exit carries the code and a null signal. The internal
+    // -signal wire encoding must never leak past this boundary.
+    #[test]
+    fn test_normalize_exit_info_signal_death_is_null_code_with_name() {
+        let (code, signal) = normalize_exit_info((-15, 15));
+        assert_eq!(code, None, "signal death has no exit code");
+        assert_eq!(signal.as_deref(), Some("SIGTERM"));
+        let (code, signal) = normalize_exit_info((-9, 9));
+        assert_eq!(code, None);
+        assert_eq!(signal.as_deref(), Some("SIGKILL"));
+    }
+
+    #[test]
+    fn test_normalize_exit_info_plain_exit_is_code_with_null_signal() {
+        let (code, signal) = normalize_exit_info((0, 0));
+        assert_eq!(code, Some(0));
+        assert_eq!(signal, None);
+        let (code, signal) = normalize_exit_info((42, 0));
+        assert_eq!(code, Some(42));
+        assert_eq!(signal, None);
+    }
+
+    #[test]
+    fn test_cp_sync_status_value_nulls_on_signal_death() {
+        // NullValue() is a NaN-boxed null — is_null() is the discriminating
+        // read; Int32Value(3) must stay a non-null int32.
+        assert!(cp_sync_status_value(-15, Some(15)).is_null());
+        assert!(!cp_sync_status_value(3, ::std::option::Option::None).is_null());
     }
 
     #[test]

@@ -368,24 +368,36 @@ fn fetch_abort_retention_body() {
     );
     assert_eq!(setup, "scheduled", "fetch retention setup failed");
 
-    let poll = pump_until_settled(
+    // @trace REQ-ENG-004
+    // Face-2 settle predicate: every probe slot recorded (no lowercase
+    // `pending` placeholder) and the mid-flight abort has reached its chain
+    // (`settled` no longer PENDING). `gcDone` is deliberately NOT part of the
+    // predicate: the Bun.gc pressure window is this test's own post-pump step
+    // (`__gcFetchRetention` runs only after the pump returns), so
+    // `gcDone=PENDING` can never clear inside a pump — including it made the
+    // settle predicate unsatisfiable by construction. Every pump then ran to
+    // its full timeout (the 21.5s PASS signature = 15s+3s+3s), and under the
+    // revived no-progress tripwire a frozen post-settle poll misfired
+    // PumpStuck even though the product side had fully settled (abort
+    // delivery, body read and rejection were all already observable in the
+    // frozen value) — a test-scheduling defect, not a GC-pump stall.
+    let poll = common::pump_until(
         &mut ctx,
         "globalThis.__pollFetchRetention()",
         Duration::from_secs(15),
+        common::eval_string_full,
+        |poll| !poll.contains("pending") && !poll.contains("settled=PENDING"),
     );
     // extra drain rounds: the transport-side tasklet handoff may land on a
-    // ConcurrentTask after the settle marker the pump stopped at
-    let _ = pump_until_settled(
-        &mut ctx,
-        "globalThis.__pollFetchRetention()",
-        Duration::from_secs(3),
-    );
+    // ConcurrentTask after the settle marker the pump stopped at. Fixed-pass
+    // loop service (no settle predicate, no tripwire): past the settle the
+    // poll is frozen until the post-pump GC flips the WeakRef probes, so any
+    // predicate-driven pump here would burn its whole timeout on a
+    // permanently stationary value — the exact shape `pump_passes` exists
+    // for.
+    common::pump_passes(&mut ctx, 150);
     std::thread::sleep(Duration::from_millis(300));
-    let _ = pump_until_settled(
-        &mut ctx,
-        "globalThis.__pollFetchRetention()",
-        Duration::from_secs(3),
-    );
+    common::pump_passes(&mut ctx, 150);
     let gced = eval_string(&mut ctx, "globalThis.__gcFetchRetention()");
     assert_eq!(gced, "gced");
     let poll = eval_string(&mut ctx, "globalThis.__pollFetchRetention()");

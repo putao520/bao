@@ -336,9 +336,11 @@ fn c12_buffer_to_string_unknown_encoding_throws() {
     );
 }
 
-/// Buffer.alloc size arms (3676-3715): boolean→0/1, undefined/null→0,
-/// string/object → TypeError, oversized → RangeError with the typed-array
-/// ceiling message.
+/// Buffer.alloc size arms: node v24.19 oracle (live-verified 2026-10-26) —
+/// ANY non-number primitive (boolean/undefined/missing/null/string) throws
+/// ERR_INVALID_ARG_TYPE (no ToNumber coerce); sizes outside [0, 2^53-1]
+/// throw ERR_OUT_OF_RANGE with the node-shape message. The old pin's
+/// boolean/undefined coercion was bao-invented and contradicted live node.
 #[test]
 fn c12_buffer_alloc_size_arms() {
     let mut ctx = make_ctx();
@@ -361,9 +363,12 @@ fn c12_buffer_alloc_size_arms() {
     );
     assert_eq!(
         report,
-        "true=1|false=0|undef=0|str=THREW:TypeError:The \"size\" argument must be of|\
-         huge=THREW:RangeError:Typed arrays are currently lim",
-        "alloc size coercion arms + ceiling RangeError"
+        "true=THREW:TypeError:The \"size\" argument must be of|\
+         false=THREW:TypeError:The \"size\" argument must be of|\
+         undef=THREW:TypeError:The \"size\" argument must be of|\
+         str=THREW:TypeError:The \"size\" argument must be of|\
+         huge=THREW:RangeError:The value of \"size\" is out of ",
+        "alloc size validation arms + safe-range RangeError (node v24 oracle)"
     );
 }
 
@@ -540,9 +545,10 @@ fn c12_buffer_index_of_legacy_arraylike_arms() {
     );
     assert_eq!(
         report,
-        "intNeedle=1|miss=-1|byteOffset=-1|strNeedle=1|needleLonger=0|hexEncIgnored=-1|ucs2EncIgnored=1",
-        "legacy indexOf: int/string utf8 needles, byteOffset, longer-needle → offset arm; \
-         encoding arg ignored (REGISTRY R3/R3b — node throws on array-like this)"
+        "intNeedle=THREW:TypeError|miss=THREW:TypeError|byteOffset=THREW:TypeError|strNeedle=THREW:TypeError|needleLonger=THREW:TypeError|hexEncIgnored=THREW:TypeError|ucs2EncIgnored=THREW:TypeError",
+        "indexOf on array-like this throws TypeError (node v24 oracle verified \
+         2026-10-26; the old R3 legacy-scan pin recorded a pre-guard \
+         implementation accident, not a real divergence)"
     );
 }
 
@@ -623,11 +629,13 @@ fn c12_subtle_digest_algorithm_matrix() {
         "#,
     );
 
-    let done = common::wait_until_with(
+    // Wall-clock window (E27 sweep): don't race the crypto threadpool with
+    // an iteration-bounded spin — see common::wait_until_deadline.
+    let done = common::wait_until_deadline(
         &mut ctx,
         r#"globalThis.__digestDone ? "y" : "n""#,
         60,
-        400,
+        10,
         |c, src| eval_string(c, src),
     );
     assert!(done, "async digests must settle");

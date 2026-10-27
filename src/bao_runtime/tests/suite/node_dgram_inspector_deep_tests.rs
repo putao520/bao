@@ -22,8 +22,10 @@ fn eval_str(ctx: &mut JsContext, code: &str) -> String {
 }
 
 /// 泵驱动等待:每轮经 bounded drain hook 驱动 timer 派发,条件达成即止。
+/// 墙钟窗口(E27 横扫):迭代有界纯自旋与跨线程生产者竞态,弃用 —
+/// 见 common::wait_until_deadline。
 fn wait_until(ctx: &mut JsContext, js_condition: &str) -> bool {
-    common::wait_until_with(ctx, js_condition, 50, 60, eval_str)
+    common::wait_until_deadline(ctx, js_condition, 50, 10, eval_str)
 }
 
 

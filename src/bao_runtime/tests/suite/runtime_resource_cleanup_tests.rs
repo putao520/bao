@@ -71,13 +71,8 @@
 use std::net::UdpSocket;
 use std::time::Duration;
 
-/// Reserve a free ephemeral port and release it immediately. The caller
-/// binds the dgram socket to it right away (small TOCTOU window; a collision
-/// surfaces as a loud bind failure in the test, never a silent pass).
-fn free_ephemeral_port() -> u16 {
-    let probe = UdpSocket::bind("127.0.0.1:0").expect("probe bind 127.0.0.1:0");
-    probe.local_addr().expect("probe local_addr").port()
-}
+#[path = "common/mod.rs"]
+mod common;
 
 fn eval_number(rt: &mut bun_runtime::NodeRuntime, src: &str) -> f64 {
     match rt.eval(src, "<runtime-cleanup-test>").expect("eval must succeed") {
@@ -91,10 +86,18 @@ fn eval_number(rt: &mut bun_runtime::NodeRuntime, src: &str) -> f64 {
 /// the 1ms recv-poll interval the JS wrapper starts (a live interval keeps
 /// the post-eval event-loop drain in `NodeRuntime::eval` non-empty forever),
 /// and return `(fd, actual bound port)`.
-fn bind_dgram(rt: &mut bun_runtime::NodeRuntime, port: u16, slot: &str) -> (i32, u16) {
-    rt.eval(
+///
+/// E26 ledger class C (UDP probe-release rebind window): returns `None` when
+/// the bind lost the release-rebind race — the native surfaces the std
+/// `Address already in use` error through `dgram bind failed: ...`; the
+/// caller retries on a FRESH probed port. Any other eval failure is a loud
+/// panic. The previous slot's recv-poll interval is cleared first so a lost
+/// attempt cannot leave a live interval draining the event loop forever.
+fn bind_dgram(rt: &mut bun_runtime::NodeRuntime, port: u16, slot: &str) -> Option<(i32, u16)> {
+    let bound_result = rt.eval(
         &format!(
             r#"
+            if (globalThis.{slot}) clearInterval(globalThis.{slot}._recvTimer);
             var dgram = require('node:dgram');
             globalThis.{slot} = dgram.createSocket('udp4');
             globalThis.{slot}.bind({port}, '127.0.0.1');
@@ -104,12 +107,22 @@ fn bind_dgram(rt: &mut bun_runtime::NodeRuntime, port: u16, slot: &str) -> (i32,
             port = port
         ),
         "<runtime-cleanup-test>",
-    )
-    .expect("dgram createSocket+bind must succeed");
+    );
+    match bound_result {
+        Ok(_) => {}
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("dgram bind failed") && msg.contains("Address already in use"),
+                "dgram createSocket+bind must succeed (or lose only the rebind race): {msg}"
+            );
+            return None;
+        }
+    }
     let fd = eval_number(rt, &format!("globalThis.{slot}._fd")) as i32;
     let bound = eval_number(rt, &format!("globalThis.{slot}.address().port")) as u16;
     assert!(fd >= 0, "bind must produce a valid fd, got {}", fd);
-    (fd, bound)
+    Some((fd, bound))
 }
 
 /// `/proc/self/fd/<fd>` link target, if the fd still exists.
@@ -124,10 +137,17 @@ fn fd_link_target(fd: i32) -> Option<String> {
 // fd identity is read via /proc/self/fd — Linux mechanic.
 #[cfg(unix)]
 fn runtime_drop_closes_dgram_sockets_fd_and_port_released() {
-    let port = free_ephemeral_port();
     let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
-    let (fd, bound) = bind_dgram(&mut rt, port, "__sock_t1");
-    assert_eq!(bound, port, "dgram socket must bind the requested port");
+    // E26 ledger class C: fresh UDP-probed port per attempt; the ring hands
+    // back the winning attempt's fd and port so the release asserts below
+    // target the port that actually won the rebind race.
+    let (fd, port) = common::port_probe::retry_probed_udp_port(|port| {
+        let Some((fd, bound)) = bind_dgram(&mut rt, port, "__sock_t1") else {
+            return None;
+        };
+        assert_eq!(bound, port, "dgram socket must bind the requested port");
+        Some((fd, port))
+    });
 
     // Alive: the fd is a real socket and the port is occupied.
     let target = fd_link_target(fd)
@@ -170,19 +190,28 @@ fn runtime_drop_is_per_token_other_runtimes_sockets_untouched() {
         .expect("receiver read timeout");
     let recv_port = receiver.local_addr().expect("receiver local_addr").port();
 
-    let port_a = free_ephemeral_port();
     let mut rt_a = bun_runtime::NodeRuntime::new().expect("runtime A");
-    let (fd_a, bound_a) = bind_dgram(&mut rt_a, port_a, "__sock_t2a");
-    assert_eq!(bound_a, port_a);
+    // E26 ledger class C: fresh UDP-probed port per attempt (see T1).
+    let (fd_a, port_a) = common::port_probe::retry_probed_udp_port(|port| {
+        let Some((fd_a, bound_a)) = bind_dgram(&mut rt_a, port, "__sock_t2a") else {
+            return None;
+        };
+        assert_eq!(bound_a, port);
+        Some((fd_a, port))
+    });
 
-    let port_b = free_ephemeral_port();
     // Second runtime on this thread parasitizes the live JSContext
     // (`JsContext::init_runtime` hands back a context without a new
     // SmRuntimeGuard) — exactly the multi-runtime shape the token slot must
     // keep isolated.
     let mut rt_b = bun_runtime::NodeRuntime::new().expect("runtime B");
-    let (fd_b, bound_b) = bind_dgram(&mut rt_b, port_b, "__sock_t2b");
-    assert_eq!(bound_b, port_b);
+    let (fd_b, port_b) = common::port_probe::retry_probed_udp_port(|port| {
+        let Some((fd_b, bound_b)) = bind_dgram(&mut rt_b, port, "__sock_t2b") else {
+            return None;
+        };
+        assert_eq!(bound_b, port);
+        Some((fd_b, port))
+    });
 
     // Both alive: both ports occupied, both fds real sockets.
     let target_a = fd_link_target(fd_a)

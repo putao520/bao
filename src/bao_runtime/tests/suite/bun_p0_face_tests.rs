@@ -19,28 +19,26 @@
 //    carry the socket object).
 
 use bao_engine::context::JsContext;
-use std::time::Duration;
 #[path = "common/mod.rs"]
 mod common;
 use common::bounded_drain_hook;
 
 use common::eval_str;
 
-/// Fixed-pass pump delegate: the unified suite pump (`common::pump_until`)
-/// run for `passes` settle-pump ticks (each tick = realm-entered timer
-/// drain + MiniEventLoop tick + RunJobs, the in-process server dispatch
-/// discipline). A live-but-unsettled marker never changes, so the
-/// `PumpStuck` tripwire fires at its 2s window instead of silently burning
-/// the (longer) pass budget.
+/// Fixed-pass pump delegate: exactly `passes` settle-pump ticks (each tick =
+/// realm-entered timer drain + MiniEventLoop tick + RunJobs, the in-process
+/// server dispatch discipline) via [`common::pump_passes`] — loop-service
+/// pacing, not a settle wait, so the no-progress tripwire is not involved
+/// (the historical `passes × 5ms` budget form through `pump_until` only
+/// worked while the tripwire was dead code, E17).
 fn pump(ctx: &mut JsContext, passes: usize) {
-    let budget = Duration::from_millis((passes as u64).saturating_mul(5));
-    common::pump_until(ctx, "'pumping'", budget, common::eval_string_full, |_| {
-        false
-    });
+    common::pump_passes(ctx, passes);
 }
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
-    common::wait_until_with(ctx, js_condition, budget, 60, eval_str)
+    // Wall-clock window (E27 sweep): don't race cross-thread producers with
+    // an iteration-bounded spin — see common::wait_until_deadline.
+    common::wait_until_deadline(ctx, js_condition, budget, 10, eval_str)
 }
 
 fn fresh_ctx() -> JsContext {

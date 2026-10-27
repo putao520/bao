@@ -6,6 +6,7 @@ pub mod bao_bin_canary;
 pub mod client_hello;
 pub mod h2_server;
 pub mod http_fixture;
+pub mod port_probe;
 
 use std::thread;
 use std::time::{Duration, Instant};

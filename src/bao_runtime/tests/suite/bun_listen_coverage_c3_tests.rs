@@ -54,21 +54,43 @@ fn make_ctx() -> JsContext {
     ctx
 }
 
-/// Fixed-pass pump delegate: the unified suite pump (`common::pump_until`)
-/// run for `passes` settle-pump ticks (each tick = realm-entered timer
-/// drain + MiniEventLoop tick + RunJobs, the uWS sockets + timers + jobs
-/// in-process server/client dispatch discipline). A live-but-unsettled
-/// marker never changes, so the `PumpStuck` tripwire fires at its 2s window
-/// instead of silently burning the (longer) pass budget.
+/// Fixed-pass pump delegate: exactly `passes` settle-pump ticks (each tick =
+/// realm-entered timer drain + MiniEventLoop tick + RunJobs, the uWS sockets
+/// + timers + jobs in-process server/client dispatch discipline) via
+/// [`common::pump_passes`] — loop-service pacing, not a settle wait, so the
+/// no-progress tripwire is not involved (the historical `passes × 5ms`
+/// budget form through `pump_until` only worked while the tripwire was dead
+/// code, E17).
 fn pump(ctx: &mut JsContext, passes: usize) {
-    let budget = Duration::from_millis((passes as u64).saturating_mul(5));
-    common::pump_until(ctx, "'pumping'", budget, common::eval_string_full, |_| {
-        false
-    });
+    common::pump_passes(ctx, passes);
 }
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
-    common::wait_until_with(ctx, js_condition, budget, 60, eval_str)
+    // Wall-clock window (E27 sweep): don't race cross-thread producers with
+    // an iteration-bounded spin — see common::wait_until_deadline.
+    common::wait_until_deadline(ctx, js_condition, budget, 10, eval_str)
+}
+
+// @trace TEST-ENG-4 [req:REQ-ENG-004] [level:unit]
+/// Tripwire 真体化钉（E17 死代码根治回归钉）：首个轮询值非空且冻结的
+/// settle-pump 必须在 `PUMP_STALL`（2s）窗触发 `PumpStuck`。修复前
+/// `last_poll` 以空串播种，任何非空首值的首读必然走进 change 臂永久清除
+/// zero-progress 签名——tripwire 对 40+ 文件的主诊断面是死代码。deadline
+/// 10s ≫ 2s 证明触发的是 tripwire 而非外层 deadline；`should_panic` 即
+/// 通过条件（tripwire 死代码形态下本测试烧满 10s 后以「未 panic」红）。
+#[test]
+#[should_panic(expected = "PumpStuck")]
+fn pump_until_tripwire_fires_on_frozen_nonempty_first_poll() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("JsContext");
+    common::pump_until(
+        &mut ctx,
+        "'frozen-marker'",
+        Duration::from_secs(10),
+        common::eval_string_full,
+        |_| false,
+    );
 }
 
 /// Grab a free TCP port (bind port 0, read it back, release). The released

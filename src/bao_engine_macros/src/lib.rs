@@ -323,6 +323,16 @@ fn expand_setter_fn(shim: &syn::Ident, func: &ItemFn, _shared: bool) -> syn::Res
 //
 // Also emits a `Gc` enum mirroring Bun's codegen pattern so that
 // `js_class_module!` callers get `Gc::$prop.get()/.set()/.clear()`.
+//
+// BCE-20261025-FFI-SLOT-GATE posture audit (no gate injected, by judgment):
+// these accessors are Rust-internal (no JSNative entry point feeds a
+// foreign receiver — the receiver is always an instance the Rust side just
+// built with its own class), they carry JSVal cache values (never cast to a
+// native pointer via to_private/Box::from_raw, so nothing here can deref
+// stale bits as a pointer), and no `cx` is in scope to run a JS_InstanceOf
+// comparison without changing the signature for all callers. Contract: do
+// NOT repurpose these slots to store native pointers — that would move them
+// into the gate-mandatory class; gate at the JS-reachable entry instead.
 // ──────────────────────────────────────────────────────────────────────────
 
 struct CachedAccessorsInput {
@@ -476,12 +486,24 @@ fn camel_to_snake(s: &str) -> String {
 /// Generates:
 /// - `{Struct}__create` constructor trampoline (JSNative)
 /// - `{Struct}__proto` prototype setup function
-/// - `HostObject` impl for reserved slot pointer storage
+///
+/// The `HostObject` impl (reserved slot pointer storage) is NOT generated:
+/// the trait requires `const HOST_CLASS: &'static JSClass`
+/// (BCE-20261025-FFI-SLOT-GATE — the class gate inside
+/// `HostObject::from_private`), and this macro cannot know which `JSClass`
+/// static the user's `JsClassOps::construct` builds instances with. Provide
+/// it in your `impl JsClassOps for MyClass` (supertrait `HostObject`); every
+/// `#[host_fn(method/getter/setter)]` shim then inherits the class gate.
 ///
 /// Usage:
 /// ```text
 /// #[bao_engine_macros::JsClass]
 /// pub struct MyClass { field1: String }
+///
+/// impl bao_engine::host_fn::JsClassOps for MyClass {
+///     const HOST_CLASS: &'static mozjs::jsapi::JSClass = &MY_CLASS;
+///     unsafe fn construct(...) -> JsResult<JsValue> { ... }
+/// }
 ///
 /// impl MyClass {
 ///     #[host_fn(method)]
@@ -506,7 +528,17 @@ pub fn JsClass(attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #struct_item
 
-        impl ::bao_engine::host_fn::HostObject for #struct_name {}
+        // NOTE (BCE-20261025-FFI-SLOT-GATE): no `impl HostObject` is
+        // generated here. The trait now requires `const HOST_CLASS` (the
+        // class gate inside `HostObject::from_private` depends on it), and
+        // this macro cannot know which `JSClass` static the user's
+        // `JsClassOps::construct` creates instances with — inventing one
+        // would silently mismatch. The user's `impl JsClassOps for
+        // #struct_name` provides `HostObject` (supertrait) together with
+        // `HOST_CLASS`; the `#[host_fn(method/getter/setter)]` shims
+        // generated inside `impl #struct_name` resolve
+        // `HostObject::from_private` through it and inherit the gate
+        // automatically.
 
         impl #struct_name {
             #[allow(unsafe_op_in_unsafe_fn)]

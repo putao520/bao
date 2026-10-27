@@ -7,6 +7,7 @@ use ::std::ptr;
 use ::std::sync::atomic::{AtomicUsize, Ordering};
 use ::std::sync::OnceLock;
 
+use mozjs::gc::RootedTraceableBox;
 use mozjs::glue::{CreateJobQueue, DeleteJobQueue, JobQueueTraps, RustJobQueue};
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};
@@ -316,9 +317,24 @@ unsafe extern "C" fn run_jobs(cx: *mut JSContext) {
     // Job queue drained — dispatch unhandled promise rejections recorded by
     // the runtime's rejection tracker. Runs after every drain (all pump
     // paths funnel through this trap), on a clean JS stack.
-    if let Some(&hook) = FLUSH_HOOK.get() {
-        // SAFETY: cx is live (trap contract).
-        unsafe { hook(cx) };
+    //
+    // (Bao, BCE) The flush hook (uncaught::flush_pending_rejections) can
+    // unwind when a process.on('unhandledRejection') handler throws — Node
+    // semantics make that fatal via crate::request_exit (route dispatcher)
+    // and the trap unwinds WITHOUT running the tail below. Under load the
+    // unwind carries live GC state (rooted handles, entered realms) straight
+    // into the trap's caller (c1_promises_success_batch SIGSEGV family);
+    // catch_unwind keeps the trap side effect-free while the route's own
+    // request_exit handles process termination. AssertUnwindSafe: the trap
+    // contract is raw-cx FFI, no thread-local poisoning is in play.
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if let Some(&hook) = FLUSH_HOOK.get() {
+            // SAFETY: cx is live (trap contract).
+            unsafe { hook(cx) };
+        }
+    }));
+    if result.is_err() {
+        eprintln!("bao: job_queue flush hook unwound (unhandledRejection handler threw) — continuing");
     }
 }
 
@@ -614,20 +630,40 @@ unsafe fn drain_next_ticks(cx: *mut JSContext) -> usize {
         let realm_cx: &mut mozjs::context::JSContext = &mut realm;
         rooted!(&in(realm_cx) let global_root = global);
         rooted!(&in(realm_cx) let cb_root = cb);
-        let arg_roots: Vec<::mozjs::jsapi::Heap<JSVal>> = arg_vals
-            .iter()
-            .copied()
-            .map(|v| {
-                let h = ::mozjs::jsapi::Heap::default();
-                h.set(v);
-                h
-            })
-            .collect();
-        // HandleValueArray::elements_ is a plain `const Value*`: it must
-        // point at the JSVal BODIES, contiguous. Heap<JSVal> is repr(C) over
-        // UnsafeCell<JSVal> — its slot array IS the value array. (Routing it
-        // through the Handle wrappers' bytes would feed SM pointer bit
-        // patterns as Values — the args arrive as garbage doubles.)
+        // (Bao, BCE) moved-Heap store-buffer edge, e127 class, 2026-10-26
+        // audit-pinned: the previous form built the arg roots as stack
+        // temporaries (default-constructed Heap inside the map closure) +
+        // `set(v)` + move into the Vec. `Heap::set`'s post-write-barrier
+        // registers the edge at the slot's CURRENT address — the closure's
+        // stack slot, reused by every later map iteration — so the move left
+        // the store buffer holding dangling stack edges; the next minor GC
+        // processed them (reading freed/reused stack) → poison value →
+        // shape/garbage-class crash downstream of the require/module-eval
+        // nextTick drain.
+        //
+        // Fixed form = a FLAT Heap slot array built at final addresses + the
+        // tracer channel: defaults are collected first (moving a
+        // default-constructed Heap carries no store-buffer edge — the slot
+        // holds initial()), then the values are set IN PLACE so the
+        // post-write-barrier registers the Vec buffer, which is stable from
+        // there on (len == cap, never grown; boxing moves only the Vec
+        // header, never the buffer). RootedTraceableBox makes the flat
+        // buffer tracer-visible (RootedTraceableSet), so a moving/compacting
+        // GC updates the slots in place — the same dual-channel contract
+        // (barrier-pinned slots + a live trace channel) as the nextTick
+        // ENTRY side above and bun_api's concatArrayBuffers rooting.
+        let mut slots: Vec<Heap<JSVal>> = (0..arg_vals.len()).map(|_| Heap::default()).collect();
+        for (slot, v) in slots.iter_mut().zip(arg_vals.iter().copied()) {
+            slot.set(v);
+        }
+        let arg_roots: RootedTraceableBox<Vec<Heap<JSVal>>> =
+            RootedTraceableBox::from_box(Box::new(slots));
+        // HandleValueArray::elements_ is a plain `const Value*` (bindgen
+        // jsapi.rs): it must point at the JSVal BODIES, CONTIGUOUS.
+        // Heap<JSVal> is repr(C) over UnsafeCell<JSVal> — a flat Heap slot
+        // array IS the value array. (Routing it through the Handle
+        // wrappers' bytes would feed SM pointer bit patterns as Values —
+        // the args arrive as garbage doubles.)
         let argv = JS::HandleValueArray {
             length_: arg_roots.len(),
             elements_: arg_roots.as_ptr() as *const JSVal,

@@ -143,11 +143,14 @@ unsafe fn emit_stream_wrap_deprecation(cx: &mut mozjs::context::JSContext) {
     }
     let code_val = mozjs::jsval::StringValue(&*code_str);
     rooted!(&in(cx) let code_root = code_val);
-    let elems = [msg_root.get(), type_root.get(), code_root.get()];
-    let call_args = HandleValueArray {
-        length_: 3,
-        elements_: elems.as_ptr(),
-    };
+    // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray across
+    // JS_CallFunctionValue (require.rs canary-pinned form).
+    rooted!(&in(cx) let args_array = mozjs_sys::jsgc::ValueArray::<3>::new([
+        msg_root.get(),
+        type_root.get(),
+        code_root.get(),
+    ]));
+    let call_args = JS::HandleValueArray::from(&args_array);
     let mut call_rval = UndefinedValue();
     let call_rval_h = MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData,

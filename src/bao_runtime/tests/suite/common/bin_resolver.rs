@@ -61,7 +61,9 @@ pub fn find_bao_binary() -> PathBuf {
 /// reporting misleading data (verbatim legacy guard semantics).
 pub fn find_bao_binary_gated(staleness_sources: &[&str]) -> PathBuf {
     static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
-    RESOLVED.get_or_init(|| resolve_bao_binary(staleness_sources)).clone()
+    RESOLVED
+        .get_or_init(|| resolve_bao_binary(staleness_sources))
+        .clone()
 }
 
 /// Candidate ladder (union of the five retired inline copies, canonical
@@ -95,7 +97,11 @@ fn candidate_paths() -> Vec<(PathBuf, bool)> {
     if let Ok(t) = std::env::var("CARGO_TARGET_DIR") {
         for profile in ["debug", "release"] {
             for name in ["bao", "bao.exe"] {
-                push_existing(&mut candidates, Path::new(&t).join(profile).join(name), false);
+                push_existing(
+                    &mut candidates,
+                    Path::new(&t).join(profile).join(name),
+                    false,
+                );
             }
         }
     }
@@ -122,7 +128,11 @@ fn candidate_paths() -> Vec<(PathBuf, bool)> {
     if let Some(root) = &root {
         for profile in ["debug", "release"] {
             for name in ["bao", "bao.exe"] {
-                push_existing(&mut candidates, root.join("target").join(profile).join(name), true);
+                push_existing(
+                    &mut candidates,
+                    root.join("target").join(profile).join(name),
+                    true,
+                );
             }
         }
     }
@@ -139,7 +149,9 @@ fn candidate_paths() -> Vec<(PathBuf, bool)> {
 
 /// Parse the `[build] target-dir` value out of a `.cargo/config.toml` body.
 fn config_target_dir(text: &str) -> Option<String> {
-    let line = text.lines().find(|l| l.trim_start().starts_with("target-dir"))?;
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("target-dir"))?;
     let idx = line.find('"')?;
     line[idx + 1..].split('"').next().map(str::to_string)
 }

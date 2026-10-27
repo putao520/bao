@@ -89,6 +89,7 @@ pub mod hot_reloader;
 pub mod initialize;
 pub mod ipc;
 pub mod js_object;
+pub mod cjs_exports;
 pub mod module_loader;
 pub mod rare_data;
 pub mod regular_expression;

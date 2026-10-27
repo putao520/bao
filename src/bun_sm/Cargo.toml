@@ -30,6 +30,15 @@ bun_transpiler = { path = "../transpiler", version = "^0.2.0" }
 bun_url = { path = "../url", version = "^0.2.1" }
 libc = "0.2"
 log = "0.4"
+# CJS named-export static extraction (BUG-ENG-365): OXC AST parse replaces the
+# old runtime Object.defineProperty(exports) hack — SM's ESM linker requires
+# static `export` declarations at ModuleLink time; runtime property writes on
+# the namespace object are invisible to it.
+oxc_parser = "0.52"
+oxc_allocator = "0.52"
+oxc_ast = "0.52"
+oxc_span = "0.52"
+oxc_syntax = "0.52"
 
 [dev-dependencies]
 # bun_bundler (pure Rust, BELOW bun_sm — cycle-free) owns the ret/arg type

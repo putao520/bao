@@ -14,6 +14,7 @@
 
 pub(crate) mod fetch_harness;
 pub(crate) mod h2_framing;
+pub(crate) mod port_probe;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

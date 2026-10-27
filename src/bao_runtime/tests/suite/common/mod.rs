@@ -28,6 +28,7 @@
 
 pub mod bin_resolver;
 pub mod capture_server;
+pub mod port_probe;
 
 use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
@@ -138,7 +139,9 @@ pub fn eval_number(ctx: &mut JsContext, source: &str) -> f64 {
 
 // ---------------------------------------------------------------------------
 // B2 cluster: context setup / event-loop driving / bounded-drain wait
-// (setup_ctx ×9+3, drive_event_loop ×8+4, bounded_drain_hook ×20, wait_until ×6+3)
+// (setup_ctx ×9+3, drive_event_loop ×8+4, bounded_drain_hook ×20; the
+// wait_until ×6+3 iteration-bounded spin family was eradicated by the E27
+// sweep — superseded by [`wait_until_deadline`] + [`pump_passes`])
 // ---------------------------------------------------------------------------
 
 use std::cell::Cell;
@@ -146,7 +149,7 @@ use std::time::{Duration, Instant};
 
 use mozjs::rooted;
 
-// Pump budget shared between [`bounded_drain_hook`] and [`wait_until_with`]
+// Pump budget shared between [`bounded_drain_hook`] and [`wait_until_deadline`]
 // (thread_local is per-process under nextest's one-test-per-process model;
 // 20 verbatim inline copies consolidated).
 thread_local! {
@@ -237,23 +240,66 @@ pub fn drive_event_loop_drain(ctx: &mut JsContext, max_iters: usize) {
 /// for this long while the loop is still ticking ⇒ `PumpStuck` panic.
 pub const PUMP_STALL: Duration = Duration::from_secs(2);
 
+/// One settle-pump tick: realm-aware timer drain (fires due timers),
+/// MiniEventLoop `tick_without_idle` (dispatches queued ConcurrentTasks onto
+/// the JS thread), `RunJobs` (settles reactions), then a 2ms yield. The tick
+/// body is the `drive_event_loop_drain` idiom verbatim (c17/
+/// abort_signal_timeout inline-pump lineage) with the settle sleep kept at
+/// 2ms. Shared by [`pump_until`] and [`pump_passes`].
+// @trace REQ-ENG-004
+fn pump_tick(ctx: &mut JsContext) {
+    let cx_raw = ctx.raw_cx();
+    {
+        let mut cxm = ctx.cx();
+        let global = bao_engine::context::thread_realm_global();
+        if let Some(g) = global {
+            rooted!(&in(cxm) let g_root = g);
+            let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
+            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+            bun_runtime::timers::drain_and_check(realm_cx);
+        } else {
+            bun_runtime::timers::drain_and_check(&mut cxm);
+        }
+    }
+    bun_runtime::timers::with_event_loop(|loop_| {
+        loop_.tick_without_idle(std::ptr::null_mut());
+    });
+    unsafe {
+        mozjs_sys::jsapi::js::RunJobs(cx_raw);
+    }
+    std::thread::sleep(Duration::from_millis(2));
+}
+
+/// Fixed-pass pump: run exactly `passes` [`pump_tick`]s with no settle
+/// predicate and no tripwire — for callers that want N ticks of loop
+/// service (server accept/dispatch pacing), not a settle wait. The
+/// historical form pumped `passes × 5ms` of wall-clock budget through
+/// [`pump_until`] with a constant poll and an always-false settle; that
+/// shape only worked while the no-progress tripwire was dead code (E17) —
+/// with the tripwire revived, a constant poll frozen past [`PUMP_STALL`]
+/// panics, so fixed-pass callers must not route through [`pump_until`].
+// @trace REQ-ENG-004
+pub fn pump_passes(ctx: &mut JsContext, passes: usize) {
+    for _ in 0..passes {
+        pump_tick(ctx);
+    }
+}
+
 /// Unified settle-pump for cross-thread async contracts (fetch ConcurrentTask
 /// delivery, timers, promise reactions): each tick drives all three
-/// actuators — realm-aware timer drain (fires due timers), MiniEventLoop
-/// `tick_without_idle` (dispatches queued ConcurrentTasks onto the JS
-/// thread), `RunJobs` (settles reactions) — then polls `poll_js` through the
-/// caller's eval binding. The tick body is the `drive_event_loop_drain`
-/// idiom verbatim (c17/abort_signal_timeout inline-pump lineage) with the
-/// settle sleep kept at 2ms.
+/// actuators (see [`pump_tick`]) then polls `poll_js` through the caller's
+/// eval binding.
 ///
 /// Exits early the moment `settled(poll)` is true (the inline-pump "marker
 /// left PENDING" semantics); returns the last poll value on `timeout` expiry
 /// (caller asserts on it). No-progress tripwire: if the polled value is
-/// unchanged for [`PUMP_STALL`] of wall clock while the loop is still
-/// ticking and not yet settled, the consumption side is stalled (producer
-/// dead / delivery chain broken) — panic `PumpStuck` immediately, so a
-/// stalled settle surfaces as a diagnostic FAIL naming the poll expression
-/// and the frozen value, not a silent hang.
+/// unchanged for [`PUMP_STALL`] of wall clock SINCE THE FIRST READ while the
+/// loop is still ticking and not yet settled, the consumption side is
+/// stalled (producer dead / delivery chain broken) — panic `PumpStuck`
+/// immediately, so a stalled settle surfaces as a diagnostic FAIL naming the
+/// poll expression and the frozen value, not a silent hang. The first poll
+/// value is the tripwire's BASELINE, not a change: only a value that
+/// differs from a previous poll disarms the zero-progress signature.
 ///
 /// Known limitation (honest boundary): the tripwire only observes *between*
 /// ticks. If a single tick call itself parks at the syscall level
@@ -268,40 +314,32 @@ pub fn pump_until(
     mut eval: impl FnMut(&mut JsContext, &str) -> String,
     mut settled: impl FnMut(&str) -> bool,
 ) -> String {
-    let cx_raw = ctx.raw_cx();
     let deadline = Instant::now() + timeout;
-    let mut last_poll = String::new();
+    // First-read baseline (E17 revival): the previous-value slot starts as
+    // `None`. Seeding it with an empty string made the tripwire dead code
+    // for every poll whose first value was non-empty ("PENDING", a registry
+    // count, ...): the first read compared unequal to "" and permanently
+    // cleared `never_changed` — the main diagnostic face of 40+ files could
+    // not fire.
+    let mut last_poll: Option<String> = None;
     let mut last_change = Instant::now();
     let mut never_changed = true;
     let mut final_poll = String::new();
     while Instant::now() < deadline {
-        {
-            let mut cxm = ctx.cx();
-            let global = bao_engine::context::thread_realm_global();
-            if let Some(g) = global {
-                rooted!(&in(cxm) let g_root = g);
-                let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-                let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-                bun_runtime::timers::drain_and_check(realm_cx);
-            } else {
-                bun_runtime::timers::drain_and_check(&mut cxm);
-            }
-        }
-        bun_runtime::timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        std::thread::sleep(Duration::from_millis(2));
+        pump_tick(ctx);
         final_poll = eval(ctx, poll_js);
         if settled(&final_poll) {
             break;
         }
-        if final_poll != last_poll {
-            last_poll = final_poll.clone();
+        if last_poll.as_deref() != Some(final_poll.as_str()) {
+            // First read (baseline) or a genuine change after it. Only a
+            // change AFTER the first read counts as progress — the first
+            // read must leave the zero-progress signature armed.
+            if last_poll.is_some() {
+                never_changed = false;
+            }
+            last_poll = Some(final_poll.clone());
             last_change = Instant::now();
-            never_changed = false;
         } else if never_changed && last_change.elapsed() >= PUMP_STALL {
             // Tripwire fires ONLY on the zero-progress signature (the c17
             // deadlock shape: producer dead, poll frozen from the first read).
@@ -318,23 +356,38 @@ pub fn pump_until(
     final_poll
 }
 
-/// wait_until core: `iters` probe rounds; each round arms [`HOOK_BUDGET`]
-/// with `budget` then evaluates `js_condition` through the caller's eval
-/// binding (injected — files differ in filename attribution and number
-/// formatting), succeeding on `"y"`.
-/// (masked variants 1ae5c01c ×6 @60 iters, 19e50b48 ×3 @120 iters)
-pub fn wait_until_with(
+/// Load-robust wall-clock condition wait (E21 shape): poll `js_condition`
+/// every 10ms until it answers `"y"` or `secs` elapse.
+///
+/// Why not an iteration-bounded spin: the deleted `wait_until_with` had a
+/// wall window of `iters × eval-latency` (tens of ms — the faster the host,
+/// the shorter the window), racing any awaited state produced on ANOTHER
+/// thread's schedule (E21 cp-drain forensics: the exit landed +10ms AFTER an
+/// 80-iteration spin had already closed its ~1-30ms window — delayed
+/// publication, not loss; 5/15 fleet rounds red). A wall-clock window with
+/// an inter-probe sleep costs nothing when green (idle arrival ≈ 1-5ms) and
+/// turns a scheduler race into an honest bounded wait: red within the
+/// window = genuine event loss (a product defect), not a spin-window
+/// artifact.
+///
+/// `budget` passthrough keeps the bounded-ctx timer drain alive
+/// ([`HOOK_BUDGET`] feeds `setup_ctx_bounded`'s post-eval hook); it is
+/// inert for hookless contexts.
+// @trace REQ-ENG-004
+pub fn wait_until_deadline(
     ctx: &mut JsContext,
     js_condition: &str,
     budget: usize,
-    iters: u32,
+    secs: u64,
     eval: fn(&mut JsContext, &str) -> String,
 ) -> bool {
-    for _ in 0..iters {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < deadline {
         HOOK_BUDGET.with(|b| b.set(budget));
         if eval(ctx, js_condition) == "y" {
             return true;
         }
+        std::thread::sleep(Duration::from_millis(10));
     }
     false
 }

@@ -122,11 +122,9 @@ unsafe fn expr_to_js(
             }
             rooted!(&in(cx_ref) let ctor_obj = big_ctor.to_object());
             rooted!(&in(cx_ref) let ctor_val = ObjectValue(ctor_obj.get()));
-            let arg = StringValue(&*js_str);
-            let call_args = HandleValueArray {
-                length_: 1,
-                elements_: &arg,
-            };
+            rooted!(&in(cx_ref) let call_args_rooted =
+                mozjs_sys::jsgc::ValueArray::<1>::new([StringValue(&*js_str)]));
+            let call_args = JS::HandleValueArray::from(&call_args_rooted);
             let mut rval = UndefinedValue();
             let ok = JS_CallFunctionValue(
                 cx,
@@ -760,11 +758,9 @@ unsafe extern "C" fn jsonc_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         JS_ReportErrorUTF8(cx, c"Bun.JSONC.parse: string allocation failed".as_ptr());
         return false;
     }
-    let arg = StringValue(&*js_str);
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: &arg,
-    };
+    rooted!(&in(cx_ref) let call_args_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([StringValue(&*js_str)]));
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
     let mut rval = UndefinedValue();
     let ok = JS_CallFunctionName(
         cx,

@@ -29,7 +29,9 @@ fn eval_str(ctx: &mut JsContext, code: &str) -> String {
 
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
-    common::wait_until_with(ctx, js_condition, budget, 60, eval_str)
+    // Wall-clock window (E27 sweep): don't race cross-thread producers with
+    // an iteration-bounded spin — see common::wait_until_deadline.
+    common::wait_until_deadline(ctx, js_condition, budget, 10, eval_str)
 }
 
 fn make_ctx() -> JsContext {
@@ -137,43 +139,97 @@ fn net_connect_malformed_port_throws() {
 
 // ─── 3. server.listen({port}) binds the REQUESTED port ────────────────────
 
+/// Retry budget for the probe-release bind race below. One fresh probed
+/// port per attempt; 8 is far beyond the observed 1/5 collision rate.
+const LISTEN_BIND_RETRIES: u32 = 8;
+
 #[test]
 fn server_listen_options_form_binds_requested_port() {
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = make_ctx();
 
-    // Reserve a free port, then release it for the JS server.
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    let wanted = probe.local_addr().unwrap().port();
-    drop(probe);
+    // Port-collision class (E17 fleet observation: 1/5 EADDRINUSE under
+    // parallel suite load). The probe-then-release pattern leaves a window
+    // between the Rust probe's drop and the JS server's bind; a parallel
+    // test process's ephemeral allocation (bind(0) or an outgoing connect)
+    // can claim the port there, and the JS listen fails with
+    // `listen EADDRINUSE`. Node oracle (pinned): a collided listen emits
+    // 'error' with `code === 'EADDRINUSE'` and the listening callback never
+    // fires (bao emits it synchronously — `__net_listen` returns ≤ 0 inside
+    // listen(); the poll below covers both emission shapes). Root fix within
+    // the test's resource domain = retry with a FRESH probed port; the
+    // contract under test — `listen({port: N})` binds the REQUESTED N (never
+    // a random one) — holds per attempt and is asserted on the winning one.
+    for attempt in 0..LISTEN_BIND_RETRIES {
+        // Reserve a free port, then release it for the JS server.
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let wanted = probe.local_addr().unwrap().port();
+        drop(probe);
 
-    let setup = eval_str(
-        &mut ctx,
-        &format!(
-            r#"
-            var net = require('net');
-            globalThis.__done = false;
-            globalThis.__got = -1;
-            var server = net.createServer(function() {{}});
-            // OPTIONS FORM — pre-fix the object matched no typeof branch and
-            // the server bound a RANDOM port (0) instead of {wanted}.
-            server.listen({{ port: {wanted}, host: '127.0.0.1' }}, function() {{
-                globalThis.__got = server.address().port;
-                server.close(function() {{ globalThis.__done = true; }});
-            }});
-            'setup-ok'
-        "#
-        ),
-    );
-    assert_eq!(setup, "setup-ok", "listen options-form wiring must eval cleanly");
+        let setup = eval_str(
+            &mut ctx,
+            &format!(
+                r#"
+                var net = require('net');
+                globalThis.__done = false;
+                globalThis.__got = -1;
+                globalThis.__err = '';
+                var server = net.createServer(function() {{}});
+                server.on('error', function(e) {{
+                    globalThis.__err = (e && e.code) || String(e && e.message);
+                }});
+                // OPTIONS FORM — pre-fix the object matched no typeof branch
+                // and the server bound a RANDOM port (0) instead of {wanted}.
+                server.listen({{ port: {wanted}, host: '127.0.0.1' }}, function() {{
+                    globalThis.__got = server.address().port;
+                    server.close(function() {{ globalThis.__done = true; }});
+                }});
+                'setup-ok'
+            "#
+            ),
+        );
+        assert_eq!(setup, "setup-ok", "listen options-form wiring must eval cleanly");
 
-    let done = wait_until(&mut ctx, "globalThis.__done === true ? 'y' : 'n'", 50);
-    assert!(done, "listen({{port}}) must settle");
-    let got = eval_str(&mut ctx, "String(globalThis.__got)");
-    assert_eq!(
-        got,
-        wanted.to_string(),
-        "listen({{port: {wanted}}}) must bind the REQUESTED port (pre-fix: random port 0)"
+        let done = wait_until(
+            &mut ctx,
+            "globalThis.__done === true || globalThis.__err !== '' ? 'y' : 'n'",
+            50,
+        );
+        assert!(
+            done,
+            "listen({{port}}) must settle (err: {})",
+            eval_str(&mut ctx, "globalThis.__err")
+        );
+
+        let bound = eval_str(&mut ctx, "globalThis.__done === true ? 'y' : 'n'") == "y";
+        if !bound {
+            let err = eval_str(&mut ctx, "globalThis.__err");
+            // Bao's listen failure emits `new Error("listen EADDRINUSE")` — a
+            // plain Error with NO `.code` property (node adds `code`; the
+            // oracle's `code === 'EADDRINUSE'` does not transfer), so match
+            // on the message text.
+            if err.contains("EADDRINUSE") && attempt + 1 < LISTEN_BIND_RETRIES {
+                // Lost the release-rebind race — fresh probe, retry.
+                continue;
+            }
+            panic!(
+                "listen({{port: {wanted}}}) attempt {} failed: {err}",
+                attempt + 1
+            );
+        }
+
+        let got = eval_str(&mut ctx, "String(globalThis.__got)");
+        assert_eq!(
+            got,
+            wanted.to_string(),
+            "listen({{port: {wanted}}}) must bind the REQUESTED port (pre-fix: random port 0)"
+        );
+        return;
+    }
+    // Fail-closed guard: every path inside the loop either retries, asserts,
+    // or returns; this is only hit if the retry accounting above is broken.
+    panic!(
+        "listen options-form: exhausted {LISTEN_BIND_RETRIES} probed ports without a clean bind"
     );
 }

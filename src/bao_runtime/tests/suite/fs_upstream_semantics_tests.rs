@@ -60,7 +60,7 @@ fn js_escape(p: &std::path::Path) -> String {
 fn truncate_sync_undefined_len_is_zero() {
     let mut ctx = setup_ctx();
 
-    let dir = std::env::temp_dir().join("bao_fs_upstream_trunc_sync");
+    let dir = std::env::temp_dir().join(format!("bao_fs_upstream_trunc_sync_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f1 = dir.join("undefined_len.txt");
@@ -102,7 +102,7 @@ fn truncate_sync_undefined_len_is_zero() {
 fn promises_truncate_undefined_len_is_zero() {
     let mut ctx = setup_ctx();
 
-    let dir = std::env::temp_dir().join("bao_fs_upstream_trunc_prom");
+    let dir = std::env::temp_dir().join(format!("bao_fs_upstream_trunc_prom_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f1 = dir.join("undefined_len.txt");
@@ -157,7 +157,7 @@ fn promises_truncate_undefined_len_is_zero() {
 fn ftruncate_sync_undefined_len_is_zero() {
     let mut ctx = setup_ctx();
 
-    let dir = std::env::temp_dir().join("bao_fs_upstream_ftrunc_sync");
+    let dir = std::env::temp_dir().join(format!("bao_fs_upstream_ftrunc_sync_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f1 = dir.join("undefined_len.txt");

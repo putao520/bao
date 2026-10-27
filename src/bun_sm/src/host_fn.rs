@@ -78,8 +78,10 @@ pub unsafe fn new_runtime_function(
 /// Trait for JS class construction operations.
 ///
 /// Implemented by types annotated with `#[bao_engine_macros::JsClass]`.
-/// The macro generates `HostObject` impl automatically; users must
-/// implement `JsClassOps` to provide the constructor logic.
+/// Users must implement `JsClassOps` to provide the constructor logic; the
+/// `HostObject` supertrait brings `HOST_CLASS`, which every implementor must
+/// declare with its exact `JSClass` static — `from_private`'s class gate
+/// (BCE-20261025-FFI-SLOT-GATE) depends on it.
 pub trait JsClassOps: HostObject {
     /// Construct a new instance of this class from JS call arguments.
     ///
@@ -233,18 +235,49 @@ pub fn install_console(
 // ---------------------------------------------------------------------------
 
 pub trait HostObject: Sized {
+    /// The exact `JSClass` of the JS instances that carry `Self` in reserved
+    /// slot 0. Required so [`HostObject::from_private`] can run the class
+    /// gate BEFORE the slot read: the generated `#[host_fn(method/getter/
+    /// setter)]` shims feed a possibly-foreign `args.thisv()` straight in,
+    /// and without the class identity the gate could not be injected here
+    /// once for the whole macro fan-out. The compiler forces every
+    /// implementor to declare it (fail-closed — an implementation without a
+    /// declared class does not compile).
+    /// @trace REQ-ENG-004
+    const HOST_CLASS: &'static JSClass;
+
     /// Extract a native pointer from a JS object's reserved slot 0.
     ///
     /// # Safety
-    /// `thisv` must be a JS value containing a JSObject with a valid host pointer
-    /// stored in reserved slot 0.
+    /// `cx` must be a live JSContext on the JS thread. `thisv` may be ANY JS
+    /// value — foreign receivers (wrong class / plain object) return null;
+    /// only an instance of [`HostObject::HOST_CLASS`] has its slot read.
     /// @trace BCE-20260618-002 [level:regression]
+    /// @trace REQ-ENG-004
     #[allow(unsafe_op_in_unsafe_fn)]
-    unsafe fn from_private(_cx: *mut JSContext, thisv: JSVal) -> *mut Self {
+    unsafe fn from_private(cx: *mut JSContext, thisv: JSVal) -> *mut Self {
         if !thisv.is_object() {
             return ::std::ptr::null_mut();
         }
-        let obj = thisv.to_object();
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
+        // Class gate BEFORE the slot read (BCE-20261025-FFI-SLOT-GATE, same
+        // fix as bun_ffi get_lib/get_callback): on a foreign class the
+        // reserved-slot read lands on the object's fixed-slot area, where
+        // stale nursery-recycled bits pass the private-encoding check below
+        // and the garbage pointer is dereferenced as *mut Self by the
+        // generated shim. JS_InstanceOf with a null CallArgs* is a pure
+        // boolean class comparison and reports nothing; the shim's own
+        // error surface stays the single error surface.
+        if !w2::JS_InstanceOf(
+            &mut wrapped_cx,
+            obj_root.handle(),
+            Self::HOST_CLASS,
+            ::std::ptr::null_mut(),
+        ) {
+            return ::std::ptr::null_mut();
+        }
+        let obj = obj_root.get();
         let mut slot = UndefinedValue();
         JS_GetReservedSlot(obj, HOST_OBJECT_SLOT, &mut slot);
         // Guard non-private doubles before to_private(). SpiderMonkey encodes

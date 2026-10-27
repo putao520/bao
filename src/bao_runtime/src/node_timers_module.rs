@@ -249,13 +249,14 @@ pub fn stamp_promisify_customs(cx: &mut mozjs::context::JSContext, promises_obj:
         rooted!(&in(cx) let global_root = global);
         rooted!(&in(cx) let factory_obj = factory_val.to_object());
         rooted!(&in(cx) let factory_call_val = ObjectValue(factory_obj.get()));
-        // Array-backed args: the slice outlives the call. `promises_root`
-        // was pinned at function entry — its slot tracks any GC move.
-        let elems = [ObjectValue(global_root.get()), ObjectValue(promises_root.get())];
-        let args = HandleValueArray {
-            length_: 2,
-            elements_: elems.as_ptr(),
-        };
+        // Array-backed args are rooted for the whole call: the rooted
+        // ValueArray below tracks GC moves (a bare stack copy would not).
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+        rooted!(&in(cx) let args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+            ObjectValue(global_root.get()),
+            ObjectValue(promises_root.get()),
+        ]));
+        let args = JS::HandleValueArray::from(&args_rooted);
         let mut call_rval = UndefinedValue();
         let called = JS_CallFunctionValue(
             cx.raw_cx(),

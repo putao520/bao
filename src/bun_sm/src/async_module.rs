@@ -118,11 +118,14 @@ impl Queue {
             };
             let cb_val = mozjs::jsval::ObjectValue(cb);
             let module_val = mozjs::jsval::ObjectValue(module);
-            let args = [module_val];
-            let call_args = mozjs::jsapi::HandleValueArray {
-                length_: args.len(),
-                elements_: args.as_ptr(),
-            };
+            // BCE (unrooted-args class, 2026-10-26 sweep): the argument
+            // values MUST live in a ROOTED ValueArray for the whole call —
+            // a bare stack array's JS::Value copies are invisible to GC, so
+            // a collection inside JS_CallFunctionValue's entry leaves them
+            // stale (require.rs canary-pinned form).
+            rooted!(&in(wrapped_cx) let args_array =
+                mozjs_sys::jsgc::ValueArray::<1>::new([module_val]));
+            let call_args = mozjs::jsapi::JS::HandleValueArray::from(&args_array);
             rooted!(&in(wrapped_cx) let global_root = global);
             rooted!(&in(wrapped_cx) let cb_val_root = cb_val);
             let mut rval = mozjs::jsval::UndefinedValue();
@@ -167,11 +170,11 @@ impl Queue {
             } else {
                 mozjs::jsval::ObjectValue(error)
             };
-            let args = [module_val, error_val];
-            let call_args = mozjs::jsapi::HandleValueArray {
-                length_: args.len(),
-                elements_: args.as_ptr(),
-            };
+            // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray,
+            // same contract as on_wake_handler above.
+            rooted!(&in(wrapped_cx) let args_array =
+                mozjs_sys::jsgc::ValueArray::<2>::new([module_val, error_val]));
+            let call_args = mozjs::jsapi::JS::HandleValueArray::from(&args_array);
             rooted!(&in(wrapped_cx) let global_root = global);
             rooted!(&in(wrapped_cx) let cb_val_root = cb_val);
             let mut rval = mozjs::jsval::UndefinedValue();

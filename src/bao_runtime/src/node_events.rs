@@ -5,14 +5,14 @@ use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicU64, Ordering};
 use bun_core::ZBox;
 
-
 use mozjs::glue::JS_GetReservedSlot;
 use mozjs::jsapi::*;
-use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, PrivateValue, UndefinedValue};
+use mozjs::jsval::{BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
 use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove};
+use crate::slot_gate::set_slot;
 use crate::require::cache_builtin;
 
 /// Global counter for generating unique GcStore keys for event listeners.
@@ -29,13 +29,6 @@ struct EmitterState {
     max_listeners: u32,
 }
 
-/// Internal property name for storing EmitterState on any JS object.
-/// Uses \x00 prefix so it's invisible to JS property enumeration.
-const STATE_PROP: &[u8] = b"\x00__ee_state\0";
-
-#[allow(dead_code)]
-const SLOT_STATE: u32 = 0;
-
 static EMITTER_CLASS: JSClass = JSClass {
     name: c"EventEmitter".as_ptr(),
     flags: (1 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
@@ -49,6 +42,24 @@ thread_local! {
     /// GC-safe: GcStore key for the EventEmitter prototype object.
     static EMITTER_PROTO_KEY: RefCell<Option<String>> = const { RefCell::new(None) };
 }
+
+/// EmitterState carrier: a native-private JS `WeakMap` (the exact shape
+/// node's own internal/event_target port in this tree already uses for the
+/// same problem). The WeakMap object itself is anchored in `gc_store`
+/// (`EMITTER_WEAKMAP_KEY`) — JS never gets a reference to it, so its VALUES
+/// (native-constructed opaque state-holder objects) are unreachable and
+/// unforgeable from script. Keys are weak: a dead emitter's entry is cleared
+/// by the engine, so nothing native pins an idle/failed wrapper — the
+/// retention contract upstream 367d939d9a requires.
+///
+/// STATE BOX: each entry's value object holds the `Box<EmitterState>` raw
+/// pointer in its reserved slot (slot 0 of EMITTER_HOLDER_CLASS). The holder
+/// dies with the WeakMap entry; the Rust `EmitterState` box behind the
+/// pointer is reclaimed by the paired `FinalizationRegistry` callback
+/// (`emitter_state_finalized`, registered in `install`) — engine-scheduled,
+/// so a delayed finalization only holds the plain-Rust state struct, never
+/// the emitter object.
+const EMITTER_WEAKMAP_KEY: &str = "builtin:emitter_state_weakmap";
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
     unsafe {
@@ -196,8 +207,9 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
             // Static event-registration helpers that node exposes on the
             // module export (function) object:
-            //   `events.on(emitter, event, handler)` /
-            //   `events.once(emitter, event, handler)`.
+            //   `events.once(emitterOrTarget, name[, options])` → Promise
+            //   (node v24 promise form; installed as a bootstrap trampoline —
+            //   see events_static_once) and `events.on(emitter, name)`.
             // listenerCount / getEventListeners are defined above; on/once
             // complete the static surface.
             w2::JS_DefineFunction(
@@ -213,7 +225,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 ctor.handle(),
                 c"once".as_ptr(),
                 Some(events_static_once),
-                3,
+                2,
                 JSPROP_ENUMERATE as u32,
             );
         }
@@ -222,6 +234,16 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // require('events') === require('events').EventEmitter).
         cache_builtin(cx, "events", ctor.get());
     }
+
+    // @trace REQ-ENG-004 [api:internal/event_target] — realm-init hook of the
+    // internal/event_target JS port. Deliberately a NO-OP (see
+    // node_internal_event_target::install): the module body must not be
+    // evaluated during realm init — install-time evaluation poisons the
+    // realm (any later module-body variable access segfaults; GC-pressure
+    // class, root cause registered). The real evaluation happens lazily on
+    // the first `require('internal/event_target')` via the require.rs wiring
+    // (node_internal_event_target::ensure_installed), in user context.
+    crate::node_internal_event_target::install(cx);
 }
 
 const METHODS: &[JSFunctionSpec] = &[
@@ -401,91 +423,156 @@ const METHODS: &[JSFunctionSpec] = &[
     },
 ];
 
-fn get_state(cx: *mut JSContext, obj: *mut JSObject) -> Option<EmitterState> {
-    unsafe {
-        // Hidden property only — reserved slots are unsafe for plain JS objects
-        // (Socket/Server inherit from EE via prototype chain but their own class
-        // differs from EMITTER_CLASS, so reading slot 0 returns arbitrary data
-        // that may pass is_double() but crash to_private()).
-        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        rooted!(&in(wrapped_cx) let obj_root = obj);
-        let mut hidden = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            obj_root.handle().into(),
-            STATE_PROP.as_ptr() as *const ::std::os::raw::c_char,
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut hidden,
-            },
-        );
-        if hidden.is_double() {
-            // Guard against non-private doubles (defensive — to_private asserts
-            // high 16 bits are zero, which only holds for PrivateValue-encoded ptrs).
-            if (hidden.asBits_ & 0xFFFF000000000000) != 0 {
-                return None;
-            }
-            let ptr = hidden.to_private() as *mut EmitterState;
-            if !ptr.is_null() {
-                // SINGLE-OWNER INVARIANT: the hidden prop OWNS the Box at
-                // rest; readers only take a CLONE. The previous
-                // `*Box::from_raw(ptr)` took ownership out while the prop
-                // kept pointing at it — any listener that re-entered an ee_*
-                // op on the SAME object (the canonical Node shapes:
-                // sock.on('data', () => sock.end()), child.on('exit', ...)
-                // re-emitting) ran `Box::from_raw` on the already-freed
-                // pointer a second time → double free + SIGSEGV
-                // (EmitterState ≈ 112B, matches the mimalloc report).
-                // Nested ops now each hold an independent snapshot; the last
-                // set_state wins. ee_emit's write-back reconciles its snapshot
-                // with the live list afterwards (see the write-back comment
-                // there), so same-event nesting no longer drifts.
-                return Some((&*ptr).clone());
-            }
-        }
+/// The native-private carrier WeakMap (constructed on first use, gc_store
+/// anchored under `EMITTER_WEAKMAP_KEY`). JS never obtains a reference to
+/// it, so its values (native-built state holders) are unforgeable.
+unsafe fn emitter_weakmap(cx: *mut JSContext) -> *mut JSObject {
+    if let Some(existing) = gc_store_get(cx, EMITTER_WEAKMAP_KEY).filter(|p| !p.is_null()) {
+        return existing;
     }
-    None
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut source_text = mozjs::rust::transform_str_to_source_text("new WeakMap()");
+    let mut rval = UndefinedValue();
+    let rval_handle = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut rval,
+    };
+    let filename = ZBox::from_bytes("<internal/emitter_weakmap>".as_bytes());
+    let opts = mozjs::glue::NewCompileOptions(cx, filename.as_ptr(), 1);
+    if opts.is_null() {
+        JS_ClearPendingException(cx);
+        return ::std::ptr::null_mut();
+    }
+    let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut source_text, rval_handle);
+    mozjs::glue::DeleteCompileOptions(opts);
+    if !ok || !rval.is_object() {
+        // Engine exception stays pending — propagate loudly (no fallback).
+        return ::std::ptr::null_mut();
+    }
+    let wm = rval.to_object();
+    gc_store_insert(cx, EMITTER_WEAKMAP_KEY, wm);
+    wm
+}
+
+/// Call a WeakMap method (`get` / `set`) with one argument. `JS_CallFunctionName`
+/// shape mirrors the node_net `__net_make_socket` precedent.
+unsafe fn wm_call(cx: *mut JSContext, wm: *mut JSObject, name: *const i8, arg: JSVal) -> JSVal {
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let wm_root = wm);
+    rooted!(&in(wrapped_cx) let arg_root = arg);
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(wrapped_cx) let argv_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([arg_root.get()]));
+    let argv = mozjs_sys::jsapi::JS::HandleValueArray::from(&argv_rooted);
+    let mut rval = UndefinedValue();
+    let ok = JS_CallFunctionName(
+        cx,
+        wm_root.handle().into(),
+        name,
+        &argv,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    if !ok {
+        JS_ClearPendingException(cx);
+        return UndefinedValue();
+    }
+    rval
+}
+
+/// Slot 0 of `EMITTER_HOLDER_CLASS` carries the `Box<EmitterState>` raw
+/// pointer. Holder objects are only ever referenced by the native-private
+/// WeakMap — script cannot reach one, so the private pointer is unforgeable
+/// (the original `\x00__ee_state` forgery vector stays closed).
+static EMITTER_HOLDER_CLASS: JSClass = JSClass {
+    name: c"EmitterStateHolder".as_ptr(),
+    flags: (1 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: ::std::ptr::null(),
+    spec: ::std::ptr::null(),
+    ext: ::std::ptr::null(),
+    oOps: ::std::ptr::null(),
+};
+
+unsafe fn holder_box<'a>(cx: *mut JSContext, holder: *mut JSObject) -> Option<&'a mut EmitterState> {
+    let _ = cx;
+    let mut sv = UndefinedValue();
+    JS_GetReservedSlot(holder, 0, &mut sv);
+    if !sv.is_double() {
+        return None;
+    }
+    // `set_slot` stores the pointer as a PrivateValue (tagged payload, not a
+    // plain double) — read it back with `to_private()` (slot_gate precedent).
+    let ptr = sv.to_private() as *mut EmitterState;
+    if ptr.is_null() {
+        return None;
+    }
+    Some(&mut *ptr)
+}
+
+fn get_state(cx: *mut JSContext, obj: *mut JSObject) -> Option<EmitterState> {
+    // WeakMap lookup by the emitter OBJECT itself (identity key — the engine
+    // resolves moving-GC identity internally, no raw-address key, no ABA).
+    // SINGLE-OWNER (unchanged): readers take a CLONE.
+    let _ = cx;
+    if obj.is_null() {
+        return None;
+    }
+    unsafe {
+        let wm = emitter_weakmap(cx);
+        if wm.is_null() {
+            return None;
+        }
+        let holder = wm_call(cx, wm, c"get".as_ptr(), ObjectValue(obj));
+        if !holder.is_object() {
+            return None;
+        }
+        holder_box(cx, holder.to_object())
+            .map(|state| state.clone())
+    }
 }
 
 fn set_state(cx: *mut JSContext, obj: *mut JSObject, state: EmitterState) {
+    // Build the holder (private class, reserved slot 0 = Box pointer), then
+    // WeakMap.set(emitter, holder). The old entry's holder (if any) is
+    // dropped with its Rust box at finalization; replace is single-owner.
+    if obj.is_null() {
+        return;
+    }
     unsafe {
-        // Hidden property only — see get_state for why reserved slots are unsafe.
-        //
-        // SINGLE-OWNER INVARIANT (see get_state): free the Box being replaced.
-        // Without this, every set_state leaked the previous state — benign
-        // while get_state still consumed the Box, a growing leak now that
-        // readers only clone.
-        {
-            let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-            rooted!(&in(wrapped_cx) let obj_root = obj);
-            let mut old = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                obj_root.handle().into(),
-                STATE_PROP.as_ptr() as *const ::std::os::raw::c_char,
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut old,
-                },
-            );
-            if old.is_double() && (old.asBits_ & 0xFFFF000000000000) == 0 {
-                let old_ptr = old.to_private() as *mut EmitterState;
-                if !old_ptr.is_null() {
-                    drop(Box::from_raw(old_ptr));
-                }
-            }
+        let wm = emitter_weakmap(cx);
+        if wm.is_null() {
+            return;
         }
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
         let boxed = Box::new(state);
-        let val = PrivateValue(Box::into_raw(boxed) as *const ::std::os::raw::c_void);
-        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        rooted!(&in(wrapped_cx) let obj_root = obj);
-        rooted!(&in(wrapped_cx) let val_root = val);
-        JS_DefineProperty(
+        let holder = w2::JS_NewObject(cx_ref, &EMITTER_HOLDER_CLASS);
+        if holder.is_null() {
+            ::std::mem::forget(boxed);
+            return;
+        }
+        set_slot(holder, 0, Box::into_raw(boxed) as *const ::std::os::raw::c_void);
+        rooted!(&in(wrapped_cx) let arg_val = ObjectValue(holder));
+        rooted!(&in(wrapped_cx) let key_val = ObjectValue(obj));
+        // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+        rooted!(&in(wrapped_cx) let call_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+            key_val.handle().get(),
+            arg_val.handle().get(),
+        ]));
+        let call = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_rooted);
+        rooted!(&in(wrapped_cx) let wm_root = wm);
+        let mut rval = UndefinedValue();
+        let _ = JS_CallFunctionName(
             cx,
-            obj_root.handle().into(),
-            STATE_PROP.as_ptr() as *const ::std::os::raw::c_char,
-            val_root.handle().into(),
-            (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+            wm_root.handle().into(),
+            c"set".as_ptr(),
+            &call,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            },
         );
     }
 }
@@ -579,9 +666,9 @@ unsafe extern "C" fn event_emitter_constructor(
     // Try normal constructor path (new EventEmitter())
     let this = JS_NewObjectForConstructor(cx, &EMITTER_CLASS, &args);
     if !this.is_null() {
-        // set_state reads a hidden property (JS_GetProperty — a formal GC
-        // point); root `this` so the rval below re-reads the live address
-        // (stale-rval UB class, e206).
+        // set_state allocates the registry entry (RootedTraceableBox::new — a
+        // formal GC point); root `this` so the rval below re-reads the live
+        // address (stale-rval UB class, e206). set_state re-roots internally.
         let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped;
         rooted!(&in(cx_ref) let this_r = this);
@@ -669,7 +756,11 @@ pub unsafe extern "C" fn ee_on(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     let mut state = ensure_state(cx, this_obj_root.get());
     let key = alloc_listener_key(&event_name);
     gc_store_insert(cx, &key, callback);
-    state.listeners.entry(event_name.clone()).or_default().push(key);
+    state
+        .listeners
+        .entry(event_name.clone())
+        .or_default()
+        .push(key);
     // once_flags is INDEX-ALIGNED with listeners (ee_once pushes `true`, so a
     // non-once registration must own a `false` slot). Without it, the vec is
     // short and every flag consumer — emit's once firing, ee_off's flag
@@ -1287,10 +1378,12 @@ unsafe extern "C" fn events_static_on(cx: *mut JSContext, argc: u32, vp: *mut JS
     );
     if on_fn.is_object() {
         let evt_val = *args.get(1).ptr;
-        let call_args = HandleValueArray {
-            length_: 2,
-            elements_: &[evt_val, callback] as *const JSVal,
-        };
+        // (Bao, BCE) rooted ValueArray carrier — the old `&[evt_val, callback]`
+        // temporary slice dangled after the let statement AND its slots were
+        // untraced; ValueArray roots the copies for the whole call.
+        rooted!(&in(wrapped_cx) let call_args_rooted =
+            mozjs_sys::jsgc::ValueArray::<2>::new([evt_val, callback]));
+        let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
         let global = CurrentGlobalOrNull(cx);
         if !global.is_null() {
             rooted!(&in(wrapped_cx) let global_root = global);
@@ -1313,55 +1406,354 @@ unsafe extern "C" fn events_static_on(cx: *mut JSContext, argc: u32, vp: *mut JS
     true
 }
 
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn events_static_once(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc < 3 || !(*args.get(0).ptr).is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
+// ════════════════════════════════════════════════════════════════════════
+// @trace REQ-ENG-006 [api:events.once promise form] — node v24
+// `events.once(emitterOrTarget, name[, options])` returns a Promise
+// resolving with the emitted-args array (or rejecting with the 'error'
+// payload / AbortError). The previous static was a 3-arg
+// registration helper (`events.once(emitter, name, listener)` returns the
+// emitter) — a shape node does NOT have; node-test/parallel/
+// test-events-once.js drives only the promise form.
+//
+// The promise form is a JS port (EVENTS_ONCE_HELPER_JS, node lib/events.js
+// once() adapted) rather than a native reimplementation, for the same
+// reason the internal/event_target module is JS: it duck-types the
+// EventEmitter prototype face (on/removeListener) and the ported
+// EventTarget face (addEventListener + kResistStopPropagation private
+// symbol — unconstructible from Rust), and the promise/listener closures
+// must be JS-visible objects.
+//
+// Bootstrap discipline mirrors node_internal_event_target::ensure_installed:
+// the helper is evaluated lazily on the FIRST `events.once()` call — in
+// user context (never realm init, whose install-time evaluation poisons
+// the realm), once per realm (gc_store cached), and only after the port is
+// evaluated so the integrated AbortSignal (AbortSignal.abort, kEvents
+// slots) and the global EventTarget/Event classes exist.
+const EVENTS_ONCE_KEY: &str = "builtin:events_once_js";
+
+const EVENTS_ONCE_HELPER_JS: &str = r#"(function() {
+  'use strict';
+  // node lib/events.js once() — promise form. The Rust trampoline only
+  // evaluates this AFTER the internal/event_target port is installed, so
+  // AbortSignal/EventTarget are the ported classes and the exported
+  // kResistStopPropagation symbol is the real dispatch face.
+  const K_RESIST = require('internal/event_target').event_target.kResistStopPropagation;
+  const kEmptyObject = Object.freeze({ __proto__: null });
+
+  // node internal/errors.js determineSpecificType — the Received suffix
+  // (oracle: options=fn → "Received function fn"; 1 → "type number (1)").
+  function determineSpecificType(v) {
+    if (v === null) {
+      return 'null';
     }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let emitter_root = (*args.get(0).ptr).to_object());
-    let callback = *args.get(2).ptr;
-    let once_name = ZBox::from_bytes("once".as_bytes());
-    let mut once_fn = UndefinedValue();
+    if (v === undefined) {
+      return 'undefined';
+    }
+    const type = typeof v;
+    if (type === 'string') {
+      return `type string ('${v}')`;
+    }
+    if (type === 'function') {
+      return v.name ? `function ${v.name}` : 'anonymous function';
+    }
+    if (type === 'object') {
+      if (typeof v.constructor === 'function' && v.constructor.name) {
+        return `an instance of ${v.constructor.name}`;
+      }
+      return 'an object';
+    }
+    return `type ${type} (${String(v)})`;
+  }
+
+  function errInvalidArgType(name, expected, actual) {
+    const e = new TypeError(
+      `The "${name}" argument must be of type ${expected}. ` +
+      `Received ${determineSpecificType(actual)}`);
+    e.code = 'ERR_INVALID_ARG_TYPE';
+    return e;
+  }
+
+  // The dot-noun switch is node's createInvalidArgType behavior (oracle:
+  // The "options.signal" property must be an instance of AbortSignal).
+  function errInvalidArgTypeInstance(name, expected, actual) {
+    const noun = name.includes('.') ? 'property' : 'argument';
+    const e = new TypeError(
+      `The "${name}" ${noun} must be an instance of ${expected}. ` +
+      `Received ${determineSpecificType(actual)}`);
+    e.code = 'ERR_INVALID_ARG_TYPE';
+    return e;
+  }
+
+  function validateObject(value, name) {
+    if (value === null || typeof value !== 'object') {
+      throw errInvalidArgType(name, 'object', value);
+    }
+  }
+
+  // oracle: {signal: undefined} passes, {signal: null} / 1 / {} reject.
+  function validateAbortSignal(signal, name) {
+    if (signal === undefined) {
+      return;
+    }
+    if (!(signal instanceof AbortSignal)) {
+      throw errInvalidArgTypeInstance(name, 'AbortSignal', signal);
+    }
+  }
+
+  // node internal/errors.js AbortError (oracle: pre-aborted and abort()
+  // rejections both carry name='AbortError' + code='ABORT_ERR'; a custom
+  // signal.reason is NOT propagated — abort('x') still rejects this shape).
+  function abortError() {
+    const err = new Error('The operation was aborted');
+    err.name = 'AbortError';
+    err.code = 'ABORT_ERR';
+    return err;
+  }
+
+  // node lib/events.js once(). Validation order mirrors the node source:
+  // options object → options.signal → already-aborted → emitter face.
+  async function once(emitter, name, options = kEmptyObject) {
+    validateObject(options, 'options');
+    let signal;
+    if (options.signal !== undefined) {
+      signal = options.signal;
+      validateAbortSignal(signal, 'options.signal');
+    }
+    if (signal?.aborted) {
+      throw abortError();
+    }
+    const isEmitter = typeof emitter?.on === 'function';
+    if (!isEmitter && typeof emitter?.addEventListener !== 'function') {
+      throw errInvalidArgTypeInstance('emitter', 'EventEmitter', emitter);
+    }
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const eventListener = (...args) => {
+        cleanup();
+        resolve(args);
+      };
+      // EventEmitter face: a distinct 'error' listener rejects the promise
+      // with the error payload and is removed on settle (oracle: during a
+      // pending signal-backed wait listenerCount('error') === 1; EventTargets
+      // have no error-reject semantics — an 'error' event resolves).
+      let errorListener;
+      if (isEmitter && name !== 'error') {
+        errorListener = (err) => {
+          cleanup();
+          reject(err);
+        };
+      }
+      const abortListener = () => {
+        cleanup();
+        reject(abortError());
+      };
+      function cleanup() {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (isEmitter) {
+          emitter.removeListener(name, eventListener);
+          if (errorListener !== undefined) {
+            emitter.removeListener('error', errorListener);
+          }
+        } else {
+          emitter.removeEventListener(name, eventListener);
+        }
+        if (signal !== undefined) {
+          signal.removeEventListener('abort', abortListener);
+        }
+      }
+      if (errorListener !== undefined) {
+        emitter.on('error', errorListener);
+      }
+      if (isEmitter) {
+        emitter.on(name, eventListener);
+      } else {
+        emitter.addEventListener(name, eventListener);
+      }
+      if (signal !== undefined) {
+        const signalOpts = { once: true };
+        signalOpts[K_RESIST] = true;
+        signal.addEventListener('abort', abortListener, signalOpts);
+      }
+    });
+  }
+
+  return once;
+})()
+"#;
+
+/// Evaluate the promise-form `events.once` helper and install it as the
+/// module static. Idempotent per realm (gc_store cached). Returns the
+/// installed function object, or None on failure (exception left pending —
+/// the caller must propagate; no silent fallback).
+unsafe fn ensure_events_once_installed(cx: *mut JSContext) -> Option<*mut JSObject> {
+    // The helper requires the ported world: integrated AbortSignal, global
+    // EventTarget/Event classes, dual statics. Idempotent.
+    if !crate::node_internal_event_target::ensure_installed(cx) {
+        return None;
+    }
+    if let Some(existing) = gc_store_get(cx, EVENTS_ONCE_KEY).filter(|p| !p.is_null()) {
+        return Some(existing);
+    }
+    let mut source_text = mozjs::rust::transform_str_to_source_text(EVENTS_ONCE_HELPER_JS);
+    let mut rval = UndefinedValue();
+    let rval_handle = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut rval,
+    };
+    let filename = ZBox::from_bytes("<internal/events_once>".as_bytes());
+    let opts = mozjs::glue::NewCompileOptions(cx, filename.as_ptr(), 1);
+    if opts.is_null() {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut source_text, rval_handle);
+    mozjs::glue::DeleteCompileOptions(opts);
+    if !ok {
+        // Engine exception stays pending; the caller propagates it verbatim
+        // (node parity — a broken bootstrap surfaces as the real error).
+        return None;
+    }
+    if !rval.is_object() {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    let fn_obj = rval.to_object();
+    let mut cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    // Install as the module static so every later `require('events').once`
+    // is the promise form (the trampoline below is no longer reachable).
+    if let Some(ctor) = crate::require::get_builtin(cx, "events").filter(|p| !p.is_null()) {
+        let fn_val = ObjectValue(fn_obj);
+        rooted!(&in(cx_ref) let fn_root = fn_val);
+        rooted!(&in(cx_ref) let ctor_root = ctor);
+        JS_DefineProperty(
+            cx,
+            ctor_root.handle().into(),
+            c"once".as_ptr(),
+            fn_root.handle().into(),
+            (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+        );
+    }
+    gc_store_insert(cx, EVENTS_ONCE_KEY, fn_obj);
+    Some(fn_obj)
+}
+
+/// Fetch a callable static off the events ctor, skipping the current
+/// trampoline itself (pointer identity via `callee`): the
+/// internal/event_target port REPLACES the dual-face statics
+/// (listenerCount / getEventListeners) with implementations that also read
+/// EventTarget kEvents slots — the Rust hidden-state path cannot see those.
+unsafe fn fetch_ctor_dual_static(
+    cx: *mut JSContext,
+    name: &str,
+    callee: *mut JSObject,
+) -> Option<*mut JSObject> {
+    if !crate::node_internal_event_target::ensure_installed(cx) {
+        return None;
+    }
+    let ctor = crate::require::get_builtin(cx, "events").filter(|p| !p.is_null())?;
+    let mut cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let ctor_root = ctor);
+    let name_box = ZBox::from_bytes(format!("{}\0", name).as_bytes());
+    let mut fn_val = UndefinedValue();
     JS_GetProperty(
         cx,
-        emitter_root.handle().into(),
-        once_name.as_ptr(),
+        ctor_root.handle().into(),
+        name_box.as_ptr(),
         MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut once_fn,
+            ptr: &mut fn_val,
         },
     );
-    if once_fn.is_object() {
-        let evt_val = *args.get(1).ptr;
-        let call_args = HandleValueArray {
-            length_: 2,
-            elements_: &[evt_val, callback] as *const JSVal,
-        };
-        let global = CurrentGlobalOrNull(cx);
-        if !global.is_null() {
-            rooted!(&in(wrapped_cx) let global_root = global);
-            rooted!(&in(wrapped_cx) let once_root = once_fn);
-            let mut rval = UndefinedValue();
-            JS_CallFunctionValue(
-                cx,
-                global_root.handle().into(),
-                once_root.handle().into(),
-                &call_args,
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut rval,
-                },
-            );
-        }
+    if !fn_val.is_object() || !is_function(fn_val.to_object()) {
+        return None;
     }
-    args.rval()
-        .set(mozjs::jsval::ObjectValue(emitter_root.get()));
+    let fn_obj = fn_val.to_object();
+    // Still the trampoline itself → the port never replaced it; the native
+    // body below is the authoritative face.
+    if fn_obj == callee {
+        return None;
+    }
+    Some(fn_obj)
+}
+
+/// Re-dispatch the current call to `fn` (bootstrap-installed JS face),
+/// preserving the original arguments; `this` = current global (node module
+/// functions are not `this`-sensitive). Shared with the AbortSignal
+/// bootstrap trampolines (node_internal_event_target) — same lazy-install +
+/// re-dispatch shape.
+pub(crate) unsafe fn redispatch_to_js(
+    cx: *mut JSContext,
+    argc: u32,
+    args: &CallArgs,
+    fn_obj: *mut JSObject,
+) -> bool {
+    let cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    // `JS_CallFunctionValue` takes the callee as `Handle<Value>` — wrap the
+    // object in `ObjectValue` and root the JSVal (never a bare object handle).
+    let fn_val = ObjectValue(fn_obj);
+    rooted!(&in(cx_ref) let fn_root = fn_val);
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        throw_type_error(cx, "events statics require a global object");
+        return false;
+    }
+    rooted!(&in(cx_ref) let global_root = global);
+    // `CallArgs` exposes no length accessor in the Rust bindings — the native
+    // fn's own `argc` parameter is the canonical count (bun_sqlite:1562 and
+    // every other forwarding site use the signature parameter).
+    let mut elements: Vec<JSVal> = Vec::with_capacity(argc as usize);
+    for i in 0..argc {
+        elements.push(*args.get(i).ptr);
+    }
+    let call_args = HandleValueArray {
+        length_: argc as usize,
+        elements_: elements.as_ptr(),
+    };
+    let mut rval = UndefinedValue();
+    let ok = JS_CallFunctionValue(
+        cx,
+        global_root.handle().into(),
+        fn_root.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    if !ok {
+        return false;
+    }
+    args.rval().set(rval);
     true
 }
 
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn events_static_once(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    match ensure_events_once_installed(cx) {
+        Some(once_fn) => redispatch_to_js(cx, argc, &args, once_fn),
+        None => {
+            if JS_IsExceptionPending(cx) {
+                // Bootstrap eval failure — propagate the real engine error.
+                return false;
+            }
+            throw_type_error(cx, "events.once could not be initialized");
+            false
+        }
+    }
+}
+
+// @trace REQ-ENG-006 [api:events.listenerCount dual face] — node v24
+// `events.listenerCount(emitterOrTarget, type)` is DUAL-NATURE: the
+// EventEmitter arm reads the emitter's own listenerCount, the EventTarget
+// arm reads the kEvents slot map (node oracle: AbortSignal counts). The
+// Rust hidden-state body below cannot see EventTarget slots, so the call
+// first bootstraps the internal/event_target port (which REPLACES this
+// static with the dual implementation) and re-dispatches; the native body
+// stays for the EventEmitter face.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn events_static_listener_count(
     cx: *mut JSContext,
@@ -1369,6 +1761,9 @@ unsafe extern "C" fn events_static_listener_count(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    if let Some(dual) = fetch_ctor_dual_static(cx, "listenerCount", args.callee()) {
+        return redispatch_to_js(cx, argc, &args, dual);
+    }
     if argc < 2 || !(*args.get(0).ptr).is_object() {
         args.rval().set(Int32Value(0));
         return true;
@@ -1394,6 +1789,9 @@ unsafe extern "C" fn events_static_listener_count(
     true
 }
 
+// @trace REQ-ENG-006 [api:events.getEventListeners dual face] — same dual
+// dispatch as events_static_listener_count: the port's replacement reads
+// EventTarget kEvents lists; the native body keeps the EventEmitter face.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn events_static_get_event_listeners(
     cx: *mut JSContext,
@@ -1401,6 +1799,9 @@ unsafe extern "C" fn events_static_get_event_listeners(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    if let Some(dual) = fetch_ctor_dual_static(cx, "getEventListeners", args.callee()) {
+        return redispatch_to_js(cx, argc, &args, dual);
+    }
     if argc < 2 || !(*args.get(0).ptr).is_object() {
         let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
         args.rval().set(if arr.is_null() {
@@ -1460,7 +1861,8 @@ unsafe extern "C" fn events_static_get_event_listeners(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::std::collections::HashMap;
+    use ::std::cell::RefCell;
+use ::std::collections::HashMap;
 
     fn make_state() -> EmitterState {
         EmitterState {
@@ -1544,16 +1946,6 @@ mod tests {
         state.listeners.insert("b".to_string(), vec![]);
         state.listeners.clear();
         assert!(state.listeners.is_empty());
-    }
-
-    #[test]
-    fn state_prop_is_null_prefixed() {
-        assert!(STATE_PROP.starts_with(b"\x00"));
-    }
-
-    #[test]
-    fn slot_state_constant() {
-        assert_eq!(SLOT_STATE, 0);
     }
 
     #[test]

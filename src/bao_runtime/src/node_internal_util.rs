@@ -42,7 +42,7 @@ use mozjs::rooted;
 
 use bun_core::ZBox;
 
-use crate::require::cache_builtin;
+use crate::require::{cache_builtin, get_builtin};
 
 const INTERNAL_UTIL_JS: &str = r#"
 (function() {
@@ -280,18 +280,50 @@ const INTERNAL_UTIL_JS: &str = r#"
 })()
 "#;
 
-pub fn install(cx: &mut mozjs::context::JSContext) {
-    // globals.rs carries a single-line install for this wave (concurrent
-    // executor E-utilF shares the file), so the timers family —
-    // `internal/timers`, `internal/util/debounce`, `internal/util/throttle`
-    // — is installed from here. Order matters: debounce/throttle require
-    // nothing from internal/util (their support constants are self-carried),
-    // and `require('util')` above is already cached by node_util::install_util.
-    crate::node_internal_timers::install(cx);
+/// Empty at realm-init time (mirrors `node_internal_event_target::install` /
+/// `node_internal_test_binding::install`): install-time evaluation poisons
+/// the realm — the GC-pressure class where the init-period function-object
+/// allocations push the nursery allocation order over a latent engine cliff,
+/// and any later module-body variable access then segfaults
+/// (timeline-attributed 2026-10-26). The real evaluation happens lazily on
+/// the first `require('internal/util')` via [`ensure_installed`], in user
+/// context, when realm init has fully completed.
+pub fn install(_cx: &mut mozjs::context::JSContext) {}
 
+thread_local! {
+    /// Per-realm once flag: repeat failed evaluations must not re-run the
+    /// whole source on every require attempt (event_target precedent).
+    static NIUTIL_EVAL_DONE: ::std::cell::Cell<bool> = ::std::cell::Cell::new(false);
+}
+
+/// Evaluate the `internal/util` port and cache the module object for the
+/// require() surface. The timers family — `internal/timers`,
+/// `internal/util/debounce`, `internal/util/throttle` — is funneled through
+/// here FIRST (the funnel the install header documents): order matters —
+/// debounce/throttle require nothing from internal/util (their support
+/// constants are self-carried), and `require('util')` is already cached by
+/// node_util::install_util. Idempotent (gc_store cache is the idempotence
+/// boundary). Called from `require_fn` (a JSNative frame): `cx` is live and
+/// the caller propagates a pending exception when evaluation fails.
+pub fn ensure_installed(cx: *mut JSContext) -> bool {
+    NIUTIL_EVAL_DONE.with(|flag| {
+        if flag.get() {
+            return;
+        }
+        flag.set(true);
+        install_eval(cx);
+    });
+    crate::require::get_builtin(cx, "internal/util").is_some()
+}
+
+fn install_eval(raw_cx: *mut JSContext) {
+    // Funnel the timers family first (order contract documented on the
+    // module header). Failure → abort; the pending exception propagates.
+    if !crate::node_internal_timers::ensure_installed(raw_cx) {
+        return;
+    }
     let source = INTERNAL_UTIL_JS;
     unsafe {
-        let raw_cx = cx.raw_cx();
         let mut source_text = mozjs::rust::transform_str_to_source_text(source);
         let mut rval = UndefinedValue();
         let rval_handle = MutableHandle::<Value> {
@@ -300,23 +332,26 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         };
         let filename = ZBox::from_bytes("<internal/util>".as_bytes());
         let opts = NewCompileOptions(raw_cx, filename.as_ptr(), 1);
-        if !opts.is_null() {
-            let ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut source_text, rval_handle);
-            mozjs::glue::DeleteCompileOptions(opts);
-            if !ok {
-                JS_ReportErrorUTF8(raw_cx, c"failed to evaluate internal/util source".as_ptr());
-                return;
-            }
-            if !rval.is_object() {
-                return;
-            }
-            let obj = rval.to_object();
-            rooted!(&in(cx) let obj_rooted = obj);
-            // Same rooting contract as the internal/test/binding precedent:
-            // only cache when evaluation produced a real object; a broken
-            // module must surface as `Cannot find module` at the require()
-            // point, not as an empty exports object.
-            cache_builtin(cx, "internal/util", obj_rooted.get());
+        if opts.is_null() {
+            JS_ClearPendingException(raw_cx);
+            return;
         }
+        let ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut source_text, rval_handle);
+        mozjs::glue::DeleteCompileOptions(opts);
+        if !ok || !rval.is_object() {
+            if ok {
+                JS_ClearPendingException(raw_cx);
+            }
+            return;
+        }
+        // Same rooting contract as the internal/test/binding precedent:
+        // only cache when evaluation produced a real object; a broken
+        // module must surface as `Cannot find module` at the require()
+        // point, not as an empty exports object.
+        let mut wrapped =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx));
+        let obj = rval.to_object();
+        rooted!(&in(wrapped) let obj_rooted = obj);
+        cache_builtin(&mut wrapped, "internal/util", obj_rooted.get());
     }
 }

@@ -5523,11 +5523,13 @@ unsafe fn crypto_async_defer_callback(ctx_ptr: *mut CryptoAsyncCtx) {
             // error slot is null, never undefined (shared by every
             // spawn_crypto_async user: pbkdf2/scrypt/generateKeyPair/
             // generateKey/hkdf/checkPrime/randomFill/generatePrime/argon2).
-            let args_arr = [mozjs::jsval::NullValue(), val_rooted.get()];
-            let cb_args = HandleValueArray {
-                length_: 2,
-                elements_: args_arr.as_ptr(),
-            };
+            // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray
+            // across JS_CallFunctionValue (require.rs canary-pinned form).
+            rooted!(&in(realm_cx) let args_array = mozjs_sys::jsgc::ValueArray::<2>::new([
+                mozjs::jsval::NullValue(),
+                val_rooted.get(),
+            ]));
+            let cb_args = JS::HandleValueArray::from(&args_array);
             let mut rval = UndefinedValue();
             JS_CallFunctionValue(
                 cx,
@@ -5558,11 +5560,11 @@ unsafe fn crypto_async_defer_callback(ctx_ptr: *mut CryptoAsyncCtx) {
                 }
             }
             rooted!(&in(realm_cx) let err_val = mozjs::jsval::ObjectValue(err_obj.get()));
-            let args_arr = [err_val.get()];
-            let cb_args = HandleValueArray {
-                length_: 1,
-                elements_: args_arr.as_ptr(),
-            };
+            // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray
+            // (require.rs canary-pinned form).
+            rooted!(&in(realm_cx) let args_array =
+                mozjs_sys::jsgc::ValueArray::<1>::new([err_val.get()]));
+            let cb_args = JS::HandleValueArray::from(&args_array);
             let mut rval = UndefinedValue();
             JS_CallFunctionValue(
                 cx,

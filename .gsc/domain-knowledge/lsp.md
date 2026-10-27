@@ -88,6 +88,7 @@ spec_read(action="traverse", dir=".spec", filePath=".spec/10-REQUIREMENTS.html",
 | `architect` | MCP schema 只收空对象 | 需 `action` 字段（consult/audit/review/analyze/retrospect/essential_audit）——CC 侧调不了带参形态，是插件已知断连形态 |
 | `spec_read` | DOM action 枚举只在报错里 | 合法 action=select/xpath/traverse/text/attributes/compute/html/extract；`read`/`search` 不存在；selector=CSS（简单选择器，`>`/`*` 组合器拒）；必带 `filePath` |
 | `spec_migrate` | action=migrate 不存在 | 合法=run/single/verify/migrate_verify |
+| `search_code` literal | **含括号 pattern 全仓 0 命中(2026-10-25 实证:`drop(listener)` grep 3+ 处存在而 literal 0 命中;`TcpListener::bind` 无括号正常)**——括号疑似参与 token 化;横扫用无括号锚点+定点 sed 复核交叉验证 |
 | `search_code` | `ok:true` 可信度陷阱 | poolSize=0 时恒空结果——先 `cache_stats` 判池 |
 
 **通用判别法**：任何 gsc MCP 工具 400 报错，先读报错正文——它比 schema 诚实（合法枚举/必填字段都在报错串里）；报错循环 2 次以上=换径（CLI/直调 import/Read 工具），禁第三次同姿势重试。

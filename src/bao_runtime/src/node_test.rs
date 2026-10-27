@@ -1,4 +1,4 @@
-// @trace REQ-ENG-009 [api:node:test] — Node.js test runner module
+// @trace REQ-ENG-048 [api:node:test] — Node.js test runner module
 // @trace REQ-ENG-048 [api:node:test] — official-suite runner bridge surface:
 // TestContext (t.test/t.diagnostic/t.todo/t.skip/t.plan + name/fullName/
 // filePath), snapshot + expectFailure + getTestContext + only/skip/todo
@@ -21,12 +21,16 @@
 //!    `test: function(){}` stub into the builtin cache — even under
 //!    `bao test`, node:test files registered nothing and reported 0/0.
 //!    All bridging is now resolved lazily at call time.
-//! 2. **Plain-run fake pass**: only `bao test` (cli.rs → run_test_file →
-//!    run_bun_tests_report) drives registered tests. In any other mode
-//!    (`bao run`, `-e`, library embedding) registration would silently
-//!    no-op and the user would believe tests passed. test()/describe()/it()
-//!    and the hooks now refuse with an explicit throw unless
-//!    `process.argv[1] === 'test'` (the `bao test` subcommand).
+//! 2. **Run-form execution (node parity)**: `bao test` (cli.rs →
+//!    run_test_file → run_bun_tests_report) drives registered tests from
+//!    the Rust side. Every other form (`bao run <file>`, `bao -e`) follows
+//!    node's `node file.js` contract: registration is accepted, and the
+//!    FIRST gated registration arms a one-shot exit-drain that runs the
+//!    SAME runner core after the main module has finished, renders the
+//!    report on stderr (the same ✓/✗ + counters shape the bao test CLI
+//!    renders) and carries failures in the exit code (`failed > 0` →
+//!    `process.exitCode = 1`). An explicit `test.run()` call keeps
+//!    ownership of execution (no double run, no spurious 0/0 line).
 //!
 //! ## Architecture
 //!
@@ -99,14 +103,112 @@ const TEST_SOURCE: &str = r#"
   }
 
   // ── runner gate ──
-  // `bao test` is the only mode that executes registered suites
-  // (runtime.rs run_test_file → run_bun_tests_report). Everywhere else,
-  // registration would silently no-op and fake a pass. Fail closed.
+  // @trace REQ-ENG-048 — two-form gate (node parity). `bao test`
+  // (process.argv[1] === 'test') keeps the Rust-driven form: cli.rs
+  // run_test_file → run_bun_tests_report starts the runner itself, so
+  // registration passes through WITHOUT arming (no double run). Every
+  // other form (`bao run <file>`, `bao -e`) follows node's `node file.js`
+  // contract: registration is accepted, and the FIRST gated registration
+  // arms a one-shot exit-drain — after the main module has finished, the
+  // same runner core executes what was registered, renders the report on
+  // stderr (the same ✓/✗ + counters shape the bao test CLI renders) and
+  // carries failures in the exit code (failed > 0 → process.exitCode = 1).
+  //
+  // Ordering holds without extra machinery: the drain anchor is a
+  // setTimeout(0), and due timers fire inside the run loop's drain pass —
+  // which only starts AFTER the main module evaluation completes — so
+  // tests never start mid-module (node ordering). The run loop stays
+  // alive while the runner chain and its async dependencies settle (the
+  // standard liveness predicate: timers/servers/fetch/fs/crypto/...), and
+  // 'exit' listeners still fire only after the suites (same ordering the
+  // bao test path implements). A hung test body pins the loop exactly
+  // like node's run-form (no built-in timeout there either) — a hang is
+  // honest; a silent 0/0 pass is not.
+  var _drainArmed = false;
+  var _explicitRun = false;
   function _runnerGate() {
     var argv = (_g.process && _g.process.argv) || [];
-    if (argv[1] !== 'test') {
-      throw new Error("node:test requires `bao test <file>`: this process is not the bao test runner (process.argv[1] !== 'test'), so registered tests would never execute and would silently fake a pass. Re-run with: bao test <file>");
+    if (argv[1] === 'test') {
+      return; // `bao test`: the Rust runner drives execution.
     }
+    if (_drainArmed) {
+      return;
+    }
+    _drainArmed = true;
+    // Fail closed at the gate: no event-loop anchor or no stderr writer
+    // means registered tests could never be honestly executed and
+    // reported — a loud refusal beats a silent fake pass.
+    if (typeof _g.setTimeout !== 'function') {
+      throw new Error("node:test: no setTimeout on globalThis — the run-form exit-drain has no event-loop anchor, refusing to register tests that would silently never execute.");
+    }
+    if (!_g.process || !_g.process.stderr || typeof _g.process.stderr.write !== 'function') {
+      throw new Error("node:test: no process.stderr.write — the run-form report could not be rendered, refusing to register tests whose outcome would be invisible.");
+    }
+    _g.setTimeout(function() {
+      // An explicit run() call owns execution: its own __run_bun_tests
+      // start already consumed the pending tests, and a second start here
+      // would walk an empty collector and print a spurious 0/0 line.
+      if (_explicitRun) {
+        return;
+      }
+      if (typeof _g.__run_bun_tests !== 'function') {
+        throw new Error("node:test: bun:test runner (globalThis.__run_bun_tests) is not installed — refusing to drop registered tests silently.");
+      }
+      var p = _g.__run_bun_tests();
+      if (!(p && typeof p.then === 'function')) {
+        throw new Error("node:test: __run_bun_tests() did not return a Promise — runner/bridge version skew.");
+      }
+      p.then(function(report) {
+        _renderRunFormReport(report);
+        if (report && report.failed > 0) {
+          _g.process.exitCode = 1;
+        }
+      }, function(err) {
+        // Runner-level rejection: render one counted failure — the run
+        // turns red instead of exiting silently as if nothing was pending.
+        _renderRunFormReport({
+          passed: 0,
+          failed: 1,
+          passes: [],
+          failures: [{
+            name: 'node:test',
+            message: (err && (err.message || String(err))) || String(err),
+            stack: (err && err.stack) || ''
+          }]
+        });
+        _g.process.exitCode = 1;
+      });
+    }, 0);
+  }
+
+  // Same shape the `bao test` CLI renders (bao_cli/src/cli.rs render_report):
+  // ✓ per pass, ✗ + message + first stack line per failure, then the
+  // counters line — all on stderr. The run-form drain is the same report,
+  // one form later.
+  function _renderRunFormReport(report) {
+    var r = report || {};
+    var passes = r.passes || [];
+    var failures = r.failures || [];
+    var i;
+    for (i = 0; i < passes.length; i++) {
+      _g.process.stderr.write('✓ ' + passes[i] + '\n');
+    }
+    for (i = 0; i < failures.length; i++) {
+      var f = failures[i] || {};
+      _g.process.stderr.write('✗ ' + (f.name || '') + '\n');
+      var msg = (f.message === null || f.message === undefined) ? '' : String(f.message);
+      if (msg !== '') {
+        _g.process.stderr.write('  ' + msg + '\n');
+      }
+      var stack = (f.stack === null || f.stack === undefined) ? '' : String(f.stack);
+      if (stack !== '') {
+        var first = stack.split('\n')[0];
+        if (first !== '') {
+          _g.process.stderr.write('  at: ' + first + '\n');
+        }
+      }
+    }
+    _g.process.stderr.write('  -> ' + (r.passed || 0) + ' passed, ' + (r.failed || 0) + ' failed\n');
   }
 
   // ── callable module ──
@@ -268,10 +370,20 @@ const TEST_SOURCE: &str = r#"
         if (typeof result === 'function') {
           // Conditional-variant registrar: the returned entry registers
           // bodies later — keep the injection on those registrations.
+          // @trace REQ-ENG-048 — preserve the registrar's own chain surface
+          // (.skip/.if/.skipIf/...): the bun:test conditional trio returns a
+          // callable no-run registrar (bun 1.4.2 oracle: skipIf/if return
+          // functions on both branches), and callers may chain another
+          // conditional or .skip on it (`test.skipIf(true).skipIf(false)`).
+          // The bare wrapper below used to drop that surface, so any chained
+          // call threw TypeError and failed the file — the same skip-only
+          // no-report class the shim-side registrar normalization closes.
           var registrar = result;
-          result = function() {
+          var wrapped = function() {
             return registrar.apply(this, _wrapLastFnArg(Array.prototype.slice.call(arguments)));
           };
+          for (var regKey in registrar) { wrapped[regKey] = registrar[regKey]; }
+          result = wrapped;
         }
         return result;
       };
@@ -395,53 +507,272 @@ const TEST_SOURCE: &str = r#"
   var afterEachFn = withGate(_btm, 'bun:test', 'afterEach');
 
   // ── mock ──
-  // Node.js node:test exposes test.mock with fn/spyOn/restore/clear/reset.
-  // fn/spyOn delegate to bun:test jest (real call-tracking mocks); restore
-  // actually restores every spy created through this module.
-  var _spies = [];
-  var mockObj = {
-    fn: function(impl) {
-      var jest = _fn(_btm(), 'bun:test', 'jest');
-      return _fn(jest, 'bun:test.jest', 'fn')(impl);
-    },
-    spyOn: function(obj, method) {
-      if (!obj || typeof obj[method] !== 'function') {
-        throw new Error('mock.spyOn requires an object with a function property');
+  // @trace REQ-ENG-048 — node v24.19.0 oracle (2026-10-27, host binary):
+  // MockTracker prototype = [fn, getter, method, property, reset, restoreAll,
+  // setter, timers] with empty own keys; a MockFunction's own keys are
+  // [length, name] with `.mock` on its prototype chain; MockFunctionContext
+  // prototype = [callCount, calls, mockImplementation, mockImplementationOnce,
+  // resetCalls, restore]; every call entry carries all six slots in the
+  // oracle's key order — {arguments, error, result, stack, target, this} —
+  // with `target` a reserved slot the oracle leaves undefined, `this` the
+  // call's receiver, and exactly one of error/result set; resetCalls
+  // REBINDS the backing array (a reference captured before the reset keeps
+  // its content). Pinned oracle behaviors: mockImplementationOnce is a
+  // SINGLE slot consumed by the next call (queue A then B → call 1 "B",
+  // call 2 falls through to the original);
+  // without a queued/permanent implementation the call forwards to `original`
+  // (this-preserving, return/throw transparent); tracker reset() restores
+  // spied properties and clears permanent implementations but leaves
+  // once-queues and call history; ctx.restore() additionally clears the once
+  // queue (calls preserved); the mock function's name is the original's own
+  // name verbatim ("" when anonymous), or "original" when mock.fn() got no
+  // original at all; every context method returns undefined (no chaining).
+  //
+  // The former bridge delegated fn/spyOn to `bun:test.jest` — that face IS
+  // on the bun:test module, but as an OBJECT (Bun's jest compat), so the
+  // `_fn` function-shape guard rejected every mock.fn() call with
+  // "bun:test does not implement bun:test.jest — refusing to fake it"
+  // (final-green4-r4 golden-node corpus: test-fs-write-stream-eagain.mjs
+  // `_write`, `mock.fn(fs.write)`). Even past the guard, a jest-compat mock
+  // is not node's MockFunctionContext contract (calls entry shape,
+  // single-slot once, restore/resetCalls surface), so node:test's mock face
+  // is implemented here natively on oracle semantics — the same
+  // self-contained shape the getter/setter entries already used. Documented
+  // absences (no invented face): mock.timers (node's fake-timer engine — a
+  // backing subsystem this bridge does not have; a fake clock would lie),
+  // and the property-mock's mockImplementation/mockImplementationOnce proto
+  // members (their semantics on a value property are unprobed — omitted
+  // rather than guessed).
+  var _mocks = [];
+
+  function _argTypeErr(argName, value) {
+    var e = new TypeError('The "' + argName + '" argument must be a function. Received ' +
+      (value === null ? 'null' : typeof value));
+    e.code = 'ERR_INVALID_ARG_TYPE';
+    return e;
+  }
+  // node routes method/getter/setter property validation through one check
+  // ("must be a method", ERR_INVALID_ARG_VALUE) — a getter called on a value
+  // property throws the same shape (oracle: getter({x:7},'x') →
+  // ERR_INVALID_ARG_VALUE "Received undefined").
+  function _methodArgErr(received) {
+    var e = new TypeError("The argument 'propertyName' must be a method. Received " + received);
+    e.code = 'ERR_INVALID_ARG_VALUE';
+    return e;
+  }
+
+  // Shared mock core. Returns a RECORD (never exposed to callers): the
+  // MockFunction, its `.mock` MockFunctionContext, and the reset/restore
+  // hooks the tracker walks. `spy` is set when the mock replaced a real
+  // property (method/getter/setter) — restore() puts the original
+  // property descriptor back.
+  function _mkMockFunction(original, initialImpl, spy) {
+    var impl = (typeof initialImpl === 'function') ? initialImpl : null;
+    var onceImpl = null; // single slot — a second mockImplementationOnce overwrites the first (oracle)
+    var calls = [];
+
+    function restoreSpy() {
+      if (spy) Object.defineProperty(spy.object, spy.property, spy.descriptor);
+    }
+    function restoreMock() {
+      restoreSpy();
+      impl = null;
+      onceImpl = null;
+    }
+    var ctxProto = {
+      mockImplementation: function(f) {
+        if (typeof f !== 'function') throw _argTypeErr('implementation', f);
+        impl = f;
+      },
+      mockImplementationOnce: function(f) {
+        if (typeof f !== 'function') throw _argTypeErr('implementation', f);
+        onceImpl = f;
+      },
+      callCount: function() { return calls.length; },
+      // oracle: resetCalls REBINDS the backing array — a reference captured
+      // before the reset keeps its content, later calls land in a fresh one.
+      resetCalls: function() { calls = []; },
+      restore: restoreMock
+    };
+    Object.defineProperty(ctxProto, 'calls', { get: function() { return calls; }, configurable: true });
+    var mockCtx = Object.create(ctxProto);
+    var fnProto = Object.create(Function.prototype);
+    fnProto.mock = mockCtx;
+    // Method shorthand: own keys are exactly [length, name] (no sloppy-mode
+    // prototype/caller/arguments own props — oracle parity), and the strict
+    // this semantics match the oracle's recorded `this` slot (undefined for
+    // plain calls, the receiver for call()/method-style use).
+    var fn = {
+      mockCall() {
+        'use strict'; // node's mock is strict-mode code: a plain call records `this: undefined`
+        // Resolution chain per call: once slot (consumed on use — fires
+        // exactly once) → permanent implementation → original.
+        var target;
+        if (onceImpl !== null) {
+          target = onceImpl;
+          onceImpl = null;
+        } else {
+          target = impl;
+        }
+        if (target === null && typeof original !== 'function') {
+          // node: mock.fn() with neither original nor implementation — the
+          // call is still recorded and returns undefined.
+          calls.push({ arguments: Array.prototype.slice.call(arguments), error: undefined, result: undefined, stack: new Error(), target: undefined, this: this });
+          return undefined;
+        }
+        if (target === null) target = original;
+        var entry = { arguments: Array.prototype.slice.call(arguments), error: undefined, result: undefined, stack: new Error(), target: undefined, this: this };
+        calls.push(entry);
+        try {
+          entry.result = target.apply(this, arguments);
+          return entry.result;
+        } catch (e) {
+          entry.error = e;
+          throw e;
+        }
       }
-      var jest = _fn(_btm(), 'bun:test', 'jest');
-      var mock = _fn(jest, 'bun:test.jest', 'spyOn')(obj, method);
-      _spies.push({ mock: mock, obj: obj, method: method });
-      return mock;
+    }.mockCall;
+    Object.setPrototypeOf(fn, fnProto);
+    Object.defineProperty(fn, 'name', {
+      value: original ? String(original.name || '') : 'original',
+      configurable: true
+    });
+    Object.defineProperty(fn, 'length', { value: original ? original.length : 0, configurable: true });
+    return {
+      fn: fn,
+      ctx: mockCtx,
+      // tracker reset(): restore the spied property + drop the permanent
+      // implementation, KEEP the once queue and call history (oracle quirk:
+      // after reset, a queued mockImplementationOnce still fires).
+      reset: function() {
+        restoreSpy();
+        impl = null;
+      },
+      restore: restoreMock
+    };
+  }
+
+  // method/getter/setter spy installation: replace one property with a mock
+  // function, preserving the rest of the original descriptor.
+  function _installSpy(object, propertyName, kind, descriptor, mockFn) {
+    var desc = { enumerable: descriptor.enumerable, configurable: true };
+    desc[kind] = mockFn;
+    var other = (kind === 'get') ? 'set' : 'get';
+    if (typeof descriptor[other] === 'function') desc[other] = descriptor[other];
+    Object.defineProperty(object, propertyName, desc);
+  }
+
+  function _spyAccessor(object, propertyName, kind, hasImpl, implementation) {
+    var d = Object.getOwnPropertyDescriptor(object, propertyName);
+    if (!d || typeof d[kind] !== 'function') {
+      throw _methodArgErr(d ? String(d[kind]) : 'undefined');
+    }
+    if (hasImpl && typeof implementation !== 'function') throw _argTypeErr('implementation', implementation);
+    var rec = _mkMockFunction(d[kind], hasImpl ? implementation : null,
+      { object: object, property: propertyName, descriptor: d });
+    _installSpy(object, propertyName, kind, d, rec.fn);
+    _mocks.push(rec);
+    return rec.fn;
+  }
+
+  var mockTrackerProto = {
+    fn: function(original, implementation) {
+      if (arguments.length > 0 && typeof original !== 'function') throw _argTypeErr('original', original);
+      if (arguments.length > 1 && typeof implementation !== 'function') throw _argTypeErr('implementation', implementation);
+      var rec = _mkMockFunction(
+        arguments.length > 0 ? original : null,
+        arguments.length > 1 ? implementation : null,
+        null
+      );
+      _mocks.push(rec);
+      return rec.fn;
     },
-    restore: function() {
-      for (var i = 0; i < _spies.length; i++) {
-        var s = _spies[i];
-        if (typeof s.mock.mockRestore === 'function') s.mock.mockRestore();
-        else s.obj[s.method] = s.mock._original;
-      }
-      _spies.length = 0;
+    getter: function(object, propertyName, implementation) {
+      return _spyAccessor(object, propertyName, 'get', arguments.length > 2, implementation);
     },
-    clear: function() {
-      for (var i = 0; i < _spies.length; i++) {
-        if (typeof _spies[i].mock.mockClear === 'function') _spies[i].mock.mockClear();
+    setter: function(object, propertyName, implementation) {
+      return _spyAccessor(object, propertyName, 'set', arguments.length > 2, implementation);
+    },
+    method: function(object, propertyName, implementation) {
+      var d = Object.getOwnPropertyDescriptor(object, propertyName);
+      if (!d || typeof d.value !== 'function') {
+        throw _methodArgErr(d ? String(d.value) : 'undefined');
       }
+      if (arguments.length > 2 && typeof implementation !== 'function') throw _argTypeErr('implementation', implementation);
+      var rec = _mkMockFunction(d.value, arguments.length > 2 ? implementation : null,
+        { object: object, property: propertyName, descriptor: d });
+      Object.defineProperty(object, propertyName, {
+        value: rec.fn,
+        writable: d.writable,
+        enumerable: d.enumerable,
+        configurable: true
+      });
+      _mocks.push(rec);
+      return rec.fn;
+    },
+    // node v24 oracle: property(obj, name, value) replaces a property's VALUE
+    // (a function value is stored verbatim, not called), records every
+    // access as {type: get|set, value, stack: Error}, and returns a handle
+    // whose own key is the property name (a live view of the current value)
+    // with `.mock` on its prototype [accesses, accessCount, resetAccesses,
+    // restore]. Accessor-backed properties delegate to the original
+    // getter/setter while recording (replacing their behavior with a storage
+    // slot would break the property's invariants).
+    property: function(object, propertyName, value) {
+      var d = Object.getOwnPropertyDescriptor(object, propertyName);
+      if (!d) throw _methodArgErr('undefined');
+      var storage = value;
+      var origGet = (typeof d.get === 'function') ? d.get : null;
+      var origSet = (typeof d.set === 'function') ? d.set : null;
+      var accesses = [];
+      var ctxProto = {
+        accessCount: function() { return accesses.length; },
+        resetAccesses: function() { accesses.length = 0; },
+        restore: function() { Object.defineProperty(object, propertyName, d); }
+      };
+      Object.defineProperty(ctxProto, 'accesses', { get: function() { return accesses; }, configurable: true });
+      var rec = {
+        reset: ctxProto.restore,
+        restore: ctxProto.restore
+      };
+      Object.defineProperty(object, propertyName, {
+        get: origGet ? function() {
+          var r = origGet.call(this);
+          accesses.push({ type: 'get', value: r, stack: new Error() });
+          return r;
+        } : function() {
+          accesses.push({ type: 'get', value: storage, stack: new Error() });
+          return storage;
+        },
+        set: origSet ? function(v) {
+          accesses.push({ type: 'set', value: v, stack: new Error() });
+          origSet.call(this, v);
+        } : function(v) {
+          accesses.push({ type: 'set', value: v, stack: new Error() });
+          storage = v;
+        },
+        enumerable: d.enumerable,
+        configurable: true
+      });
+      var handle = Object.create({ mock: Object.create(ctxProto) });
+      // The handle's property-name key reads THROUGH the mocked property
+      // (oracle: reading handle.p records a get access and yields the
+      // current value — a live view, not a snapshot).
+      Object.defineProperty(handle, propertyName, {
+        get: function() { return object[propertyName]; },
+        configurable: true
+      });
+      _mocks.push(rec);
+      return handle;
     },
     reset: function() {
-      for (var i = 0; i < _spies.length; i++) {
-        if (typeof _spies[i].mock.mockReset === 'function') _spies[i].mock.mockReset();
-      }
+      for (var i = 0; i < _mocks.length; i++) _mocks[i].reset();
     },
-    getter: function(obj, prop, impl) {
-      var orig = Object.getOwnPropertyDescriptor(obj, prop);
-      Object.defineProperty(obj, prop, { get: impl, configurable: true });
-      return { mockRestore: function() { if (orig) Object.defineProperty(obj, prop, orig); } };
-    },
-    setter: function(obj, prop, impl) {
-      var orig = Object.getOwnPropertyDescriptor(obj, prop);
-      Object.defineProperty(obj, prop, { set: impl, configurable: true });
-      return { mockRestore: function() { if (orig) Object.defineProperty(obj, prop, orig); } };
+    restoreAll: function() {
+      for (var i = 0; i < _mocks.length; i++) _mocks[i].restore();
     }
   };
+  var mockObj = Object.create(mockTrackerProto);
 
   // ── assert ──
   // Node.js node:test assert subset. Delegates to the Node.js assert module
@@ -500,6 +831,10 @@ const TEST_SOURCE: &str = r#"
   // Delegates to the real bun:test runner. Explicit API — not gated, the
   // caller asked for execution, and a missing runner fails explicitly.
   function runFn() {
+    // Explicit-API ownership: the caller started the runner themselves, so
+    // the run-form exit-drain must not start a second pass over the (now
+    // empty) collector.
+    _explicitRun = true;
     if (typeof _g.__run_bun_tests !== 'function') {
       throw new Error("node:test run(): bun:test runner (globalThis.__run_bun_tests) is not installed — refusing to return a fake empty report.");
     }

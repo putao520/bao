@@ -27,7 +27,9 @@ use common::eval_str;
 
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
-    common::wait_until_with(ctx, js_condition, budget, 60, eval_str)
+    // Wall-clock window (E27 sweep): don't race cross-thread producers with
+    // an iteration-bounded spin — see common::wait_until_deadline.
+    common::wait_until_deadline(ctx, js_condition, budget, 10, eval_str)
 }
 
 /// Hostile spawner signal state: SIGTERM/SIGINT ignored (SIG_IGN survives
@@ -150,9 +152,12 @@ fn spawn_sigterm_kill_converges_under_hostile_spawner_state_body() {
     // child DIED BY SIGTERM, not that it survived to the SIGKILL escalation.
     // (Pin history: -1 sentinel form predated the -signal encoding; the
     // 10-17 farm double-red was this stale pin, misattributed as farm-env.)
+    // node v24 oracle (E39 exit-normalization wave, 2026-10-26): exit event
+    // reports (code=null, signal="SIGTERM") — the -signal numeric wire is
+    // internal only and never surfaced at the JS emit boundary.
     assert_eq!(
-        exit, "-15/15",
-        "the exit event must report death by SIGTERM (code -15 / signal 15), got {exit:?}"
+        exit, "null/SIGTERM",
+        "the exit event must report death by SIGTERM (null + signal name), got {exit:?}"
     );
     eprintln!("[w33] SIGTERM convergence: {elapsed:?} (exit={exit:?})");
 }

@@ -25,6 +25,9 @@ use bao_cdp_client::Browser;
 use base64::Engine;
 use serde_json::{json, Value};
 
+#[path = "common/mod.rs"]
+mod common;
+
 /// Static marker document: no animations, no rAF — the only pixel changes
 /// come from the tests' own Runtime.evaluate mutations, so the change-driven
 /// gate (C1) observes exactly the test's stimulus. `#`-free colors so the
@@ -32,14 +35,6 @@ use serde_json::{json, Value};
 const DOC: &str = "data:text/html,<html><body style='margin:0'>\
 <div id='t' style='width:120px;height:90px;background:rgb(255,0,0)'></div>\
 </body></html>";
-
-fn pick_free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
 
 /// Fresh runtime + settled page. The 800ms pre-pump settles the initial
 /// load's rendering so screencast sessions observe only test-driven changes
@@ -472,25 +467,53 @@ fn ws_face_screencast_e2e() {
     let (event_tx, servo_event_rx) = bao_ipc::unbounded::<ServoEvent>();
     runtime.set_event_channel(event_tx);
 
-    let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
-    let port = pick_free_port();
-    let server_config = ServerConfig::builder()
-        .host("127.0.0.1")
-        .port(port)
-        .build();
-    let mut server = CdpServer::with_registry(server_config, registry.clone());
-    server.set_target_provider(Arc::new(ServoTargetProvider::new(
-        bridge_tx,
-        page.id().to_string(),
-        "127.0.0.1".into(),
-        port,
-    )));
-    let broadcaster = server.broadcaster();
-    std::thread::spawn(move || {
-        let _ = server.run();
-    });
-
-    let ws_url = format!("ws://127.0.0.1:{port}/devtools/page/{}", page.id());
+    // E26 ledger class A (probe-release rebind window): the port probe's
+    // drop and CdpServer's bind leave a window a parallel suite process can
+    // claim (E17 fleet: 1/5 EADDRINUSE); run() fails fast at bind with
+    // Err("bind: ... EADDRINUSE ..."). Root fix inside the test's resource
+    // domain: one FRESH probed port per attempt, bind-verified.
+    let (_port, registry, broadcaster, ws_url) =
+        common::port_probe::retry_probed_port(|port| {
+            let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
+            let mut server = CdpServer::with_registry(
+                ServerConfig::builder().host("127.0.0.1").port(port).build(),
+                Arc::clone(&registry),
+            );
+            server.set_target_provider(Arc::new(ServoTargetProvider::new(
+                bridge_tx.clone(),
+                page.id().to_string(),
+                "127.0.0.1".into(),
+                port,
+            )));
+            let broadcaster = server.broadcaster();
+            // run() binds first: an early Err(EADDRINUSE) = lost the
+            // release-rebind race; the connect-poll confirms a live bind.
+            let (run_tx, run_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = run_tx.send(server.run());
+            });
+            let bind_deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                match run_rx.try_recv() {
+                    Ok(Err(e)) if e.contains("EADDRINUSE") => return None,
+                    Ok(other) => panic!("cdp server run() ended before bind: {other:?}"),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        panic!("cdp server thread died before binding")
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < bind_deadline,
+                    "cdp server did not bind 127.0.0.1:{port} within 10s"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let ws_url = format!("ws://127.0.0.1:{port}/devtools/page/{}", page.id());
+            Some((port, registry, broadcaster, ws_url))
+        });
     let done = Arc::new(AtomicBool::new(false));
     let client = {
         let done = Arc::clone(&done);

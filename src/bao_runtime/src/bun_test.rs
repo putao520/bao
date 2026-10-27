@@ -991,13 +991,47 @@ const BUN_TEST_SHIM: &str = r#"
       beforeEach: [], afterEach: [], beforeAll: [], afterAll: []
     });
   }
+  // @trace REQ-ENG-006 [api:bun:test] — one shared SKIP REGISTRAR for every
+  // conditional registrar's no-run branch.
+  //
+  // node oracle 2026-10-25 (node v24.19.0, local binary): `require('node:test')`
+  // exposes NO conditional registrar (test.skipIf / test.if / test.onlyIf are
+  // all undefined) — these are a bun:test API. bun oracle (bun 1.4.2, local
+  // binary): `test.skipIf(true)` and `test.if(false)` both return a CALLABLE
+  // function ("skipIf(true) returns: function (null)"), so
+  // `test.skipIf(true)('name', fn)` registers and skips. A skip-only suite
+  // reports `1 pass / 3 skip / 1 todo / 0 fail` and EXITS 0.
+  //
+  // The branches used to return a plain no-op object (`{ skip: function(){} }`),
+  // which is NOT callable: a suite that gates every test with
+  // `test.skipIf(process.platform !== 'win32')(name, fn)` — the canonical
+  // win-only gate — threw "test.skipIf is not a function" at FILE-EVAL time,
+  // so the runner never started, no report was published, and `bao test`
+  // counted the file as a FAILURE instead of an all-skipped 0/0 pass (the
+  // "SKIP_or_unsettled_runner_no_report" class, E18). The registrar below
+  // mirrors bun's callable no-op: it IS a function (so calling it never
+  // throws), it registers nothing (counting stays neutral — the report keeps
+  // no skipped/todo row, documented degraded mode), and it returns itself so a
+  // chain like `test.skipIf(true).skip('name', fn)` resolves too.
+  //
+  // `skip`/`todo`/`only` are retained on the registrar even though the bodies
+  // are no-ops: a caller that never invokes the registrar still gets the
+  // documented no-op surface instead of a TypeError.
+  var _noopRegistrar = function() { return _noopRegistrar; };
+  _noopRegistrar.skip = function() { return _noopRegistrar; };
+  _noopRegistrar.todo = function() { return _noopRegistrar; };
+  _noopRegistrar.only = function() { return _noopRegistrar; };
+  _noopRegistrar.if = function() { return _noopRegistrar; };
+  _noopRegistrar.skipIf = function() { return _noopRegistrar; };
+  _noopRegistrar.onlyIf = function() { return _noopRegistrar; };
+
   describeFn.skip = function(name, fn) { /* no-op */ };
   describeFn.todo = function(name, fn) { /* no-op */ };
   describeFn.each = function() { return function(name, fn) { describeFn(name, fn); }; };
   describeFn.only = function(name, fn) { describeFn(name, fn); };
-  describeFn.if = function(cond) { return cond ? describeFn : { skip: function(){} }; };
+  describeFn.if = function(cond) { return cond ? describeFn : _noopRegistrar; };
   // @trace REQ-ENG-006 [api:bun:test] — skipIf(cond): run when cond is falsy.
-  describeFn.skipIf = function(cond) { return cond ? { skip: function(){}, only: function(){}, if: function(){ return { skip: function(){} }; } } : describeFn; };
+  describeFn.skipIf = function(cond) { return cond ? _noopRegistrar : describeFn; };
 
   function itFn(name, fn) {
     if (_currentDescribe) {
@@ -1012,11 +1046,14 @@ const BUN_TEST_SHIM: &str = r#"
   itFn.only = function(name, fn) { itFn(name, fn); };
   // @trace REQ-ENG-006 [api:bun:test] — it.skipIf(cond) runs the test only
   // when cond is falsy. it.onlyIf(cond) is the inverse. bun:test exposes both.
+  // Both no-run branches return the callable _noopRegistrar (see above): the
+  // former bare `{ skip: fn }` object threw TypeError at the caller's
+  // ('name', fn) invocation and failed the whole file (E18 skip-only class).
   itFn.skipIf = function(cond) {
-    return cond ? { skip: function(){}, only: function(){} } : itFn;
+    return cond ? _noopRegistrar : itFn;
   };
   itFn.onlyIf = function(cond) {
-    return cond ? itFn : { skip: function(){}, only: function(){} };
+    return cond ? itFn : _noopRegistrar;
   };
   itFn.failing = function(name, fn) {
     // In failing mode, we expect the test to throw (sync) or reject (async).
@@ -1033,7 +1070,7 @@ const BUN_TEST_SHIM: &str = r#"
   testFn.each = itFn.each;
   testFn.only = itFn.only;
   testFn.failing = itFn.failing;
-  testFn.if = function(cond) { return cond ? testFn : { skip: function(){} }; };
+  testFn.if = function(cond) { return cond ? testFn : _noopRegistrar; };
   testFn.skipIf = itFn.skipIf;
   testFn.onlyIf = itFn.onlyIf;
 

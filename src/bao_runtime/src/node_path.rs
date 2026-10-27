@@ -1819,11 +1819,11 @@ unsafe fn throw_type_error_code(cx: *mut JSContext, msg: &str, code: &str) -> bo
         return false;
     }
     rooted!(&in(cx_ref) let msg_root = StringValue(&*msg_js));
-    let elems = [msg_root.get()];
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: elems.as_ptr(),
-    };
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<1>::new([
+        msg_root.get(),
+    ]));
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
     rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
     let mut err_val = UndefinedValue();
     let called = JS_CallFunctionValue(
@@ -2846,14 +2846,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 macro_rules! attach_glob {
                     ($val:expr, $w:expr) => {{
                         rooted!(&in(wrapped_cx) let target_root = $val);
-                        let elems = [
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+                        rooted!(&in(wrapped_cx) let args_arr_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
                             target_root.get(),
                             ::mozjs::jsval::BooleanValue($w),
-                        ];
-                        let args_arr = HandleValueArray {
-                            length_: 2,
-                            elements_: elems.as_ptr(),
-                        };
+                        ]));
+                        let args_arr = JS::HandleValueArray::from(&args_arr_rooted);
                         let mut call_rval = UndefinedValue();
                         let call_rval_h = MutableHandle::<Value> {
                             _phantom_0: ::std::marker::PhantomData,
@@ -3268,6 +3266,28 @@ pub(crate) fn normalize_path(path: &::std::path::Path) -> PathBuf {
     }
 }
 
+// @trace REQ-ENG-007 [criterion:7] — node posix `path.resolve(path)` 单参核心,
+// `process.permission.has` 的路径包含判定消费(permission_bridge)。直接复用
+// `node_alg::normalize_string` 忠实移植(allow_above_root=false = 绝对路径越根
+// `..` 钳位;oracle v24.19.0:resolve('/tmp/../../../etc') === '/etc'、
+// resolve('/tmp/') === '/tmp'、resolve('') === cwd)。
+// cwd 不可得(cwd 已删等)→ None:调用方 fail-closed 判 false,不猜测路径。
+// 平台边界:posix 语义(bao runtime 权限载具跑 POSIX;Windows 宿主不在本面)。
+pub(crate) fn resolve_against_cwd(path: &str) -> ::std::option::Option<String> {
+    if path.starts_with('/') {
+        return ::std::option::Option::Some(format!(
+            "/{}",
+            node_alg::normalize_string(path, false, b'/', false)
+        ));
+    }
+    let cwd = ::std::env::current_dir().ok()?;
+    let joined = format!("{}/{}", cwd.to_string_lossy(), path);
+    ::std::option::Option::Some(format!(
+        "/{}",
+        node_alg::normalize_string(&joined, false, b'/', false)
+    ))
+}
+
 /// node's deprecated `_makeLong` alias — same function object as the face's
 /// `toNamespacedPath` (node: `win32._makeLong = win32.toNamespacedPath`).
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -3419,4 +3439,37 @@ mod tests {
     // the Windows-host cwd-dependent legs now run the node win32 cores
     // (`resolve_win32` / `relative_win32`), and nothing else consumed the
     // bun_paths POSIX-leg helpers.
+
+    // --- resolve_against_cwd (process.permission path containment core) ---
+    // @trace REQ-ENG-007 [criterion:7] [level:unit]
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_against_cwd_absolute_clamps_beyond_root() {
+        // node resolve 语义(oracle v24.19.0):越根 `..` 钳位、尾斜杠去。
+        assert_eq!(
+            resolve_against_cwd("/tmp/../../../etc").as_deref(),
+            Some("/etc")
+        );
+        assert_eq!(resolve_against_cwd("/tmp/").as_deref(), Some("/tmp"));
+        assert_eq!(resolve_against_cwd("/tmp/../etc").as_deref(), Some("/etc"));
+        assert_eq!(resolve_against_cwd("/").as_deref(), Some("/"));
+        assert_eq!(resolve_against_cwd("/a/./b//c").as_deref(), Some("/a/b/c"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_against_cwd_relative_joins_cwd() {
+        let cwd = ::std::env::current_dir().expect("cwd");
+        let cwd = cwd.to_string_lossy().into_owned();
+        // node resolve('') === cwd;相对路径拼 cwd。
+        assert_eq!(resolve_against_cwd("").as_deref(), Some(cwd.as_str()));
+        assert_eq!(
+            resolve_against_cwd("x").as_deref(),
+            Some(format!("{cwd}/x")).as_deref()
+        );
+        assert_eq!(
+            resolve_against_cwd("./x").as_deref(),
+            Some(format!("{cwd}/x")).as_deref()
+        );
+    }
 }

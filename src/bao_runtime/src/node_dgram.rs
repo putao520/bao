@@ -53,6 +53,13 @@ pub(crate) fn cleanup_for_token(token: u64) -> usize {
     before - reg.len()
 }
 
+/// @trace REQ-ENG-004 — process.getActiveResourcesInfo read face: open UDP
+/// sockets in the registry (one "UDPWrap" per bound socket — node v24
+/// oracle). Global registry, thread-safe; poisoned-lock tolerant.
+pub fn active_udp_socket_count() -> usize {
+    registry().lock().map(|reg| reg.len()).unwrap_or(0)
+}
+
 // ── Native __dgram_bind ──
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dgram_bind(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {

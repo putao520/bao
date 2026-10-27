@@ -563,8 +563,8 @@ impl<'a> ShellInterpreter<'a> {
             Ok(result) => {
                 let exit_code = match result.term {
                     Term::Exited(code) => code as i32,
-                    Term::Signal(sig) => -(sig as i32),
-                    Term::Stopped(sig) => -(sig as i32),
+                    Term::Signal(sig) => shell_signal_exit_code(sig),
+                    Term::Stopped(sig) => shell_signal_exit_code(sig),
                     Term::Unknown(code) => code as i32,
                 };
                 ShellOutput {
@@ -632,7 +632,7 @@ impl<'a> ShellInterpreter<'a> {
 
                 match child.wait_with_output() {
                     Ok(output) => {
-                        let exit_code = output.status.code().unwrap_or(-1);
+                        let exit_code = shell_status_exit_code(output.status);
                         ShellOutput {
                             stdout: output.stdout,
                             stderr: output.stderr,
@@ -745,6 +745,55 @@ struct ShellOutput {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     exit_code: i32,
+}
+
+/// Signal-death exit code on the Bun.Shell/$ result face — bun oracle:
+/// `SignalCode.toExitCode` (bun src/sys/SignalCode.zig:53) maps signals
+/// 1..=31 to 128 + signal, and the shell interpreter consumes it directly
+/// (bun src/runtime/shell/subproc.zig:981). Verified live on bun 1.4.2:
+/// Bun.$`sh -c "kill -9 $$"`.nothrow() → exitCode 137, and the Shell result
+/// face carries NO signalCode property — the null + "SIGKILL" shape is the
+/// Bun.spawnSync / node child_process face (normalize_exit_info), a
+/// different face from the Shell interpreter. bun's own shell face unwraps
+/// `.?` on signals outside 1..=31 (would panic); a runtime must not panic,
+/// so exotic signals take bun's API-face fallback 254
+/// (bun src/runtime/api/bun/subprocess.zig:854 `toExitCode() orelse 254`).
+///
+/// @trace REQ-BAO-API-018 [api:Bun.Shell/$ signal-death exit code]
+fn shell_signal_exit_code(sig: u32) -> i32 {
+    if (1..=31).contains(&sig) {
+        128 + sig as i32
+    } else {
+        254
+    }
+}
+
+/// std::process ExitStatus → Shell-face exit code (the stdin-pipe / cwd
+/// fallback path). Plain exit: the process code. Signal death (unix:
+/// `code()` is None): the same bun Shell oracle as the bun_spawn path, so a
+/// signal death surfaces identically regardless of which producer ran it.
+///
+/// @trace REQ-BAO-API-018 [api:Bun.Shell/$ signal-death exit code]
+#[cfg(unix)]
+fn shell_status_exit_code(status: ::std::process::ExitStatus) -> i32 {
+    use ::std::os::unix::process::ExitStatusExt;
+    match status.code() {
+        Some(code) => code,
+        None => match status.signal() {
+            Some(sig) => shell_signal_exit_code(sig as u32),
+            None => 254,
+        },
+    }
+}
+
+/// Windows has no wait-status signal concept (TerminateProcess reports a
+/// plain exit code), so `code()` is the only face; 254 mirrors the unix
+/// unknown-cause fallback.
+///
+/// @trace REQ-BAO-API-018 [api:Bun.Shell/$ signal-death exit code]
+#[cfg(not(unix))]
+fn shell_status_exit_code(status: ::std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(254)
 }
 
 impl ShellOutput {
@@ -1340,10 +1389,9 @@ unsafe extern "C" fn shell_run(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
         if !global.get().is_null() {
             rooted!(&in(cx_ref) let out_val = ObjectValue(js_output));
-            let call_args = HandleValueArray {
-                length_: 1,
-                elements_: &*out_val.handle(),
-            };
+            rooted!(&in(cx_ref) let call_args_rooted =
+                mozjs_sys::jsgc::ValueArray::<1>::new([out_val.handle().get()]));
+            let call_args = JS::HandleValueArray::from(&call_args_rooted);
             let mut rval = UndefinedValue();
             let rval_h = MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,

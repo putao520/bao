@@ -2147,18 +2147,18 @@ unsafe fn tls_dispatch_sni_callback(
     rooted!(&in(cx_ref) let server_root = server_obj);
     rooted!(&in(cx_ref) let sni_root = sni_fn_val);
 
-    // BCE-20260824-SNI-ARGV-DANGLE: the argument vector must outlive the
-    // `HandleValueArray` — an inline `[a, b].as_ptr()` creates a temporary
-    // that dies at the end of this `let` statement, leaving `elements_`
-    // dangling by the time `JS_CallFunctionValue` reads it (the user
-    // SNICallback then observes garbage for `cb` — "cb is not a function"
-    // — and the swallowed exception parks the handshake until the client
-    // times out). Named binding, same shape as `tls_emit_js` below/above.
-    let call_vals = [name_val.get(), ObjectValue(cb_obj)];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: call_vals.as_ptr(),
-    };
+    // BCE-20260824-SNI-ARGV-DANGLE: the user SNICallback observed garbage
+    // for `cb` ("cb is not a function") and the swallowed exception parked
+    // the handshake until the client timed out. Superseded by the
+    // unrooted-args class sweep (2026-10-26): the argument values now live
+    // in a ROOTED ValueArray for the whole call — both the dangling-
+    // temporary hazard and the unrooted-copy hazard are structurally gone
+    // (require.rs canary-pinned form).
+    rooted!(&in(cx_ref) let args_array = mozjs_sys::jsgc::ValueArray::<2>::new([
+        name_val.get(),
+        ObjectValue(cb_obj),
+    ]));
+    let call_args = JS::HandleValueArray::from(&args_array);
     let mut rval = UndefinedValue();
     JS_CallFunctionValue(
         cx,
@@ -3629,11 +3629,11 @@ unsafe extern "C" fn tls_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 let ev_str = JS_NewStringCopyZ(cx, c"secureConnect".as_ptr());
                 if !ev_str.is_null() {
                     rooted!(&in(cx_ref) let ev_val = StringValue(&*ev_str));
-                    let args_vals = [ev_val.get(), cb_root.get()];
-                    let call_args = HandleValueArray {
-                        length_: 2,
-                        elements_: args_vals.as_ptr(),
-                    };
+                    // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED
+                    // ValueArray (require.rs canary-pinned form).
+                    rooted!(&in(cx_ref) let args_array =
+                        mozjs_sys::jsgc::ValueArray::<2>::new([ev_val.get(), cb_root.get()]));
+                    let call_args = JS::HandleValueArray::from(&args_array);
                     let mut rval = UndefinedValue();
                     JS_CallFunctionName(
                         cx,
@@ -3692,11 +3692,11 @@ unsafe extern "C" fn tls_socket_then(cx: *mut JSContext, argc: u32, vp: *mut JSV
     let on_r = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
     rooted!(&in(cx_ref) let on_f_root = on_f);
     rooted!(&in(cx_ref) let on_r_root = on_r);
-    let args_vals = [on_f_root.get(), on_r_root.get()];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: args_vals.as_ptr(),
-    };
+    // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray
+    // (require.rs canary-pinned form).
+    rooted!(&in(cx_ref) let args_array =
+        mozjs_sys::jsgc::ValueArray::<2>::new([on_f_root.get(), on_r_root.get()]));
+    let call_args = JS::HandleValueArray::from(&args_array);
     let mut rval = UndefinedValue();
     JS_CallFunctionName(
         cx,
@@ -3913,11 +3913,11 @@ unsafe extern "C" fn tls_create_server(cx: *mut JSContext, argc: u32, vp: *mut J
                     let ev_str = JS_NewStringCopyZ(cx, c"secureConnection".as_ptr());
                     if !ev_str.is_null() {
                         rooted!(&in(cx_ref) let ev_val = StringValue(&*ev_str));
-                        let args_vals = [ev_val.get(), cb_root.get()];
-                        let call_args = HandleValueArray {
-                            length_: 2,
-                            elements_: args_vals.as_ptr(),
-                        };
+                        // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED
+                        // ValueArray (require.rs canary-pinned form).
+                        rooted!(&in(cx_ref) let args_array =
+                            mozjs_sys::jsgc::ValueArray::<2>::new([ev_val.get(), cb_root.get()]));
+                        let call_args = JS::HandleValueArray::from(&args_array);
                         let mut rval = UndefinedValue();
                         JS_CallFunctionName(
                             cx,

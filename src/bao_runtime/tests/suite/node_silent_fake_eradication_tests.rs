@@ -7,8 +7,17 @@
 // silent success that pretends work happened.
 //
 // Covered surfaces:
-//   1. node:test        — refuses fake registration outside `bao test`;
-//                         really registers + runs under the test runner
+//   1. node:test        — two-form runner gate (node parity, E-test wave):
+//                         `bao test` registers for the Rust-driven runner;
+//                         every other form (plain run / -e / ESM import)
+//                         ACCEPTS registration and arms a one-shot exit-drain
+//                         that executes the registered suites after the main
+//                         module finishes, carries failures into
+//                         process.exitCode (node v24.19.0 oracle 2026-10-27:
+//                         plain-run registration never throws — the old
+//                         "refuse outside the runner" pin contradicted node
+//                         and is superseded; the silent-fake risk is gone
+//                         because the drain really executes + counts)
 //                         (CJS require + ESM import share the gated bridge)
 //   1b. bao test runner — plain-script (CJS) files and `-e` evals drive the
 //                         registered suites, not a vacuous 0/0 report
@@ -50,46 +59,84 @@ fn make_ctx() -> JsContext {
     ctx
 }
 
+/// Drive the run-form exit-drain to completion: fire the armed setTimeout(0)
+/// (timers tick), settle the runner promise chain (RunJobs), repeat. The
+/// node run-form contract is "registration accepted, execution deferred to
+/// after the main module" — this is the in-test equivalent of the main
+/// module finishing and the loop draining (node oracle: the body runs only
+/// after the registering eval returns, and a failing body lands in
+/// process.exitCode === 1). Same actuator set as the shared suite
+/// pump_tick, inlined here because this file keeps its own harness.
+fn drive_settle(ctx: &mut JsContext, passes: usize) {
+    let cx_raw = ctx.raw_cx();
+    for _ in 0..passes {
+        unsafe {
+            mozjs_sys::jsapi::js::RunJobs(cx_raw);
+        }
+        // Drive bao timers too: the run-form drain is armed as a setTimeout(0)
+        // anchor in BAO_REGISTRY, which tick_without_idle (tasklet/uWS face)
+        // never fires — without this drain the anchor stays pending forever.
+        bun_runtime::timers::drain_bao_timers(cx_raw);
+        bun_runtime::timers::with_event_loop(|loop_| {
+            loop_.tick_without_idle(std::ptr::null_mut());
+        });
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // 1. node:test
 // ─────────────────────────────────────────────────────────────────────────
 
+// node v24.19.0 oracle (2026-10-27, /tmp/bao-oracle-c1 probes): plain-run
+// node:test registration NEVER throws — `node -e "nt.test('x', fn)"` prints
+// "✔ x" via the deferred run-form drain, and a failing body lands in
+// process.exitCode === 1. The former pin ("refuse outside `bao test`")
+// described a pre-E-test-wave bao behavior, not node's; the fake-pass risk
+// it guarded against is eradicated by the drain REALLY executing (below).
 #[test]
-fn node_test_plain_run_refuses_fake_registration() {
+fn node_test_plain_run_registers_and_executes_via_drain() {
     let mut ctx = make_ctx();
     // Under the test binary process.argv[1] is the executable path, i.e. the
-    // plain-run (non-runner) mode — registration must refuse explicitly.
+    // plain-run (non-runner) form: registration must be ACCEPTED and the
+    // one-shot exit-drain armed (no throw — node parity).
     let out = eval_string(
         &mut ctx,
         r#"(function() {
   var nt = require('node:test');
-  try { nt.test('x', function() {}); return 'NO_THROW'; }
-  catch (e) { return /bao test/.test(e.message) ? 'REFUSED' : 'WRONG:' + e.message.substring(0, 80); }
-})()"#,
-    );
-    assert_eq!(out, "REFUSED", "plain-run test() must throw a bao-test hint");
-
-    let out = eval_string(
-        &mut ctx,
-        r#"(function() {
-  var nt = require('node:test');
-  try { nt.it('x', function() {}); return 'NO_THROW'; }
-  catch (e) { return /bao test/.test(e.message) ? 'REFUSED' : 'WRONG'; }
-})()"#,
-    );
-    assert_eq!(out, "REFUSED", "plain-run it() must throw a bao-test hint");
-
-    let out = eval_string(
-        &mut ctx,
-        r#"(function() {
-  var nt = require('node:test');
-  try { nt.describe('suite', function() {}); return 'NO_THROW'; }
-  catch (e) { return /bao test/.test(e.message) ? 'REFUSED' : 'WRONG'; }
+  try {
+    nt.test('x', function() { globalThis.__drainExec = (globalThis.__drainExec || 0) + 1; });
+    nt.it('x-it', function() { globalThis.__drainExec = (globalThis.__drainExec || 0) + 1; });
+    nt.describe('suite', function() {
+      nt.it('inner', function() { globalThis.__drainExec = (globalThis.__drainExec || 0) + 1; });
+    });
+    return 'REGISTERED';
+  }
+  catch (e) { return 'THREW:' + e.message.substring(0, 80); }
 })()"#,
     );
     assert_eq!(
-        out, "REFUSED",
-        "plain-run describe() must throw a bao-test hint"
+        out, "REGISTERED",
+        "plain-run registration must be accepted (node run-form contract, not a refusal)"
+    );
+
+    // The drain really executes: after the registering eval returns (the
+    // "main module finished"), the armed setTimeout(0) fires, the runner
+    // executes all three bodies, and the report lands. Execution is the
+    // anti-fake proof. exitCode === 0 = an all-pass run did NOT trip the
+    // failed>0 → exitCode 1 mapping (bao's exitCode accessor defaults to
+    // the int32 0 slot, unlike node's undefined).
+    drive_settle(&mut ctx, 200);
+    let out = eval_string(
+        &mut ctx,
+        r#"(function() {
+  return JSON.stringify({ exec: globalThis.__drainExec, exitCode: process.exitCode });
+})()"#,
+    );
+    assert_eq!(
+        out, r#"{"exec":3,"exitCode":0}"#,
+        "run-form drain must actually execute every registered body (exec=3), \
+         and an all-pass run must not map anything into a failure exit code"
     );
 }
 
@@ -165,31 +212,39 @@ fn node_test_missing_infrastructure_refuses() {
 
 // ESM import path — the synthetic `node:test` ESM module must go through the
 // same gated CJS bridge as require('node:test'): outside `bao test` the
-// test()/describe() calls fail the module evaluation with the bao-test hint
-// (a silent no-op registration would fake a pass under `bao run`).
+// test()/describe() calls are ACCEPTED (the run-form drain executes them
+// after module evaluation — node parity; the former "fail the module
+// evaluation" pin was the pre-E-test-wave refusal, superseded with the
+// drain-carrying bridge) and the drain really executes the bodies.
 
 #[test]
-fn node_test_esm_import_refuses_fake_registration_outside_runner() {
+fn node_test_esm_import_registers_and_executes_via_drain() {
     let mut ctx = make_ctx();
     ctx.eval("void 0;", "<realm-init>").expect("realm init");
     let global_ptr = thread_realm_global().expect("realm global");
     let mut cx = ctx.cx();
     rooted!(&in(cx) let global = global_ptr);
 
-    let result = ModuleLoader::eval_module_in_realm(
+    ModuleLoader::eval_module_in_realm(
         &mut cx,
-        "import { test } from 'node:test';\ntest('esm-plain-run', function() {});",
+        "import { test } from 'node:test';\ntest('esm-plain-run', function() { globalThis.__esmDrainExec = (globalThis.__esmDrainExec || 0) + 1; });",
         "<esm-plain-run>.mjs",
         None,
         global.handle(),
+    )
+    .expect(
+        "ESM node:test registration outside the runner must be accepted \
+         (node run-form contract: register now, execute after the module)",
     );
-    let err = result.expect_err(
-        "ESM node:test registration outside the runner must fail the module evaluation",
-    );
-    assert!(
-        err.message.contains("bao test"),
-        "error must point at `bao test`, got: {}",
-        err.message
+
+    // The run-form drain (armed by the FIRST gated registration through the
+    // shared bridge) executes the ESM-registered body once the module eval
+    // finished — real execution is the anti-fake proof.
+    drive_settle(&mut ctx, 200);
+    let out = eval_string(&mut ctx, "String(globalThis.__esmDrainExec === 1)");
+    assert_eq!(
+        out, "true",
+        "the ESM-registered body must have actually executed via the run-form drain"
     );
 }
 

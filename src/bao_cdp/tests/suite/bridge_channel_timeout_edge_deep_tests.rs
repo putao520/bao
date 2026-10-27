@@ -3,11 +3,11 @@
 // fire-and-forget semantics, is_alive checks, multi-command processing,
 // protocol handle_command with bridge connected for Target domain.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use bao_cdp::{bridge_channel, BridgeCommand, BridgeResponse, BridgeSender, CdpEvent, CdpMessage};
+use bao_cdp::{BridgeCommand, BridgeResponse, BridgeSender, CdpEvent, CdpMessage, bridge_channel};
 use bao_cdp::{handle_command, serialize_event, serialize_response};
 use serde_json::json;
 
@@ -313,9 +313,13 @@ fn test_target_get_targets_with_bridge() {
                 match cmd {
                     // getTargets first enumerates pages via ListTargets (the
                     // real PagePool face), then resolves live title/url per id.
+                    // The listing entry must carry browserContextId — the
+                    // production writer (cmd_list_targets via
+                    // page_context_id) always writes it and the dispatch
+                    // hard-takes it (REQ-CDS-009).
                     BridgeCommand::ListTargets => BridgeResponse {
                         result: Ok(json!([
-                            { "id": "test-target", "title": "Test Title", "url": "https://example.com" }
+                            { "id": "test-target", "title": "Test Title", "url": "https://example.com", "browserContextId": "bao-default-context" }
                         ])),
                     },
                     BridgeCommand::GetTitle { .. } => BridgeResponse {
@@ -476,7 +480,10 @@ fn test_runtime_evaluate_with_bridge() {
     done.store(1, Ordering::Relaxed);
     assert!(resp.result.is_some());
     let result = resp.result.unwrap();
-    assert_eq!(result["result"]["value"], 42, "envelope result lifts to top level");
+    assert_eq!(
+        result["result"]["value"], 42,
+        "envelope result lifts to top level"
+    );
     assert!(result["exceptionDetails"].is_null());
 }
 
@@ -539,9 +546,19 @@ fn test_dom_query_selector_with_bridge() {
     done.store(1, Ordering::Relaxed);
     let result = resp.result.expect("querySelector over the bridge succeeds");
     assert_eq!(result["nodeId"], 42);
-    let expr = captured.lock().unwrap().take().expect("EvaluateJs dispatched");
-    assert!(expr.contains("document.querySelector"), "selector evaluated in-page");
-    assert!(expr.contains("__baoCanonical"), "match mapped to canonical identity");
+    let expr = captured
+        .lock()
+        .unwrap()
+        .take()
+        .expect("EvaluateJs dispatched");
+    assert!(
+        expr.contains("document.querySelector"),
+        "selector evaluated in-page"
+    );
+    assert!(
+        expr.contains("__baoCanonical"),
+        "match mapped to canonical identity"
+    );
 }
 
 #[test]
@@ -562,11 +579,13 @@ fn test_dom_query_selector_empty_no_bridge() {
 fn test_fetch_enable_with_patterns() {
     // REQ-CDP contract: the command routes through the servo bridge —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.enable", Some(json!({"patterns": [{"urlPattern": "*"}]})));
+    let resp = dispatch(
+        "Fetch.enable",
+        Some(json!({"patterns": [{"urlPattern": "*"}]})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -577,7 +596,6 @@ fn test_fetch_enable_no_patterns() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -588,51 +606,58 @@ fn test_fetch_continue_request() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_fail_request() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.failRequest", Some(json!({"requestId": "r2", "reason": "Aborted"})));
+    let resp = dispatch(
+        "Fetch.failRequest",
+        Some(json!({"requestId": "r2", "reason": "Aborted"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_fulfill_request() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "r3", "responseCode": 200, "body": "hi"})));
+    let resp = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId": "r3", "responseCode": 200, "body": "hi"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_fulfill_request_default_status() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "r3", "body": "hi"})));
+    let resp = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId": "r3", "body": "hi"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_take_response_body_as_stream() {
     // REQ-CDP contract: stream handles are not part of the P1 interception face —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "r6"})));
+    let resp = dispatch(
+        "Fetch.takeResponseBodyAsStream",
+        Some(json!({"requestId": "r6"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("stream handles"));
-
 }
 
 #[test]
@@ -643,7 +668,6 @@ fn test_fetch_get_request_post_data() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("no request body"));
-
 }
 
 #[test]
@@ -654,7 +678,6 @@ fn test_fetch_continue_with_auth() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("auth interception facet is not wired"));
-
 }
 
 #[test]
@@ -690,7 +713,10 @@ fn test_network_get_response_body_no_bridge_explicit_error() {
     let resp = dispatch("Network.getResponseBody", None);
     let err = resp.error.expect("no bridge must yield an error");
     assert_eq!(err.code, -32603);
-    assert!(resp.result.is_none(), "error response must not carry a body");
+    assert!(
+        resp.result.is_none(),
+        "error response must not carry a body"
+    );
 }
 
 #[test]
@@ -1194,7 +1220,6 @@ fn test_target_create_target_echoes_target_id() {
     let err = resp.error.expect("createTarget must fail without a bridge");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -1232,10 +1257,11 @@ fn test_target_attach_to_target_session_id_deterministic() {
     // stateless dispatch must refuse explicitly, never fabricate a
     // deterministic hash sessionId.
     let resp = dispatch("Target.attachToTarget", Some(json!({"targetId": "t1"})));
-    let err = resp.error.expect("attachToTarget must fail without the WS registry");
+    let err = resp
+        .error
+        .expect("attachToTarget must fail without the WS registry");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("WS session registry"));
-
 }
 
 #[test]
@@ -1243,10 +1269,11 @@ fn test_target_attach_to_target_empty_target_id_session_id() {
     // Boundary preserved: empty target_id also refuses explicitly (the
     // fabricated all-zeros sessionId is eradicated).
     let resp = dispatch("Target.attachToTarget", Some(json!({"targetId": ""})));
-    let err = resp.error.expect("attachToTarget must fail without the WS registry");
+    let err = resp
+        .error
+        .expect("attachToTarget must fail without the WS registry");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("WS session registry"));
-
 }
 
 #[test]
@@ -1269,7 +1296,6 @@ fn test_target_set_auto_attach_and_discover_empty_result() {
         assert_eq!(err.code, -32000);
         assert!(err.message.contains("WS session registry"), "{cmd}");
     }
-
 }
 
 #[test]
@@ -1280,7 +1306,6 @@ fn test_target_close_target_no_bridge_still_success() {
     let err = resp.error.expect("closeTarget must fail without a bridge");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -1412,7 +1437,10 @@ fn test_page_navigate_non_string_url_falls_back_to_default() {
         .unwrap()
         .take()
         .expect("Navigate bridge command must fire");
-    assert_eq!(url, "about:blank", "non-string url must fall back to about:blank");
+    assert_eq!(
+        url, "about:blank",
+        "non-string url must fall back to about:blank"
+    );
 }
 
 #[test]
@@ -1682,14 +1710,19 @@ fn test_page_misc_commands_no_bridge_explicit_errors() {
     // setContent validates its html param (-32602), close and bringToFront
     // require the bridge (-32603). No silent empty successes remain.
     let resp = dispatch("Page.setContent", None);
-    let err = resp.error.expect("setContent without html must be rejected");
+    let err = resp
+        .error
+        .expect("setContent without html must be rejected");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("html"));
 
     for cmd in ["close", "bringToFront"] {
         let resp = dispatch(&format!("Page.{cmd}"), None);
         let err = resp.error.expect("{cmd} requires the bridge");
-        assert_eq!(err.code, -32603, "{cmd} must surface -32603 without a bridge");
+        assert_eq!(
+            err.code, -32603,
+            "{cmd} must surface -32603 without a bridge"
+        );
         assert!(resp.result.is_none(), "{cmd} must not fake success");
     }
 }
@@ -1811,7 +1844,11 @@ fn test_runtime_evaluate_nonempty_expression_uses_bridge_when_present() {
         &tx,
     );
     done.store(1, Ordering::Relaxed);
-    assert_eq!(resp.result.unwrap()["result"]["value"], 7, "envelope result lifts");
+    assert_eq!(
+        resp.result.unwrap()["result"]["value"],
+        7,
+        "envelope result lifts"
+    );
     let (expr, rbv) = captured.lock().unwrap().take().unwrap();
     assert_eq!(expr, "3+4");
     assert_eq!(rbv, false, "returnByValue=false must propagate to bridge");
@@ -2000,7 +2037,9 @@ fn test_dom_query_selector_empty_selector_skips_bridge() {
     done.store(1, Ordering::Relaxed);
     // REQ-BRW-048 follow-up: the empty selector is rejected at param
     // validation (-32602) — before any bridge round trip.
-    let err = resp.error.expect("empty selector must be an explicit error");
+    let err = resp
+        .error
+        .expect("empty selector must be an explicit error");
     assert_eq!(err.code, -32602);
     std::thread::sleep(Duration::from_millis(30));
     assert_eq!(dispatched.load(Ordering::SeqCst), 0);
@@ -2048,7 +2087,9 @@ fn test_dom_query_selector_all_with_bridge_routes() {
         &tx,
     );
     done.store(1, Ordering::Relaxed);
-    let ids = resp.result.expect("querySelectorAll over the bridge succeeds")["nodeIds"]
+    let ids = resp
+        .result
+        .expect("querySelectorAll over the bridge succeeds")["nodeIds"]
         .as_array()
         .unwrap()
         .clone();
@@ -2056,8 +2097,15 @@ fn test_dom_query_selector_all_with_bridge_routes() {
     assert_eq!(ids[1], 20);
     // REQ-BRW-048 follow-up: the dispatched command is EvaluateJs carrying
     // the selector inside the in-page query (string form verified).
-    let expr = captured.lock().unwrap().take().expect("EvaluateJs dispatched");
-    assert!(expr.contains("\"li.item\""), "selector embedded in the page query: {expr}");
+    let expr = captured
+        .lock()
+        .unwrap()
+        .take()
+        .expect("EvaluateJs dispatched");
+    assert!(
+        expr.contains("\"li.item\""),
+        "selector embedded in the page query: {expr}"
+    );
 }
 
 #[test]
@@ -2460,7 +2508,9 @@ fn test_input_dispatch_mouse_event_no_bridge_empty_result() {
     let resp = dispatch(
         "Input.dispatchMouseEvent",
         // CDP `button` is a string enum (stub-era numeric fixture corrected).
-        Some(json!({"type": "mousePressed", "x": 10.0, "y": 20.0, "button": "left", "clickCount": 1})),
+        Some(
+            json!({"type": "mousePressed", "x": 10.0, "y": 20.0, "button": "left", "clickCount": 1}),
+        ),
     );
     let err = resp.error.expect("explicit error required");
     assert_eq!(err.code, -32603);
@@ -2501,7 +2551,9 @@ fn test_input_dispatch_mouse_event_with_bridge_propagates_fields() {
     });
     let _ = dispatch_bridge(
         "Input.dispatchMouseEvent",
-        Some(json!({"type": "mouseReleased", "x": 12.5, "y": -3.0, "button": "right", "clickCount": 3})),
+        Some(
+            json!({"type": "mouseReleased", "x": 12.5, "y": -3.0, "button": "right", "clickCount": 3}),
+        ),
         "t1",
         &tx,
     );
@@ -2720,10 +2772,15 @@ fn test_network_emulate_and_intercept_noop() {
     // absent patterns = catch-all); continueInterceptedRequest without the
     // resolution key is -32602.
     let resp = dispatch("Network.emulateNetworkConditions", None);
-    assert!(resp.result.is_some(), "emulateNetworkConditions must stay an ok");
+    assert!(
+        resp.result.is_some(),
+        "emulateNetworkConditions must stay an ok"
+    );
     assert!(resp.error.is_none());
     let resp = dispatch("Network.setRequestInterception", None);
-    let err = resp.error.expect("setRequestInterception must route through the bridge");
+    let err = resp
+        .error
+        .expect("setRequestInterception must route through the bridge");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
     let resp = dispatch("Network.continueInterceptedRequest", None);
@@ -2805,13 +2862,16 @@ fn test_debugger_enable_and_misc_default_shapes() {
     // unknown). Verify the documented Debugger.* stubs used by this layer.
     // task #10: setBreakpointByUrl left this stub sweep — a breakpoint
     // write without a bridge is -32603 (pinned by its dedicated test).
-    for cmd in [
-        "getPossibleBreakpoints",
-        "getScriptSource",
-        "evaluateOnCallFrame",
-        "setPauseOnExceptions",
+    for (cmd, params) in [
+        ("getPossibleBreakpoints", None),
+        // getScriptSource: scriptId is param-validated BEFORE the bridge
+        // branch (malformed/missing = -32602), so the fixture carries a
+        // well-formed id.
+        ("getScriptSource", Some(json!({"scriptId": "1"}))),
+        ("evaluateOnCallFrame", None),
+        ("setPauseOnExceptions", None),
     ] {
-        let resp = dispatch(&format!("Debugger.{cmd}"), None);
+        let resp = dispatch(&format!("Debugger.{cmd}"), params);
         // All listed Debugger commands must produce a result (no error).
         assert!(resp.result.is_some(), "{cmd} must return a result");
         assert!(resp.error.is_none(), "{cmd} must not error");
@@ -2824,7 +2884,9 @@ fn test_fetch_enable_disable_coverage() {
     // interception slot + pending drains live browser-side, so without a
     // bridge each is -32603, never a canned ok.
     let resp = dispatch("Fetch.disable", None);
-    let err = resp.error.expect("Fetch.disable must route through the bridge");
+    let err = resp
+        .error
+        .expect("Fetch.disable must route through the bridge");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
     let resp = dispatch(
@@ -2834,17 +2896,18 @@ fn test_fetch_enable_disable_coverage() {
     let err = resp.error.expect("Fetch.enable must fail explicitly");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
 fn test_fetch_get_request_post_data_constant_shape() {
     // REQ-CDP contract: the servo embedder request face carries no request body — explicit error.
-    let resp = dispatch("Fetch.getRequestPostData", Some(json!({"requestId": "r-x"})));
+    let resp = dispatch(
+        "Fetch.getRequestPostData",
+        Some(json!({"requestId": "r-x"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("no request body"));
-
 }
 
 #[test]
@@ -2854,17 +2917,18 @@ fn test_fetch_continue_with_auth_constant_shape() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("auth interception facet is not wired"));
-
 }
 
 #[test]
 fn test_fetch_take_response_bodyAsStream_naming() {
     // REQ-CDP contract: stream handles are not part of the P1 interception face — explicit error.
-    let resp = dispatch("Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "r-z"})));
+    let resp = dispatch(
+        "Fetch.takeResponseBodyAsStream",
+        Some(json!({"requestId": "r-z"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("stream handles"));
-
 }
 
 // ============================================================================
@@ -3348,16 +3412,22 @@ fn test_dod_debugger_enable_disable_churn() {
         while done2.load(Ordering::Relaxed) == 0 {
             let got = rx.try_process(|cmd| match cmd {
                 BridgeCommand::DebuggerEnable { .. } => {
-                    assert!(last_enable == false || disables == enables - 1 + 0,
-                        "enable must alternate with disable");
+                    assert!(
+                        last_enable == false || disables == enables - 1 + 0,
+                        "enable must alternate with disable"
+                    );
                     enables += 1;
                     last_enable = true;
-                    BridgeResponse { result: Ok(json!({})) }
+                    BridgeResponse {
+                        result: Ok(json!({})),
+                    }
                 }
                 BridgeCommand::DebuggerDisable { .. } => {
                     disables += 1;
                     last_enable = false;
-                    BridgeResponse { result: Ok(json!({})) }
+                    BridgeResponse {
+                        result: Ok(json!({})),
+                    }
                 }
                 BridgeCommand::DebuggerGetScriptSource { .. } => BridgeResponse {
                     result: Ok(json!({ "scriptSource": "post-churn" })),
@@ -3408,7 +3478,10 @@ fn test_dod_per_target_script_identity_routing() {
     let h1 = std::thread::spawn(move || {
         while done1.load(Ordering::Relaxed) == 0 {
             let got = rx1.try_process(|cmd| match cmd {
-                BridgeCommand::DebuggerGetScriptSource { target_id, script_id } => {
+                BridgeCommand::DebuggerGetScriptSource {
+                    target_id,
+                    script_id,
+                } => {
                     assert_eq!(target_id, "t1");
                     assert_eq!(script_id, 5);
                     BridgeResponse {
@@ -3428,7 +3501,10 @@ fn test_dod_per_target_script_identity_routing() {
     let h2 = std::thread::spawn(move || {
         while done2.load(Ordering::Relaxed) == 0 {
             let got = rx2.try_process(|cmd| match cmd {
-                BridgeCommand::DebuggerGetScriptSource { target_id, script_id } => {
+                BridgeCommand::DebuggerGetScriptSource {
+                    target_id,
+                    script_id,
+                } => {
                     assert_eq!(target_id, "t2");
                     assert_eq!(script_id, 5);
                     BridgeResponse {

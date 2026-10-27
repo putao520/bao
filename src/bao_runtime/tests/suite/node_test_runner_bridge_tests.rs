@@ -599,24 +599,59 @@ fn node_test_suite_alias_registers_describe_suite() {
 }
 
 #[test]
-fn node_test_plain_run_still_refuses() {
+fn node_test_plain_run_registers_and_executes_via_drain() {
     let mut ctx = make_ctx();
-    // argv[1] is NOT 'test' (plain run / library embedding): registration
-    // must fail closed, callable or not.
+    // node v24.19.0 oracle (2026-10-27): plain-run registration is ACCEPTED
+    // and deferred — `nt('nope', fn)` under `node file.js` prints "✔ nope"
+    // from the run-form drain; it never throws (the former
+    // "REGISTERED-FALSELY is a bug" pin predates the drain-carrying bridge).
+    // The honest-execution proof: after the registering eval returns, the
+    // armed setTimeout(0) drain runs the body (exec flag) and the report
+    // counters land; a failing body carries into process.exitCode === 1
+    // (the CLI's exit mapping), the same chain the node oracle shows.
     let out = eval_string(
         &mut ctx,
         r#"(function() {
   process.argv[1] = '/some/script.js';
-  try {
-    var nt = require('node:test');
-    nt('nope', function() {});
-    return 'REGISTERED-FALSELY';
-  } catch (e) {
-    return e.message.indexOf('bao test') >= 0 ? 'REFUSED' : 'WRONG-ERR:' + e.message;
-  }
+  var nt = require('node:test');
+  nt('nope', function() { globalThis.__plainExec = true; });
+  nt('plain-bad', function() { throw new Error('plain-boom'); });
+  return 'REGISTERED';
 })()"#,
     );
-    assert_eq!(out, "REFUSED");
+    assert_eq!(
+        out, "REGISTERED",
+        "plain-run registration must be accepted (node run-form contract)"
+    );
+
+    // Same actuator set as the shared suite pump (drain the armed
+    // setTimeout(0), settle the runner promise chain).
+    let cx_raw = ctx.raw_cx();
+    for _ in 0..200 {
+        unsafe {
+            mozjs_sys::jsapi::js::RunJobs(cx_raw);
+        }
+        // Drive bao timers too: the run-form drain is armed as a
+        // setTimeout(0) anchor in BAO_REGISTRY, which tick_without_idle
+        // (tasklet/uWS face) never fires.
+        bun_runtime::timers::drain_bao_timers(cx_raw);
+        bun_runtime::timers::with_event_loop(|loop_| {
+            loop_.tick_without_idle(std::ptr::null_mut());
+        });
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+
+    let out = eval_string(
+        &mut ctx,
+        r#"(function() {
+  return JSON.stringify({ exec: globalThis.__plainExec === true, exitCode: process.exitCode });
+})()"#,
+    );
+    assert_eq!(
+        out, r#"{"exec":true,"exitCode":1}"#,
+        "the drain must execute the body (exec=true) and a failing body must carry \
+         process.exitCode === 1 (node run-form exit mapping)"
+    );
 }
 
 #[test]

@@ -184,9 +184,14 @@ fn test_buffer_write_rejects_non_string_value() {
             try { fn(); return false; }
             catch (e) { return isInvalidArgType(e); }
         }
+        // Methods list per the node v24 Buffer.prototype surface
+        // (Object.getOwnPropertyNames oracle — utf16leWrite/utf16beWrite are
+        // NOT node/bun prototype methods; 'utf16be' writes go through the
+        // write() dispatcher closure. The removed own-properties previously
+        // broke the exact-surface assertion in node's
+        // test-buffer-generic-methods.js GOLDEN test).
         var METHODS = ['utf8Write', 'latin1Write', 'asciiWrite', 'hexWrite',
-                       'base64Write', 'base64urlWrite', 'ucs2Write',
-                       'utf16leWrite', 'utf16beWrite'];
+                       'base64Write', 'base64urlWrite', 'ucs2Write'];
         var nonStrings = [123, null, undefined, true, 1n, Symbol('s'), {},
                           [], new String('ab'), Buffer.from('ab'), function() {}];
 

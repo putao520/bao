@@ -12,6 +12,7 @@
 //! - [`browser`]:Browser 类(is_connected/version/disconnect/close/...)
 //! - [`browser_context`]:BrowserContext(pages/permissions/close/...)
 //! - [`page`]:Page 类(核心,~30 D method)
+//! - [`cdp_session`]:CdpSession(page.create_cdp_session 的 Playwright 形会话对象)
 //! - [`frame`]:Frame 类
 //! - [`element_handle`]:ElementHandle(继承自 JSHandle)
 //! - [`js_handle`]:JSHandle(jsonValue/dispose)
@@ -37,6 +38,7 @@ pub mod event_emitter;
 pub mod accessibility;
 pub mod browser;
 pub mod browser_context;
+pub mod cdp_session;
 pub mod console_message;
 pub mod coverage;
 pub mod dialog;
@@ -55,6 +57,7 @@ pub mod tracing;
 pub use accessibility::Accessibility;
 pub use browser::{Browser as HighLevelBrowser, BrowserOptions, Pid};
 pub use browser_context::{BrowserContext, ContextOptions, PermissionOverride};
+pub use cdp_session::CdpSession;
 pub use console_message::ConsoleMessage;
 pub use coverage::Coverage;
 pub use dialog::Dialog;

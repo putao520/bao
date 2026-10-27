@@ -71,7 +71,7 @@ fn js_escape(p: &std::path::Path) -> String {
 fn fs_async_callback_readfile_utf8_delivered() {
     let mut ctx = setup_ctx();
 
-    let dir = std::env::temp_dir().join("bao_fs_async_cb_readfile");
+    let dir = std::env::temp_dir().join(format!("bao_fs_async_cb_readfile_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("hello.txt");
@@ -123,7 +123,8 @@ fn fs_async_callback_readfile_utf8_delivered() {
 fn fs_async_callback_readfile_enoent_error_delivered() {
     let mut ctx = setup_ctx();
 
-    let missing = std::env::temp_dir().join("bao_fs_async_cb_missing_definitely_absent.txt");
+    let missing =
+        std::env::temp_dir().join(format!("bao_fs_async_cb_missing_absent_{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&missing);
 
     let out = eval_string(
@@ -166,7 +167,7 @@ fn fs_async_callback_readfile_enoent_error_delivered() {
 fn fs_async_callback_promise_readfile_regression() {
     let mut ctx = setup_ctx();
 
-    let dir = std::env::temp_dir().join("bao_fs_async_cb_promises");
+    let dir = std::env::temp_dir().join(format!("bao_fs_async_cb_promises_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("promises.txt");
@@ -204,7 +205,7 @@ fn fs_async_callback_promise_readfile_regression() {
 fn fs_async_callback_readfilesync_regression() {
     let mut ctx = setup_ctx();
 
-    let dir = std::env::temp_dir().join("bao_fs_async_cb_sync");
+    let dir = std::env::temp_dir().join(format!("bao_fs_async_cb_sync_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("sync.txt");

@@ -375,6 +375,19 @@ pub unsafe fn flush_pending_rejections(raw_cx: *mut JSContext) {
         return;
     }
     FLUSHING.with(|c| c.set(true));
+
+    let entries: Vec<PendingRejection> =
+        PENDING_REJECTIONS.with(|p| ::std::mem::take(&mut *p.borrow_mut()));
+
+    // (Bao, BCE) Drop AFTER `entries`: Reset restores FLUSHING at scope end,
+    // so it must be declared before `entries` to outlive the drain below
+    // (Rust drops bindings in reverse declaration order). A handler that
+    // throws is fatal and unwind-exits the function without resetting
+    // FLUSHING — a stale-true latch leaves every later flush permanently
+    // skipped (c1_promises_success_batch silent-loss class under load:
+    // re-recorded rejections stuck in PENDING_REJECTIONS while the drain is
+    // unwound, their raw promises dangling once the GcStore property is
+    // deleted elsewhere). Rust reference: "drop scope" (RFC 1857).
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
@@ -383,8 +396,6 @@ pub unsafe fn flush_pending_rejections(raw_cx: *mut JSContext) {
     }
     let _reset = Reset;
 
-    let entries: Vec<PendingRejection> =
-        PENDING_REJECTIONS.with(|p| ::std::mem::take(&mut *p.borrow_mut()));
     for entry in entries {
         // Take the root: None = cancelled by a late Handled before flush.
         let promise = gc_store_get_ns(raw_cx, NS, &entry.gc_key);

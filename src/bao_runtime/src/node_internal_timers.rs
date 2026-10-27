@@ -41,7 +41,7 @@ use mozjs::rooted;
 
 use bun_core::ZBox;
 
-use crate::require::cache_builtin;
+use crate::require::{cache_builtin, get_builtin};
 
 const INTERNAL_TIMERS_JS: &str = r#"
 (function() {
@@ -939,17 +939,17 @@ const INTERNAL_UTIL_THROTTLE_JS: &str = r#"
 "#;
 
 /// Evaluate one internal-module source and register it under its builtin
-/// name. Mirrors the `node_internal_test_binding::install` precedent: a
-/// broken module must surface as `Cannot find module` at the require()
-/// point, never as an empty exports object.
-fn evaluate_and_cache(
-    cx: &mut mozjs::context::JSContext,
-    source: &str,
-    filename: &str,
-    builtin_name: &str,
-) {
+/// name. A broken module must surface as `Cannot find module` at the require()
+/// point, never as an empty exports object. GC contract (mirrors the
+/// `node_internal_fs_modules::evaluate_and_cache` precedent): called from a
+/// JSNative frame (the require hook); the caller propagates a pending
+/// exception when evaluation fails (Node parity).
+fn evaluate_and_cache(cx: *mut JSContext, source: &str, filename: &str, builtin_name: &str) -> bool {
+    // Guard: never clobber a natively-implemented module.
+    if get_builtin(cx, builtin_name).is_some() {
+        return true;
+    }
     unsafe {
-        let raw_cx = cx.raw_cx();
         let mut source_text = mozjs::rust::transform_str_to_source_text(source);
         let mut rval = UndefinedValue();
         let rval_handle = MutableHandle::<Value> {
@@ -957,37 +957,75 @@ fn evaluate_and_cache(
             ptr: &mut rval,
         };
         let filename_c = ZBox::from_bytes(format!("<{}>", filename).into_bytes());
-        let opts = NewCompileOptions(raw_cx, filename_c.as_ptr(), 1);
+        let opts = NewCompileOptions(cx, filename_c.as_ptr(), 1);
         if opts.is_null() {
-            return;
+            JS_ClearPendingException(cx);
+            return false;
         }
-        let ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut source_text, rval_handle);
+        let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut source_text, rval_handle);
         mozjs::glue::DeleteCompileOptions(opts);
-        if !ok {
-            let msg = format!("failed to evaluate {} source", filename);
-            let msg_c = ZBox::from_bytes(msg.into_bytes());
-            JS_ReportErrorUTF8(raw_cx, c"%s".as_ptr(), msg_c.as_ptr());
-            return;
+        if !ok || !rval.is_object() {
+            if ok {
+                JS_ClearPendingException(cx);
+            }
+            return false;
         }
-        if !rval.is_object() {
-            return;
-        }
+        let mut wrapped = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let obj = rval.to_object();
-        rooted!(&in(cx) let obj_rooted = obj);
-        cache_builtin(cx, builtin_name, obj_rooted.get());
+        rooted!(&in(wrapped) let obj_rooted = obj);
+        cache_builtin(&mut wrapped, builtin_name, obj_rooted.get());
+        true
     }
 }
 
-pub fn install(cx: &mut mozjs::context::JSContext) {
-    evaluate_and_cache(cx, INTERNAL_TIMERS_JS, "internal/timers", "internal/timers");
-    evaluate_and_cache(
-        cx,
+/// Empty at realm-init time (mirrors `node_internal_event_target::install` /
+/// `node_internal_test_binding::install`): install-time evaluation poisons
+/// the realm — the GC-pressure class where the init-period function-object
+/// allocations push the nursery allocation order over a latent engine cliff,
+/// and any later module-body variable access then segfaults
+/// (timeline-attributed 2026-10-26). The real evaluation happens lazily on
+/// the first `require('internal/timers')` / `require('internal/util/debounce')`
+/// / `require('internal/util/throttle')` via [`ensure_installed`], in user
+/// context, when realm init has fully completed.
+pub fn install(_cx: &mut mozjs::context::JSContext) {}
+
+thread_local! {
+    /// Per-realm once flag: repeat failed evaluations must not re-run the
+    /// whole source on every require attempt (event_target precedent).
+    static NIT_EVAL_DONE: ::std::cell::Cell<bool> = ::std::cell::Cell::new(false);
+}
+
+/// Evaluate the `internal/timers` + `internal/util/{debounce,throttle}`
+/// module family and cache each module object for the require() surface.
+/// Idempotent: each `evaluate_and_cache` first checks the gc_store cache, so
+/// a partial earlier install skips already-cached keys. Called from
+/// `require_fn` (a JSNative frame): `cx` is live and the caller propagates
+/// a pending exception when evaluation fails.
+pub fn ensure_installed(cx: *mut JSContext) -> bool {
+    NIT_EVAL_DONE.with(|flag| {
+        if flag.get() {
+            return;
+        }
+        flag.set(true);
+        install_eval(cx);
+    });
+    crate::require::get_builtin(cx, "internal/timers").is_some()
+}
+
+fn install_eval(raw_cx: *mut JSContext) {
+    if !evaluate_and_cache(raw_cx, INTERNAL_TIMERS_JS, "internal/timers", "internal/timers") {
+        return;
+    }
+    if !evaluate_and_cache(
+        raw_cx,
         INTERNAL_UTIL_DEBOUNCE_JS,
         "internal/util/debounce",
         "internal/util/debounce",
-    );
+    ) {
+        return;
+    }
     evaluate_and_cache(
-        cx,
+        raw_cx,
         INTERNAL_UTIL_THROTTLE_JS,
         "internal/util/throttle",
         "internal/util/throttle",

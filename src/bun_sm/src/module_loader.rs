@@ -467,13 +467,7 @@ impl ModuleLoader {
 
         // SM153: graph-load first (New -> Unlinked), then link.
         if !unsafe { load_requested_modules_sync(realm_cx.raw_cx(), module_obj.handle().into()) } {
-            return Err(JsError {
-                message: "module graph loading failed".into(),
-                filename: String::new(),
-                line: 0,
-                column: 0,
-                stack: None,
-            });
+            return Err(graph_load_error(realm_cx));
         }
         if !unsafe { ModuleLink(realm_cx, module_obj.handle()) } {
             return ::std::result::Result::Err(extract_module_error(realm_cx));
@@ -625,13 +619,7 @@ impl ModuleLoader {
 
         // SM153: graph-load first (New -> Unlinked), then link.
         if !unsafe { load_requested_modules_sync(realm_cx.raw_cx(), module_obj.handle().into()) } {
-            return Err(JsError {
-                message: "module graph loading failed".into(),
-                filename: String::new(),
-                line: 0,
-                column: 0,
-                stack: None,
-            });
+            return Err(graph_load_error(realm_cx));
         }
         if !unsafe { ModuleLink(realm_cx, module_obj.handle()) } {
             return ::std::result::Result::Err(extract_module_error(realm_cx));
@@ -769,13 +757,7 @@ impl ModuleLoader {
 
         // SM153: graph-load first (New -> Unlinked), then link.
         if !unsafe { load_requested_modules_sync(realm_cx.raw_cx(), module_obj.handle().into()) } {
-            return Err(JsError {
-                message: "module graph loading failed".into(),
-                filename: String::new(),
-                line: 0,
-                column: 0,
-                stack: None,
-            });
+            return Err(graph_load_error(realm_cx));
         }
         if !unsafe { ModuleLink(realm_cx, module_obj.handle()) } {
             return ::std::result::Result::Err(extract_module_error(realm_cx));
@@ -914,13 +896,7 @@ impl ModuleLoader {
 
         // SM153: graph-load first (New -> Unlinked), then link.
         if !unsafe { load_requested_modules_sync(realm_cx.raw_cx(), module_obj.handle().into()) } {
-            return Err(JsError {
-                message: "module graph loading failed".into(),
-                filename: String::new(),
-                line: 0,
-                column: 0,
-                stack: None,
-            });
+            return Err(graph_load_error(realm_cx));
         }
         if !unsafe { ModuleLink(realm_cx, module_obj.handle()) } {
             return ::std::result::Result::Err(extract_module_error(realm_cx));
@@ -1251,19 +1227,21 @@ export var stackTrace = _m.stackTrace;
 export default _m;
 "#,
         ),
-        // Generic builtin modules: each builtin's `require("<name>")` returns a
-        // cached module object exposing named properties (Buffer, createHash,
-        // readFile, EventEmitter, ...). We emit explicit static `export var`
-        // declarations per known builtin so SM's ESM linker can resolve
-        // `import { Buffer } from "buffer"` / `import { createHash } from
-        // "crypto"` / `import { readFile } from "fs"` at link time. Each export
-        // binds lazily to the underlying property so it stays in sync with the
-        // builtin module object after initialisation.
-        _ if builtin_modules.contains(&stripped) => Some(builtin_esm_source(stripped)),
+        // Generic builtin modules: bridged via LIVE enumeration — the key set
+        // is `require("<name>")`'s own string keys (incl. non-enumerable) at
+        // bridge generation time (see builtin_bridge_source_live). No curated table:
+        // keys the object exposes are exactly the keys the bridge declares,
+        // so `import { open } from "fs/promises"` and every future builtin
+        // surface resolves without per-builtin maintenance.
+        _ if builtin_modules.contains(&stripped) => None,
         _ => None,
     };
 
-    if let Some(esm_src) = synthetic_esm {
+    // Bridge candidates: the three static bridges above, plus every known
+    // builtin (live-enumeration path). Cache check runs BEFORE the live
+    // enumeration so a cache hit never pays the require/enumeration cost.
+    let is_bridge_candidate = synthetic_esm.is_some() || builtin_modules.contains(&stripped);
+    if is_bridge_candidate {
         // Check cache first — synthetic modules must be returned as the same object
         let cache_key = format!("builtin:{}", stripped);
         let cached = module_cache_get(raw_cx, &cache_key);
@@ -1273,21 +1251,47 @@ export default _m;
             return existing;
         }
 
+        let esm_src: String = match synthetic_esm {
+            ::std::option::Option::Some(static_src) => static_src.to_string(),
+            // Live-enumeration bridge. Fail-closed: Err means the pending
+            // exception (missing require / throwing require / failed
+            // enumeration) makes this import fail loudly — NO silent
+            // default-only degradation.
+            ::std::option::Option::None => {
+                match builtin_bridge_source_live(raw_cx, stripped) {
+                    ::std::result::Result::Ok(src) => src,
+                    ::std::result::Result::Err(()) => return ::std::ptr::null_mut(),
+                }
+            }
+        };
+
         let c_filename = CString::new(format!("<builtin:{}>", stripped))
             .unwrap_or_else(|_| CString::new("<builtin>").unwrap());
         let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
-        if !opts.is_null() {
-            let mut src = transform_str_to_source_text(esm_src);
-            let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
-            mozjs::glue::DeleteCompileOptions(opts);
-            if !module.is_null() {
-                // BUG-ENG-365: attach private value to synthetic builtin modules
-                let priv_url = format!("builtin:{}", stripped);
-                set_module_private(raw_cx, module, &priv_url);
-                module_cache_insert(raw_cx, &cache_key, module);
-            }
-            return module;
+        if opts.is_null() {
+            // Fail-closed (same class as the CJS arm): a bridge candidate
+            // without compile options must fail loudly, never silently fall
+            // through to file-path resolution ("Cannot find module" for a
+            // builtin = misleading diagnosis).
+            let mut cx_s =
+                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx));
+            let msg =
+                format!("Cannot compile builtin bridge '{stripped}' (no compile options)");
+            let c_msg = CString::new(msg)
+                .unwrap_or_else(|_| CString::new("Cannot compile builtin bridge").unwrap());
+            mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
+            return ::std::ptr::null_mut();
         }
+        let mut src = transform_str_to_source_text(&esm_src);
+        let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
+        mozjs::glue::DeleteCompileOptions(opts);
+        if !module.is_null() {
+            // BUG-ENG-365: attach private value to synthetic builtin modules
+            let priv_url = format!("builtin:{}", stripped);
+            set_module_private(raw_cx, module, &priv_url);
+            module_cache_insert(raw_cx, &cache_key, module);
+        }
+        return module;
     }
 
     // BUG-ENG-365: derive base_dir from the referencing module's private URL
@@ -1353,27 +1357,50 @@ export default _m;
     };
 
     // BUG-ENG-365: CJS↔ESM interop.
-    // When an ESM `import` targets a CJS module (`.cjs` or `.js` lacking
-    // ESM syntax with a `module.exports` shape), wrap it as a synthetic ESM
-    // whose default export is module.exports and named exports are exposed
-    // via Object.keys re-exports. This matches Node.js ESM-CJS interop.
+    // When an ESM `import` targets a CJS module (`.cjs` or `.js` lacking ESM
+    // syntax with a `module.exports` shape), wrap it as a synthetic ESM whose
+    // default export is `module.exports` and whose named exports are static
+    // `export` declarations extracted from the CJS source via OXC AST
+    // (`cjs_exports::extract_cjs_named_exports` — see cjs_compat_wrapper_source).
+    // SM's ESM linker resolves named imports statically at ModuleLink time.
     if is_cjs_module(&canonical, &content) {
         let wrapper = cjs_compat_wrapper_source(&canonical, &content);
         let c_filename = CString::new(canonical.to_string_lossy().into_owned())
             .unwrap_or_else(|_| CString::new("<cjs-compat>").unwrap());
         let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
-        if !opts.is_null() {
-            let mut src = transform_str_to_source_text(&wrapper);
-            let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
-            mozjs::glue::DeleteCompileOptions(opts);
-            if !module.is_null() {
-                let priv_url = path_to_file_url(&canonical);
-                set_module_private(raw_cx, module, &priv_url);
-                module_cache_insert(raw_cx, &cache_key, module);
-                return module;
-            }
+        if opts.is_null() {
+            // Fail-closed: cannot build compile options for an
+            // authoritatively-CJS module. NEVER re-interpret the source as
+            // native ESM below — that silently republishes a CJS module with
+            // wrong flavor and swallows the real failure as spurious
+            // missing-export link errors. Node parity: a CJS syntax error is
+            // a loud SyntaxError, never a silent ESM recompile.
+            let mut cx_s =
+                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx));
+            let msg = format!("Cannot compile CJS module {} (no compile options)", c_filename.to_string_lossy());
+            let c_msg = CString::new(msg)
+                .unwrap_or_else(|_| CString::new("Cannot compile CJS module").unwrap());
+            mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
+            return ::std::ptr::null_mut();
         }
-        // Fallback: treat as ESM below if CJS wrap fails.
+        let mut src = transform_str_to_source_text(&wrapper);
+        let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
+        mozjs::glue::DeleteCompileOptions(opts);
+        if !module.is_null() {
+            let priv_url = path_to_file_url(&canonical);
+            set_module_private(raw_cx, module, &priv_url);
+            module_cache_insert(raw_cx, &cache_key, module);
+            return module;
+        }
+        // Fail-closed (BCE module-flavor misinterpretation class): the
+        // wrapper failed to compile (e.g. the CJS source itself has a syntax
+        // error). CompileModule1 left SM's pending exception (real
+        // SyntaxError with line:col) — return null and let the hook's
+        // `JS_IsExceptionPending` check surface it. The former
+        // "treat as ESM below" fallback is DELETED: it recompiled the CJS
+        // body as native ESM, silently producing a wrong-flavored module
+        // whose import failures masked the true compile error.
+        return ::std::ptr::null_mut();
     }
 
     // REQ-ENG-005 criterion 3: TypeScript/JSX transpilation before SM compilation.
@@ -1453,471 +1480,6 @@ fn js_string_literal(s: &str) -> String {
     out
 }
 
-/// Named ESM exports to surface for each Node-compatible builtin module.
-///
-/// The list mirrors the surface installed by `bao_runtime` (see
-/// `node_buffer.rs`, `node_crypto.rs`, `node_fs.rs`, `node_events.rs`, ...).
-/// Each name becomes a static `export var` declaration so SM's ESM linker can
-/// resolve `import { Buffer } from "buffer"` at link time. Unknown names fall
-/// back to a `default`-only module; builtins without an entry here are still
-/// importable via default export.
-fn builtin_named_exports(name: &str) -> &'static [&'static str] {
-    match name {
-        "buffer" => &[
-            "Buffer",
-            "SlowBuffer",
-            "kMaxLength",
-            "constants",
-            "INSPECT_MAX_BYTES",
-            // @trace REQ-ENG-005 — extras imported by upstream tests.
-            // buffer.test.js imports isAscii, isUtf8; buffer-resolveObjectURL
-            // imports resolveObjectURL. Blob/File live on globalThis per Web
-            // IDL but buffer.test.js "File" drives
-            //   const BufferModule = await import("buffer");
-            //   expect(BufferModule.File).toBe(File);
-            // so File MUST appear as a named export. transcode is the
-            // masqueradesAsUndefined sentinel (typeof === "undefined" but
-            // callable and throws "Not implemented" — see buffer module
-            // installer in node_buffer.rs).
-            "isAscii",
-            "isUtf8",
-            "resolveObjectURL",
-            "Blob",
-            "File",
-            "transcode",
-        ],
-        "crypto" => &[
-            "createHash",
-            "createHmac",
-            "createCipher",
-            "createCipheriv",
-            "createDecipher",
-            "createDecipheriv",
-            "randomBytes",
-            "pseudoRandomBytes",
-            "randomInt",
-            "randomUUID",
-            "pbkdf2",
-            "pbkdf2Sync",
-            "scrypt",
-            "scryptSync",
-            "hkdf",
-            "hkdfSync",
-            "digest",
-            "hash",
-            "createSign",
-            "createVerify",
-            "getHashes",
-            "getCiphers",
-            "timingSafeEqual",
-            "timingSafeCompare",
-            "DiffieHellmanGroup",
-            "createDiffieHellman",
-            "DiffieHellman",
-            "createECDH",
-            "generateKeyPair",
-            "generateKeyPairSync",
-            "createSecretKey",
-            "createPublicKey",
-            "createPrivateKey",
-            "KeyObject",
-            "webcrypto",
-            "constants",
-            "randomFill",
-            "randomFillSync",
-        ],
-        "fs" => &[
-            "readFile",
-            "readFileSync",
-            "writeFile",
-            "writeFileSync",
-            "appendFile",
-            "appendFileSync",
-            "readdir",
-            "readdirSync",
-            "stat",
-            "statSync",
-            "lstat",
-            "lstatSync",
-            "fstat",
-            "fstatSync",
-            "exists",
-            "existsSync",
-            "mkdir",
-            "mkdirSync",
-            "rmdir",
-            "rmdirSync",
-            "rm",
-            "rmSync",
-            "unlink",
-            "unlinkSync",
-            "rename",
-            "renameSync",
-            "copyFile",
-            "copyFileSync",
-            "open",
-            "openSync",
-            "close",
-            "closeSync",
-            "read",
-            "readSync",
-            "write",
-            "writeSync",
-            "realpath",
-            "realpathSync",
-            "createReadStream",
-            "createWriteStream",
-            "watch",
-            "watchFile",
-            "unwatchFile",
-            "access",
-            "accessSync",
-            "chmod",
-            "chmodSync",
-            "chown",
-            "chownSync",
-            "utimes",
-            "utimesSync",
-            "lutimes",
-            "lutimesSync",
-            "link",
-            "linkSync",
-            "symlink",
-            "symlinkSync",
-            "readlink",
-            "readlinkSync",
-            "truncate",
-            "truncateSync",
-            "ftruncate",
-            "ftruncateSync",
-            "fchmod",
-            "fchmodSync",
-            "fchown",
-            "fchownSync",
-            "mkdirp",
-            "mkdirpSync",
-            "cp",
-            "cpSync",
-            "opendir",
-            "opendirSync",
-            "Dir",
-            "promises",
-            "constants",
-            "F_OK",
-            "R_OK",
-            "W_OK",
-            "X_OK",
-            "Stats",
-            "ReadStream",
-            "WriteStream",
-            "Dirent",
-        ],
-        "events" => &[
-            "EventEmitter",
-            "once",
-            "on",
-            "getEventListeners",
-            "setMaxListeners",
-            "getMaxListeners",
-            "EventEmitterAsyncResource",
-            "captureRejections",
-            "captureRejectionSymbol",
-            "defaultMaxListeners",
-            "errorMonitor",
-            "listenerCount",
-        ],
-        "os" => &[
-            "platform",
-            "arch",
-            "type",
-            "release",
-            "hostname",
-            "cpus",
-            "totalmem",
-            "freemem",
-            "uptime",
-            "loadavg",
-            "networkInterfaces",
-            "userInfo",
-            "homedir",
-            "tmpdir",
-            "endianness",
-            "EOL",
-            "constants",
-            "availableParallelism",
-            "getPriority",
-            "setPriority",
-            "machine",
-            "version",
-            "devDir",
-        ],
-        "path" => &[
-            "resolve",
-            "normalize",
-            "isAbsolute",
-            "join",
-            "relative",
-            "dirname",
-            "basename",
-            "extname",
-            "parse",
-            "format",
-            "sep",
-            "delimiter",
-            "win32",
-            "posix",
-            "toNamespacedPath",
-            "matchesGlob",
-        ],
-        "url" => &[
-            "parse",
-            "resolve",
-            "resolveObject",
-            "format",
-            "Url",
-            "URL",
-            "URLSearchParams",
-            "domainToASCII",
-            "domainToUnicode",
-            "fileURLToPath",
-            "pathToFileURL",
-            "urlToHttpOptions",
-        ],
-        "util" => &[
-            "format",
-            "debug",
-            "log",
-            "inspect",
-            "isArray",
-            "isBoolean",
-            "isNull",
-            "isNullOrUndefined",
-            "isNumber",
-            "isString",
-            "isSymbol",
-            "isUndefined",
-            "isRegExp",
-            "isObject",
-            "isDate",
-            "isError",
-            "isFunction",
-            "isPrimitive",
-            "isBuffer",
-            "promisify",
-            "callbackify",
-            "inherits",
-            "types",
-            "TextEncoder",
-            "TextDecoder",
-            "_extend",
-            "deprecate",
-            "formatWithOptions",
-            "styleText",
-            "stripVTControlCharacters",
-            "parseArgs",
-            "MIMEType",
-            "parseMIMEType",
-            "aborted",
-            "transferable",
-            "deepEqual",
-            "deepStrictEqual",
-        ],
-        "string_decoder" => &["StringDecoder"],
-        // @trace REQ-ENG-005 — node:tty named exports. ReadStream, WriteStream,
-        // and isatty are imported by tty.test.ts and nodettywrap.test.ts.
-        "tty" => &["ReadStream", "WriteStream", "isatty"],
-        "timers" => &[
-            "setTimeout",
-            "clearTimeout",
-            "setInterval",
-            "clearInterval",
-            "setImmediate",
-            "clearImmediate",
-            "promises",
-        ],
-        "stream" => &[
-            "Stream",
-            "Readable",
-            "Writable",
-            "Duplex",
-            "Transform",
-            "PassThrough",
-            "pipeline",
-            "finished",
-            "addAbortSignal",
-            "promises",
-            "ReadableStream",
-            "WritableStream",
-            "TransformStream",
-            "getDefaultHighWaterMark",
-            "setDefaultHighWaterMark",
-            "isDisturbed",
-        ],
-        "assert" => &[
-            "ok",
-            "equal",
-            "notEqual",
-            "deepEqual",
-            "notDeepEqual",
-            "deepStrictEqual",
-            "notDeepStrictEqual",
-            "strict",
-            "fail",
-            "throws",
-            "doesNotThrow",
-            "ifError",
-            "rejects",
-            "doesNotReject",
-            "match",
-            "doesNotMatch",
-            "CallTracker",
-            "partialDeepStrictEqual",
-        ],
-        "querystring" => &[
-            "escape",
-            "unescape",
-            "encode",
-            "decode",
-            "stringify",
-            "parse",
-        ],
-        "net" => &[
-            "createServer",
-            "createConnection",
-            "connect",
-            "Server",
-            "Socket",
-            "isIP",
-            "isIPv4",
-            "isIPv6",
-            "BlockList",
-            "SocketAddress",
-        ],
-        "tls" => &[
-            "createServer",
-            "createSecureContext",
-            "createSecureServer",
-            "connect",
-            "TLSSocket",
-            "Server",
-            "SecureContext",
-            "checkServerIdentity",
-            "getCiphers",
-            "rootCertificates",
-            "DEFAULT_ECDH_CURVE",
-            "DEFAULT_MIN_VERSION",
-            "DEFAULT_MAX_VERSION",
-        ],
-        "dns" => &[
-            "lookup",
-            "resolve",
-            "resolve4",
-            "resolve6",
-            "resolveAny",
-            "reverse",
-            "Resolver",
-            "getServers",
-            "setServers",
-            "lookupService",
-            "promises",
-            "defaultResolver",
-            "setDefaultResultOrder",
-            "getDefaultResultOrder",
-            "lookupSync",
-        ],
-        "zlib" => &[
-            "deflate",
-            "deflateSync",
-            "inflate",
-            "inflateSync",
-            "gzip",
-            "gzipSync",
-            "gunzip",
-            "gunzipSync",
-            "deflateRaw",
-            "deflateRawSync",
-            "inflateRaw",
-            "inflateRawSync",
-            "brotliCompress",
-            "brotliCompressSync",
-            "brotliDecompress",
-            "brotliDecompressSync",
-            "createDeflate",
-            "createInflate",
-            "createGzip",
-            "createGunzip",
-            "createDeflateRaw",
-            "createInflateRaw",
-            "createBrotliCompress",
-            "createBrotliDecompress",
-            "Deflate",
-            "Inflate",
-            "Gzip",
-            "Gunzip",
-            "DeflateRaw",
-            "InflateRaw",
-            "BrotliCompress",
-            "BrotliDecompress",
-            "constants",
-            "crc32",
-            "crc32Sync",
-        ],
-        "child_process" => &[
-            "spawn",
-            "exec",
-            "execFile",
-            "execFileSync",
-            "spawnSync",
-            "execSync",
-            "fork",
-            "ChildProcess",
-        ],
-        "readline" => &[
-            "createInterface",
-            "clearLine",
-            "clearScreenDown",
-            "cursorTo",
-            "emitKeypressEvents",
-            "moveCursor",
-            "promises",
-            "Interface",
-            "question",
-        ],
-        "perf_hooks" => &[
-            "PerformanceObserver",
-            "PerformanceEntry",
-            "PerformanceObserverEntryList",
-            "Performance",
-            "monitorEventLoopDelay",
-            "constants",
-        ],
-        "http" => &[
-            "request",
-            "get",
-            "ClientRequest",
-            "IncomingMessage",
-            "Server",
-            "ServerResponse",
-            "METHODS",
-            "STATUS_CODES",
-            "globalAgent",
-            "Agent",
-            "MaxRequestsPerServer",
-            "createServer",
-            "validateHeaderName",
-            "validateHeaderValue",
-            "setGlobalDispatcher",
-            "getGlobalDispatcher",
-        ],
-        "https" => &["request", "get", "Server", "Agent", "globalAgent"],
-        _ => &[],
-    }
-}
-
-/// Build the ESM source for a builtin module. Emits `export var` declarations
-/// for each named export (so SM's linker can resolve them statically) plus a
-/// `default` export pointing at the full builtin module object. Unknown names
-/// fall back to `default`-only (still `import X from "<builtin>"`-able).
 /// ESM bridge source for `node:test` — shared by the static-import resolve
 /// hook (`host_resolve_imported_module`) and dynamic `import("node:test")`
 /// (`dynamic_import_builtin`) so both expose the identical surface.
@@ -1960,33 +1522,242 @@ export var getTestContext = _m.getTestContext;
 export default _m;
 "#;
 
-fn builtin_esm_source(name: &str) -> &'static str {
-    // Static module source is required because SM's ESM linker reads exports
-    // at compile time. We render this once per builtin and leak it so the
-    // returned `&'static str` matches the other match arms.
+// @trace REQ-ENG-005 — bridge-reserved local names in the generated builtin
+// ESM source. An export key colliding with one of these routes through the
+// numbered-local alias form (a direct `export var _m;` would redeclare the
+// bridge's own `var _m = require(...)` — SyntaxError).
+const BRIDGE_RESERVED_IDENTS: &[&str] = &["_m"];
+
+// @trace REQ-ENG-005 — Build the builtin-bridge ESM source from a key set.
+// Pure core (unit-testable): `keys` are the live builtin object's own
+// enumerable string keys — the single source of truth, enumerated at bridge
+// generation time (no curated table to chase; keys the object does not have
+// are never invented). Form (two-zone, mirroring cjs_compat_wrapper_source):
+//
+/// ```text
+/// var _m = require("<name>");          // live object
+/// // ── declaration zone ──
+/// export var <k>;                      // identifier keys
+/// let __bi_N;                          // string / reserved / colliding keys
+/// export { __bi_N as "<k>" };          //   (ES2022 arbitrary namespace names)
+/// export default _m;
+/// // ── binding zone (evaluation time) ──
+/// <k> = _m["<k>"];
+/// __bi_N = _m["<k>"];
+/// ```
+///
+/// `default` and `__esModule` are filtered; duplicates de-duplicated
+/// (first-seen order kept). Identifier keys route to `export var`; keys that
+/// are not valid JS identifiers, are reserved words, or collide with the
+/// bridge's own locals route through the alias form.
+fn builtin_esm_source_from_keys(name: &str, keys: &[String]) -> String {
     let spec = js_string_literal(name);
-    let named = builtin_named_exports(name);
-    let mut src = String::with_capacity(64 + named.len() * 32);
-    src.push_str("var _m = require(");
-    src.push_str(&spec);
-    src.push_str(");\n");
-    // Deduplicate: SM rejects duplicate export names at compile time. Iterate
-    // and skip any name we've already emitted.
+    let mut decls = String::new();
+    let mut bindings = String::new();
     let mut seen: ::std::collections::HashSet<&str> = ::std::collections::HashSet::new();
-    for &exp in named {
-        if !seen.insert(exp) {
+    let mut alias_idx = 0usize;
+    for key in keys {
+        if key == "default" || key == "__esModule" {
             continue;
         }
-        // `export var <name> = _m.<name>;` — bind the export to the property
-        // value at module evaluation time. Re-binds on each evaluation.
-        src.push_str("export var ");
-        src.push_str(exp);
-        src.push_str(" = _m.");
-        src.push_str(exp);
-        src.push_str(";\n");
+        if !seen.insert(key.as_str()) {
+            continue;
+        }
+        if is_valid_js_identifier(key)
+            && !is_reserved_word(key)
+            && !BRIDGE_RESERVED_IDENTS.contains(&key.as_str())
+            // A key literally shaped like our alias locals (`__bi_N`) must
+            // also route through the alias form — via the identifier route it
+            // would redeclare an alias local (`let __bi_0;` for some other
+            // key + `export var __bi_0;` = SyntaxError). Through the alias
+            // form it is collision-free: alias locals are indexed uniquely
+            // per key, and a local whose text equals its own key still binds
+            // correctly (`let __bi_3; __bi_3 = _m["__bi_3"]`).
+            && !key.starts_with("__bi_")
+        {
+            decls.push_str(&format!("export var {key};\n"));
+            bindings.push_str(&format!("{key} = _m[{}];\n", js_string_literal(key)));
+        } else {
+            let local = format!("__bi_{alias_idx}");
+            alias_idx += 1;
+            decls.push_str(&format!("let {local};\n"));
+            decls.push_str(&format!(
+                "export {{ {local} as {} }};\n",
+                js_string_literal(key)
+            ));
+            bindings.push_str(&format!("{local} = _m[{}];\n", js_string_literal(key)));
+        }
     }
+    let mut src = String::with_capacity(96 + decls.len() + bindings.len());
+    src.push_str(&format!("var _m = require({spec});\n"));
+    src.push_str("// Static named exports — keys enumerated from the LIVE builtin object\n");
+    src.push_str("// (own string keys incl. non-enumerable via GetPropertyKeys at bridge\n");
+    src.push_str("// generation time); SM's linker resolves named imports statically.\n");
+    src.push_str(&decls);
     src.push_str("export default _m;\n");
-    Box::leak(src.into_boxed_str())
+    src.push_str("// Bind named exports to the live object's values at evaluation time.\n");
+    src.push_str(&bindings);
+    src
+}
+
+// @trace REQ-ENG-005 — Thin cx wrapper: enumerate the LIVE builtin object's
+// named-export keys and build the bridge source (see
+// [`builtin_esm_source_from_keys`] for the pure core).
+//
+// Fail-closed contract: a missing/non-callable `globalThis.require`, a
+// throwing `require` call, or a failed enumeration leaves SM's pending
+// exception in place and returns `Err(())` — the caller must fail this
+// import loudly (NO silent default-only degradation: that would republish
+// "compatible" against a broken engine contract). `Ok` with an EMPTY key set
+// is the honest empty-object case: the require call succeeded and the real
+// object genuinely has no own string keys — default-only over a
+// truth, not a degradation.
+//
+// Enumeration timing: this runs at bridge-generation time = SM ModuleLink of
+// the importing module = user context with the realm fully initialised, so
+// the require-driven lazy builtin materialization lands inside the designed
+// M2 laziness window (link phase, engine thread, post realm init — safe by
+// construction).
+//
+// Keys = own STRING keys INCLUDING non-enumerable (`GetPropertyKeys` with
+// `JSITER_OWNONLY | JSITER_HIDDEN`; absence of `JSITER_SYMBOLS` ⇒ symbol-
+// free). Beyond the `Object.keys` face on purpose: node builtin APIs are
+// installed non-enumerable (farm diag3), and a named import must still be
+// able to name them.
+fn builtin_bridge_source_live(
+    raw_cx: *mut JSContext,
+    name: &str,
+) -> ::std::result::Result<String, ()> {
+    // Failure helper: throw a type error (engine-contract violation message)
+    // and propagate Err(()) — the pending exception makes the import fail.
+    let fail = |msg: String| -> ::std::result::Result<String, ()> {
+        let mut cx_t = unsafe {
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx))
+        };
+        let c_msg = CString::new(msg)
+            .unwrap_or_else(|_| CString::new("builtin bridge failure").unwrap());
+        // throw_type_error is a SAFE wrapper (mozjs/src/error.rs) — no unsafe
+        // shell.
+        mozjs::error::throw_type_error(&mut cx_t, c_msg.as_ref());
+        ::std::result::Result::Err(())
+    };
+
+    let global = unsafe { CurrentGlobalOrNull(raw_cx) };
+    if global.is_null() {
+        return fail(format!("builtin bridge: no current global while bridging '{name}'"));
+    }
+
+    let mut cx_s =
+        unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx)) };
+    rooted!(&in(cx_s) let global_root = global);
+
+    // globalThis.require — must exist and be callable (engine contract).
+    rooted!(&in(cx_s) let mut require_val = UndefinedValue());
+    let got = unsafe {
+        JS_GetProperty(
+            raw_cx,
+            global_root.handle().into(),
+            c"require".as_ptr(),
+            // `.into()`: the rooted! guard's lifetime-form rust::MutableHandle
+            // adopts into the non-lifetime jsapi MutableHandle<Value> these
+            // JSAPI wrappers expect (same form as the JS_GetModulePrivate
+            // call above in this file).
+            require_val.handle_mut().into(),
+        )
+    };
+    if !got || !require_val.is_object() {
+        return fail(format!(
+            "builtin bridge: globalThis.require is not available while bridging '{name}'"
+        ));
+    }
+
+    // require("<name>") — one string argument; live builtin object returned.
+    let c_name = CString::new(name).unwrap_or_else(|_| CString::new("<builtin>").unwrap());
+    let name_js = unsafe { JS_NewStringCopyZ(raw_cx, c_name.as_ptr()) };
+    if name_js.is_null() {
+        return fail(format!("builtin bridge: cannot allocate name string for '{name}'"));
+    }
+    // StringValue itself is safe (&JSString); the unsafe is precisely the
+    // raw-pointer deref (name_js: *mut JSString, allocated above, alive).
+    let name_val = mozjs::jsval::StringValue(unsafe { &*name_js });
+    rooted!(&in(cx_s) let name_val_root = name_val);
+    let args = [*name_val_root.handle()];
+    let call_args = mozjs::jsapi::HandleValueArray {
+        length_: 1,
+        elements_: args.as_ptr(),
+    };
+    rooted!(&in(cx_s) let mut rval = UndefinedValue());
+    let called = unsafe {
+        JS_CallFunctionValue(
+            raw_cx,
+            global_root.handle().into(),
+            require_val.handle().into(),
+            &call_args,
+            rval.handle_mut().into(),
+        )
+    };
+    if !called {
+        // require threw — its exception is pending; surface it verbatim.
+        return ::std::result::Result::Err(());
+    }
+    if !rval.is_object() {
+        return fail(format!(
+            "builtin bridge: require('{name}') did not return an object (engine contract break)"
+        ));
+    }
+
+    // Own string keys of the live object INCLUDING non-enumerable ones.
+    // Diagnostic evidence (farm diag3, CJS require direct probe): the API
+    // surface of node builtins is installed non-enumerable —
+    // timers/promises' setTimeout/setImmediate/setInterval/scheduler and
+    // module's createRequire/_resolveFilename are all own-but-NON-enumerable,
+    // so plain JSITER_OWNONLY (= own + enumerable-only) saw none of them.
+    // JSITER_HIDDEN (jsfriendapi.h: "Include nonenumerable properties") adds
+    // them back; still no JSITER_SYMBOLS ⇒ string-only keys, matching what a
+    // named import can name.
+    rooted!(&in(cx_s) let builtin_obj = rval.to_object());
+    let mut ids = mozjs::rust::IdVector::new(&mut cx_s);
+    let enumerated = unsafe {
+        mozjs::rust::wrappers2::GetPropertyKeys(
+            &mut cx_s,
+            builtin_obj.handle().into(),
+            mozjs::jsapi::JSITER_OWNONLY | mozjs::jsapi::JSITER_HIDDEN,
+            ids.handle_mut(),
+        )
+    };
+    if !enumerated {
+        // SM left a pending exception; ids must drop before returning so the
+        // rooted vector is released on the same context.
+        drop(ids);
+        return ::std::result::Result::Err(());
+    }
+
+    // IdVector is the documented root for its contents ("Use
+    // JS::Rooted<JS::IdVector>"); conversions to Rust strings run with no
+    // intervening JS, so per-id extra rooting is unnecessary.
+    let mut keys: Vec<String> = Vec::with_capacity(ids.len());
+    for i in 0..ids.len() {
+        let id = ids[i];
+        if !id.is_string() {
+            // Our flags exclude symbols; a non-string id here is impossible —
+            // skip honestly rather than invent.
+            continue;
+        }
+        let s = id.to_string();
+        match NonNull::new(s) {
+            Some(nn) => {
+                let k = unsafe { mozjs::conversions::jsstr_to_string(&cx_s, nn) };
+                keys.push(k);
+            }
+            None => {
+                drop(ids);
+                return fail(format!("builtin bridge: null key string while bridging '{name}'"));
+            }
+        }
+    }
+    drop(ids);
+
+    ::std::result::Result::Ok(builtin_esm_source_from_keys(name, &keys))
 }
 
 /// Generate the CJS-compat ESM wrapper source that wraps a CJS module.exports
@@ -1994,12 +1765,27 @@ fn builtin_esm_source(name: &str) -> &'static str {
 ///   1. Defines `module`, `exports` locals (CJS environment).
 ///   2. Evaluates the CJS source in a function scope.
 ///   3. Exports `default = module.exports`.
-///   4. Re-exports all enumerable keys as named exports (live bindings).
+///   4. Statically re-exports named keys extracted from the AST via OXC
+///      (`cjs_exports::extract_cjs_named_exports`) so SM's ESM linker can
+///      resolve `import { foo } from './lib.cjs'` at ModuleLink time.
 fn cjs_compat_wrapper_source(canonical: &Path, cjs_source: &str) -> String {
-    let escaped = cjs_source
-        .replace('\\', "\\\\")
-        .replace('`', "\\`")
-        .replace("${", "\\${");
+    // BCE (wrapper-escape pollution, GOLDEN-attributed 2026-10-26): the CJS
+    // body is embedded at a NORMAL CODE POSITION of the wrapper — inside the
+    // `(function() { ... }).call(exports);` IIFE — NOT inside a template
+    // literal. The former `\` → `\\`, backtick → `\``, `${` → `\${` escape
+    // set is the TEMPLATE-LITERAL escape set and is pure pollution at a code
+    // position: every backtick in the CJS source (fs.js has 5, index.js 49 —
+    // 69/96 GOLDEN fixtures import these) became `\`` = SyntaxError, and
+    // `"a\nb"` string escapes were re-interpreted as literal backslash-n.
+    // Node's own CJS wrapper `(function(exports, require, module,
+    // __filename, __dirname) { <src> })` embeds the source with ZERO
+    // escaping — an unbalanced-brace source is a syntax error in Node too,
+    // so there is no injection-face difference. Consumer chain audited (all
+    // call sites of this fn): the product goes straight through
+    // `transform_str_to_source_text` (byte-faithful UTF-8 → JS source buffer)
+    // into `JS::CompileModule1` — no layer ever re-embeds it in a template
+    // literal or string literal, so no consumer gives these escapes meaning.
+    let cjs_body = cjs_source;
     let filename_str = js_string_literal(&canonical.to_string_lossy());
     let dirname_str = js_string_literal(
         &canonical
@@ -2007,6 +1793,44 @@ fn cjs_compat_wrapper_source(canonical: &Path, cjs_source: &str) -> String {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
     );
+
+    // Extract named-export keys from the CJS source via OXC AST. These become
+    // static `export let <key>;` declarations so SM's ModuleLink can resolve
+    // named imports at link time (runtime Object.defineProperty on the
+    // namespace object is invisible to the linker).
+    let named_keys = crate::cjs_exports::extract_cjs_named_exports(cjs_source);
+    let mut named_exports_src = String::new();
+    let mut named_bindings_src = String::new();
+    for (idx, key) in named_keys.iter().enumerate() {
+        // Keys colliding with wrapper locals (module / exports / require /
+        // __filename / __dirname / __cjs_*) cannot use `export let <key>;`
+        // directly — that redeclares the wrapper's `var` and is a
+        // SyntaxError. Same for non-identifier string keys AND for JS
+        // reserved words (`export let class;` is a SyntaxError). All three
+        // route through a collision-free numbered local +
+        // `export { <local> as <name-or-"string"> }` (arbitrary module
+        // namespace names, ES2022 — supported by SM153).
+        if is_valid_js_identifier(key)
+            && !WRAPPER_RESERVED_IDENTS.contains(&key.as_str())
+            && !is_reserved_word(key)
+        {
+            named_exports_src.push_str(&format!("export let {key};\n"));
+            named_bindings_src
+                .push_str(&format!("{key} = __cjs_default[{}];\n", js_string_literal(key)));
+        } else {
+            // Numbered local: unique per wrapper, cannot collide with any
+            // export key or wrapper local.
+            let local = format!("__cjs_exp_{idx}");
+            named_exports_src.push_str(&format!("let {local};\n"));
+            named_exports_src.push_str(&format!(
+                "export {{ {local} as {} }};\n",
+                js_string_literal(key)
+            ));
+            named_bindings_src
+                .push_str(&format!("{local} = __cjs_default[{}];\n", js_string_literal(key)));
+        }
+    }
+
     format!(
         r#"
 var __cjs_module = {{ exports: {{}} }};
@@ -2014,27 +1838,120 @@ var module = __cjs_module;
 var exports = __cjs_module.exports;
 var __filename = {filename_str};
 var __dirname = {dirname_str};
+// BCE (ESM-imported CJS relative require base, GOLDEN-attributed 2026-10-26):
+// the wrapped CJS body calls the GLOBAL require, whose thread-local
+// REQUIRE_DIR is not set for this module (it was compiled as an ESM module
+// via the import hook, not loaded through load_cjs_module). A relative
+// `require('./sibling')` inside the body then resolved against the wrong
+// base (or none) and threw MODULE_NOT_FOUND (GOLDEN A: 94/96 .mjs failed at
+// common/index.js's require('./tmpdir')). Shadow the global with a
+// module-local require that resolves relative to THIS module's own directory
+// — created via module.createRequire(__filename) so builtin caching,
+// extension probing and the CJS wrapper pipeline stay identical.
+var require = (typeof globalThis.require === 'function' && globalThis.require.resolve)
+    ? globalThis.require('module').createRequire(__filename)
+    : globalThis.require;
 (function() {{
 {src}
 }}).call(exports);
 var __cjs_default = (module.exports === exports) ? exports : module.exports;
 export default __cjs_default;
-var __cjs_keys = (typeof __cjs_default === 'object' && __cjs_default !== null)
-    ? Object.keys(__cjs_default) : [];
-for (var __i = 0; __i < __cjs_keys.length; __i++) {{
-    var __k = __cjs_keys[__i];
-    try {{
-        Object.defineProperty(exports, __k, {{
-            get: function() {{ return __cjs_default[__k]; }},
-            enumerable: true,
-            configurable: true,
-        }});
-    }} catch (e) {{}}
-}}
+// Static named exports — keys extracted from the CJS source via OXC AST.
+// Each is a live binding: `export let <key>` declares the export and the
+// assignment below populates it from __cjs_default at evaluation time.
+{named_exports_src}
+// Bind named exports to the runtime values of __cjs_default.
+{named_bindings_src}
 "#,
         filename_str = filename_str,
         dirname_str = dirname_str,
-        src = escaped,
+        src = cjs_body,
+        named_exports_src = named_exports_src,
+        named_bindings_src = named_bindings_src,
+    )
+}
+
+/// Check whether a string is a valid JS identifier (ECMAScript IdentifierName).
+///
+/// Used to decide whether a CJS export key can appear as a plain
+/// `export let <ident>;` declaration or needs the
+/// `export { <local> as "<string>" }` form.
+fn is_valid_js_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+/// Wrapper-local identifiers that a CJS export key must not collide with when
+/// emitted as a plain `export let <key>;` — colliding keys route through the
+/// numbered-local + `export { local as name }` alias form instead.
+const WRAPPER_RESERVED_IDENTS: &[&str] = &[
+    "module",
+    "exports",
+    "require",
+    "__filename",
+    "__dirname",
+    "__cjs_module",
+    "__cjs_default",
+];
+
+/// Reserved words that cannot appear in `export let <word>;` position.
+/// Keys matching these route through the alias form
+/// (`export { local as "<string>" }`) regardless of identifier validity.
+fn is_reserved_word(s: &str) -> bool {
+    matches!(
+        s,
+        "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "continue"
+            | "debugger"
+            | "default"
+            | "delete"
+            | "do"
+            | "else"
+            | "enum"
+            | "export"
+            | "extends"
+            | "false"
+            | "finally"
+            | "for"
+            | "function"
+            | "if"
+            | "import"
+            | "in"
+            | "instanceof"
+            | "new"
+            | "null"
+            | "return"
+            | "super"
+            | "switch"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typeof"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+            | "yield"
+            | "let"
+            | "static"
+            | "await"
+            // Strict-mode reserved words — ES modules are always strict, so
+            // `export let implements;` and friends are SyntaxErrors too.
+            | "implements"
+            | "interface"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
     )
 }
 
@@ -3170,6 +3087,27 @@ fn check_module_evaluation_promise(
     }
 }
 
+/// Graph-load failure error surface (BCE generic-error-masks-pending-
+/// exception class): when a dependency module fails to load, the loader hook
+/// leaves SM's real error (e.g. the SyntaxError of a broken CJS source, with
+/// its own file:line:column) pending on the context. Surface THAT — the
+/// generic "module graph loading failed" placeholder is the fallback ONLY
+/// for the no-pending-exception case (hook returned null without an
+/// exception, e.g. resolution failure paths that already reported).
+fn graph_load_error(realm_cx: &mut mozjs::context::JSContext) -> JsError {
+    if unsafe { JS_IsExceptionPending(realm_cx.raw_cx()) } {
+        extract_module_error(realm_cx)
+    } else {
+        JsError {
+            message: "module graph loading failed".into(),
+            filename: String::new(),
+            line: 0,
+            column: 0,
+            stack: None,
+        }
+    }
+}
+
 fn extract_module_error(cx: &mut mozjs::context::JSContext) -> JsError {
     rooted!(&in(cx) let mut exn = UndefinedValue());
     if let ::std::option::Option::Some(info) =
@@ -3778,21 +3716,33 @@ mod tests {
         );
     }
 
-    // @trace REQ-ENG-005 — ESM builtin named exports.
-    // GAP-2: `import { Buffer } from "buffer"` must work. The builtin ESM
-    // source is generated with static `export var` declarations so SM's
-    // linker can resolve named imports at link time.
+    // @trace REQ-ENG-005 — ESM builtin named exports bridge (live-enumerated
+    // keys form). GAP-2: `import { Buffer } from "buffer"` must work. The
+    // bridge source is generated with static `export var` declarations so
+    // SM's linker can resolve named imports at link time. The pure core
+    // (builtin_esm_source_from_keys) is tested here against representative
+    // key sets; the live-enumeration face (builtin_bridge_source_live) is
+    // farm-validated (needs a real SM context + installed builtins).
+    fn s(v: &str) -> String {
+        v.to_string()
+    }
+
     #[test]
-    fn builtin_esm_source_emits_named_exports_for_buffer() {
-        let src = builtin_esm_source("buffer");
+    fn builtin_esm_source_from_keys_emits_named_exports_for_buffer() {
+        let src = builtin_esm_source_from_keys("buffer", &[s("Buffer"), s("constants")]);
         assert!(
             src.contains("require(\"buffer\")"),
             "must require builtin: {}",
             src
         );
         assert!(
-            src.contains("export var Buffer = _m.Buffer;"),
-            "must export Buffer: {}",
+            src.contains("export var Buffer;"),
+            "must declare Buffer export: {}",
+            src
+        );
+        assert!(
+            src.contains("Buffer = _m[\"Buffer\"];"),
+            "must bind Buffer in the evaluation zone: {}",
             src
         );
         assert!(
@@ -3803,34 +3753,66 @@ mod tests {
     }
 
     #[test]
-    fn builtin_esm_source_emits_named_exports_for_crypto_fs_events() {
-        for (name, sentinel) in [
-            ("crypto", "createHash"),
-            ("fs", "readFile"),
-            ("events", "EventEmitter"),
-        ] {
-            let src = builtin_esm_source(name);
-            assert!(
-                src.contains(&format!("export var {} = _m.{};", sentinel, sentinel)),
-                "builtin {} must export {}: {}",
-                name,
-                sentinel,
-                src
-            );
-        }
+    fn builtin_esm_source_from_keys_two_zone_ordering() {
+        // Declaration zone (export var / export {}) must come BEFORE
+        // `export default`, and the binding zone AFTER it — the cjs-wrapper
+        // contract shape.
+        let src = builtin_esm_source_from_keys("fs", &[s("readFile"), s("str-key")]);
+        let decl_pos = src.find("export var readFile;").expect("decl zone");
+        let alias_pos = src.find("export { __bi_0 as \"str-key\" };").expect("alias decl");
+        let default_pos = src.find("export default _m;").expect("default");
+        let bind_pos = src.find("readFile = _m[\"readFile\"];").expect("binding zone");
+        assert!(decl_pos < default_pos && alias_pos < default_pos && default_pos < bind_pos);
     }
 
     #[test]
-    fn builtin_esm_source_unknown_builtin_falls_back_to_default_only() {
-        // 'net' is a known builtin; 'unknown-builtin-xyz' is not in
-        // builtin_named_exports and yields no named exports, only default.
-        let src = builtin_esm_source("net");
-        assert!(src.contains("export default _m;"));
-        // Unknown name returns empty named list — only default + require.
-        let unknown = builtin_named_exports("does-not-exist-xyz");
-        assert!(
-            unknown.is_empty(),
-            "unknown builtin should have no named exports"
+    fn builtin_esm_source_from_keys_filters_default_and_esmodule_and_dedups() {
+        let src = builtin_esm_source_from_keys(
+            "x",
+            &[
+                s("readFile"),
+                s("default"),
+                s("__esModule"),
+                s("readFile"),
+                s("open"),
+            ],
         );
+        assert!(src.contains("export var readFile;"));
+        assert!(src.contains("export var open;"));
+        assert_eq!(
+            src.matches("export var readFile;").count(),
+            1,
+            "duplicate keys must dedup: {}",
+            src
+        );
+        assert!(
+            !src.contains("export var default;") && !src.contains("export var __esModule;"),
+            "default/__esModule must be filtered: {}",
+            src
+        );
+    }
+
+    #[test]
+    fn builtin_esm_source_from_keys_reserved_and_collision_route_alias() {
+        // Reserved word (`class`) and bridge-local collision (`_m`) must both
+        // route through the numbered-local alias form — a direct
+        // `export var class;` / `export var _m;` is a SyntaxError.
+        let src = builtin_esm_source_from_keys("x", &[s("class"), s("_m")]);
+        assert!(src.contains("export { __bi_0 as \"class\" };"), "{}", src);
+        assert!(src.contains("export { __bi_1 as \"_m\" };"), "{}", src);
+        assert!(!src.contains("export var class;"));
+        assert!(!src.contains("export var _m;"));
+    }
+
+    #[test]
+    fn builtin_esm_source_from_keys_empty_keys_is_honest_default_only() {
+        // Empty key set from a REAL object (enumeration succeeded, object has
+        // no own string keys) → default-only bridge. This is the
+        // honest empty set — distinct from the fail-closed Err path.
+        let src = builtin_esm_source_from_keys("mystery", &[]);
+        assert!(src.contains("require(\"mystery\")"));
+        assert!(src.contains("export default _m;"));
+        assert!(!src.contains("export var"));
+        assert!(!src.contains("export {"));
     }
 }

@@ -38,14 +38,6 @@ use std::time::{Duration, Instant};
 
 use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageState, PageHandle};
 
-fn pick_free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 /// Loopback origin serving one instant HTML page at any path, plus the
 /// slow-init carrier: `/slowinit` paints immediately (first frame early)
 /// but its blocking subresource `/delay` holds the LOAD event back, so the

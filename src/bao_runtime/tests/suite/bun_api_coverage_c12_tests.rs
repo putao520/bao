@@ -137,14 +137,19 @@ fn poll_until(ctx: &mut JsContext, cond: &str, iters: u32) -> bool {
 }
 
 /// One raw HTTP/1.1 GET/POST against the in-process serve, pumping the loop
-/// between read attempts (uWS dispatches only while the loop ticks).
+/// between read attempts (uWS dispatches only while the loop ticks). The
+/// deadline is a fleet-load margin, not a semantics gate: every hop here is
+/// pump-driven, so a co-tenant stall (GC / scheduler) only slows dispatch —
+/// 15s keeps a healthy round trip green through stall bursts that the
+/// e15-era 5s window turned into flaky reds. A genuinely dropped response
+/// still fails this gate (nextest slow-timeout is 60s).
 fn raw_http(ctx: &mut JsContext, port: u16, request: &str) -> String {
     let mut sock = TcpStream::connect(("127.0.0.1", port)).expect("connect serve");
     sock.set_read_timeout(Some(Duration::from_millis(25))).ok();
     sock.write_all(request.as_bytes()).expect("write request");
     let mut out = Vec::new();
     let mut buf = [0u8; 8192];
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
     while std::time::Instant::now() < deadline {
         // Fixed-pass loop pump (unified settle-pump tick per attempt) — uWS
         // dispatches only while the loop ticks.
@@ -345,10 +350,27 @@ fn c12_spawn_command_shapes_deliver_stdout() {
         "spawn shapes must settle — got: {}",
         eval_string(&mut ctx, "globalThis.__shapes")
     );
+    // Order-insensitive: the three children run concurrently, so their
+    // 'close' events complete in scheduler order, not spawn order — the
+    // e15-era fixed-sequence assertion flipped under fleet load (observed
+    // obj|split|arr with arr's reap delayed). The pinned contract is each
+    // shape's exit code + captured stdout, which the sorted comparison
+    // preserves element-for-element.
+    let mut observed: Vec<String> = eval_string(&mut ctx, "globalThis.__shapes")
+        .split('|')
+        .map(|s| s.to_string())
+        .collect();
+    observed.sort();
+    let mut expected = [
+        "arr:0:arr-form".to_string(),
+        "obj:0:obj-alias".to_string(),
+        "split:0:split-form".to_string(),
+    ];
+    expected.sort();
     assert_eq!(
-        eval_string(&mut ctx, "globalThis.__shapes"),
-        "arr:0:arr-form|obj:0:obj-alias|split:0:split-form",
-        "all three command shapes run the real binary with exit 0 and captured stdout"
+        observed, expected,
+        "all three command shapes run the real binary with exit 0 and captured \
+         stdout (close-event order is scheduler-dependent, compared as a set)"
     );
 }
 
@@ -393,10 +415,11 @@ fn c12_spawn_wait_and_poll_exit_info() {
 }
 
 /// kill(signal-name) arm (9265-9273): a named signal kills the child; the
-/// pump publishes a signal death as exit code -1 (subproc_wait contract),
-/// observed through the synchronous wait().
+/// synchronous wait() publishes the bun `exited` contract for a signal
+/// death — 128 + signum (bun 1.4.2 live probe 2026-10-25: SIGKILL → 137),
+/// never the leaked internal -signal wire encoding.
 #[test]
-fn c12_spawn_kill_signal_name_signal_death_is_minus_one() {
+fn c12_spawn_kill_signal_name_signal_death_is_128_plus_signum() {
     let mut ctx = make_ctx();
 
     let setup = eval_string(
@@ -426,8 +449,10 @@ fn c12_spawn_kill_signal_name_signal_death_is_minus_one() {
     );
     assert_eq!(
         eval_string(&mut ctx, "globalThis.__killReport"),
-        "sent=true;code=-9",
-        "named signal sent; signal death publishes -<signal> (-9 for SIGKILL).          REGISTRY R-A8: subproc_wait's doc comment claims signal deaths → -1; the observed          publish is -<signal>"
+        "sent=true;code=137",
+        "named signal sent; signal death publishes 128+signum (137 for SIGKILL, bun \
+         exited oracle). Supersedes REGISTRY R-A8 (which pinned the leaked internal \
+         -signal wire encoding) — REQ-ENG-004 E28 normalization"
     );
 }
 
@@ -705,7 +730,11 @@ fn c12_serve_route_throw_500_and_uncaught_routing() {
     // R-A7 oracle: the throwing route answers 500, the server survives, AND
     // the captured pending exception reaches process.on("uncaughtException")
     // (Node semantics; symmetric with the listen-side invoke_js_callback).
-    let routed = poll_until(&mut ctx, r#"globalThis.__uncaught !== "" ? "y" : "n""#, 60);
+    // The routing itself is synchronous inside the route-throw catch
+    // (bun_api serve_route_pending_exception → route_uncaught_exception);
+    // the poll is only the observation window, so it gets the same
+    // fleet-load margin as the raw_http deadline above (was 420ms).
+    let routed = poll_until(&mut ctx, r#"globalThis.__uncaught !== "" ? "y" : "n""#, 700);
     assert!(
         routed,
         "route-throw pending exception must reach the uncaughtException handler"
@@ -1273,10 +1302,15 @@ fn c12_serve_websocket_in_process_roundtrip() {
         "#,
     );
 
+    // Budget = fleet-load margin for the full round trip (TCP connect →
+    // upgrade → open → send → server echo → onmessage), every hop
+    // pump-driven. The e15-era 2.8s window was the tightest in the serve
+    // family; 14.7s matches the family's stall margin (a real
+    // message-drop regression still fails: the poll value never settles).
     let roundtripped = poll_until_bare(
         &mut ctx,
         r#"globalThis.__cliMsg === "echo:hi-c12" ? "y" : "n""#,
-        400,
+        2100,
     );
     let srv_log = eval_string(&mut ctx, "globalThis.__srvLog.join('|')");
     assert!(

@@ -336,11 +336,11 @@ unsafe extern "C" fn inspector_wait_for_debugger(
             let fn_obj = JS_GetFunctionObject(resolve_fn);
             rooted!(&in(wrapped_cx) let fn_val = ObjectValue(fn_obj));
 
-            let elems = [fn_val.get()];
-            let call_args = HandleValueArray {
-                length_: elems.len(),
-                elements_: elems.as_ptr(),
-            };
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+            rooted!(&in(wrapped_cx) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<1>::new([
+                fn_val.get(),
+            ]));
+            let call_args = JS::HandleValueArray::from(&call_args_rooted);
 
             let mut rval = UndefinedValue();
             JS_CallFunctionValue(

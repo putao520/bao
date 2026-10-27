@@ -165,20 +165,32 @@ fs.watchFile("{f}", {{ interval: 60 }}, function (curr, prev) {{
   throw new Error("watchfile-handled-boom");
 }});
 setTimeout(function () {{ fs.writeFileSync("{f}", "change-number-one"); }}, 120);
-setTimeout(function () {{ fs.writeFileSync("{f}", "change-number-two"); }}, 400);
 'ok'
 "#,
         f = f
     );
     assert_eq!(eval_string(&mut ctx, &script), "ok");
 
-    // Pump until both writes have been observed (or deadline). Each eval's
-    // post_eval_hook drains the stat-poll events realm-entered.
-    let both_fired = wait_until(
-        &mut ctx,
-        "String(globalThis.__fired) === '2' ? 'y' : 'n'",
-        80,
+    // Phase 1: first dispatch (delivery + throw + handler routing).
+    let first_fired = wait_until(&mut ctx, "globalThis.__fired >= 1 ? 'y' : 'n'", 80);
+    assert!(
+        first_fired,
+        "first write dispatch must fire the watchFile callback, fired={}",
+        eval_string(&mut ctx, "String(globalThis.__fired)")
     );
+
+    // Phase 2 = the loop-continues face, made deterministic: the second
+    // write is issued ONLY after the first dispatch's throw was routed and
+    // the loop demonstrably survived it (this eval runs on the same loop),
+    // so the second delivery cannot merge into the first — the former
+    // timer-scheduled write raced its sibling into one pump burst under
+    // fleet load, the poller then saw a single merged change and the
+    // fired===2 count gate starved (same class as the e15 10->13 window).
+    let _ = eval_string(
+        &mut ctx,
+        &format!("require('fs').writeFileSync(\"{f}\", \"change-number-two\")"),
+    );
+    let both_fired = wait_until(&mut ctx, "globalThis.__fired >= 2 ? 'y' : 'n'", 80);
 
     assert!(
         both_fired,

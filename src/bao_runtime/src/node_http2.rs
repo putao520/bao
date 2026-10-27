@@ -32,6 +32,70 @@ use crate::gc_store::{gc_store_get_ns, gc_store_insert_ns, gc_store_remove_ns};
 // (REQ-ARCH-001 duplicate convergence).
 use crate::node_constants::define_int_prop;
 use crate::require::cache_builtin;
+use crate::slot_gate::{set_slot, slot_ptr};
+
+// Reserved-slot indices on H2_SERVER_CLASS. The uWS App pointers (plain +
+// SSL) and the H2ServerUserData raw pointer live ONLY in engine-private
+// reserved slots: JS can neither read nor write them. This retires the former
+// `_appPtr`/`_sslAppPtr`/`_udPtr` own-property carriers (attrs=0
+// writable+configurable own properties holding PrivateValue — a page could
+// assign any subnormal double, e.g. `s._appPtr = 1e-320`, whose bits pass the
+// `(asBits & 0xFFFF000000000000) == 0` private-encoding check and reach
+// `to_private()` → wild `&*ptr` deref / arbitrary-address `Box::from_raw`). A
+// JS-visible carrier is unfixable at the bit level: any x86-64 userland
+// pointer (< 2^48) encodes to a double whose top 16 bits are zero, and every
+// such bit pattern is itself a JS-expressible double, so the encoding check
+// cannot discriminate engine-written from JS-written values
+// (BCE-20261025-FFI-SLOT-GATE).
+const SLOT_H2_SRV_APP_PTR: u32 = 0;
+const SLOT_H2_SRV_SSL_APP_PTR: u32 = 1;
+const SLOT_H2_SRV_UD_PTR: u32 = 2;
+
+/// Instance class of every `http2.createServer` / `http2.createSecureServer`
+/// server object (the plain fallback, and the `Http2Server` /
+/// `Http2SecureServer` prototype-preserving `JS_NewObjectWithGivenProto`
+/// paths). Three reserved slots (app ptr + ssl app ptr + user-data ptr), no
+/// ops; the given proto is preserved so the JS-visible surface is unchanged
+/// apart from the retired private properties.
+/// @trace REQ-ENG-004 [api:node:http2]
+const H2_SERVER_CLASS: JSClass = JSClass {
+    name: c"NodeHttp2Server".as_ptr(),
+    flags: (3 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: ::std::ptr::null(),
+    spec: ::std::ptr::null(),
+    ext: ::std::ptr::null(),
+    oOps: ::std::ptr::null(),
+};
+
+// Reserved-slot index on H2_RESPONSE_CLASS. The raw `*mut uws_res` lives
+// ONLY in an engine-private reserved slot: JS can neither read nor write it.
+// This retires the former `_uwsRes` own-property carrier (attrs=0
+// writable+configurable own property holding PrivateValue — a page could
+// assign any subnormal double, e.g. `s._uwsRes = 1e-320`, whose bits pass
+// the `(asBits & 0xFFFF000000000000) == 0` private-encoding check and reach
+// `to_private()` → wild `&*ptr` deref / arbitrary-address `Box::from_raw`).
+// A JS-visible carrier is unfixable at the bit level: any x86-64 userland
+// pointer (< 2^48) encodes to a double whose top 16 bits are zero, and every
+// such bit pattern is itself a JS-expressible double, so the encoding check
+// cannot discriminate engine-written from JS-written values
+// (BCE-20261025-FFI-SLOT-GATE, same class as node_http HTTP_RESPONSE_CLASS).
+const SLOT_H2_RES_PTR: u32 = 0;
+
+/// Instance class of every h2 response/stream carrier object (the union
+/// `stream_obj` and the compat `res_obj` built in the h2 route handler —
+/// both carry the same `*mut uws_res`). One reserved slot (uWS res ptr), no
+/// ops. `JS_NewObject` resolves the default proto for an op-less class to
+/// Object.prototype — the same proto `JS_NewPlainObject` gave — so the
+/// JS-visible surface is unchanged apart from the retired `_uwsRes` property.
+/// @trace REQ-ENG-004 [api:node:http2]
+const H2_RESPONSE_CLASS: JSClass = JSClass {
+    name: c"NodeHttp2Response".as_ptr(),
+    flags: (1 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: ::std::ptr::null(),
+    spec: ::std::ptr::null(),
+    ext: ::std::ptr::null(),
+    oOps: ::std::ptr::null(),
+};
 
 static NEXT_SERVER_ID: AtomicU64 = AtomicU64::new(1);
 #[allow(dead_code)]
@@ -1394,11 +1458,12 @@ unsafe fn h2_emit_event(
     let ev_val = StringValue(&*event_str);
     rooted!(&in(cx_ref) let ev_root = ev_val);
 
-    let args_vals = [ev_root.get(), arg_root.get()];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: args_vals.as_ptr(),
-    };
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+        ev_root.get(),
+        arg_root.get(),
+    ]));
+    let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
 
     let emit_fn_val = ObjectValue(emit_fn.get());
     rooted!(&in(cx_ref) let emit_fn_root = emit_fn_val);
@@ -1744,7 +1809,9 @@ unsafe extern "C" fn uws_h2_route_handler(
     // surface (respond/end/close + ':method'/':path') — http_te_parity pins
     // createServer handlers written against the session shape, and node's
     // Http2ServerRequest is itself a stream (req.stream === this surface).
-    rooted!(&in(cx_ref) let stream_obj = w2::JS_NewPlainObject(cx_ref));
+    // H2_RESPONSE_CLASS carries the `_uwsRes` pointer on a reserved slot
+    // (same as the retired JS_NewPlainObject shape).
+    rooted!(&in(cx_ref) let stream_obj = unsafe { w2::JS_NewObject(cx_ref, &H2_RESPONSE_CLASS) });
     if stream_obj.get().is_null() {
         log::error!("[node:http2] stream object allocation failed — responding 500");
         h2_respond_500(&mut *res_mut, b"stream allocation failed");
@@ -1917,20 +1984,20 @@ unsafe extern "C" fn uws_h2_route_handler(
     // (node_events natives — the same EE the pump emits through).
     attach_ee_methods(raw_cx, stream_obj.get());
 
-    // Store uWS res pointer on the stream object
-    let res_ptr_val = PrivateValue(res as *const core::ffi::c_void);
-    rooted!(&in(cx_ref) let rv = res_ptr_val);
-    JS_DefineProperty(
-        raw_cx,
-        stream_obj.handle().into(),
-        c"_uwsRes".as_ptr(),
-        rv.handle().into(),
-        0,
+    // Store uWS res pointer in an engine-private reserved slot on the stream
+    // object (the same `res` is also stored on the compat res_obj below —
+    // both share the one uWS Response for the request).
+    set_slot(
+        stream_obj.get(),
+        SLOT_H2_RES_PTR,
+        res as *const core::ffi::c_void,
     );
 
     // Compat response object: writeHead/setHeader/write/end bridging to the
-    // uWS Response (node's Http2ServerResponse surface).
-    rooted!(&in(cx_ref) let res_obj = w2::JS_NewPlainObject(cx_ref));
+    // uWS Response (node's Http2ServerResponse surface). H2_RESPONSE_CLASS
+    // carries the `_uwsRes` pointer on a reserved slot (same as the retired
+    // JS_NewPlainObject shape).
+    rooted!(&in(cx_ref) let res_obj = unsafe { w2::JS_NewObject(cx_ref, &H2_RESPONSE_CLASS) });
     if res_obj.get().is_null() {
         log::error!("[node:http2] response object allocation failed — responding 500");
         h2_respond_500(&mut *res_mut, b"response allocation failed");
@@ -1980,12 +2047,10 @@ unsafe extern "C" fn uws_h2_route_handler(
         );
     }
     attach_ee_methods(raw_cx, res_obj.get());
-    JS_DefineProperty(
-        raw_cx,
-        res_obj.handle().into(),
-        c"_uwsRes".as_ptr(),
-        rv.handle().into(),
-        0,
+    set_slot(
+        res_obj.get(),
+        SLOT_H2_RES_PTR,
+        res as *const core::ffi::c_void,
     );
 
     // Per-request state: root the stream/res objects in the GcStore and
@@ -2047,14 +2112,12 @@ unsafe extern "C" fn uws_h2_route_handler(
     rooted!(&in(cx_ref) let handler_root = ObjectValue(handler));
     rooted!(&in(cx_ref) let global_root = global);
 
-    let args_vals = [
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
         ObjectValue(stream_obj.get()),
         ObjectValue(res_obj.get()),
-    ];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: args_vals.as_ptr(),
-    };
+    ]));
+    let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
 
     let mut rval = UndefinedValue();
     let rval_h = MutableHandle::<Value> {
@@ -2251,11 +2314,14 @@ unsafe fn h2_emit_server_stream(
     rooted!(&in(cx_ref) let h_root = ObjectValue(headers_obj));
     rooted!(&in(cx_ref) let f_root = Int32Value(0));
 
-    let args_vals = [ev_root.get(), s_root.get(), h_root.get(), f_root.get()];
-    let call_args = HandleValueArray {
-        length_: 4,
-        elements_: args_vals.as_ptr(),
-    };
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<4>::new([
+        ev_root.get(),
+        s_root.get(),
+        h_root.get(),
+        f_root.get(),
+    ]));
+    let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
 
     rooted!(&in(cx_ref) let emit_fn = emit_val.to_object());
     rooted!(&in(cx_ref) let emit_fn_root = ObjectValue(emit_fn.get()));
@@ -2280,11 +2346,11 @@ unsafe fn h2_emit_server_stream(
 // JS stream methods — bridge to uWS Response::<false>
 // ──────────────────────────────────────────────────────────────────────
 
-#[inline]
-fn val_is_private(v: &JSVal) -> bool {
-    v.is_double() && (v.asBits_ & 0xFFFF000000000000) == 0
-}
-
+/// Recover the `*mut uws_res` stored in the `H2_RESPONSE_CLASS` reserved slot
+/// on the JS stream/response object. The class gate (`slot_ptr`) rejects any
+/// foreign-class receiver (proxies included) and any unset/cleared slot, so
+/// a stale or JS-tampered object never reaches `to_private()`.
+/// @trace REQ-ENG-004 [api:node:http2]
 #[inline]
 unsafe fn get_uws_res(
     cx: *mut JSContext,
@@ -2293,20 +2359,8 @@ unsafe fn get_uws_res(
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_root = obj);
-    let mut ptr_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj_root.handle().into(),
-        c"_uwsRes".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut ptr_val,
-        },
-    );
-    if !val_is_private(&ptr_val) {
-        return core::ptr::null_mut();
-    }
-    ptr_val.to_private() as *mut bun_uws_sys::response::c::uws_res
+    slot_ptr(cx, obj_root.handle(), &H2_RESPONSE_CLASS, SLOT_H2_RES_PTR)
+        as *mut bun_uws_sys::response::c::uws_res
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2420,7 +2474,8 @@ unsafe extern "C" fn h2_stream_end(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 
     // Node contract: end() after end() is a no-op — a second uWS end() on
     // the same response is a use-after-answer crash class (also covers the
-    // res.end-first cross-object case: both objects share _uwsRes).
+    // res.end-first cross-object case: both objects share the one reserved
+    // slot's `*mut uws_res`).
     if (*res_mut).state().is_http_end_called() {
         args.rval().set(UndefinedValue());
         return true;
@@ -3006,11 +3061,10 @@ unsafe extern "C" fn h2_res_set_timeout(cx: *mut JSContext, argc: u32, vp: *mut 
                 rooted!(&in(cx_ref) let st_root = ObjectValue(st_fn.get()));
                 rooted!(&in(cx_ref) let cb_root = *args.get(1).ptr);
                 rooted!(&in(cx_ref) let ms_root = Int32Value(msecs));
-                let call_vals = [cb_root.get(), ms_root.get()];
-                let call_args = HandleValueArray {
-                    length_: 2,
-                    elements_: call_vals.as_ptr(),
-                };
+                // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+                rooted!(&in(cx_ref) let call_args_rooted =
+                    mozjs_sys::jsgc::ValueArray::<2>::new([cb_root.get(), ms_root.get()]));
+                let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
                 let mut rval = UndefinedValue();
                 JS_CallFunctionValue(
                     cx,
@@ -3068,8 +3122,12 @@ unsafe extern "C" fn http2_create_server(cx: *mut JSContext, argc: u32, vp: *mut
     );
 
     if !ctor_val.is_object() {
-        // Fallback: create a plain object with EE methods
-        rooted!(&in(cx_ref) let server_obj = w2::JS_NewPlainObject(cx_ref));
+        // Fallback: H2_SERVER_CLASS carries the three pointer reserved slots
+        // (BCE-20261025-FFI-SLOT-GATE; default proto stays Object.prototype,
+        // same as the retired JS_NewPlainObject shape)
+        rooted!(&in(cx_ref) let server_obj = unsafe {
+            w2::JS_NewObject(cx_ref, &H2_SERVER_CLASS)
+        });
         if server_obj.get().is_null() {
             args.rval().set(UndefinedValue());
             return true;
@@ -3118,9 +3176,11 @@ unsafe extern "C" fn http2_create_server(cx: *mut JSContext, argc: u32, vp: *mut
     } else {
         ::std::ptr::null_mut::<JSObject>()
     });
+    // H2_SERVER_CLASS carries the three pointer reserved slots while
+    // preserving the ctor's prototype chain (BCE-20261025-FFI-SLOT-GATE)
     rooted!(&in(cx_ref) let server_obj = w2::JS_NewObjectWithGivenProto(
         cx_ref,
-        ::std::ptr::null(),
+        &H2_SERVER_CLASS,
         proto_obj.handle()
     ));
     if server_obj.get().is_null() {
@@ -3207,8 +3267,12 @@ unsafe extern "C" fn http2_create_secure_server(
     );
 
     if !ctor_val.is_object() {
-        // Fallback: create a plain object with EE methods
-        rooted!(&in(cx_ref) let server_obj = w2::JS_NewPlainObject(cx_ref));
+        // Fallback: H2_SERVER_CLASS carries the three pointer reserved slots
+        // (BCE-20261025-FFI-SLOT-GATE; default proto stays Object.prototype,
+        // same as the retired JS_NewPlainObject shape)
+        rooted!(&in(cx_ref) let server_obj = unsafe {
+            w2::JS_NewObject(cx_ref, &H2_SERVER_CLASS)
+        });
         if server_obj.get().is_null() {
             args.rval().set(UndefinedValue());
             return true;
@@ -3264,9 +3328,11 @@ unsafe extern "C" fn http2_create_secure_server(
     } else {
         ::std::ptr::null_mut::<JSObject>()
     });
+    // H2_SERVER_CLASS carries the three pointer reserved slots while
+    // preserving the ctor's prototype chain (BCE-20261025-FFI-SLOT-GATE)
     rooted!(&in(cx_ref) let server_obj = w2::JS_NewObjectWithGivenProto(
         cx_ref,
-        ::std::ptr::null(),
+        &H2_SERVER_CLASS,
         proto_obj.handle()
     ));
     if server_obj.get().is_null() {
@@ -3489,11 +3555,10 @@ unsafe extern "C" fn uws_h2_listen_callback(
             if !cb_root_ptr.get().is_null() {
                 rooted!(&in(cx_ref) let cb_root = ObjectValue(cb_root_ptr.get()));
                 rooted!(&in(cx_ref) let arg_root = ObjectValue(err_obj.get()));
-                let call_vals = [arg_root.get()];
-                let call_args = HandleValueArray {
-                    length_: 1,
-                    elements_: call_vals.as_ptr(),
-                };
+                // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+                rooted!(&in(cx_ref) let call_args_rooted =
+                    mozjs_sys::jsgc::ValueArray::<1>::new([arg_root.get()]));
+                let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
                 let mut rval = UndefinedValue();
                 JS_CallFunctionValue(
                     cx,
@@ -3648,16 +3713,13 @@ unsafe extern "C" fn http2_server_listen(cx: *mut JSContext, argc: u32, vp: *mut
     };
     (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
-    // Store ud pointer on server object
-    {
-        let ud_val = PrivateValue(ud_ptr as *const core::ffi::c_void);
-        rooted!(&in(cx_ref) let udv = ud_val);
-        JS_DefineProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_udPtr".as_ptr(),
-            udv.handle().into(),
-            0,
+    // Store ud pointer in the engine-private reserved slot — JS can neither
+    // read nor write reserved slots (BCE-20261025-FFI-SLOT-GATE)
+    unsafe {
+        set_slot(
+            server_obj.get(),
+            SLOT_H2_SRV_UD_PTR,
+            ud_ptr as *const core::ffi::c_void,
         );
     }
 
@@ -3703,16 +3765,13 @@ unsafe extern "C" fn http2_server_listen(cx: *mut JSContext, argc: u32, vp: *mut
         }
     }
 
-    // Store app pointer on server object
-    {
-        let app_ptr_val = PrivateValue(app_ptr as *const core::ffi::c_void);
-        rooted!(&in(cx_ref) let apv = app_ptr_val);
-        JS_DefineProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_appPtr".as_ptr(),
-            apv.handle().into(),
-            0,
+    // Store app pointer in the engine-private reserved slot
+    // (BCE-20261025-FFI-SLOT-GATE)
+    unsafe {
+        set_slot(
+            server_obj.get(),
+            SLOT_H2_SRV_APP_PTR,
+            app_ptr as *const core::ffi::c_void,
         );
     }
 
@@ -3798,61 +3857,27 @@ unsafe fn close_h2_server(
 ) {
     rooted!(&in(cx_ref) let obj = server_obj);
 
-    // Destroy the uWS App
-    let mut app_ptr_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj.handle().into(),
-        c"_appPtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut app_ptr_val,
-        },
-    );
-    let app_ptr = if val_is_private(&app_ptr_val) {
-        app_ptr_val.to_private() as *mut App<false>
-    } else {
-        core::ptr::null_mut()
-    };
+    // Read and clear the engine-private reserved slot (BCE-20261025-FFI-SLOT-GATE)
+    let app_ptr =
+        slot_ptr(cx, obj.handle(), &H2_SERVER_CLASS, SLOT_H2_SRV_APP_PTR) as *mut App<false>;
     if !app_ptr.is_null() {
         (*app_ptr).close();
         App::<false>::destroy(app_ptr);
         unregister_active_h2_app(app_ptr);
-        rooted!(&in(cx_ref) let undef_root = UndefinedValue());
-        JS_SetProperty(
-            cx,
-            obj.handle().into(),
-            c"_appPtr".as_ptr(),
-            undef_root.handle().into(),
-        );
+        unsafe {
+            set_slot(server_obj, SLOT_H2_SRV_APP_PTR, core::ptr::null());
+        }
     }
 
     // Cleanup H2ServerUserData
-    let mut ud_ptr_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj.handle().into(),
-        c"_udPtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut ud_ptr_val,
-        },
-    );
-    let ud_ptr = if val_is_private(&ud_ptr_val) {
-        ud_ptr_val.to_private() as *mut H2ServerUserData
-    } else {
-        core::ptr::null_mut()
-    };
+    let ud_ptr =
+        slot_ptr(cx, obj.handle(), &H2_SERVER_CLASS, SLOT_H2_SRV_UD_PTR) as *mut H2ServerUserData;
     if !ud_ptr.is_null() {
         let ud = Box::from_raw(ud_ptr);
         ud.cleanup();
-        rooted!(&in(cx_ref) let undef_root2 = UndefinedValue());
-        JS_SetProperty(
-            cx,
-            obj.handle().into(),
-            c"_udPtr".as_ptr(),
-            undef_root2.handle().into(),
-        );
+        unsafe {
+            set_slot(server_obj, SLOT_H2_SRV_UD_PTR, core::ptr::null());
+        }
     }
 }
 
@@ -4030,16 +4055,13 @@ unsafe extern "C" fn http2_secure_server_listen(
     };
     (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
-    // Store ud pointer
-    {
-        let ud_val = PrivateValue(ud_ptr as *const core::ffi::c_void);
-        rooted!(&in(cx_ref) let udv = ud_val);
-        JS_DefineProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_udPtr".as_ptr(),
-            udv.handle().into(),
-            0,
+    // Store ud pointer in the engine-private reserved slot
+    // (BCE-20261025-FFI-SLOT-GATE)
+    unsafe {
+        set_slot(
+            server_obj.get(),
+            SLOT_H2_SRV_UD_PTR,
+            ud_ptr as *const core::ffi::c_void,
         );
     }
 
@@ -4073,16 +4095,13 @@ unsafe extern "C" fn http2_secure_server_listen(
     };
     (*app_ptr).listen(port as i32, safe_listen_cb, listen_state_ptr);
 
-    // Store app pointer (as App<true>)
-    {
-        let app_ptr_val = PrivateValue(app_ptr as *const core::ffi::c_void);
-        rooted!(&in(cx_ref) let apv = app_ptr_val);
-        JS_DefineProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_sslAppPtr".as_ptr(),
-            apv.handle().into(),
-            0,
+    // Store app pointer (as App<true>) in the engine-private reserved slot
+    // (BCE-20261025-FFI-SLOT-GATE)
+    unsafe {
+        set_slot(
+            server_obj.get(),
+            SLOT_H2_SRV_SSL_APP_PTR,
+            app_ptr as *const core::ffi::c_void,
         );
     }
 
@@ -4135,66 +4154,40 @@ unsafe extern "C" fn http2_secure_server_close(
         None
     };
 
-    // Close the SSL App
+    // Close the SSL App — engine-private reserved slot (BCE-20261025-FFI-SLOT-GATE)
     {
         rooted!(&in(cx_ref) let obj = server_obj.get());
-        let mut app_ptr_val = UndefinedValue();
-        JS_GetProperty(
+        let app_ptr = slot_ptr(
             cx,
-            obj.handle().into(),
-            c"_sslAppPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut app_ptr_val,
-            },
-        );
-        let app_ptr = if val_is_private(&app_ptr_val) {
-            app_ptr_val.to_private() as *mut App<true>
-        } else {
-            core::ptr::null_mut()
-        };
+            obj.handle(),
+            &H2_SERVER_CLASS,
+            SLOT_H2_SRV_SSL_APP_PTR,
+        ) as *mut App<true>;
         if !app_ptr.is_null() {
             (*app_ptr).close();
             App::<true>::destroy(app_ptr);
             unregister_active_h2_ssl_app(app_ptr);
-            rooted!(&in(cx_ref) let undef_root = UndefinedValue());
-            JS_SetProperty(
-                cx,
-                obj.handle().into(),
-                c"_sslAppPtr".as_ptr(),
-                undef_root.handle().into(),
-            );
+            unsafe {
+                set_slot(server_obj.get(), SLOT_H2_SRV_SSL_APP_PTR, core::ptr::null());
+            }
         }
     }
 
     // Cleanup H2ServerUserData
     {
         rooted!(&in(cx_ref) let obj = server_obj.get());
-        let mut ud_ptr_val = UndefinedValue();
-        JS_GetProperty(
+        let ud_ptr = slot_ptr(
             cx,
-            obj.handle().into(),
-            c"_udPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ud_ptr_val,
-            },
-        );
-        let ud_ptr = if val_is_private(&ud_ptr_val) {
-            ud_ptr_val.to_private() as *mut H2ServerUserData
-        } else {
-            core::ptr::null_mut()
-        };
+            obj.handle(),
+            &H2_SERVER_CLASS,
+            SLOT_H2_SRV_UD_PTR,
+        ) as *mut H2ServerUserData;
         if !ud_ptr.is_null() {
             let ud = Box::from_raw(ud_ptr);
             ud.cleanup();
-            rooted!(&in(cx_ref) let undef_root2 = UndefinedValue());
-            JS_SetProperty(
-                cx,
-                obj.handle().into(),
-                c"_udPtr".as_ptr(),
-                undef_root2.handle().into(),
-            );
+            unsafe {
+                set_slot(server_obj.get(), SLOT_H2_SRV_UD_PTR, core::ptr::null());
+            }
         }
     }
 
@@ -4319,15 +4312,13 @@ unsafe extern "C" fn http2_server_listen_js(cx: *mut JSContext, argc: u32, vp: *
     };
     (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
-    {
-        let ud_val = PrivateValue(ud_ptr as *const core::ffi::c_void);
-        rooted!(&in(cx_ref) let udv = ud_val);
-        JS_DefineProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_udPtr".as_ptr(),
-            udv.handle().into(),
-            0,
+    // Store ud + app pointers in the engine-private reserved slots — JS can
+    // neither read nor write reserved slots (BCE-20261025-FFI-SLOT-GATE)
+    unsafe {
+        set_slot(
+            server_obj.get(),
+            SLOT_H2_SRV_UD_PTR,
+            ud_ptr as *const core::ffi::c_void,
         );
     }
 
@@ -4345,15 +4336,11 @@ unsafe extern "C" fn http2_server_listen_js(cx: *mut JSContext, argc: u32, vp: *
     };
     (*app_ptr).listen(port as i32, safe_listen_cb, core::ptr::null_mut());
 
-    {
-        let app_ptr_val = PrivateValue(app_ptr as *const core::ffi::c_void);
-        rooted!(&in(cx_ref) let apv = app_ptr_val);
-        JS_DefineProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_appPtr".as_ptr(),
-            apv.handle().into(),
-            0,
+    unsafe {
+        set_slot(
+            server_obj.get(),
+            SLOT_H2_SRV_APP_PTR,
+            app_ptr as *const core::ffi::c_void,
         );
     }
 
@@ -4563,15 +4550,13 @@ unsafe extern "C" fn http2_secure_server_listen_js(
     };
     (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
-    {
-        let ud_val = PrivateValue(ud_ptr as *const core::ffi::c_void);
-        rooted!(&in(cx_ref) let udv = ud_val);
-        JS_DefineProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_udPtr".as_ptr(),
-            udv.handle().into(),
-            0,
+    // Store ud pointer in the engine-private reserved slot — JS can neither
+    // read nor write reserved slots (BCE-20261025-FFI-SLOT-GATE)
+    unsafe {
+        set_slot(
+            server_obj.get(),
+            SLOT_H2_SRV_UD_PTR,
+            ud_ptr as *const core::ffi::c_void,
         );
     }
 
@@ -4589,15 +4574,13 @@ unsafe extern "C" fn http2_secure_server_listen_js(
     };
     (*app_ptr).listen(port as i32, safe_listen_cb, core::ptr::null_mut());
 
-    {
-        let app_ptr_val = PrivateValue(app_ptr as *const core::ffi::c_void);
-        rooted!(&in(cx_ref) let apv = app_ptr_val);
-        JS_DefineProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_sslAppPtr".as_ptr(),
-            apv.handle().into(),
-            0,
+    // Store the SSL app pointer in the engine-private reserved slot
+    // (BCE-20261025-FFI-SLOT-GATE)
+    unsafe {
+        set_slot(
+            server_obj.get(),
+            SLOT_H2_SRV_SSL_APP_PTR,
+            app_ptr as *const core::ffi::c_void,
         );
     }
 
@@ -4655,64 +4638,38 @@ unsafe extern "C" fn http2_secure_server_close_js(
     let this = args.thisv();
     rooted!(&in(cx_ref) let server_obj = this.to_object());
 
-    // Close the SSL App
+    // Close the SSL App — engine-private reserved slot (BCE-20261025-FFI-SLOT-GATE)
     {
-        let mut app_ptr_val = UndefinedValue();
-        JS_GetProperty(
+        let app_ptr = slot_ptr(
             cx,
-            server_obj.handle().into(),
-            c"_sslAppPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut app_ptr_val,
-            },
-        );
-        let app_ptr = if val_is_private(&app_ptr_val) {
-            app_ptr_val.to_private() as *mut App<true>
-        } else {
-            core::ptr::null_mut()
-        };
+            server_obj.handle(),
+            &H2_SERVER_CLASS,
+            SLOT_H2_SRV_SSL_APP_PTR,
+        ) as *mut App<true>;
         if !app_ptr.is_null() {
             (*app_ptr).close();
             App::<true>::destroy(app_ptr);
             unregister_active_h2_ssl_app(app_ptr);
-            rooted!(&in(cx_ref) let undef_root = UndefinedValue());
-            JS_SetProperty(
-                cx,
-                server_obj.handle().into(),
-                c"_sslAppPtr".as_ptr(),
-                undef_root.handle().into(),
-            );
+            unsafe {
+                set_slot(server_obj.get(), SLOT_H2_SRV_SSL_APP_PTR, core::ptr::null());
+            }
         }
     }
 
     // Cleanup H2ServerUserData
     {
-        let mut ud_ptr_val = UndefinedValue();
-        JS_GetProperty(
+        let ud_ptr = slot_ptr(
             cx,
-            server_obj.handle().into(),
-            c"_udPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ud_ptr_val,
-            },
-        );
-        let ud_ptr = if val_is_private(&ud_ptr_val) {
-            ud_ptr_val.to_private() as *mut H2ServerUserData
-        } else {
-            core::ptr::null_mut()
-        };
+            server_obj.handle(),
+            &H2_SERVER_CLASS,
+            SLOT_H2_SRV_UD_PTR,
+        ) as *mut H2ServerUserData;
         if !ud_ptr.is_null() {
             let ud = Box::from_raw(ud_ptr);
             ud.cleanup();
-            rooted!(&in(cx_ref) let undef_root2 = UndefinedValue());
-            JS_SetProperty(
-                cx,
-                server_obj.handle().into(),
-                c"_udPtr".as_ptr(),
-                undef_root2.handle().into(),
-            );
+            unsafe {
+                set_slot(server_obj.get(), SLOT_H2_SRV_UD_PTR, core::ptr::null());
+            }
         }
     }
 
@@ -4953,18 +4910,6 @@ mod tests {
             server_key: "http2_server_998_server".to_string(),
         };
         ud.cleanup(); // Must not panic
-    }
-
-    #[test]
-    fn val_is_private_undefined() {
-        let v = UndefinedValue();
-        assert!(!val_is_private(&v));
-    }
-
-    #[test]
-    fn val_is_private_int32() {
-        let v = Int32Value(42);
-        assert!(!val_is_private(&v));
     }
 
     // HTTP/2 constants verification

@@ -15,6 +15,13 @@
 //      双 oracle 实测)。
 //   ④ windows 孪生面(cp_detect_exit_windows 同 pipes_drained 门 + 孤儿
 //      潜伏缺陷)在本文件之外:交叉编译门验证,本文件 unix-only。
+//   ⑤ E21 负载态红根治(2026-10-25,E17 fleet 15 轮 5/15 红的归因处置):
+//      两个 wait 原为 common::wait_until_with 迭代有界纯自旋(无 sleep),
+//      墙钟窗 = iters × eval-latency(~1-30ms),与 cp drain 线程的
+//      fork/exec/waitpid/Exit-push 链(~70-90ms,farm 背景负载)成反比
+//      竞态 — 自旋越快窗口越短。取证实证:窗口结束后 +10ms exit 即可观察
+//      (DELAYED publication,not loss — 产品 push-once/sticky 链全程存活),
+//      换墙钟窗口(10s 窗/10ms 间隔)后红根除。见 wait_until_deadline。
 // 全部字面/形状 pin 自 node v24.19.0 oracle(2026-10-18 实测)。
 
 use bao_engine::context::JsContext;
@@ -25,7 +32,43 @@ use common::eval_str;
 use common::eval_string_dbg;
 use common::setup_ctx;
 use common::setup_ctx_bounded;
-use common::wait_until_with;
+
+/// Load-robust wall-clock condition wait: poll `js_condition` every 10ms
+/// until it answers 'y' or `secs` elapse.
+///
+/// Why not [`common::wait_until_with`]: it is an ITERATION-bounded spin with
+/// no sleep — its wall window is `iters × eval-latency` (tens of ms, and the
+/// faster the host the shorter the window). That races any awaited state
+/// produced on ANOTHER thread's schedule. Here the awaited state is the cp
+/// drain thread's fork/exec/waitpid/Exit-push chain: under fleet load the
+/// child is reaped ~70-90ms after spawn while the 80-iteration spin closed
+/// its window in ~1-30ms, so the probe legitimately answered null and the
+/// test redged 5/15 E17 fleet rounds (E21 stage-1 forensics: the extended
+/// probe observed the exit +10ms AFTER the spin window ended — delayed
+/// publication, not loss). A wall-clock window with an inter-probe sleep
+/// costs nothing when green (idle arrival ≈ 1-5ms) and turns a scheduler
+/// race into an honest bounded wait: red within the window = genuine event
+/// loss, a product defect.
+///
+/// `budget` passthrough keeps the bounded-ctx timer drain alive
+/// ([`common::HOOK_BUDGET`] feeds `setup_ctx_bounded`'s post-eval hook,
+/// which drives the stream face's pump); it is inert for hookless contexts.
+fn wait_until_deadline(
+    ctx: &mut JsContext,
+    js_condition: &str,
+    budget: usize,
+    secs: u64,
+) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    while std::time::Instant::now() < deadline {
+        common::HOOK_BUDGET.with(|b| b.set(budget));
+        if eval_str(ctx, js_condition) == "y" {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    false
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ① exit 槽双消费者 — probe 幂等 / take 后 sticky / consume-once 保持
@@ -42,6 +85,7 @@ fn followup_peek_exit_no_dual_consumer_loss() {
 
 #[cfg(unix)]
 fn followup_peek_exit_no_dual_consumer_loss_body() {
+    let t0 = std::time::Instant::now();
     let mut ctx = setup_ctx();
 
     let setup = eval_str(
@@ -54,6 +98,7 @@ fn followup_peek_exit_no_dual_consumer_loss_body() {
     "#,
     );
     assert_eq!(setup, "setup-ok");
+    let setup_ms = t0.elapsed().as_millis();
 
     // The live child answers null (running — probe must not fake an exit).
     let live_null = eval_str(
@@ -63,15 +108,18 @@ fn followup_peek_exit_no_dual_consumer_loss_body() {
     assert_eq!(live_null, "null", "probe on a live child must answer null");
 
     // Wait until the exited child is observable through the PROBE (the drain
-    // thread's Exit push, folded by the probe's own pump).
-    let seen = wait_until_with(
-        &mut ctx,
-        "(globalThis.__fucp.__cp_peek_exit(globalThis.__fupid) !== null) ? 'y' : 'n'",
-        60,
-        80,
-        eval_str,
+    // thread's Exit push, folded by the probe's own pump). Wall-clock window
+    // (E21): the probe must not race the drain thread's reap chain — see
+    // wait_until_deadline. Red within the 10s window = genuine event loss.
+    let cond = "(globalThis.__fucp.__cp_peek_exit(globalThis.__fupid) !== null) ? 'y' : 'n'";
+    let wait_started = std::time::Instant::now();
+    let seen = wait_until_deadline(&mut ctx, cond, 60, 10);
+    assert!(
+        seen,
+        "probe must observe the exit once published within the 10s wall window \
+         (setup_ms={setup_ms}, waited {}ms) — genuine loss if red",
+        wait_started.elapsed().as_millis()
     );
-    assert!(seen, "probe must observe the exit once published");
 
     // The competition story, in order:
     //   p1/p2 — probe is idempotent and consumes nothing;
@@ -145,15 +193,19 @@ fn followup_stream_read_then_take_still_delivers_body() {
     );
     assert_eq!(setup, "setup-ok");
 
-    let done = wait_until_with(
-        &mut ctx,
-        "(globalThis.__sr.ended === true) ? 'y' : 'n'",
-        60,
-        120,
-        eval_str,
-    );
+    // Wall-clock window (E21, same class as the peek wait): the stream face's
+    // data/end events are produced by the drain thread + pump chain, not by
+    // the eval itself — don't race them with an iteration-bounded spin.
+    let scond = "(globalThis.__sr.ended === true) ? 'y' : 'n'";
+    let wait_started = std::time::Instant::now();
+    let done = wait_until_deadline(&mut ctx, scond, 60, 10);
     let data = eval_str(&mut ctx, "globalThis.__sr.data");
-    assert!(done, "stream face must reach EOF; data so far: {data:?}");
+    assert!(
+        done,
+        "stream face must reach EOF within the 10s wall window; data so far: {data:?} \
+         (waited {}ms) — genuine stall if red",
+        wait_started.elapsed().as_millis()
+    );
     assert_eq!(data, "fu-data", "stream face must deliver the child's bytes");
     assert_eq!(
         eval_str(&mut ctx, "String(globalThis.__sr_isreadable)"),
@@ -187,6 +239,44 @@ fn followup_error_faces_node_parity() {
 #[cfg(unix)]
 fn followup_error_faces_node_parity_body() {
     let mut ctx = setup_ctx();
+    // exec is ASYNC (node v24.19.0 oracle 2026-10-27, E-cp wave): the
+    // callback is delivered at 'close', not inline — schedule the two exec
+    // children, settle the poll pump through the bounded drain hook
+    // (wait_until_deadline's per-eval HOOK_BUDGET), then run the checks.
+    ctx.set_post_eval_hook(common::bounded_drain_hook);
+
+    let setup = eval_str(
+        &mut ctx,
+        r#"
+        var cp = require("child_process");
+        globalThis.__fuCb = { done: false, err: "unset" };
+        cp.exec("/bin/sh -c 'echo fubo >&2; exit 5'", function(err) {
+            globalThis.__fuCb = { done: true, err: err };
+        });
+        globalThis.__fuCbNull = "pending";
+        cp.exec("printf fu-ok", function(err) { globalThis.__fuCbNull = err; });
+        "setup-ok"
+    "#,
+    );
+    assert_eq!(setup, "setup-ok");
+
+    // Settle window (E21 law): the delivery rides the shim's poll pump, not
+    // the scheduling eval — a wall-clock window with an inter-eval timer
+    // drain; red within it = genuine event loss.
+    let settled = wait_until_deadline(
+        &mut ctx,
+        "(globalThis.__fuCb.done === true && globalThis.__fuCbNull !== 'pending') ? 'y' : 'n'",
+        60,
+        10,
+    );
+    let state = eval_str(
+        &mut ctx,
+        "JSON.stringify({done: globalThis.__fuCb.done, msg: String(globalThis.__fuCb.err && globalThis.__fuCb.err.message), nullErr: String(globalThis.__fuCbNull)})",
+    );
+    assert!(
+        settled,
+        "exec callbacks must settle within the 10s window; state: {state}"
+    );
 
     // Label-check harness identical to the c5 suite's.
     let results = eval_string_dbg(
@@ -200,21 +290,18 @@ fn followup_error_faces_node_parity_body() {
         var cp = require("child_process");
 
         // ── ② exec callback error: node literal + property surface ──
-        var cb = { done: false, err: "unset" };
-        cp.exec("/bin/sh -c 'echo fubo >&2; exit 5'", function(err) {
-            cb = { done: true, err: err };
-        });
+        // (children scheduled + settled above — the callback lands at 'close'
+        // per node's async exec contract; the checks read the recorded
+        // deliveries from globalThis.__fuCb / __fuCbNull.)
         check("exec_cb_err_full_parity", function() {
-            var e = cb.err;
-            return cb.done && e instanceof Error
+            var e = globalThis.__fuCb.err;
+            return globalThis.__fuCb.done && e instanceof Error
                 && String(e.message) === "Command failed: /bin/sh -c 'echo fubo >&2; exit 5'\nfubo\n"
                 && e.code === 5 && e.killed === false && e.signal === null
                 && e.cmd === "/bin/sh -c 'echo fubo >&2; exit 5'";
         });
         check("exec_cb_success_err_null", function() {
-            var got = "pending";
-            cp.exec("printf fu-ok", function(err) { got = err; });
-            return got === null;
+            return globalThis.__fuCbNull === null;
         });
 
         // ── ③ spawnSync fail-object: real Error + SystemError fields ──

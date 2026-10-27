@@ -113,10 +113,9 @@ unsafe extern "C" fn bun_peek(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
 
     // Take the first item eagerly.
     rooted!(&in(cx_ref) let next_val = ObjectValue(next_obj.get()));
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: &*next_val.handle(),
-    };
+    rooted!(&in(cx_ref) let call_args_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([next_val.handle().get()]));
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
     let mut rval = UndefinedValue();
     let ok = JS_CallFunctionValue(
         cx,
@@ -203,11 +202,11 @@ unsafe extern "C" fn bun_peek(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     rooted!(&in(cx_ref) let ctor_val = ObjectValue(ctor_obj.get()));
     rooted!(&in(cx_ref) let this_arg = val);
     rooted!(&in(cx_ref) let fv = value_v);
-    let call_vals = [this_arg.handle().get(), fv.handle().get()];
-    let call_arr = HandleValueArray {
-        length_: 2,
-        elements_: call_vals.as_ptr(),
-    };
+    rooted!(&in(cx_ref) let call_arr_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+        this_arg.handle().get(),
+        fv.handle().get(),
+    ]));
+    let call_arr = JS::HandleValueArray::from(&call_arr_rooted);
     let mut out = UndefinedValue();
     let ok2 = JS_CallFunctionValue(
         cx,
@@ -478,11 +477,9 @@ unsafe extern "C" fn readable_stream_to_array(
     rooted!(&in(cx_ref) let fn_obj = fn_val.to_object());
     rooted!(&in(cx_ref) let fn_call_val = ObjectValue(fn_obj.get()));
     rooted!(&in(cx_ref) let stream_arg = *args.get(0).ptr);
-    let call_vals = [stream_arg.handle().get()];
-    let call_arr = HandleValueArray {
-        length_: 1,
-        elements_: call_vals.as_ptr(),
-    };
+    rooted!(&in(cx_ref) let call_arr_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([stream_arg.handle().get()]));
+    let call_arr = JS::HandleValueArray::from(&call_arr_rooted);
     rooted!(&in(cx_ref) let null_obj = ::std::ptr::null_mut::<JSObject>());
     let mut rval = UndefinedValue();
     let called = JS_CallFunctionValue(

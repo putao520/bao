@@ -77,23 +77,21 @@ fn make_ctx() -> JsContext {
     ctx
 }
 
-/// Fixed-pass pump delegate: the unified suite pump (`common::pump_until`)
-/// run for `passes` settle-pump ticks (each tick = realm-entered timer
-/// drain + MiniEventLoop tick + RunJobs, the C3 in-process server/client
-/// accept/parse/dispatch discipline). A live-but-unsettled marker never
-/// changes, so the `PumpStuck` tripwire fires at its 2s window instead of
-/// silently burning the (longer) pass budget — an unbounded `passes` under
-/// a stuck loop is the hang shape this delegate now diagnoses.
+/// Fixed-pass pump delegate: exactly `passes` settle-pump ticks (each tick =
+/// realm-entered timer drain + MiniEventLoop tick + RunJobs, the C3
+/// in-process server/client accept/parse/dispatch discipline) via
+/// [`common::pump_passes`] — loop-service pacing, not a settle wait, so the
+/// no-progress tripwire is not involved (the historical `passes × 5ms`
+/// budget form through `pump_until` only worked while the tripwire was dead
+/// code, E17; a stuck loop now bounds at `passes` ticks by construction).
 fn pump(ctx: &mut JsContext, passes: usize) {
-    let budget = Duration::from_millis((passes as u64).saturating_mul(5));
-    common::pump_until(ctx, "'pumping'", budget, common::eval_string_full, |_| {
-        false
-    });
+    common::pump_passes(ctx, passes);
 }
 
-/// Poll `cond` (a JS expression that must yield "y"/"n") until "y".
-fn wait_until(ctx: &mut JsContext, js_condition: &str, iters: u32) -> bool {
-    common::wait_until_with(ctx, js_condition, 60, iters, eval_str)
+/// Poll `cond` (a JS expression that must yield "y"/"n") until "y" —
+/// wall-clock window (E27 sweep), see common::wait_until_deadline.
+fn wait_until(ctx: &mut JsContext, js_condition: &str) -> bool {
+    common::wait_until_deadline(ctx, js_condition, 60, 10, eval_str)
 }
 
 /// Grab a free TCP port for refused-connect probes (acceptance window tiny).
@@ -354,7 +352,6 @@ fn c12_http_fetch_throw_routes_uncaught_and_keeps_serving() {
     let routed = wait_until(
         &mut ctx,
         r#"globalThis.__lcUncaught !== "" ? "y" : "n""#,
-        60,
     );
     assert!(
         routed,
@@ -415,7 +412,7 @@ fn c12_connect_refused_promise_rejects() {
         ),
     );
 
-    let settled = wait_until(&mut ctx, r#"globalThis.__rejected !== "" ? "y" : "n""#, 400);
+    let settled = wait_until(&mut ctx, r#"globalThis.__rejected !== "" ? "y" : "n""#);
     assert!(settled, "promise must settle on refused connect");
     assert_eq!(
         eval_str(&mut ctx, "globalThis.__rejected"),
@@ -463,7 +460,6 @@ fn c12_connect_tls_arm_refused_fails_fast() {
     let settled = wait_until(
         &mut ctx,
         r#"globalThis.__tlsState !== "pending" ? "y" : "n""#,
-        400,
     );
     assert!(settled, "tls connect to a refused port must settle fast");
     assert_eq!(
@@ -528,7 +524,6 @@ fn c12_connect_localhost_async_full_lifecycle() {
     let done = wait_until(
         &mut ctx,
         r#"globalThis.__log.join(",").indexOf("cli-close") >= 0 ? "y" : "n""#,
-        400,
     );
     let log = eval_str(&mut ctx, "globalThis.__log.join('|')");
     assert!(done, "lifecycle must complete — log: {log}");
@@ -621,7 +616,6 @@ fn c12_connect_sock_write_byte_and_error_arms() {
     let got = wait_until(
         &mut ctx,
         r#"globalThis.__srvGot.length > 0 ? "y" : "n""#,
-        400,
     );
     assert!(got, "server must receive the client payload");
     assert_eq!(
@@ -677,7 +671,6 @@ fn c12_connect_port_double_and_top_level_callback_fallback() {
     let got = wait_until(
         &mut ctx,
         r#"globalThis.__topData.length > 0 ? "y" : "n""#,
-        400,
     );
     assert!(got, "top-level open fallback must have fired and written");
     assert_eq!(eval_str(&mut ctx, "globalThis.__topData"), "top-level");

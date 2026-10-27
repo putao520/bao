@@ -29,7 +29,7 @@ use mozjs::rooted;
 #[path = "common/mod.rs"]
 mod common;
 
-use common::{eval_str, wait_until_with};
+use common::{eval_str, wait_until_deadline};
 
 fn make_ctx() -> JsContext {
     bun_runtime::install_exit_handler();
@@ -40,7 +40,9 @@ fn make_ctx() -> JsContext {
 }
 
 fn wait(ctx: &mut JsContext, cond: &str) -> bool {
-    wait_until_with(ctx, cond, 30, 40, eval_str)
+    // Wall-clock window (E27 sweep): don't race cross-thread producers with
+    // an iteration-bounded spin — see common::wait_until_deadline.
+    wait_until_deadline(ctx, cond, 30, 10, eval_str)
 }
 
 // ──────────────────── install_all face ────────────────────

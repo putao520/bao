@@ -19,9 +19,8 @@ use mozjs::glue::NewCompileOptions;
 use mozjs::jsapi::*;
 use mozjs::jsval::UndefinedValue;
 use mozjs::rooted;
-use mozjs::rust::wrappers2 as w2;
 
-use crate::require::cache_builtin;
+use crate::require::{cache_builtin, get_builtin};
 
 const HTTP_AGENT_JS: &str = r#"
 (function() {
@@ -476,53 +475,87 @@ const HTTP_SERVER_JS: &str = r#"
 })()
 "#;
 
-/// Evaluate a JS IIFE string and cache the result as a builtin module.
-fn eval_and_cache(
-    cx: &mut mozjs::context::JSContext,
-    module_name: &str,
-    source: &str,
-    filename: &str,
-) {
+/// Evaluate one JS IIFE source and cache the result under `builtin:<key>`.
+/// GC contract (mirrors the `node_internal_fs_modules::evaluate_and_cache`
+/// precedent): called from a JSNative frame (the require hook); the caller
+/// propagates a pending exception when evaluation fails (Node parity).
+fn eval_and_cache(cx: *mut JSContext, module_name: &str, source: &str, filename: &str) -> bool {
     // Guard: never clobber a natively-implemented module.
-    let cache_key = format!("builtin:{}", module_name);
-    if let Some(existing) = crate::gc_store::gc_store_get(unsafe { cx.raw_cx() }, &cache_key) {
-        if !existing.is_null() {
-            return;
-        }
+    if get_builtin(cx, module_name).is_some() {
+        return true;
     }
-
     unsafe {
-        let cx_raw = cx.raw_cx();
         let c_filename = ZBox::from_bytes(filename.as_bytes());
-        let opts = NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
+        let opts = NewCompileOptions(cx, c_filename.as_ptr(), 1);
         if opts.is_null() {
-            return;
+            JS_ClearPendingException(cx);
+            return false;
         }
-
         let mut src = mozjs::rust::transform_str_to_source_text(source);
         let mut rval = UndefinedValue();
         let rval_handle = MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
             ptr: &mut rval,
         };
-        let ok = mozjs_sys::jsapi::JS::Evaluate2(cx_raw, opts, &mut src, rval_handle);
+        let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_handle);
         mozjs::glue::DeleteCompileOptions(opts);
-
         if !ok || !rval.is_object() {
-            return;
+            if ok {
+                JS_ClearPendingException(cx);
+            }
+            return false;
         }
-
+        let mut wrapped = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let exports_obj = rval.to_object();
-        cache_builtin(cx, module_name, exports_obj);
+        rooted!(&in(wrapped) let obj_rooted = exports_obj);
+        cache_builtin(&mut wrapped, module_name, obj_rooted.get());
+        true
     }
 }
 
-/// Install all internal HTTP modules.
-pub fn install(cx: &mut mozjs::context::JSContext) {
-    eval_and_cache(cx, "_http_agent", HTTP_AGENT_JS, "<_http_agent>");
-    eval_and_cache(cx, "_http_client", HTTP_CLIENT_JS, "<_http_client>");
-    eval_and_cache(cx, "_http_common", HTTP_COMMON_JS, "<_http_common>");
-    eval_and_cache(cx, "_http_incoming", HTTP_INCOMING_JS, "<_http_incoming>");
-    eval_and_cache(cx, "_http_outgoing", HTTP_OUTGOING_JS, "<_http_outgoing>");
-    eval_and_cache(cx, "_http_server", HTTP_SERVER_JS, "<_http_server>");
+/// Empty at realm-init time (mirrors `node_internal_event_target::install` /
+/// `node_internal_test_binding::install`): install-time evaluation poisons
+/// the realm — the GC-pressure class where the init-period function-object
+/// allocations push the nursery allocation order over a latent engine cliff,
+/// and any later module-body variable access then segfaults
+/// (timeline-attributed 2026-10-26). The real evaluation happens lazily on
+/// the first `require('_http_*')` via [`ensure_installed`], in user context,
+/// when realm init has fully completed.
+pub fn install(_cx: &mut mozjs::context::JSContext) {}
+
+thread_local! {
+    /// Per-realm once flag: repeat failed evaluations must not re-run the
+    /// whole source on every require attempt (event_target precedent).
+    static NIHTTP_EVAL_DONE: ::std::cell::Cell<bool> = ::std::cell::Cell::new(false);
+}
+
+/// Evaluate the `_http_*` module family and cache each module object for the
+/// require() surface. Idempotent: each `eval_and_cache` first checks the
+/// gc_store cache, so a partial earlier install skips already-cached keys.
+/// Called from `require_fn` (a JSNative frame): `cx` is live and the caller
+/// propagates a pending exception when evaluation fails.
+pub fn ensure_installed(cx: *mut JSContext) -> bool {
+    NIHTTP_EVAL_DONE.with(|flag| {
+        if flag.get() {
+            return;
+        }
+        flag.set(true);
+        install_eval(cx);
+    });
+    crate::require::get_builtin(cx, "_http_agent").is_some()
+}
+
+fn install_eval(raw_cx: *mut JSContext) {
+    for (name, source, filename) in [
+        ("_http_agent", HTTP_AGENT_JS, "<_http_agent>"),
+        ("_http_client", HTTP_CLIENT_JS, "<_http_client>"),
+        ("_http_common", HTTP_COMMON_JS, "<_http_common>"),
+        ("_http_incoming", HTTP_INCOMING_JS, "<_http_incoming>"),
+        ("_http_outgoing", HTTP_OUTGOING_JS, "<_http_outgoing>"),
+        ("_http_server", HTTP_SERVER_JS, "<_http_server>"),
+    ] {
+        if !eval_and_cache(raw_cx, name, source, filename) {
+            return;
+        }
+    }
 }

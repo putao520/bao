@@ -478,11 +478,9 @@ unsafe extern "C" fn glob_scan(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     rooted!(&in(cx_ref) let ctor_obj = ctor.to_object());
     rooted!(&in(cx_ref) let ctor_val = ObjectValue(ctor_obj.get()));
     rooted!(&in(cx_ref) let arr_val = ObjectValue(arr_r.get()));
-    let call_vals = [arr_val.handle().get()];
-    let call_arr = HandleValueArray {
-        length_: 1,
-        elements_: call_vals.as_ptr(),
-    };
+    rooted!(&in(cx_ref) let call_arr_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([arr_val.handle().get()]));
+    let call_arr = JS::HandleValueArray::from(&call_arr_rooted);
     let mut out = UndefinedValue();
     let called = JS_CallFunctionValue(
         cx,

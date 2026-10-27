@@ -17,7 +17,7 @@
 //       type="page", attached=true (live_target_info).
 
 use bao_cdp::{
-    handle_command, serialize_event, serialize_response, CdpEvent, CdpMessage, CdpResponse,
+    CdpEvent, CdpMessage, CdpResponse, handle_command, serialize_event, serialize_response,
 };
 
 const TID: &str = "test-target";
@@ -202,7 +202,15 @@ fn test_invariant_all_ok_responses() {
         // bridge (-32603 without one; capability-absent faces stay explicit
         // -32000 errors), pinned by the dedicated tests below.
     ] {
-        let r = dispatch(method, None);
+        // getScriptSource: scriptId is param-validated BEFORE the bridge
+        // branch (malformed/missing = -32602), so the sweep carries a
+        // well-formed id for it; every other row needs no params.
+        let params = if method == "Debugger.getScriptSource" {
+            Some(json!({"scriptId": "1"}))
+        } else {
+            None
+        };
+        let r = dispatch(method, params);
         assert_jsonrpc_invariant(&r, method);
         // Success responses must carry a non-null result object (per CDP convention).
         assert!(
@@ -270,7 +278,9 @@ fn test_invariant_bridge_dependent_errors() {
     ] {
         let r = dispatch(method, None);
         assert_jsonrpc_invariant(&r, method);
-        let e = r.error.unwrap_or_else(|| panic!("[{method}] expected error"));
+        let e = r
+            .error
+            .unwrap_or_else(|| panic!("[{method}] expected error"));
         assert_eq!(
             e.code, code,
             "[{method}] expected {code} but got {}: {}",
@@ -557,7 +567,6 @@ fn test_target_create_target() {
     let err = r.error.expect("must fail without a bridge");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -566,7 +575,6 @@ fn test_target_create_target_default_url() {
     let err = r.error.expect("must fail without a bridge");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -575,7 +583,6 @@ fn test_target_create_target_target_id_echoes() {
     let err = r.error.expect("must fail without a bridge");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -587,7 +594,6 @@ fn test_target_close_target() {
     let err = r.error.expect("must fail without a bridge");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -596,7 +602,6 @@ fn test_target_close_target_no_params() {
     let err = r.error.expect("must fail without a bridge");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -629,11 +634,17 @@ fn test_target_get_target_info() {
     // required by Playwright's CRBrowser assert).
     let keys: std::collections::BTreeSet<String> =
         info.as_object().unwrap().keys().cloned().collect();
-    let expected: std::collections::BTreeSet<String> =
-        ["targetId", "type", "title", "url", "attached", "browserContextId"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+    let expected: std::collections::BTreeSet<String> = [
+        "targetId",
+        "type",
+        "title",
+        "url",
+        "attached",
+        "browserContextId",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     assert_eq!(
         keys, expected,
         "targetInfo schema must be exactly targetId/type/title/url/attached"
@@ -647,7 +658,6 @@ fn test_target_attach_to_target() {
     let err = resp.error.expect("must fail without the WS registry");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("WS session registry"));
-
 }
 
 #[test]
@@ -661,7 +671,6 @@ fn test_target_attach_to_target_deterministic_per_target_id() {
         assert_eq!(err.code, -32000);
         assert!(err.message.contains("WS session registry"));
     }
-
 }
 
 #[test]
@@ -672,7 +681,6 @@ fn test_target_attach_to_target_empty_target_id() {
     let err = r.error.expect("must fail without the WS registry");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("WS session registry"));
-
 }
 
 #[test]
@@ -681,7 +689,6 @@ fn test_target_detach_from_target() {
     let err = resp.error.expect("must fail without the WS registry");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("WS session registry"));
-
 }
 
 #[test]
@@ -692,7 +699,6 @@ fn test_target_send_message_to_target() {
     let err = r.error.expect("must fail without the WS registry");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("WS session registry"));
-
 }
 
 #[test]
@@ -757,7 +763,10 @@ fn test_page_navigate_loader_id_depends_on_url_length() {
         let r = dispatch("Page.navigate", Some(json!({"url":url})));
         let e = r.error.unwrap();
         assert_eq!(e.code, -32603, "url={url}");
-        assert!(r.result.is_none(), "no url-length-derived loaderId for url={url}");
+        assert!(
+            r.result.is_none(),
+            "no url-length-derived loaderId for url={url}"
+        );
     }
 }
 
@@ -1406,7 +1415,9 @@ fn test_css_query_methods_no_bridge_with_node_id_error() {
     ] {
         let r = dispatch(method, Some(json!({"nodeId": 1})));
         assert_jsonrpc_invariant(&r, method);
-        let err = r.error.unwrap_or_else(|| panic!("[{method}] expected error"));
+        let err = r
+            .error
+            .unwrap_or_else(|| panic!("[{method}] expected error"));
         assert_eq!(err.code, -32603, "[{method}] {}", err.message);
         assert!(err.message.contains("no servo bridge"), "[{method}]");
     }
@@ -1786,7 +1797,10 @@ fn test_debugger_get_possible_breakpoints() {
 
 #[test]
 fn test_debugger_get_script_source() {
-    let r = dispatch("Debugger.getScriptSource", None);
+    // Bridge-less face: scriptId is param-validated BEFORE the bridge branch
+    // (malformed/missing scriptId is -32602), so the fixture carries a
+    // well-formed id.
+    let r = dispatch("Debugger.getScriptSource", Some(json!({"scriptId": "1"})));
     assert_jsonrpc_invariant(&r, "Debugger.getScriptSource");
     let result = r.result.unwrap();
     assert!(result["scriptSource"].is_string());
@@ -1856,7 +1870,6 @@ fn test_fetch_enable() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -1864,22 +1877,26 @@ fn test_fetch_enable_with_patterns() {
     // REQ-CDP-006 C6: Fetch.enable arms the per-target interception slot
     // through the servo bridge — without a bridge there is no slot owner:
     // -32603, never a canned "enabled".
-    let resp = dispatch("Fetch.enable", Some(json!({"patterns": [{"urlPattern": "*"}]})));
+    let resp = dispatch(
+        "Fetch.enable",
+        Some(json!({"patterns": [{"urlPattern": "*"}]})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
 fn test_fetch_enable_with_multiple_patterns() {
     // REQ-CDP contract: the command routes through the servo bridge —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.enable", Some(json!({"patterns": [{"urlPattern": "*"}, {"urlPattern": "*.js"}]})));
+    let resp = dispatch(
+        "Fetch.enable",
+        Some(json!({"patterns": [{"urlPattern": "*"}, {"urlPattern": "*.js"}]})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -1890,7 +1907,6 @@ fn test_fetch_enable_with_empty_patterns_array() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -1901,14 +1917,15 @@ fn test_fetch_enable_with_patterns_wrong_type() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("'patterns' must be an array"));
-
 }
 
 #[test]
 fn test_fetch_disable() {
     // REQ-CDP-006 C6: a real bridge command — -32603 without a bridge.
     let resp = dispatch("Fetch.disable", None);
-    let err = resp.error.expect("Fetch.disable must route through the bridge");
+    let err = resp
+        .error
+        .expect("Fetch.disable must route through the bridge");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
 }
@@ -1921,7 +1938,6 @@ fn test_fetch_continue_request() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
@@ -1932,29 +1948,32 @@ fn test_fetch_continue_request_no_request_id() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_continue_with_response() {
     // REQ-CDP contract: a renamed fulfillRequest — phase-2, use Fetch.fulfillRequest —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.continueWithResponse", Some(json!({"requestId": "r-1"})));
+    let resp = dispatch(
+        "Fetch.continueWithResponse",
+        Some(json!({"requestId": "r-1"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("phase-2"));
-
 }
 
 #[test]
 fn test_fetch_fail_request() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.failRequest", Some(json!({"requestId": "r2", "reason": "Aborted"})));
+    let resp = dispatch(
+        "Fetch.failRequest",
+        Some(json!({"requestId": "r2", "reason": "Aborted"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
@@ -1965,40 +1984,45 @@ fn test_fetch_fail_request_default_reason() {
     let err = r.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_fulfill_request() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "r3", "responseCode": 200, "body": "hi"})));
+    let resp = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId": "r3", "responseCode": 200, "body": "hi"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_fulfill_request_default_response_code() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f4", "body": "x"})));
+    let resp = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId": "f4", "body": "x"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_fulfill_request_empty_body() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f5", "body": ""})));
+    let resp = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId": "f5", "body": ""})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
@@ -2009,18 +2033,19 @@ fn test_fetch_fulfill_request_missing_body() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_fulfill_request_unicode_body() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f3", "body": "héllo"})));
+    let resp = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId": "f3", "body": "héllo"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
@@ -2031,7 +2056,6 @@ fn test_fetch_get_request_post_data() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("no request body"));
-
 }
 
 #[test]
@@ -2042,18 +2066,19 @@ fn test_fetch_continue_with_auth() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("auth interception facet is not wired"));
-
 }
 
 #[test]
 fn test_fetch_take_response_body() {
     // REQ-CDP contract: stream handles are not part of the P1 interception face —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "r6"})));
+    let resp = dispatch(
+        "Fetch.takeResponseBodyAsStream",
+        Some(json!({"requestId": "r6"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("stream handles"));
-
 }
 
 #[test]
@@ -2064,7 +2089,6 @@ fn test_fetch_take_response_body_no_request_id() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("stream handles"));
-
 }
 
 #[test]
@@ -2323,5 +2347,4 @@ fn test_attach_session_id_is_hex_of_char_sum() {
     let err = resp.error.expect("must fail without the WS registry");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("WS session registry"));
-
 }

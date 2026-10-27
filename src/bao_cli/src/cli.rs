@@ -92,6 +92,37 @@ struct Cli {
     #[arg(long)]
     headless: bool,
 
+    // ── node CLI parity flags (node-convention subprocess vehicles) ──────
+    // Node test corpora spawn `process.execPath` children carrying
+    // node-only flags, e.g. `node --expose-internals -e <script> <dir>` and
+    // `node --permission --allow-fs-read=<root> -e <child>`. The flags must
+    // parse so those vehicles start; the runtime faces they gate in node
+    // are honest no-ops here (documented per flag — no faked surface).
+    //
+    // @trace REQ-CLI-001
+    /// Expose internal modules to `require()` (node parity
+    /// `--expose-internals`). Accepted so node-convention subprocess
+    /// vehicles start. Honest boundary: bao has no `internal/*` module
+    /// namespace — `require('internal/...')` still fails MODULE_NOT_FOUND;
+    /// this flag only unlocks the vehicle, it does not fake internals.
+    #[arg(long)]
+    expose_internals: bool,
+
+    /// Enable the permission model (node parity `--permission`). Installs
+    /// the process-level `CliPermissionModel` whose only observer is the
+    /// `process.permission.has` face (node v24 parity; REQ-ENG-007).
+    /// Honest boundary: bao wires no child-process/wasi/... grant flags, so
+    /// those scopes report no grants; fs enforcement itself (fs.* call
+    /// denial) is not wired — the model is the observable allow list.
+    #[arg(long)]
+    permission: bool,
+
+    /// Grant fs read access to PATH under the permission model (node parity
+    /// `--allow-fs-read=<PATH>`, repeatable). Requires `--permission`
+    /// (node ERR_MISSING_OPTION parity); `*` grants everything.
+    #[arg(long = "allow-fs-read", value_name = "PATH")]
+    allow_fs_read: Vec<String>,
+
     /// Print the version and exit 0 (node/bun parity face: `node -v` /
     /// `bun -v` print the bare version string — no name prefix, no extra
     /// text).
@@ -240,6 +271,26 @@ pub fn run() -> ::std::result::Result<(), i32> {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    // @trace REQ-ENG-007 [criterion:7] — node permission-model parity flags →
+    // runtime `process.permission` face (oracle v24.19.0). Grant flags
+    // without the model are a hard start error (node ERR_MISSING_OPTION at
+    // pre-execution); with the model, grants are resolved (relative entries
+    // against the startup cwd) and installed for the process lifetime.
+    // Must run before any dispatch entry creates the JS runtime —
+    // `populate_process_object` reads the model at process-object build time.
+    if !cli.allow_fs_read.is_empty() && !cli.permission {
+        eprintln!("error: --allow-fs-read requires --permission (node ERR_MISSING_OPTION)");
+        return Err(1);
+    }
+    if cli.permission
+        && let Err(err) = bun_runtime::permission_bridge::install_cli_permission_model(
+            cli.allow_fs_read.clone(),
+            ::std::vec::Vec::new(),
+        )
+    {
+        eprintln!("error: {err}");
+        return Err(1);
+    }
     // WPT official-toolchain face (REQ-BRW-002): any servoshell-compatible
     // browser flag (or the positional URL) selects the browser entry before
     // any other dispatch — wptrunner's command line carries no subcommand.
@@ -268,13 +319,24 @@ pub fn run() -> ::std::result::Result<(), i32> {
         .as_deref()
         .map(|s| s.contains("://") || s.split('/').next().map_or(false, |s| s.contains(':')))
         .unwrap_or(false);
-    if browser_entry || (cli.url.is_some() && url_is_valid) {
-        return run_browser_entry(&cli);
-    }
-    if cli.url.is_some() && !url_is_valid {
-        eprintln!("error: unrecognized subcommand '{}'", cli.url.as_deref().unwrap_or_default());
-        eprintln!("Try 'bao --help' for more information.");
-        return Err(1);
+    // node parity (REQ-CLI-001): with `-e`, the trailing positional is
+    // script-argv data (`node -e <code> ARG` → process.argv[1] = ARG) —
+    // never a browser-entry URL and never an unknown subcommand. The node
+    // corpus spawns `execPath --expose-internals -e <script> <dir>` in
+    // exactly this shape; routing the positional into the browser/subcommand
+    // faces killed the child before its script ran.
+    if cli.eval.is_none() {
+        if browser_entry || (cli.url.is_some() && url_is_valid) {
+            return run_browser_entry(&cli);
+        }
+        if cli.url.is_some() && !url_is_valid {
+            eprintln!(
+                "error: unrecognized subcommand '{}'",
+                cli.url.as_deref().unwrap_or_default()
+            );
+            eprintln!("Try 'bao --help' for more information.");
+            return Err(1);
+        }
     }
     // --timeout only drives script execution entries (SM-EVOLUTION #24 S1
     // CLI wiring: `bao run` / top-level `-e`). On every other subcommand it

@@ -28,7 +28,9 @@ use common::eval_str;
 
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
-    common::wait_until_with(ctx, js_condition, budget, 60, eval_str)
+    // Wall-clock window (E27 sweep): don't race cross-thread producers with
+    // an iteration-bounded spin — see common::wait_until_deadline.
+    common::wait_until_deadline(ctx, js_condition, budget, 10, eval_str)
 }
 
 fn settle(ctx: &mut JsContext, budget: usize) {

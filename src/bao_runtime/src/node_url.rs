@@ -387,6 +387,11 @@ const SLOT_URL: u32 = 0;
 /// reserved slot (PrivateValue is not GC-traced, so the only release point
 /// is this finalizer). BCE-20260818-URL-SC-BOUNDARY — the copy-out/copy-in
 /// slot discipline left every collected URL's state Box leaked.
+///
+/// No class gate needed (BCE-20261025-FFI-SLOT-GATE judgment): a JSClassOps
+/// finalizer is invoked by the GC only on objects whose class is exactly
+/// this one, and SLOT_URL is only ever written by set_url_state behind the
+/// same URL_CLASS gate — the object class here is guaranteed by construction.
 unsafe extern "C" fn url_finalize(_gcx: *mut mozjs_sys::jsapi::JS::GCContext, obj: *mut JSObject) {
     unsafe {
         let mut slot = UndefinedValue();
@@ -429,6 +434,10 @@ const URL_CLASS: JSClass = JSClass {
 const SLOT_SP_DATA: u32 = 0;
 const SLOT_SP_HOST: u32 = 1;
 
+/// No class gate needed (BCE-20261025-FFI-SLOT-GATE judgment): a JSClassOps
+/// finalizer is invoked by the GC only on objects whose class is exactly
+/// URL_SEARCH_PARAMS_CLASS, and SLOT_SP_DATA is only ever written by
+/// sp_set_pairs behind the same class gate — guaranteed by construction.
 unsafe extern "C" fn sp_finalize(_gcx: *mut mozjs_sys::jsapi::JS::GCContext, obj: *mut JSObject) {
     unsafe {
         let mut slot = UndefinedValue();
@@ -473,11 +482,67 @@ const URL_SEARCH_PARAMS_CLASS: JSClass = JSClass {
 // the internal storage, `get()` could not find encoded keys, and a live
 // url.searchParams could never write back.
 
+/// Pure-boolean class gate that must run BEFORE any reserved-slot access on
+/// an object whose `this` can be foreign (BCE-20261025-FFI-SLOT-GATE class,
+/// same fix as bun_ffi `get_lib`/`get_callback`): `JS_GetReservedSlot` on a
+/// foreign class reads that object's fixed-slot area, where stale
+/// nursery-recycled bits pass the private-encoding / `is_object` checks and
+/// yield garbage pointers (`Box::from_raw` = free of an arbitrary address;
+/// `&*ptr` = wild deref). `JS_InstanceOf` with a null `CallArgs*` is a pure
+/// class-pointer comparison — it reports nothing and runs no user code, so
+/// the caller's own rejection surface (node-oracle TypeError since the V55
+/// alignment) stays the single behavior surface.
+/// @trace REQ-ENG-004
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn slot_gate(cx: *mut JSContext, obj: *mut JSObject, clasp: *const JSClass) -> bool {
+    unsafe {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let obj_root = obj);
+        w2::JS_InstanceOf(
+            &mut wrapped_cx,
+            obj_root.handle(),
+            clasp,
+            ::std::ptr::null_mut(),
+        )
+    }
+}
+
+/// Class gate for URLSearchParams method surfaces: a foreign receiver is
+/// rejected with the node-oracle TypeError shape `Value of "this" must be of
+/// type URLSearchParams` + `ERR_INVALID_THIS` (node v24 ground truth,
+/// probed). Returns true when the receiver passes the gate; on false the
+/// native returns false immediately (the exception is pending).
+/// @trace REQ-ENG-007
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sp_gate_or_throw(cx: *mut JSContext, obj: *mut JSObject) -> bool {
+    unsafe {
+        if slot_gate(cx, obj, &URL_SEARCH_PARAMS_CLASS) {
+            return true;
+        }
+        throw_type_error_with_code(
+            cx,
+            "Value of \"this\" must be of type URLSearchParams",
+            "ERR_INVALID_THIS",
+        )
+    }
+}
+
 /// Take the pair list out of the data slot (the Box is re-created by
 /// [`sp_set_pairs`]; the finalizer releases whatever is parked last).
+/// Returns an empty list for a foreign (non-URLSearchParams) receiver — the
+/// caller decides the rejection surface (methods throw a TypeError per the
+/// Node oracle; internal constructors like `sp_instance` pre-gate so the
+/// empty arm is unreachable there).
+/// @trace REQ-ENG-007
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn sp_take_pairs(obj: *mut JSObject) -> Vec<(String, String)> {
+unsafe fn sp_take_pairs(cx: *mut JSContext, obj: *mut JSObject) -> Vec<(String, String)> {
     unsafe {
+        // Class gate BEFORE the slot read (BCE-20261025-FFI-SLOT-GATE) — a
+        // foreign receiver's slot read is an OOB fixed-slot read whose stale
+        // bits would otherwise be handed to `to_private()`.
+        if !slot_gate(cx, obj, &URL_SEARCH_PARAMS_CLASS) {
+            return Vec::new();
+        }
         let mut slot = UndefinedValue();
         JS_GetReservedSlot(obj, SLOT_SP_DATA, &mut slot);
         if slot.is_double() && (slot.asBits_ & 0xFFFF000000000000) == 0 {
@@ -493,9 +558,18 @@ unsafe fn sp_take_pairs(obj: *mut JSObject) -> Vec<(String, String)> {
 }
 
 /// Park the pair list in the data slot, releasing whatever Box was there.
+/// A no-op for any non-URLSearchParams receiver (class gate,
+/// BCE-20261025-FFI-SLOT-GATE): neither the old-Box release nor the slot
+/// write may touch a foreign object (the write would land out of bounds).
+/// Internal callers (`sp_instance` / `sync_search_params_data`) pre-gate so
+/// the no-op arm is unreachable in production paths.
+/// @trace REQ-ENG-007
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn sp_set_pairs(obj: *mut JSObject, pairs: Vec<(String, String)>) {
+unsafe fn sp_set_pairs(cx: *mut JSContext, obj: *mut JSObject, pairs: Vec<(String, String)>) {
     unsafe {
+        if !slot_gate(cx, obj, &URL_SEARCH_PARAMS_CLASS) {
+            return;
+        }
         let mut old = UndefinedValue();
         JS_GetReservedSlot(obj, SLOT_SP_DATA, &mut old);
         if old.is_double() && (old.asBits_ & 0xFFFF000000000000) == 0 {
@@ -543,9 +617,19 @@ fn sp_pairs_to_string(pairs: &[(String, String)]) -> String {
 /// The empty list clears the query (WHATWG: empty list → null query), and
 /// `url_prop_set` re-syncs this very object's data slot from the re-parsed
 /// state — the mutator's list and the URL's search stay one source of truth.
+/// Internal callers (`sp_commit`) pre-gate so the no-op arm is unreachable
+/// in production paths.
+/// @trace REQ-ENG-007
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn sp_sync_host(cx: *mut JSContext, sp_obj: *mut JSObject, pairs: &[(String, String)]) {
     unsafe {
+        // Class gate BEFORE the SLOT_SP_HOST read (BCE-20261025-FFI-SLOT-GATE):
+        // on a foreign receiver the OOB slot read can surface stale bits that
+        // pass `is_object()`, rooting a bogus JSObject* for the property write
+        // below.
+        if !slot_gate(cx, sp_obj, &URL_SEARCH_PARAMS_CLASS) {
+            return;
+        }
         let mut host = UndefinedValue();
         JS_GetReservedSlot(sp_obj, SLOT_SP_HOST, &mut host);
         if !host.is_object() {
@@ -582,14 +666,23 @@ unsafe fn sync_search_params_data(cx: *mut JSContext, url_obj: *mut JSObject, st
             return;
         }
         rooted!(&in(cx_ref) let sp_obj = sp_val.to_object());
-        sp_set_pairs(sp_obj.get(), sp_parse_init_str(&state.search));
+        sp_set_pairs(cx, sp_obj.get(), sp_parse_init_str(&state.search));
     }
 }
 
-/// Get the UrlState from a URL object's reserved slot.
+/// Get the UrlState from a URL object's reserved slot. `None` for any
+/// non-URL receiver (URL_CLASS gate — method `this` can be foreign,
+/// BCE-20261025-FFI-SLOT-GATE). Methods decide the rejection surface:
+/// getters/setters throw a TypeError per the Node oracle; `url_prop_set`
+/// returns false (the setter macro ignores the return).
 /// @trace BCE-20260618-002 [level:regression]
-unsafe fn get_url_state(obj: *mut JSObject) -> Option<UrlState> {
+/// @trace REQ-ENG-004
+/// @trace REQ-ENG-007
+unsafe fn get_url_state(cx: *mut JSContext, obj: *mut JSObject) -> Option<UrlState> {
     unsafe {
+        if !slot_gate(cx, obj, &URL_CLASS) {
+            return None;
+        }
         let mut slot = UndefinedValue();
         JS_GetReservedSlot(obj, SLOT_URL, &mut slot);
         // Guard with the full PrivateValue encoding (double + zero high bits).
@@ -608,8 +701,18 @@ unsafe fn get_url_state(obj: *mut JSObject) -> Option<UrlState> {
     }
 }
 
-fn set_url_state(obj: *mut JSObject, state: UrlState) {
+/// Park `state` in a URL object's reserved slot. A no-op for any non-URL
+/// receiver (URL_CLASS gate, BCE-20261025-FFI-SLOT-GATE): neither the
+/// old-Box release nor the slot write may touch a foreign object.
+/// Internal callers (`url_to_js` / `url_constructor`) construct the object
+/// with URL_CLASS so the no-op arm is unreachable in production paths.
+/// @trace REQ-ENG-004
+/// @trace REQ-ENG-007
+fn set_url_state(cx: *mut JSContext, obj: *mut JSObject, state: UrlState) {
     unsafe {
+        if !slot_gate(cx, obj, &URL_CLASS) {
+            return;
+        }
         // Release the Box currently parked in the slot — overwriting a
         // PrivateValue without freeing the previous pointer leaks it.
         let mut old = UndefinedValue();
@@ -805,7 +908,7 @@ fn port_setter_canonical_value(state: &UrlState, value: &str) -> Option<String> 
 /// `href ...#z`, never a marker-less splice into the query).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn url_prop_set(cx: *mut JSContext, obj: *mut JSObject, field: &str, new_val: &str) -> bool {
-    let state = match get_url_state(obj) {
+    let state = match get_url_state(cx, obj) {
         Some(s) => s,
         None => return false,
     };
@@ -845,13 +948,13 @@ unsafe fn url_prop_set(cx: *mut JSContext, obj: *mut JSObject, field: &str, new_
     };
 
     // Store updated state — getters will automatically return new values
-    set_url_state(obj, new_state);
+    set_url_state(cx, obj, new_state);
 
     // Fields that can move the query must re-sync the live searchParams
     // list (WHATWG: the query object's list is re-initialized from the new
     // URL record's query).
     if matches!(field, "search" | "href") {
-        let synced_state = match get_url_state(obj) {
+        let synced_state = match get_url_state(cx, obj) {
             Some(s) => s,
             None => return true,
         };
@@ -859,7 +962,7 @@ unsafe fn url_prop_set(cx: *mut JSContext, obj: *mut JSObject, field: &str, new_
     }
 
     // Update the computed read-only properties (host, origin) that don't have getters
-    let updated_state = match get_url_state(obj) {
+    let updated_state = match get_url_state(cx, obj) {
         Some(s) => s,
         None => return true,
     };
@@ -887,7 +990,7 @@ unsafe fn url_prop_set(cx: *mut JSContext, obj: *mut JSObject, field: &str, new_
             );
         }
     }
-    set_url_state(obj, updated_state);
+    set_url_state(cx, obj, updated_state);
     true
 }
 
@@ -935,22 +1038,27 @@ macro_rules! url_prop_accessors {
             unsafe extern "C" fn $name(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
                 let args = CallArgs::from_vp(vp, _argc);
                 let this = args.thisv();
-                if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+                // Node oracle (v24): a foreign receiver throws
+                // `Receiver must be an instance of class URL` (TypeError).
+                if !this.is_object() {
+                    return throw_url_type_error(cx);
+                }
                 let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
                 let cx_ref = &mut wrapped_cx;
                 rooted!(&in(cx_ref) let obj = this.to_object());
-                let state = get_url_state(obj.get());
+                let state = get_url_state(cx, obj.get());
                 if let Some(state) = state {
                     let val = url_state_get_field(&state, $field);
                     let js_str = JS_NewStringCopyN(cx, val.as_ptr() as *const ::std::os::raw::c_char, val.len());
-                    set_url_state(obj.get(), state);
+                    set_url_state(cx, obj.get(), state);
                     if !js_str.is_null() {
                         args.rval().set(StringValue(&*js_str));
                     } else {
                         args.rval().set(UndefinedValue());
                     }
                 } else {
-                    args.rval().set(UndefinedValue());
+                    // Foreign receiver — TypeError thrown by the gate check.
+                    return throw_url_type_error(cx);
                 }
                 true
             }
@@ -993,25 +1101,27 @@ url_prop_accessors! {
 unsafe extern "C" fn url_get_search(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
+    // Node oracle (v24): a foreign receiver throws
+    // `Receiver must be an instance of class URL` (TypeError).
     if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
+        return throw_url_type_error(cx);
     }
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = this.to_object());
-    let state = get_url_state(obj.get());
+    let state = get_url_state(cx, obj.get());
     if let Some(state) = state {
         let val = if state.search == "?" { "" } else { state.search.as_str() };
         let js_str = JS_NewStringCopyN(cx, val.as_ptr() as *const ::std::os::raw::c_char, val.len());
-        set_url_state(obj.get(), state);
+        set_url_state(cx, obj.get(), state);
         args.rval().set(if !js_str.is_null() {
             StringValue(&*js_str)
         } else {
             UndefinedValue()
         });
     } else {
-        args.rval().set(UndefinedValue());
+        // Foreign receiver — TypeError thrown by the gate check.
+        return throw_url_type_error(cx);
     }
     true
 }
@@ -1022,27 +1132,42 @@ unsafe extern "C" fn url_get_search(cx: *mut JSContext, _argc: u32, vp: *mut JSV
 unsafe extern "C" fn url_get_hash(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
+    // Node oracle (v24): a foreign receiver throws
+    // `Receiver must be an instance of class URL` (TypeError).
     if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
+        return throw_url_type_error(cx);
     }
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = this.to_object());
-    let state = get_url_state(obj.get());
+    let state = get_url_state(cx, obj.get());
     if let Some(state) = state {
         let val = if state.hash == "#" { "" } else { state.hash.as_str() };
         let js_str = JS_NewStringCopyN(cx, val.as_ptr() as *const ::std::os::raw::c_char, val.len());
-        set_url_state(obj.get(), state);
+        set_url_state(cx, obj.get(), state);
         args.rval().set(if !js_str.is_null() {
             StringValue(&*js_str)
         } else {
             UndefinedValue()
         });
     } else {
-        args.rval().set(UndefinedValue());
+        // Foreign receiver — TypeError thrown by the gate check.
+        return throw_url_type_error(cx);
     }
     true
+}
+
+/// Class gate rejection for URL property getters/setters and
+/// URL.prototype.toString/toJSON: the node oracle (v24) rejects a foreign
+/// receiver with `Receiver must be an instance of class URL` (TypeError, no
+/// `code` own property — V8's kIllegalInvocation shape). Returns the native
+/// `false` that propagates the pending exception.
+/// @trace REQ-ENG-007
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn throw_url_type_error(cx: *mut JSContext) -> bool {
+    unsafe {
+        throw_type_error_with_code(cx, "Receiver must be an instance of class URL", "")
+    }
 }
 
 macro_rules! url_prop_setters {
@@ -1052,10 +1177,20 @@ macro_rules! url_prop_setters {
             unsafe extern "C" fn $name(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
                 let args = CallArgs::from_vp(vp, _argc);
                 let this = args.thisv();
-                if !this.is_object() { return true; }
+                // Node oracle (v24): a foreign receiver throws
+                // `Receiver must be an instance of class URL` (TypeError).
+                if !this.is_object() {
+                    return throw_url_type_error(cx);
+                }
                 let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
                 let cx_ref = &mut wrapped_cx;
                 rooted!(&in(cx_ref) let obj = this.to_object());
+                // Validate the receiver class before mutating (a foreign
+                // receiver would silently no-op via the class gate, but the
+                // node oracle rejects it with a TypeError).
+                if get_url_state(cx, obj.get()).is_none() {
+                    return throw_url_type_error(cx);
+                }
                 if _argc == 0 { return true; }
                 let val = *args.get(0).ptr;
                 // WHATWG setters stringify the assigned value before parsing
@@ -1148,7 +1283,7 @@ unsafe fn sp_instance(cx: *mut JSContext, pairs: Vec<(String, String)>) -> *mut 
         if obj.is_null() {
             return obj;
         }
-        sp_set_pairs(obj, pairs);
+        sp_set_pairs(cx, obj, pairs);
         obj
     }
 }
@@ -1173,6 +1308,7 @@ unsafe fn url_to_js(cx: *mut JSContext, state: &UrlState) -> *mut JSObject {
 
         // Store UrlState in reserved slot for getter/setter access
         set_url_state(
+            cx,
             obj,
             UrlState {
                 href: state.href.clone(),
@@ -1298,13 +1434,19 @@ unsafe fn url_to_js(cx: *mut JSContext, state: &UrlState) -> *mut JSObject {
 unsafe extern "C" fn url_to_string(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
+    // Node oracle (v24): a foreign receiver throws
+    // `Receiver must be an instance of class URL` (TypeError).
     if !this.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
+        return throw_url_type_error(cx);
     }
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = this.to_object());
+    // Validate the receiver class before the href read (node oracle rejects
+    // foreign receivers with a TypeError).
+    if get_url_state(cx, obj.get()).is_none() {
+        return throw_url_type_error(cx);
+    }
     let mut href_val = UndefinedValue();
     JS_GetProperty(
         cx,
@@ -1672,10 +1814,10 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
                 };
                 rooted!(&in(wrapped_cx) let global_root = global);
                 rooted!(&in(wrapped_cx) let url_val_root = ObjectValue(url_mod.get()));
-                let args_arr = HandleValueArray {
-                    length_: 1,
-                    elements_: &url_val_root.get() as *const Value,
-                };
+                // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+                rooted!(&in(wrapped_cx) let args_arr_rooted =
+                    mozjs_sys::jsgc::ValueArray::<1>::new([url_val_root.get()]));
+                let args_arr = mozjs_sys::jsapi::JS::HandleValueArray::from(&args_arr_rooted);
                 let mut call_rval = UndefinedValue();
                 let call_rval_h = MutableHandle::<Value> {
                     _phantom_0: ::std::marker::PhantomData,
@@ -1760,7 +1902,7 @@ unsafe extern "C" fn url_constructor(cx: *mut JSContext, argc: u32, vp: *mut JSV
         return true;
     }
 
-    set_url_state(obj, state);
+    set_url_state(cx, obj, state);
     args.rval().set(ObjectValue(obj));
     true
 }
@@ -1885,11 +2027,14 @@ unsafe extern "C" fn url_search_params_constructor(
 unsafe fn sp_commit(cx: *mut JSContext, sp_obj: *mut JSObject, pairs: Vec<(String, String)>) {
     unsafe {
         sp_sync_host(cx, sp_obj, &pairs);
-        sp_set_pairs(sp_obj, pairs);
+        sp_set_pairs(cx, sp_obj, pairs);
     }
 }
 
-/// Common prologue: bind `this` to an object and take its pair list.
+/// Common prologue: bind `this` to a URLSearchParams instance (class gate
+/// or throw per the node oracle) and take its pair list. A non-object `this`
+/// throws the same TypeError (node oracle: `sp.get.call(1)` → TypeError).
+/// @trace REQ-ENG-007
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn sp_this_pairs(
     cx: *mut JSContext,
@@ -1897,12 +2042,16 @@ unsafe fn sp_this_pairs(
 ) -> ::std::option::Option<(*mut JSObject, Vec<(String, String)>)> {
     unsafe {
         if !this.is_object() {
+            let _ = sp_gate_or_throw(cx, ::std::ptr::null_mut());
             return None;
         }
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let obj = this.to_object());
-        Some((obj.get(), sp_take_pairs(obj.get())))
+        if !sp_gate_or_throw(cx, obj.get()) {
+            return None;
+        }
+        Some((obj.get(), sp_take_pairs(cx, obj.get())))
     }
 }
 
@@ -1931,11 +2080,10 @@ unsafe fn throw_type_error_with_code(cx: *mut JSContext, msg: &str, code: &str) 
                 let msg_js = qs_js_string_utf8(cx, msg);
                 if !msg_js.is_null() {
                     rooted!(&in(cx_ref) let msg_root = StringValue(&*msg_js));
-                    let elems = [msg_root.get()];
-                    let call_args = HandleValueArray {
-                        length_: 1,
-                        elements_: elems.as_ptr(),
-                    };
+                    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+                    rooted!(&in(cx_ref) let call_args_rooted =
+                        mozjs_sys::jsgc::ValueArray::<1>::new([msg_root.get()]));
+                    let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
                     rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
                     let mut err_val = UndefinedValue();
                     let called = JS_CallFunctionValue(
@@ -1952,9 +2100,17 @@ unsafe fn throw_type_error_with_code(cx: *mut JSContext, msg: &str, code: &str) 
                         rooted!(&in(cx_ref) let err_root = err_val);
                         // Node's coded errors carry a `code` own property —
                         // pin it for message-level parity (ERR_MISSING_ARGS,
-                        // ERR_INVALID_URL, …).
-                        let c_code = ZBox::from_bytes(code.as_bytes());
-                        let code_js = JS_NewStringCopyZ(cx, c_code.as_ptr());
+                        // ERR_INVALID_URL, …). An empty `code` means the
+                        // oracle error carries NO code own property (e.g. the
+                        // URL getter "Receiver must be an instance of class
+                        // URL" TypeError) — skip the definition entirely so
+                        // `e.code` stays undefined.
+                        let code_js = if code.is_empty() {
+                            ::std::ptr::null_mut()
+                        } else {
+                            let c_code = ZBox::from_bytes(code.as_bytes());
+                            JS_NewStringCopyZ(cx, c_code.as_ptr())
+                        };
                         if !code_js.is_null() {
                             rooted!(&in(cx_ref) let code_root = StringValue(&*code_js));
                             rooted!(&in(cx_ref) let err_obj = err_val.to_object());
@@ -2007,10 +2163,8 @@ unsafe extern "C" fn sp_get(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
     let args = CallArgs::from_vp(vp, argc);
     let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
+        // Foreign receiver — TypeError thrown by sp_this_pairs (node oracle).
+        None => return false,
     };
     if argc == 0 {
         return sp_throw_type_error(cx, "The \"name\" argument must be specified");
@@ -2040,10 +2194,8 @@ unsafe extern "C" fn sp_get_all(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let args = CallArgs::from_vp(vp, argc);
     let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
+        // Foreign receiver — TypeError thrown by sp_this_pairs (node oracle).
+        None => return false,
     };
     if argc == 0 {
         return sp_throw_type_error(cx, "The \"name\" argument must be specified");
@@ -2089,10 +2241,8 @@ unsafe extern "C" fn sp_has(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
     let args = CallArgs::from_vp(vp, argc);
     let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
-        None => {
-            args.rval().set(BooleanValue(false));
-            return true;
-        }
+        // Foreign receiver — TypeError thrown by sp_this_pairs (node oracle).
+        None => return false,
     };
     if argc == 0 {
         return sp_throw_type_error(cx, "The \"name\" argument must be specified");
@@ -2123,10 +2273,8 @@ unsafe extern "C" fn sp_set(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
     let args = CallArgs::from_vp(vp, argc);
     let (obj, mut pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
+        // Foreign receiver — TypeError thrown by sp_this_pairs (node oracle).
+        None => return false,
     };
     if argc < 2 {
         return sp_throw_type_error(cx, "The \"name\" and \"value\" arguments must be specified");
@@ -2155,10 +2303,8 @@ unsafe extern "C" fn sp_append(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     let args = CallArgs::from_vp(vp, argc);
     let (obj, mut pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
+        // Foreign receiver — TypeError thrown by sp_this_pairs (node oracle).
+        None => return false,
     };
     if argc < 2 {
         return sp_throw_type_error(cx, "The \"name\" and \"value\" arguments must be specified");
@@ -2186,10 +2332,8 @@ unsafe extern "C" fn sp_sort(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> 
     let args = CallArgs::from_vp(vp, _argc);
     let (obj, mut pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
+        // Foreign receiver — TypeError thrown by sp_this_pairs (node oracle).
+        None => return false,
     };
     pairs.sort_by(|a, b| {
         let ka: ::std::vec::Vec<u16> = a.0.encode_utf16().collect();
@@ -2208,10 +2352,8 @@ unsafe extern "C" fn sp_delete(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     let args = CallArgs::from_vp(vp, argc);
     let (obj, mut pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
+        // Foreign receiver — TypeError thrown by sp_this_pairs (node oracle).
+        None => return false,
     };
     if argc == 0 {
         return sp_throw_type_error(cx, "The \"name\" argument must be specified");
@@ -2243,10 +2385,8 @@ unsafe extern "C" fn sp_to_string(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
     let args = CallArgs::from_vp(vp, _argc);
     let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
+        // Foreign receiver — TypeError thrown by sp_this_pairs (node oracle).
+        None => return false,
     };
     let out = sp_pairs_to_string(&pairs);
     let js = qs_js_string_utf8(cx, &out);
@@ -2264,10 +2404,8 @@ unsafe extern "C" fn sp_size_getter(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     let args = CallArgs::from_vp(vp, _argc);
     let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
+        // Foreign receiver — TypeError thrown by sp_this_pairs (node oracle).
+        None => return false,
     };
     args.rval().set(Int32Value(pairs.len() as i32));
     true
@@ -2302,6 +2440,21 @@ unsafe extern "C" fn sp_iter_next(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = this.to_object());
+
+    // Class gate BEFORE the reserved-slot reads (BCE-20261025-FFI-SLOT-GATE):
+    // `next` is a plain function, so `iter.next.call({})` lands here with a
+    // foreign receiver whose fixed-slot area holds stale nursery bits — a
+    // garbage read passing `is_object()` would be rooted and handed to
+    // GetArrayLength as a bogus JSObject*. The rejection surface is the
+    // node-oracle TypeError (node v24: `Value of "this" must be of type
+    // URLSearchParamsIterator`, code ERR_INVALID_THIS).
+    if !slot_gate(cx, obj.get(), &URL_SP_ITER_CLASS) {
+        return throw_type_error_with_code(
+            cx,
+            "Value of \"this\" must be of type URLSearchParamsIterator",
+            "ERR_INVALID_THIS",
+        );
+    }
 
     let mut snapshot = UndefinedValue();
     JS_GetReservedSlot(obj.get(), SLOT_ITER_SNAPSHOT, &mut snapshot);
@@ -2444,10 +2597,8 @@ unsafe extern "C" fn sp_projection_iter(
     let args = CallArgs::from_vp(vp, _argc);
     let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
+        // Foreign receiver — TypeError thrown by sp_this_pairs (node oracle).
+        None => return false,
     };
     let it = if want_keys {
         unsafe { sp_string_snapshot_iterator(cx, pairs.iter().map(|(k, _)| k)) }
@@ -2480,10 +2631,8 @@ unsafe extern "C" fn sp_entries(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) 
     let args = CallArgs::from_vp(vp, _argc);
     let (_obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
+        // Foreign receiver — TypeError thrown by sp_this_pairs (node oracle).
+        None => return false,
     };
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -2545,10 +2694,8 @@ unsafe extern "C" fn sp_for_each(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let args = CallArgs::from_vp(vp, argc);
     let (obj, pairs) = match unsafe { sp_this_pairs(cx, args.thisv()) } {
         Some(p) => p,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
+        // Foreign receiver — TypeError thrown by sp_this_pairs (node oracle).
+        None => return false,
     };
     if argc == 0 || !(*args.get(0).ptr).is_object() {
         args.rval().set(UndefinedValue());
@@ -2569,19 +2716,25 @@ unsafe extern "C" fn sp_for_each(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     for (k, v) in &pairs {
         let kj = qs_js_string_utf8(cx, k);
-        let vj = qs_js_string_utf8(cx, v);
-        if kj.is_null() || vj.is_null() {
+        if kj.is_null() {
             continue;
         }
-        let mut call_args: [JSVal; 3] = [
-            StringValue(unsafe { &*vj }),
-            StringValue(unsafe { &*kj }),
+        // Root kj BEFORE the next JS_NewStringCopyZ (vj): string allocation is
+        // a GC point and an unrooted fresh JSString goes stale across it
+        // (same root-before-GC-point discipline as uncaught.rs).
+        rooted!(&in(cx_ref) let kj_v = StringValue(unsafe { &*kj }));
+        let vj = qs_js_string_utf8(cx, v);
+        if vj.is_null() {
+            continue;
+        }
+        rooted!(&in(cx_ref) let vj_v = StringValue(unsafe { &*vj }));
+        // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+        rooted!(&in(cx_ref) let handle_arr_rooted = mozjs_sys::jsgc::ValueArray::<3>::new([
+            vj_v.get(),
+            kj_v.get(),
             ObjectValue(obj_r.get()),
-        ];
-        let handle_arr = HandleValueArray {
-            length_: 3,
-            elements_: call_args.as_mut_ptr(),
-        };
+        ]));
+        let handle_arr = mozjs_sys::jsapi::JS::HandleValueArray::from(&handle_arr_rooted);
         rooted!(&in(cx_ref) let cb_val = ObjectValue(callback.get()));
         let mut rval = UndefinedValue();
         JS_CallFunctionValue(

@@ -19,6 +19,68 @@ use bun_uws_sys::socket_context::BunSocketContextOptions;
 
 use crate::gc_store::{gc_store_get_ns, gc_store_insert_ns, gc_store_remove_ns};
 use crate::require::cache_builtin;
+use crate::slot_gate::{set_slot, slot_ptr};
+
+// Reserved-slot indices on HTTP_SERVER_CLASS. The uWS App pointer and the
+// ServerUserData raw pointer live ONLY in engine-private reserved slots: JS
+// can neither read nor write them. This retires the former `_appPtr`/`_udPtr`
+// own-property carriers (attrs=0 writable+configurable own properties holding
+// PrivateValue — a page could assign any subnormal double, e.g.
+// `s._appPtr = 1e-320`, whose bits pass the `(asBits & 0xFFFF000000000000) == 0`
+// private-encoding check and reach `to_private()` → wild `&*ptr` deref /
+// arbitrary-address `Box::from_raw`). A JS-visible carrier is unfixable at the
+// bit level: any x86-64 userland pointer (< 2^48) encodes to a double whose
+// top 16 bits are zero, and every such bit pattern is itself a JS-expressible
+// double, so the encoding check cannot discriminate engine-written from
+// JS-written values (BCE-20261025-FFI-SLOT-GATE).
+const SLOT_HTTP_SRV_APP_PTR: u32 = 0;
+const SLOT_HTTP_SRV_UD_PTR: u32 = 1;
+
+/// Instance class of every `http.createServer` server object. Two reserved
+/// slots (app ptr + user-data ptr), no ops. `JS_NewObject` resolves the
+/// default proto for an op-less class to Object.prototype — the same proto
+/// `JS_NewPlainObject` gave — so the JS-visible surface is unchanged apart
+/// from the retired private properties.
+/// @trace REQ-ENG-004 [api:http.createServer]
+const HTTP_SERVER_CLASS: JSClass = JSClass {
+    name: c"NodeHttpServer".as_ptr(),
+    flags: (2 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: ::std::ptr::null(),
+    spec: ::std::ptr::null(),
+    ext: ::std::ptr::null(),
+    oOps: ::std::ptr::null(),
+};
+
+// Reserved-slot index on HTTP_RESPONSE_CLASS. The raw `*mut uws_res` lives
+// ONLY in an engine-private reserved slot: JS can neither read nor write it.
+// This retires the former `_uwsRes` own-property carrier (attrs=0
+// writable+configurable own property holding PrivateValue — a page could
+// assign any subnormal double, e.g. `res._uwsRes = 1e-320`, whose bits pass
+// the `(asBits & 0xFFFF000000000000) == 0` private-encoding check and reach
+// `to_private()` → wild `&*ptr` deref / arbitrary-address `Box::from_raw`).
+// A JS-visible carrier is unfixable at the bit level: any x86-64 userland
+// pointer (< 2^48) encodes to a double whose top 16 bits are zero, and every
+// such bit pattern is itself a JS-expressible double, so the encoding check
+// cannot discriminate engine-written from JS-written values
+// (BCE-20261025-FFI-SLOT-GATE, same class as bun_udp UDP_SOCKET_CLASS /
+// bun_listen HTTP_SERVER_CLASS / H2_SERVER_CLASS).
+const SLOT_HTTP_RES_PTR: u32 = 0;
+
+/// Instance class of every h1 `http.createServer` response object (the
+/// `res_obj` built in the route handler and the `upgrade_res_obj` built for
+/// the 'upgrade' event). One reserved slot (uWS res ptr), no ops.
+/// `JS_NewObject` resolves the default proto for an op-less class to
+/// Object.prototype — the same proto `JS_NewPlainObject` gave — so the
+/// JS-visible surface is unchanged apart from the retired `_uwsRes` property.
+/// @trace REQ-ENG-004 [api:http.createServer]
+const HTTP_RESPONSE_CLASS: JSClass = JSClass {
+    name: c"NodeHttpResponse".as_ptr(),
+    flags: (1 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: ::std::ptr::null(),
+    spec: ::std::ptr::null(),
+    ext: ::std::ptr::null(),
+    oOps: ::std::ptr::null(),
+};
 
 /// Monotonic server ID for GcStore key namespacing.
 static NEXT_SERVER_ID: AtomicU64 = AtomicU64::new(1);
@@ -793,10 +855,11 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                         mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
                     rooted!(&in(wrapped_cx) let global_root = CurrentGlobalOrNull(cx.raw_cx()));
                     rooted!(&in(wrapped_cx) let http_val_root = ObjectValue(http_obj.get()));
-                    let args_arr = HandleValueArray {
-                        length_: 1,
-                        elements_: &http_val_root.get() as *const Value,
-                    };
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+                    rooted!(&in(wrapped_cx) let args_arr_rooted = mozjs_sys::jsgc::ValueArray::<1>::new([
+                        http_val_root.get(),
+                    ]));
+                    let args_arr = JS::HandleValueArray::from(&args_arr_rooted);
                     let mut call_rval = UndefinedValue();
                     let call_rval_h = MutableHandle::<Value> {
                         _phantom_0: ::std::marker::PhantomData,
@@ -837,10 +900,11 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                         mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
                     rooted!(&in(wrapped_cx) let global_root = CurrentGlobalOrNull(cx.raw_cx()));
                     rooted!(&in(wrapped_cx) let http_val_root = ObjectValue(http_obj.get()));
-                    let args_arr = HandleValueArray {
-                        length_: 1,
-                        elements_: &http_val_root.get() as *const Value,
-                    };
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+                    rooted!(&in(wrapped_cx) let args_arr_rooted = mozjs_sys::jsgc::ValueArray::<1>::new([
+                        http_val_root.get(),
+                    ]));
+                    let args_arr = JS::HandleValueArray::from(&args_arr_rooted);
                     let mut call_rval = UndefinedValue();
                     let call_rval_h = MutableHandle::<Value> {
                         _phantom_0: ::std::marker::PhantomData,
@@ -1070,11 +1134,11 @@ unsafe fn server_req_chunk_value(
                 rooted!(&in(cx_ref) let from_root = from_val.to_object());
                 let u8_val = ObjectValue(arr.get());
                 rooted!(&in(cx_ref) let u8_root = u8_val);
-                let args_vals = [u8_root.get()];
-                let call_args = HandleValueArray {
-                    length_: 1,
-                    elements_: args_vals.as_ptr(),
-                };
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+                rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<1>::new([
+                    u8_root.get(),
+                ]));
+                let call_args = JS::HandleValueArray::from(&call_args_rooted);
                 let from_fn_val = ObjectValue(from_root.get());
                 rooted!(&in(cx_ref) let from_fn_root = from_fn_val);
                 let mut rval = UndefinedValue();
@@ -1140,11 +1204,12 @@ unsafe fn server_req_emit(
     let ev_val = StringValue(&*event_str);
     rooted!(&in(cx_ref) let ev_root = ev_val);
 
-    let args_vals = [ev_root.get(), arg_root.get()];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: args_vals.as_ptr(),
-    };
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+        ev_root.get(),
+        arg_root.get(),
+    ]));
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
     let emit_fn_val = ObjectValue(emit_fn.get());
     rooted!(&in(cx_ref) let emit_fn_root = emit_fn_val);
 
@@ -1579,7 +1644,11 @@ unsafe extern "C" fn uws_route_handler(
         if !socket_obj.get().is_null() {
             // Build JS response object for the upgrade event (allows the handler
             // to call res.end() or write headers for the 101 response).
-            rooted!(&in(cx_ref) let upgrade_res_obj = w2::JS_NewPlainObject(cx_ref));
+            // HTTP_RESPONSE_CLASS carries the `_uwsRes` pointer on a reserved
+            // slot (same as the retired JS_NewPlainObject shape).
+            rooted!(&in(cx_ref) let upgrade_res_obj = unsafe {
+                w2::JS_NewObject(cx_ref, &HTTP_RESPONSE_CLASS)
+            });
             if !upgrade_res_obj.get().is_null() {
                 w2::JS_DefineFunction(
                     cx_ref,
@@ -1606,14 +1675,10 @@ unsafe extern "C" fn uws_route_handler(
                     sv.handle().into(),
                     JSPROP_ENUMERATE as u32,
                 );
-                let res_ptr_val = mozjs::jsval::PrivateValue(res as *const core::ffi::c_void);
-                rooted!(&in(cx_ref) let rv = res_ptr_val);
-                JS_DefineProperty(
-                    raw_cx,
-                    upgrade_res_obj.handle().into(),
-                    c"_uwsRes".as_ptr(),
-                    rv.handle().into(),
-                    0,
+                set_slot(
+                    upgrade_res_obj.get(),
+                    SLOT_HTTP_RES_PTR,
+                    res as *const core::ffi::c_void,
                 );
             }
 
@@ -1639,7 +1704,8 @@ unsafe extern "C" fn uws_route_handler(
                         let event_name_str = JS_NewStringCopyZ(raw_cx, c"upgrade".as_ptr());
                         if !event_name_str.is_null() {
                             let ev_val = StringValue(&*event_name_str);
-                            let args_vals = [
+                            // unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+                            rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<4>::new([
                                 ev_val,
                                 ObjectValue(req_obj.get()),
                                 ObjectValue(socket_obj.get()),
@@ -1648,11 +1714,8 @@ unsafe extern "C" fn uws_route_handler(
                                 } else {
                                     socket_obj.get()
                                 }),
-                            ];
-                            let call_args = HandleValueArray {
-                                length_: 4,
-                                elements_: args_vals.as_ptr(),
-                            };
+                            ]));
+                            let call_args = JS::HandleValueArray::from(&call_args_rooted);
                             let mut rval = UndefinedValue();
                             let rval_h = MutableHandle::<Value> {
                                 _phantom_0: ::std::marker::PhantomData,
@@ -1737,7 +1800,9 @@ unsafe extern "C" fn uws_route_handler(
     );
 
     // Build JS response object with writeHead/write/end bridging to uWS Response.
-    rooted!(&in(cx_ref) let res_obj = w2::JS_NewPlainObject(cx_ref));
+    // HTTP_RESPONSE_CLASS carries the `_uwsRes` pointer on a reserved slot
+    // (same as the retired JS_NewPlainObject shape).
+    rooted!(&in(cx_ref) let res_obj = unsafe { w2::JS_NewObject(cx_ref, &HTTP_RESPONSE_CLASS) });
     if res_obj.get().is_null() {
         return;
     }
@@ -1811,25 +1876,22 @@ unsafe extern "C" fn uws_route_handler(
         JSPROP_ENUMERATE as u32,
     );
 
-    // Store uWS res pointer on the JS response object for write/end.
-    let res_ptr_val = mozjs::jsval::PrivateValue(res as *const core::ffi::c_void);
-    rooted!(&in(cx_ref) let rv = res_ptr_val);
-    JS_DefineProperty(
-        raw_cx,
-        res_obj.handle().into(),
-        c"_uwsRes".as_ptr(),
-        rv.handle().into(),
-        0,
+    // Store uWS res pointer in an engine-private reserved slot for write/end.
+    set_slot(
+        res_obj.get(),
+        SLOT_HTTP_RES_PTR,
+        res as *const core::ffi::c_void,
     );
 
     // Call the JS request handler: handler(req, res). Runs in the handler's
     // own realm (AutoRealm scope above). The handler was already rooted at
     // realm entry as `handler_val_root`; reuse that root.
-    let args_vals = [ObjectValue(req_obj.get()), ObjectValue(res_obj.get())];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: args_vals.as_ptr(),
-    };
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+        ObjectValue(req_obj.get()),
+        ObjectValue(res_obj.get()),
+    ]));
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
 
     let mut rval = UndefinedValue();
     let rval_h = MutableHandle::<Value> {
@@ -1876,18 +1938,11 @@ unsafe extern "C" fn uws_route_handler(
 // JS response methods — bridge to uWS Response::<false>
 // ──────────────────────────────────────────────────────────────
 
-/// Check if a JSVal is a PrivateValue (double with zero high bits).
-/// @trace BCE-20260618-002 [level:regression]
-/// SpiderMonkey encodes private values as doubles; this guard rejects
-/// undefined/non-private doubles that would otherwise trigger the
-/// `assert!(self.is_double())` panic in `to_private()` when a property
-/// slot is unset (e.g. server object created without listening).
-#[inline]
-fn val_is_private(v: &JSVal) -> bool {
-    v.is_double() && (v.asBits_ & 0xFFFF000000000000) == 0
-}
-
-/// Recover the `*mut uws_res` stored as `_uwsRes` on the JS response object.
+/// Recover the `*mut uws_res` stored in the `HTTP_RESPONSE_CLASS` reserved
+/// slot on the JS response object. The class gate (`slot_ptr`) rejects any
+/// foreign-class receiver (proxies included) and any unset/cleared slot, so a
+/// stale or JS-tampered object never reaches `to_private()`.
+/// @trace REQ-ENG-004 [api:http.createServer]
 #[inline]
 unsafe fn get_uws_res(
     cx: *mut JSContext,
@@ -1896,21 +1951,12 @@ unsafe fn get_uws_res(
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_root = obj);
-    let mut ptr_val = UndefinedValue();
-    JS_GetProperty(
+    slot_ptr(
         cx,
-        obj_root.handle().into(),
-        c"_uwsRes".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut ptr_val,
-        },
-    );
-    // @trace BCE-20260618-002 — guard non-private doubles before to_private().
-    if !val_is_private(&ptr_val) {
-        return core::ptr::null_mut();
-    }
-    ptr_val.to_private() as *mut bun_uws_sys::response::c::uws_res
+        obj_root.handle(),
+        &HTTP_RESPONSE_CLASS,
+        SLOT_HTTP_RES_PTR,
+    ) as *mut bun_uws_sys::response::c::uws_res
 }
 
 /// Extract the writeHead status code and record it as `statusCode` on the res
@@ -2323,7 +2369,10 @@ unsafe extern "C" fn http_create_server(
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
-    rooted!(&in(cx_ref) let server_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
+    // HTTP_SERVER_CLASS carries the two pointer reserved slots
+    // (BCE-20261025-FFI-SLOT-GATE; default proto stays Object.prototype, same
+    // as the retired JS_NewPlainObject shape)
+    rooted!(&in(cx_ref) let server_obj = unsafe { w2::JS_NewObject(cx_ref, &HTTP_SERVER_CLASS) });
     if server_obj.get().is_null() {
         args.rval().set(UndefinedValue());
         return true;
@@ -2578,16 +2627,14 @@ unsafe extern "C" fn server_listen(
     };
     (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
-    // Store the ServerUserData pointer on the server object for cleanup in server_close.
-    {
-        let ud_val = mozjs::jsval::PrivateValue(ud_ptr as *const core::ffi::c_void);
-        rooted!(&in(cx_ref) let udv = ud_val);
-        JS_DefineProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_udPtr".as_ptr(),
-            udv.handle().into(),
-            0,
+    // Store the ServerUserData pointer in the engine-private reserved slot for
+    // cleanup in server_close — JS can neither read nor write reserved slots
+    // (BCE-20261025-FFI-SLOT-GATE).
+    unsafe {
+        set_slot(
+            server_obj.get(),
+            SLOT_HTTP_SRV_UD_PTR,
+            ud_ptr as *const core::ffi::c_void,
         );
     }
 
@@ -2633,16 +2680,13 @@ unsafe extern "C" fn server_listen(
     // requested value so address() stays honest either way.
     let effective_port: u16 = if port == 0 { actual_port } else { port };
 
-    // Store app pointer on server object for close/destroy.
-    {
-        let app_ptr_val = mozjs::jsval::PrivateValue(app_ptr as *const core::ffi::c_void);
-        rooted!(&in(cx_ref) let apv = app_ptr_val);
-        JS_DefineProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_appPtr".as_ptr(),
-            apv.handle().into(),
-            0,
+    // Store app pointer in the engine-private reserved slot for
+    // close/destroy (BCE-20261025-FFI-SLOT-GATE).
+    unsafe {
+        set_slot(
+            server_obj.get(),
+            SLOT_HTTP_SRV_APP_PTR,
+            app_ptr as *const core::ffi::c_void,
         );
     }
 
@@ -2749,25 +2793,15 @@ unsafe extern "C" fn server_close(
     };
     let had_live_app: bool;
 
-    // Destroy the uWS App if it exists.
-    let mut app_ptr_val = UndefinedValue();
-    JS_GetProperty(
+    // Read and clear the engine-private reserved slot (BCE-20261025-FFI-SLOT-GATE).
+    // server.close() before listen leaves the slot null → no-op, same as the
+    // retired undefined `_appPtr` guard path.
+    let app_ptr = slot_ptr(
         cx,
-        server_obj.handle().into(),
-        c"_appPtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut app_ptr_val,
-        },
-    );
-    // @trace BCE-20260618-002 — guard non-private doubles before to_private().
-    // http.createServer(fn).close() before listen leaves _appPtr undefined;
-    // to_private() on undefined asserts is_double() → panic across extern "C".
-    let app_ptr = if val_is_private(&app_ptr_val) {
-        app_ptr_val.to_private() as *mut App<false>
-    } else {
-        core::ptr::null_mut()
-    };
+        server_obj.handle(),
+        &HTTP_SERVER_CLASS,
+        SLOT_HTTP_SRV_APP_PTR,
+    ) as *mut App<false>;
     had_live_app = !app_ptr.is_null();
     if !app_ptr.is_null() {
         (*app_ptr).close();
@@ -2781,54 +2815,34 @@ unsafe extern "C" fn server_close(
         }
 
         // @trace BCE-20260618-006 [level:regression] [api:http.createServer close]
-        // Clear `_appPtr` on the JS server object so subsequent `close()`
-        // calls are idempotent no-ops instead of use-after-free on the
-        // destroyed `*mut App`. Same class of bug as Bun.serve's server_stop
-        // (bun_api.rs) — double-close reads the stale pointer and calls
-        // `close()`/`destroy()` on freed memory → SIGSEGV. Set to a non-
-        // private value (UndefinedValue) so the val_is_private guard above
-        // correctly takes the null path on re-entry.
-        rooted!(&in(cx_ref) let undef_root = UndefinedValue());
-        JS_SetProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_appPtr".as_ptr(),
-            undef_root.handle().into(),
-        );
+        // Clear the reserved slot so subsequent `close()` calls are idempotent
+        // no-ops instead of use-after-free on the destroyed `*mut App`. Same
+        // class of bug as Bun.serve's server_stop (bun_api.rs) — double-close
+        // reads the stale pointer and calls `close()`/`destroy()` on freed
+        // memory → SIGSEGV.
+        unsafe {
+            set_slot(server_obj.get(), SLOT_HTTP_SRV_APP_PTR, core::ptr::null());
+        }
     }
 
     // Cleanup: reclaim ServerUserData box and remove GcStore entries.
-    let mut ud_ptr_val = UndefinedValue();
-    JS_GetProperty(
+    let ud_ptr = slot_ptr(
         cx,
-        server_obj.handle().into(),
-        c"_udPtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut ud_ptr_val,
-        },
-    );
-    // @trace BCE-20260618-002 — guard non-private doubles before to_private().
-    let ud_ptr = if val_is_private(&ud_ptr_val) {
-        ud_ptr_val.to_private() as *mut ServerUserData
-    } else {
-        core::ptr::null_mut()
-    };
+        server_obj.handle(),
+        &HTTP_SERVER_CLASS,
+        SLOT_HTTP_SRV_UD_PTR,
+    ) as *mut ServerUserData;
     if !ud_ptr.is_null() {
         // SAFETY: ud_ptr was created by Box::into_raw in server_listen.
         let ud = unsafe { Box::from_raw(ud_ptr) };
         ud.cleanup();
 
         // @trace BCE-20260618-006 [level:regression] — same stale-pointer
-        // class as `_appPtr` above. Clear `_udPtr` so a second `close()` is
-        // a no-op (the Box has been consumed and the memory freed).
-        rooted!(&in(cx_ref) let undef_root2 = UndefinedValue());
-        JS_SetProperty(
-            cx,
-            server_obj.handle().into(),
-            c"_udPtr".as_ptr(),
-            undef_root2.handle().into(),
-        );
+        // class as the app reserved slot above. Clear it so a second `close()`
+        // is a no-op (the Box has been consumed and the memory freed).
+        unsafe {
+            set_slot(server_obj.get(), SLOT_HTTP_SRV_UD_PTR, core::ptr::null());
+        }
     }
 
     // Node close() delivery: the teardown above is synchronous (listen socket
@@ -2897,11 +2911,11 @@ unsafe extern "C" fn server_close(
                     let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
                     if !msg_js.is_null() {
                         rooted!(&in(cx_ref) let msg_root = StringValue(&*msg_js));
-                        let elems = [msg_root.get()];
-                        let call_args = HandleValueArray {
-                            length_: 1,
-                            elements_: elems.as_ptr(),
-                        };
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+                        rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<1>::new([
+                            msg_root.get(),
+                        ]));
+                        let call_args = JS::HandleValueArray::from(&call_args_rooted);
                         let mut e_val = UndefinedValue();
                         if JS_CallFunctionValue(
                             cx,
@@ -2925,11 +2939,11 @@ unsafe extern "C" fn server_close(
             } else {
                 UndefinedValue()
             });
-            let elems = [arg_val.get()];
-            let cb_args = HandleValueArray {
-                length_: 1,
-                elements_: elems.as_ptr(),
-            };
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+            rooted!(&in(cx_ref) let cb_args_rooted = mozjs_sys::jsgc::ValueArray::<1>::new([
+                arg_val.get(),
+            ]));
+            let cb_args = JS::HandleValueArray::from(&cb_args_rooted);
             let mut rval = UndefinedValue();
             let cb_ok = JS_CallFunctionValue(
                 cx,
@@ -2968,11 +2982,11 @@ unsafe extern "C" fn server_close(
             let ev_str = JS_NewStringCopyZ(cx, c"close".as_ptr());
             if !ev_str.is_null() {
                 rooted!(&in(cx_ref) let ev_root = StringValue(&*ev_str));
-                let elems = [ev_root.get()];
-                let call_args = HandleValueArray {
-                    length_: 1,
-                    elements_: elems.as_ptr(),
-                };
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+                rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<1>::new([
+                    ev_root.get(),
+                ]));
+                let call_args = JS::HandleValueArray::from(&call_args_rooted);
                 let mut rval = UndefinedValue();
                 let emit_ok = JS_CallFunctionValue(
                     cx,

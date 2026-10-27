@@ -12,9 +12,15 @@
 //     sends the signal (Node semantics) with a 1s SIGKILL escalation.
 //
 // This test forks a REAL worker (`bao run <script>`, BAO_CLUSTER_EXEC),
-// kills it, and verifies process-level death (the pid is gone from /proc),
-// the 'exit' event (code=-1, signal=SIGTERM), isDead flipped by the observed
-// exit, and the cluster.workers registry emptied.
+// kills it after the worker comes ONLINE (event-driven: the former fixed
+// 300ms timer raced the worker boot + IPC handshake under fleet load —
+// a pre-online kill delivers 'exit' but 'online' never fired), and verifies
+// process-level death (the pid is gone from /proc), the 'exit' event in the
+// node-oracle shape — node v24.19.0 (live probe 2026-10-25, child_process
+// AND cluster worker killed via kill()/SIGTERM): exit(code=null,
+// signal='SIGTERM'), w.process.exitCode=null; a signal death has NO exit
+// code — isDead flipped by the observed exit, and the cluster.workers
+// registry emptied.
 
 use std::time::{Duration, Instant};
 
@@ -79,7 +85,21 @@ if (cluster.isWorker) {
   globalThis.__done = function () { return results.exitSignal !== null; };
   var w = cluster.fork();
   results.pid = w._pid;
-  w.on('online', function () { results.online += 1; });
+  // Event-driven kill: the former fixed-300ms timer raced the worker's
+  // boot + IPC handshake under fleet load — a pre-online kill delivers
+  // 'exit' but the worker never emitted 'online' (e15 load run observed
+  // online:0 with exitSignal:15). Killing only after 'online' is the Node
+  // flow this test pins (healthy worker → kill → observed death); the
+  // exit-driven assertions below are unchanged.
+  w.on('online', function () {
+    results.online += 1;
+    setTimeout(function () {
+      results.killedAt = Date.now() - results.bootAt;
+      results.killed = true;
+      results.isDeadAtKill = w.isDead; // Node: still false — death is observed, not assumed
+      w.kill(); // default SIGTERM
+    }, 50);
+  });
   w.on('exit', function (code, signal) {
     results.exitCode = code;
     results.exitSignal = signal;
@@ -90,12 +110,6 @@ if (cluster.isWorker) {
     results.processExitCode = w.process && w.process.exitCode;
   });
   setTimeout(function () { results.hbAt = Date.now() - results.bootAt; }, 50);
-  setTimeout(function () {
-    results.killedAt = Date.now() - results.bootAt;
-    results.killed = true;
-    results.isDeadAtKill = w.isDead; // Node: still false — death is observed, not assumed
-    w.kill(); // default SIGTERM
-  }, 300);
 }
 "#;
     let script_path = std::env::temp_dir().join("bao_cluster_kill_worker.js");
@@ -148,15 +162,34 @@ if (cluster.isWorker) {
         "kill() must not assume death (isDead flips on the observed exit): {}",
         final_state
     );
-    assert!(
-        final_state.contains("\"exitSignal\":15"),
-        "exit must carry SIGTERM (signal 15): {}",
-        final_state
+    // node-oracle precise exit shape (E17): the former substring asserts
+    // `contains("\"exitCode\":-1")` / `contains("\"exitSignal\":15")` were
+    // PREFIX-WEAK — "-1" also matches "-15", which is exactly the value bao's
+    // native poll produces for a signal death (node_child_process.rs encoding
+    // contract: "signal deaths → code = -signal", passed through by the
+    // cluster exit poll verbatim). node v24.19.0 (live probe 2026-10-25,
+    // cluster worker kill()) delivers exit(code=null, signal='SIGTERM' string)
+    // and w.process.exitCode=null. Per-field strict equality below — no
+    // substring matching, so a -signal-encoded code can never satisfy them.
+    // These pins hold the wire face to the node contract: bao's current
+    // (-signal, signum) passthrough is the registered deviation (the
+    // normalization belongs in the child_process/cluster exit delivery, not
+    // in this assertion).
+    let exit_code = eval_string(&mut ctx, "String(globalThis.__results.exitCode)");
+    assert_eq!(
+        exit_code, "null",
+        "node oracle: signal death reports exitCode null (code and signal are separate fields); got {exit_code}: {final_state}"
     );
-    assert!(
-        final_state.contains("\"exitCode\":-1"),
-        "signal death reports exitCode -1: {}",
-        final_state
+    let exit_signal = eval_string(&mut ctx, "String(globalThis.__results.exitSignal)");
+    assert_eq!(
+        exit_signal, "SIGTERM",
+        "node oracle: signal death reports the signal NAME string 'SIGTERM', not a signum; got {exit_signal}: {final_state}"
+    );
+    let proc_exit_code =
+        eval_string(&mut ctx, "String(globalThis.__results.processExitCode)");
+    assert_eq!(
+        proc_exit_code, "null",
+        "node oracle: w.process.exitCode reads back null on signal death; got {proc_exit_code}: {final_state}"
     );
     assert!(
         final_state.contains("\"isDeadAfterExit\":true"),
@@ -176,8 +209,11 @@ if (cluster.isWorker) {
         probe.parse().unwrap_or(0)
     };
     assert!(pid > 0, "worker pid must be recorded, got {}", pid);
+    // 15s reap margin: the cp-poll thread reaps promptly, but under fleet
+    // load the waitpid side can lag; the pid disappears on the first pass in
+    // the healthy case so the margin costs nothing when green.
     let mut gone = false;
-    for _ in 0..100 {
+    for _ in 0..300 {
         if pid_is_gone(pid) {
             gone = true;
             break;

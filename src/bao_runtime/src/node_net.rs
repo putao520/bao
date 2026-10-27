@@ -157,6 +157,12 @@ thread_local! {
     /// Used to return the correct port in Server.address() when getsockname fails.
     static NET_LISTEN_PORTS: RefCell<HashMap<usize, u16>> = RefCell::new(HashMap::new());
 
+    /// @trace REQ-ENG-007 — Unix listen socket paths: listen_ptr (as usize) →
+    /// bound path. Written by net_listen_unix at bind time; Server.address()
+    /// returns the path for a UNIX server (Node contract: a string pathname,
+    /// not the {port, family, address} object an IP socket yields).
+    static NET_LISTEN_PATHS: RefCell<HashMap<usize, String>> = RefCell::new(HashMap::new());
+
     /// 'connection' dispatcher per listen socket: listen_ptr (as usize) →
     /// GcStore key of the JS callback registered by `__net_on_connection`.
     /// Consumed by `dispatch_accept` when the vtable on_open fires for an
@@ -177,6 +183,16 @@ thread_local! {
     static NET_CX: Cell<Option<*mut JSContext>> = const { Cell::new(None) };
 }
 
+/// @trace REQ-ENG-004 — process.getActiveResourcesInfo read face: (listening
+/// servers, connected sockets) from the JS-thread registries. node v24 oracle
+/// maps them to "TCPServerWrap" / "TCPSocketWrap" respectively. JS thread
+/// only (thread-local state).
+pub fn active_net_socket_counts() -> (usize, usize) {
+    let listening = NET_LISTEN_SOCKETS.with(|l| l.borrow().len());
+    let connected = NET_SOCKETS.with(|s| s.borrow().len());
+    (listening, connected)
+}
+
 pub struct NetCleanup;
 
 impl Drop for NetCleanup {
@@ -195,6 +211,7 @@ impl Drop for NetCleanup {
         NET_SOCKETS.with(|s| s.borrow_mut().clear());
         NET_INCOMING_DATA.with(|d| d.borrow_mut().clear());
         NET_LISTEN_PORTS.with(|p| p.borrow_mut().clear());
+        NET_LISTEN_PATHS.with(|p| p.borrow_mut().clear());
         NET_CONNECTION_CBS.with(|c| c.borrow_mut().clear());
         NET_GROUP_LISTEN.with(|m| m.borrow_mut().clear());
         NET_EOF_SOCKETS.with(|e| e.borrow_mut().clear());
@@ -393,10 +410,10 @@ unsafe fn dispatch_accept(s: *mut us_socket_t) {
 
     // Build the JS socket: __net_make_socket(ptr) → new Socket with _ptr set.
     rooted!(&in(realm_cx) let ptr_arg = DoubleValue(s as usize as f64));
-    let factory_args = HandleValueArray {
-        length_: 1,
-        elements_: &*ptr_arg.handle(),
-    };
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(realm_cx) let factory_args_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([ptr_arg.get()]));
+    let factory_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&factory_args_rooted);
     let mut sock_val = UndefinedValue();
     let sock_ok = JS_CallFunctionName(
         realm_cx.raw_cx(),
@@ -447,10 +464,10 @@ unsafe fn dispatch_accept(s: *mut us_socket_t) {
     // connection handler(socket)
     rooted!(&in(realm_cx) let handler_val = ObjectValue(handler_root.get()));
     rooted!(&in(realm_cx) let sock_elem = ObjectValue(sock_obj.get()));
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: &*sock_elem.handle(),
-    };
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(realm_cx) let call_args_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([sock_elem.get()]));
+    let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
     let mut rval = UndefinedValue();
     let ok = JS_CallFunctionValue(
         realm_cx.raw_cx(),
@@ -894,52 +911,82 @@ const NET_JS: &str = r#"
     this.listening = false;
     this._ptr = 0;
     this._port = 0;
+    this._path = null;
     if (connectionListener) this.on("connection", connectionListener);
   }
   Server.prototype = Object.create(EE.prototype);
   Server.prototype.constructor = Server;
   Server.prototype.listen = function() {
-    var port = 0, host = "0.0.0.0", cb;
+    var port = 0, host = "0.0.0.0", path = null, cb;
+    var portSeen = false;
     for (var i = 0; i < arguments.length; i++) {
       var arg = arguments[i];
       if (typeof arg === "function") cb = arg;
       else if (arg && typeof arg === "object") {
-        // Node options form: server.listen({ port, host }, [cb]). The object
+        // Node options form: server.listen({ port, host, path }, [cb]). The object
         // matched none of the typeof branches before, so listen({port: N})
-        // silently bound a RANDOM port (0) instead of N.
-        if (typeof arg.port === "number") port = arg.port;
-        else if (typeof arg.port === "string") port = Number(arg.port);
+        // silently bound a RANDOM port (0) instead of N. Port wins over path
+        // within one options object (Node: path is the fallback when no port
+        // was requested).
+        if (typeof arg.port === "number") { port = arg.port; portSeen = true; }
+        else if (typeof arg.port === "string") { port = Number(arg.port); portSeen = true; }
+        else if (typeof arg.path === "string") path = arg.path;
         if (typeof arg.host === "string") host = arg.host;
         else if (typeof arg.hostname === "string") host = arg.hostname;
       }
-      else if (typeof arg === "number") port = arg;
-      else if (typeof arg === "string") host = arg;
-    }
-    if (typeof __net_listen === "function") {
-      var ptr = __net_listen(port, host);
-      if (ptr > 0) {
-        this._ptr = ptr;
-        this._port = port;
-        this.listening = true;
-        // Register the accept dispatcher BEFORE any callback runs: the native
-        // side (dispatch_accept, vtable on_open with is_client == 0) drops the
-        // accept silently when NET_CONNECTION_CBS has no entry for the listen
-        // socket. A 'listening' callback that immediately net.connect()s to
-        // itself spins the loop inline (net_connect waits for the real TCP
-        // open), so the inbound accept can dispatch inside that spin — before
-        // this function returns. Registering after `cb()` (the old order)
-        // lost that first connection forever (echo server never saw it).
-        if (typeof __net_on_connection === "function") {
-          var self = this;
-          __net_on_connection(ptr, function(sock) {
-            self.emit("connection", sock);
-          });
+      else if (typeof arg === "number") { port = arg; portSeen = true; }
+      else if (typeof arg === "string") {
+        // Node listen() contract: a string in the FIRST slot is a TCP port
+        // when it parses as a non-negative number (Number("") is 0 → port 0,
+        // matching Node's toNumber() normalization), otherwise it is a UNIX
+        // socket path (server.listen(path[, cb])). A string AFTER the port is
+        // the host slot of the port form — listen(port, host) must keep
+        // reaching the TCP face ('127.0.0.1' parses as NaN and must NOT be
+        // taken as a path). Before this branch ANY string was handed to the
+        // TCP face as a HOST, so a fresh mkdtemp path (never bound before)
+        // failed getaddrinfo and surfaced as the hardcoded
+        // "listen EADDRINUSE".
+        if (!portSeen) {
+          var n = Number(arg);
+          if (n >= 0) { port = n; portSeen = true; }
+          else path = arg;
+        } else {
+          host = arg;
         }
-        this.emit("listening");
-        if (cb) cb();
-      } else {
-        this.emit("error", new Error("listen EADDRINUSE"));
       }
+    }
+    // UNIX face: a bound path wins (the positional form can never carry both —
+    // port and path share the same argument slot).
+    var isUnix = path !== null;
+    var ptr = 0;
+    if (isUnix && typeof __net_listen_unix === "function") {
+      ptr = __net_listen_unix(path);
+    } else if (typeof __net_listen === "function") {
+      ptr = __net_listen(port, host);
+    }
+    if (ptr > 0) {
+      this._ptr = ptr;
+      this._port = port;
+      this._path = isUnix ? path : null;
+      this.listening = true;
+      // Register the accept dispatcher BEFORE any callback runs: the native
+      // side (dispatch_accept, vtable on_open with is_client == 0) drops the
+      // accept silently when NET_CONNECTION_CBS has no entry for the listen
+      // socket. A 'listening' callback that immediately net.connect()s to
+      // itself spins the loop inline (net_connect waits for the real TCP
+      // open), so the inbound accept can dispatch inside that spin — before
+      // this function returns. Registering after `cb()` (the old order)
+      // lost that first connection forever (echo server never saw it).
+      if (typeof __net_on_connection === "function") {
+        var self = this;
+        __net_on_connection(ptr, function(sock) {
+          self.emit("connection", sock);
+        });
+      }
+      this.emit("listening");
+      if (cb) cb();
+    } else {
+      this.emit("error", new Error("listen EADDRINUSE"));
     }
     return this;
   };
@@ -1199,11 +1246,47 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         return true;
     }
 
-    // Store the group and listen socket.
+    let listen_key = unsafe { install_listen_socket(group_ptr, listen_socket) };
+
+    // Store the requested port so address() can return it if getsockname fails.
+    // If port 0 was requested, the OS assigned a port — getsockname in net_address
+    // will retrieve the actual port, but we store the requested port as fallback.
+    NET_LISTEN_PORTS.with(|p| p.borrow_mut().insert(listen_key, port as u16));
+
+    // Return the listen socket pointer as a JS Number (f64) to avoid i32 truncation on 64-bit.
+    args.rval().set(ptr_to_jsval(listen_key));
+    true
+}
+
+/// Shared install tail of `net_listen` / `net_listen_unix` (the single-bind
+/// install path, kept single-sourced): take ownership of the fresh socket
+/// group, register the (group, listen socket, reverse-index, JS-idle
+/// liveness) quad, and hand the listen socket identity back to JS. Returns
+/// the listen_key.
+///
+/// JS-idle tick surface (BCE-007 registration gap, node:net variant):
+/// drain_and_check only drives the uWS loop while
+/// node_http::has_active_servers() is true — that branch is the only thing
+/// that ever `accept()`s on this listen socket. Register it in the unified
+/// liveness registry so an idle script (no pending timers, no poll chains)
+/// still accepts inbound connections. Liveness token only: the registry
+/// does ptr-eq bookkeeping and never dereferences (same representation-
+/// preserving alias node_http2 uses for its `App<true>` tokens).
+///
+/// # Safety
+/// `group_ptr` must be a fresh group from `ensure_server_group` whose bind
+/// just succeeded, and `listen_socket` the listen socket that bind returned —
+/// this function takes ownership of both registrations exactly once.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn install_listen_socket(
+    group_ptr: *mut SocketGroup,
+    listen_socket: *mut ListenSocket,
+) -> usize {
     let listen_key = listen_socket as usize;
+    // Store the group and listen socket.
     NET_SERVER_GROUPS.with(|g| {
         g.borrow_mut()
-            .insert(listen_key, unsafe { Box::from_raw(group_ptr) })
+            .insert(listen_key, Box::from_raw(group_ptr))
     });
     NET_LISTEN_SOCKETS.with(|l| l.borrow_mut().push(listen_key));
 
@@ -1212,22 +1295,91 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     // (whose 'connection' dispatcher fires).
     NET_GROUP_LISTEN.with(|m| m.borrow_mut().insert(group_ptr as usize, listen_key));
 
-    // JS-idle tick surface (BCE-007 registration gap, node:net variant):
-    // drain_and_check only drives the uWS loop while
-    // node_http::has_active_servers() is true — that branch is the only thing
-    // that ever `accept()`s on this listen socket. Register it in the unified
-    // liveness registry so an idle script (no pending timers, no poll chains)
-    // still accepts inbound connections. Liveness token only: the registry
-    // does ptr-eq bookkeeping and never dereferences (same representation-
-    // preserving alias node_http2 uses for its `App<true>` tokens).
-    unsafe { crate::node_http::register_active_app(listen_socket as *mut App<false>) };
+    crate::node_http::register_active_app(listen_socket as *mut App<false>);
+    listen_key
+}
 
-    // Store the requested port so address() can return it if getsockname fails.
-    // If port 0 was requested, the OS assigned a port — getsockname in net_address
-    // will retrieve the actual port, but we store the requested port as fallback.
-    NET_LISTEN_PORTS.with(|p| p.borrow_mut().insert(listen_key, port as u16));
+/// @trace REQ-ENG-007 — node:net Server.listen(path) UNIX face (the native
+/// `__net_listen_unix(path)` bridge). Node's documented listen() contract
+/// hands every non-numeric-string argument here as a UNIX socket path; the
+/// port-vs-path discrimination lives in NET_JS, this face receives the
+/// resolved path only.
+///
+/// Binds through the same single-bind usockets path as the TCP face —
+/// `us_socket_group_listen_unix` → `bsd_create_listen_socket_unix`
+/// (AF_UNIX socket + bind + listen; the C side zero-fills `sockaddr_un`, so
+/// the path slice needs no NUL, and a too-long path fails with ENAMETOOLONG
+/// inside bsd.c) — and shares the install tail with `net_listen`.
+///
+/// Success/failure contract mirrors `__net_listen` exactly: the listen
+/// socket pointer as an f64 Number (> 0) on success, 0 on bind failure (the
+/// JS layer emits the error event; the pre-existing shared error branch is
+/// the authoritative JS surface).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn net_listen_unix(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
 
-    // Return the listen socket pointer as a JS Number (f64) to avoid i32 truncation on 64-bit.
+    let path: String = if argc > 0 && (*args.get(0).ptr).is_string() {
+        jsstr_to_string(
+            &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+            NonNull::new_unchecked((*args.get(0).ptr).to_string()),
+        )
+    } else {
+        JS_ReportErrorUTF8(
+            cx,
+            c"The 'path' argument must be a string. Received a non-string value.".as_ptr(),
+        );
+        return false;
+    };
+    if path.is_empty() {
+        // bsd.c maps an empty path to ENOENT before any bind attempt; report
+        // the argument-level contract directly instead of a bind failure.
+        JS_ReportErrorUTF8(cx, c"The 'path' argument must be a non-empty string.".as_ptr());
+        return false;
+    }
+
+    let loop_ = get_loop();
+    if loop_.is_null() {
+        args.rval().set(Int32Value(0));
+        return true;
+    }
+
+    let group_ptr = ensure_server_group(loop_);
+    let group: &mut SocketGroup = unsafe { &mut *group_ptr };
+
+    let mut err: ::std::ffi::c_int = 0;
+    let listen_socket = group.listen_unix(
+        SocketKind::UwsHttp, // same kind tag as the TCP face: this C-level group
+        // API only carries it on the accept dispatch; the transport (AF_UNIX)
+        // is decided inside bsd.c by the listen_unix entry itself.
+        None,                         // no SSL
+        path.as_bytes(),              // C zero-fills sockaddr_un — no NUL needed
+        LIBUS_SOCKET_ALLOW_HALF_OPEN, // same as net_listen: accepted sockets
+        // inherit half-open so the JS poll chain drains the buffered RX tail
+        // before the peer-FIN close (see net_listen's long comment).
+        0, // socket_ext_size
+        &mut err,
+    );
+    // Same authoritativeness contract as net_listen (see its comment above the
+    // null test): NULL ⟺ failure; *error is written on the success path too.
+    let _ = err;
+    if listen_socket.is_null() {
+        // Listen failed — destroy the group (same as net_listen).
+        unsafe {
+            SocketGroup::destroy(group_ptr);
+        }
+        args.rval().set(Int32Value(0));
+        return true;
+    }
+
+    let listen_key = unsafe { install_listen_socket(group_ptr, listen_socket) };
+
+    // UNIX face identity: address() returns the bound path (Node contract) —
+    // keyed off the same listen_key the TCP face uses for NET_LISTEN_PORTS.
+    NET_LISTEN_PATHS.with(|p| p.borrow_mut().insert(listen_key, path));
+
+    // Return the listen socket pointer as a JS Number (f64) — same contract
+    // as net_listen (i32 truncation on 64-bit pointers).
     args.rval().set(ptr_to_jsval(listen_key));
     true
 }
@@ -1497,6 +1649,8 @@ unsafe extern "C" fn net_close(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             }
         }
         NET_LISTEN_PORTS.with(|p| p.borrow_mut().remove(&ptr_val));
+        // Drop the unix path record (net_listen_unix's address() identity).
+        NET_LISTEN_PATHS.with(|p| p.borrow_mut().remove(&ptr_val));
         // Drop the connection dispatcher (GcStore entry + map slot) and the
         // JS-idle liveness token registered at listen time.
         NET_CONNECTION_CBS.with(|c| {
@@ -1532,6 +1686,25 @@ unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         // OBJECT-TAGGED null JSVal: truthy to JS, and even `typeof` it
         // dereferences the null payload (SIGSEGV, e208 face ② RED probe).
         args.rval().set(NullValue());
+        return true;
+    }
+
+    // UNIX face (REQ-ENG-007): Server.address() for a UNIX-socket server
+    // returns the bound path STRING (Node contract — no {port, family,
+    // address} object). The registry is the record net_listen_unix wrote at
+    // bind time; getting here means the caller is a unix listen socket, and
+    // the getsockname parse below would misread sockaddr_un bytes as IPv4.
+    if let Some(unix_path) = NET_LISTEN_PATHS.with(|p| p.borrow().get(&ptr_val).cloned()) {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        let c_path = ZBox::from_bytes(unix_path.as_bytes());
+        let path_js = JS_NewStringCopyZ(cx, c_path.as_ptr());
+        if path_js.is_null() {
+            args.rval().set(NullValue());
+            return true;
+        }
+        rooted!(&in(cx_ref) let path_v = StringValue(&*path_js));
+        args.rval().set(path_v.get());
         return true;
     }
 
@@ -1838,6 +2011,14 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         JS_DefineFunction(
             cx_raw,
             mod_obj.handle().into(),
+            c"__net_listen_unix".as_ptr(),
+            Some(net_listen_unix),
+            1,
+            0,
+        );
+        JS_DefineFunction(
+            cx_raw,
+            mod_obj.handle().into(),
             c"__net_connect".as_ptr(),
             Some(net_connect),
             2,
@@ -1928,6 +2109,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             rooted!(&in(cx) let global_root = global);
             let bridges: &[(&str, JSNative, u32)] = &[
                 ("__net_listen", Some(net_listen), 2),
+                ("__net_listen_unix", Some(net_listen_unix), 1),
                 ("__net_connect", Some(net_connect), 2),
                 ("__net_write", Some(net_write), 2),
                 ("__net_close", Some(net_close), 1),
@@ -2291,6 +2473,11 @@ mod tests {
         assert!(NET_JS.contains("Server.prototype.listen"));
         assert!(NET_JS.contains("Server.prototype.close"));
         assert!(NET_JS.contains("Server.prototype.address"));
+        // UNIX face: the listen arg dispatcher must carry the path branch
+        // (Node contract — a non-numeric string is a UNIX socket path) and
+        // the Server must expose the bound path slot for address().
+        assert!(NET_JS.contains("__net_listen_unix"));
+        assert!(NET_JS.contains("this._path"));
     }
 
     // @trace TEST-ENG-7 [req:REQ-ENG-007] [level:unit]

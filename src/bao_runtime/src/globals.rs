@@ -26,8 +26,18 @@ use mozjs::rust::wrappers2 as w2;
 /// would already be pathologically slow — we use the typed-array ceiling as
 /// the hard limit so callers get a clean `RangeError` instead of an OOM/abort
 /// when they pass absurd sizes.
-// @trace REQ-ENG-005 [entity:Buffer]
+// @trace REQ-ENG-007 [entity:Buffer]
 pub const MAX_BUFFER_SIZE: usize = (1usize << 32) - 1;
+
+/// node v24 `buffer.kMaxLength` = 2^53-1 (MAX_SAFE_INTEGER) — the bound
+/// quoted by the `Buffer.concat` totalLength RangeError messages ("It must
+/// be >= 0 && <= 9007199254740991"). Kept distinct from MAX_BUFFER_SIZE
+/// (the engine allocation backstop, 2^32-1) so the error text matches the
+/// `require('buffer').kMaxLength` export (node_buffer.rs defines the same
+/// 2^53-1 value) — node-test/parallel/test-buffer-concat.js interpolates
+/// `${kMaxLength}` into its message assertion.
+// @trace REQ-ENG-006 [api:Buffer.concat totalLength validation]
+const BUFFER_CONCAT_MAX_TOTAL_LENGTH: f64 = 9007199254740991.0_f64;
 
 thread_local! {
     static FILE_GLOBALS: RefCell<(Option<String>, Option<String>)> = const { RefCell::new((None, None)) };
@@ -323,11 +333,13 @@ pub unsafe fn install_module_on_target(
         let ok = JS::Evaluate2(raw, opts, &mut setup_text, factory_h);
         mozjs::glue::DeleteCompileOptions(opts);
         if ok && factory.is_object() {
-            let elems = [ObjectValue(global.get()), ObjectValue(mod_obj.get())];
-            let args = HandleValueArray {
-                length_: 2,
-                elements_: elems.as_ptr(),
-            };
+            // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray
+            // across JS_CallFunctionValue (require.rs canary-pinned form).
+            rooted!(&in(cx) let args_array = mozjs_sys::jsgc::ValueArray::<2>::new([
+                ObjectValue(global.get()),
+                ObjectValue(mod_obj.get()),
+            ]));
+            let args = JS::HandleValueArray::from(&args_array);
             let mut rval = UndefinedValue();
             let rval_h = MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
@@ -428,11 +440,13 @@ pub fn install_module_global(
             let ok = JS::Evaluate2(raw, opts, &mut setup_text, factory_h);
             mozjs::glue::DeleteCompileOptions(opts);
             if ok && factory.is_object() {
-                let elems = [ObjectValue(global.get()), ObjectValue(mod_obj.get())];
-                let args = HandleValueArray {
-                    length_: 2,
-                    elements_: elems.as_ptr(),
-                };
+                // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED
+                // ValueArray (require.rs canary-pinned form).
+                rooted!(&in(cx) let args_array = mozjs_sys::jsgc::ValueArray::<2>::new([
+                    ObjectValue(global.get()),
+                    ObjectValue(mod_obj.get()),
+                ]));
+                let args = JS::HandleValueArray::from(&args_array);
                 let mut rval = UndefinedValue();
                 let rval_h = MutableHandle::<Value> {
                     _phantom_0: ::std::marker::PhantomData,
@@ -543,42 +557,21 @@ fn f16_to_f64(bits: u16) -> f64 {
 }
 
 /// Buffer.isAscii(input) — true when every byte of the BufferSource is
-/// < 0x80 (Node 19+ surface). Non-BufferSource input → false (no throw).
-/// Byte extraction and validation delegate to the single owner in
-/// node_buffer.rs (`collect_byte_view` + `is_ascii_bytes`) — the same truth
-/// site as the require('buffer') module face.
+/// < 0x80. Delegates to the module-face native in node_buffer.rs — the SAME
+/// truth site as require('buffer').isAscii. Non-BufferSource input is
+/// predicate-false (no throw) per the c3 GLOBAL-face pin; node v24 exposes
+/// no isAscii/isUtf8 at all (live-verified), so the face is bao-registered.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_is_ascii(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let is_ascii = if argc > 0 {
-        match crate::node_buffer::collect_byte_view(cx, *args.get(0).ptr) {
-            Some(bytes) => crate::node_buffer::is_ascii_bytes(bytes.as_slice()),
-            None => false,
-        }
-    } else {
-        false
-    };
-    args.rval().set(mozjs::jsval::BooleanValue(is_ascii));
-    true
+    crate::node_buffer::buffer_is_ascii(cx, argc, vp)
 }
 
 /// Buffer.isUtf8(input) — lossless UTF-8 validation over the BufferSource's
 /// byte view (overlong forms, surrogates and > U+10FFFF all reject).
-/// Non-BufferSource input → false. Delegates to the single owner in
-/// node_buffer.rs (`collect_byte_view` + `is_utf8_bytes`).
+/// Delegates to the module-face native in node_buffer.rs (single owner).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_is_utf8(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let is_utf8 = if argc > 0 {
-        match crate::node_buffer::collect_byte_view(cx, *args.get(0).ptr) {
-            Some(bytes) => crate::node_buffer::is_utf8_bytes(bytes.as_slice()),
-            None => false,
-        }
-    } else {
-        false
-    };
-    args.rval().set(mozjs::jsval::BooleanValue(is_utf8));
-    true
+    crate::node_buffer::buffer_is_utf8(cx, argc, vp)
 }
 
 pub fn install_buffer_global(
@@ -586,7 +579,7 @@ pub fn install_buffer_global(
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     unsafe {
-        // @trace REQ-ENG-005 [entity:Buffer] — JSFUN_CONSTRUCTOR (0x400) so
+        // @trace REQ-ENG-007 [entity:Buffer] — JSFUN_CONSTRUCTOR (0x400) so
         // `new Buffer(...)` works (legacy Node.js constructor). Without it SM
         // raises "X is not a constructor" on `new`.
         let buf_fn = JS_NewFunction(
@@ -605,7 +598,7 @@ pub fn install_buffer_global(
         }
         rooted!(&in(cx) let buf_root = buf_obj);
 
-        // @trace REQ-ENG-005 [api:Buffer.from] — JSFUN_CONSTRUCTOR (0x400)
+        // @trace REQ-ENG-007 [api:Buffer.from] — JSFUN_CONSTRUCTOR (0x400)
         // marks `from` / `alloc` as constructible so the deprecated
         // `new Buffer.from(x)` / `new Buffer.alloc(n)` legacy patterns work.
         // buffer.test.js "new Buffer.from()" drives
@@ -688,7 +681,7 @@ pub fn install_buffer_global(
             1,
             JSPROP_ENUMERATE as u32,
         );
-        // @trace REQ-ENG-005 [api:Buffer.isAscii/isUtf8] — Node.js 19+ static
+        // @trace REQ-ENG-007 [api:Buffer.isAscii/isUtf8] — Node.js 19+ static
         // predicates on the GLOBAL Buffer face (the require('buffer') module
         // face shares the same pair in node_buffer.rs). Byte extraction +
         // validation delegate to the single owner in node_buffer.rs
@@ -794,6 +787,25 @@ pub fn install_buffer_global(
         // passes `instanceof Uint8Array` and inherits length/indexed
         // access/subarray/set directly from the SM typed-array implementation.
         wire_buffer_proto_to_uint8array(cx.raw_cx());
+
+        // @trace REQ-ENG-007 [api:Buffer detach predicate] — JS-visible real
+        // detached-ArrayBuffer predicate backing the Buffer blob's
+        // fill/subarray/lastIndexOf detach paths. The previous
+        // `buffer.byteLength === 0` convention misfired on legitimately
+        // zero-length Buffers (node test-buffer-slice drives
+        // Buffer.alloc(0).slice(0,1) → length 0; only a GENUINELY detached
+        // backing store may take the detach paths). Implemented natively via
+        // JS::IsDetachedArrayBufferObject and installed as a non-enumerable
+        // globalThis helper so the JS blob can consult it without polluting
+        // the Buffer.prototype surface (whose exact shape node pins).
+        JS_DefineFunction(
+            cx,
+            global,
+            c"__baoIsABDetached".as_ptr(),
+            Some(buffer_is_ab_detached),
+            1,
+            0u32,
+        );
     }
 
     // Inject Buffer prototype methods via JS eval
@@ -810,7 +822,7 @@ pub fn install_buffer_global(
   var _bp = Buffer.prototype;
   if (!_bp) return;
 
-  // @trace REQ-ENG-005 [api:Buffer.write] — Node.js Buffer#write with full
+  // @trace REQ-ENG-007 [api:Buffer.write] — Node.js Buffer#write with full
   // encoding support, ERR_BUFFER_OUT_OF_BOUNDS bounds checking, and the
   // Node.js argument-coercion matrix:
   //   write(string)                          → utf8, offset=0, len=this.length
@@ -861,7 +873,7 @@ pub fn install_buffer_global(
     return out;
   }
   function _hexBytes(str) {
-    // @trace REQ-ENG-005 [algorithm:hex] — Node.js stops decoding at the
+    // @trace REQ-ENG-007 [algorithm:hex] — Node.js stops decoding at the
     // first non-hex character (outside [0-9a-fA-F]) rather than throwing.
     // buffer.test.js "hex input containing byte 0xFF is treated as invalid"
     // drives Buffer.from("\xff\xff", "hex") → empty Buffer and
@@ -887,7 +899,7 @@ pub fn install_buffer_global(
     return out;
   }
   function _base64Bytes(str) {
-    // @trace REQ-ENG-005 [algorithm:base64] — Node.js parity:
+    // @trace REQ-ENG-007 [algorithm:base64] — Node.js parity:
     // base64 decoding reads the LOW BYTE of each UTF-16 code unit, then
     // decodes the resulting byte sequence. Crucially, this means a two-byte
     // JSString containing surrogate pairs contributes only the low byte of
@@ -958,7 +970,7 @@ pub fn install_buffer_global(
     return _base64Bytes(s);
   }
 
-  // @trace REQ-ENG-005 [api:Buffer.*Write] — upstream aa8307619d: the
+  // @trace REQ-ENG-007 [api:Buffer.*Write] — upstream aa8307619d: the
   // per-encoding writers reject a value that is not a primitive string
   // (Node's THROW_AND_RETURN_IF_NOT_STRING, src/node_buffer.cc) and never
   // coerce it — an object's toString/valueOf/Symbol.toPrimitive must not
@@ -970,8 +982,146 @@ pub fn install_buffer_global(
     throw err;
   }
 
+  // @trace REQ-ENG-007 [algorithm:error_helpers] — Node.js v24 validation
+  // helpers shared by the typed read*/write* family. Message shapes verified
+  // against node v24 (test/parallel/test-buffer-readint.js,
+  // test-buffer-writeint.js, test-buffer-writedouble.js, test-buffer-write.js):
+  //
+  //   _receivedDesc(v)      — node test/common/index.js invalidArgTypeHelper
+  //   _offsetTypeError(v)   — TypeError ERR_INVALID_ARG_TYPE
+  //       'The "offset" argument must be of type number.' + desc
+  //       (only when offset !== undefined — read*/write* default offset 0)
+  //   _offsetIntegerError(v) — RangeError ERR_OUT_OF_RANGE
+  //       'The value of "offset" is out of range. It must be an integer.
+  //        Received X'   (NaN / ±Infinity / fractional)
+  //   _offsetRangeError(v, hi) — RangeError ERR_OUT_OF_RANGE
+  //       'The value of "offset" is out of range. It must be >= 0 and <= hi.
+  //        Received X'   ("and" — node's native writers use "and"; the
+  //        generic buf.write() uses "&&", see _write())
+  //   _valueRangeError(v, lo, hi) — RangeError ERR_OUT_OF_RANGE
+  //       'The value of "value" is out of range. It must be >= lo and <= hi.
+  //        Received X'
+  //   _byteLengthError(v, hi) — RangeError ERR_OUT_OF_RANGE
+  //       'The value of "byteLength" is out of range. It must be >= 1 and
+  //        <= hi. Received X' / non-integer variant.
+  function _receivedDesc(v) {
+    if (v === null || v === undefined) return ' Received ' + String(v);
+    var t = typeof v;
+    if (t === 'function') return ' Received function ' + (v.name || '(anonymous)');
+    if (t === 'object') {
+      var name = v.constructor && v.constructor.name;
+      if (typeof name === 'string' && name !== '') return ' Received an instance of ' + name;
+      return ' Received ' + String(v);
+    }
+    // node quotes string values in the inspected form ('abc' — node's
+    // util.inspect renders strings quoted; test-buffer-equals pins
+    // "Received type string ('abc')").
+    var inspected = (t === 'string') ? ("'" + v + "'") : String(v);
+    if (inspected.length > 28) inspected = inspected.slice(0, 25) + '...';
+    return ' Received type ' + t + ' (' + inspected + ')';
+  }
+  function _offsetTypeError(v) {
+    var e = new TypeError('The "offset" argument must be of type number.' + _receivedDesc(v));
+    e.code = 'ERR_INVALID_ARG_TYPE';
+    throw e;
+  }
+  // Generic named-argument TypeError ("The \"<name>\" argument must be of
+  // type number.") — node validateInteger's non-number branch.
+  function _argTypeError(name, v) {
+    var e = new TypeError('The "' + name + '" argument must be of type number.' + _receivedDesc(v));
+    e.code = 'ERR_INVALID_ARG_TYPE';
+    throw e;
+  }
+  function _offsetIntegerError(v) {
+    var e = new RangeError(
+      'The value of "offset" is out of range. It must be an integer. Received ' + v);
+    e.code = 'ERR_OUT_OF_RANGE';
+    throw e;
+  }
+  function _offsetRangeError(v, hi) {
+    var e = new RangeError(
+      'The value of "offset" is out of range. It must be >= 0 and <= ' + hi +
+      '. Received ' + v);
+    e.code = 'ERR_OUT_OF_RANGE';
+    throw e;
+  }
+  // node write value semantics (oracle-verified): NO type validation — the
+  // raw value is compared directly (JS comparisons), so coercible non-numbers
+  // pass ('a' → NaN bypasses both < and > → writes NaN & 0xFF === 0), while
+  // genuine out-of-range numbers throw. The caller keeps its `v & 0xFF`
+  // masking for the write itself.
+  function _valueRangeCheck(v, lo, hi) {
+    if (v < lo || v > hi) {
+      var e = new RangeError(
+        'The value of "value" is out of range. It must be >= ' + lo + ' and <= ' + hi +
+        '. Received ' + v);
+      e.code = 'ERR_OUT_OF_RANGE';
+      throw e;
+    }
+  }
+  function _byteLengthError(v, hi) {
+    // Message chooser mirrors node validateInteger's ordering (oracle:
+    // writeUIntLE(1, 0, Infinity) → the RANGE form ">= 1 and <= 6.
+    // Received Infinity" — Infinity fails the range check, not the integer
+    // check; NaN / fractional → the integer form).
+    var isNonInteger = Number.isNaN(v) || (Number.isFinite(v) && !Number.isInteger(v));
+    var msg = isNonInteger
+      ? ('The value of "byteLength" is out of range. It must be an integer. Received ' + v)
+      : ('The value of "byteLength" is out of range. It must be >= 1 and <= ' + hi +
+         '. Received ' + v);
+    var e = new RangeError(msg);
+    e.code = 'ERR_OUT_OF_RANGE';
+    throw e;
+  }
+  // Full node-style offset validation for the typed read*/write* family —
+  // matrix verified against node v24:
+  //   • undefined → default 0 (no throw)
+  //   • non-number ('' / '0' / null / {} / [] / functions / booleans)
+  //     → TypeError ERR_INVALID_ARG_TYPE (node v24 is strict: NO coercion —
+  //     test-buffer-readint drives the ['0',''] matrix)
+  //   • NaN / fractional → ERR_OUT_OF_RANGE "It must be an integer."
+  //   • ±Infinity → the RANGE error ("It must be >= 0 and <= hi. Received
+  //     Infinity") — node's validateOffset lets Infinity fall into the range
+  //     branch (readDouble(Infinity) oracle-verified)
+  //   • out of [0, hi] → ERR_OUT_OF_RANGE "It must be >= 0 and <= hi."
+  // Returns the validated offset.
+  function _validateOffset(offset, hi) {
+    if (offset === undefined) return 0;
+    if (typeof offset !== 'number') _offsetTypeError(offset);
+    if (Number.isNaN(offset) || (Number.isFinite(offset) && !Number.isInteger(offset))) {
+      _offsetIntegerError(offset);
+    }
+    if (offset < 0 || offset > hi) _offsetRangeError(offset, hi);
+    return offset;
+  }
+  // byteLength validation for the LE/BE(n) variable-length family (1..6) —
+  // node validateInteger shape: non-number → ERR_INVALID_ARG_TYPE; NaN or
+  // fractional → "It must be an integer."; ±Infinity / out of range →
+  // "It must be >= 1 and <= 6." (oracle: writeUIntLE(1,0,Infinity) takes the
+  // range branch).
+  function _validateByteLength(byteLength) {
+    if (typeof byteLength !== 'number') _argTypeError('byteLength', byteLength);
+    if (Number.isNaN(byteLength) || (Number.isFinite(byteLength) && !Number.isInteger(byteLength))) {
+      _byteLengthError(byteLength, 6);
+    }
+    if (byteLength < 1 || byteLength > 6) _byteLengthError(byteLength, 6);
+    return byteLength;
+  }
+  // Node's BigInt underscore formatting for error messages:
+  // 18446744073709551616n → "18_446_744_073_709_551_616n"
+  function _formatBig(n) {
+    var neg = n < 0n;
+    var digits = (neg ? -n : n).toString().split('').reverse();
+    var out = '';
+    for (var i = 0; i < digits.length; i++) {
+      if (i > 0 && i % 3 === 0) out = '_' + out;
+      out = digits[i] + out;
+    }
+    return (neg ? '-' : '') + out + 'n';
+  }
+
   // Resolve+validate the [offset, length] write window for a *Write call.
-  // @trace REQ-ENG-005 [api:Buffer.*Write] — Node.js semantics:
+  // @trace REQ-ENG-007 [api:Buffer.*Write] — Node.js semantics:
   //   • offset beyond buf.length → ERR_BUFFER_OUT_OF_BOUNDS
   //   • explicit numeric length that exceeds (buf.length - offset) →
   //     ERR_BUFFER_OUT_OF_BOUNDS (NOT a silent clamp). buffer.test.js
@@ -1033,7 +1183,7 @@ pub fn install_buffer_global(
   }
 
   _bp.utf8Write = function(string, offset, length) {
-    // @trace REQ-ENG-005 [api:Buffer.utf8Write] — Node.js truncates at the
+    // @trace REQ-ENG-007 [api:Buffer.utf8Write] — Node.js truncates at the
     // character boundary: a multi-byte UTF-8 sequence that does not fully
     // fit in the remaining buffer space is dropped entirely (it is NOT
     // split mid-codepoint). buffer.test.js "UTF-8 write() & slice()" and
@@ -1041,7 +1191,7 @@ pub fn install_buffer_global(
     // full UTF-8 byte sequence, then walk the original string's codepoints
     // to find the largest prefix whose encoded length fits `length`.
     //
-    // @trace REQ-ENG-005 — upstream aa8307619d order (Node wraps
+    // @trace REQ-ENG-007 — upstream aa8307619d order (Node wraps
     // utf8/latin1/ascii in a JS bounds-checking wrapper): the bounds check
     // runs FIRST, so ERR_BUFFER_OUT_OF_BOUNDS wins over a non-string value,
     // and offset/length valueOf runs before the rejection.
@@ -1109,7 +1259,7 @@ pub fn install_buffer_global(
     return _doWrite(this, bytes, offset, length);
   };
   _bp.ucs2Write = function(string, offset, length) {
-    // @trace REQ-ENG-005 [api:Buffer.ucs2Write] — Node.js truncates at the
+    // @trace REQ-ENG-007 [api:Buffer.ucs2Write] — Node.js truncates at the
     // code-unit boundary: a 2-byte UCS-2 unit that does not fully fit in
     // the remaining buffer space is dropped entirely. buffer.test.js
     // "write" drives x.write("ыыыыыы", 3, "ucs2") on a 4-byte buffer to
@@ -1126,9 +1276,14 @@ pub fn install_buffer_global(
     for (var i = 0; i < n; i++) this[off + i] = bytes[i] & 0xFF;
     return n;
   };
-  _bp.utf16leWrite = _bp.ucs2Write;
-  _bp.utf16beWrite = function(string, offset, length) {
-    // bao extension (no Node twin); string-first family order (aa8307619d).
+  // @trace REQ-ENG-007 [api:Buffer utf16le/utf16be write] — node v24's
+  // Buffer.prototype has NO utf16leWrite/utf16beWrite own properties (the
+  // surface is ucs2Write only; write('utf16le') dispatches to ucs2Write and
+  // 'utf16be' to this closure). They were removed from the prototype so
+  // Object.getOwnPropertyNames(Buffer.prototype) matches node exactly
+  // (test-buffer-generic-methods drives the exact surface); the utf16be
+  // encoder stays available as this closure for write('utf16be').
+  function _utf16beWrite(string, offset, length) {
     var s = _stringArgumentOrThrow(string);
     var bytes = new Array(s.length * 2);
     for (var i = 0; i < s.length; i++) {
@@ -1137,7 +1292,7 @@ pub fn install_buffer_global(
       bytes[i*2+1] = c & 0xFF;
     }
     return _doWrite(this, bytes, offset, length);
-  };
+  }
 
   _bp.write = function write(string, offset, length, encoding) {
     // Mirror Node.js's argument-overload matrix exactly.
@@ -1157,10 +1312,29 @@ pub fn install_buffer_global(
         var inspected = (typeof offset === 'string') ? ("'" + offset + "'") : String(offset);
         throw new TypeError('The "offset" argument must be of type number. Received type ' + typeof offset + ' (' + inspected + ')');
       }
-      if (!isFinite(offset)) {
-        throw new TypeError('The "offset" argument must be of type number. Received type ' + typeof offset);
+      // @trace REQ-ENG-007 [api:Buffer.write] — node v24 write() offset
+      // validation (test-buffer-write.js drives both messages):
+      //   NaN / ±Infinity / fractional → ERR_OUT_OF_RANGE
+      //     "It must be an integer. Received X" (write('x', Infinity))
+      //   integer outside [0, this.length] → ERR_OUT_OF_RANGE
+      //     "It must be >= 0 && <= <len>. Received X" ("&&" form — the
+      //     generic write() uses "&&" where the native writers use "and").
+      // The legacy 'Attempt to write outside buffer bounds' RangeError is
+      // retired (write('foo', 10) on a 9-byte buffer must throw the node
+      // message, and an empty string at an out-of-range offset throws too).
+      if (!Number.isInteger(offset)) {
+        var re = new RangeError(
+          'The value of "offset" is out of range. It must be an integer. Received ' + offset);
+        re.code = 'ERR_OUT_OF_RANGE';
+        throw re;
       }
-      offset = offset >>> 0;
+      if (offset < 0 || offset > this.length) {
+        var re2 = new RangeError(
+          'The value of "offset" is out of range. It must be >= 0 && <= ' + this.length +
+          '. Received ' + offset);
+        re2.code = 'ERR_OUT_OF_RANGE';
+        throw re2;
+      }
       if (typeof length === 'string') {
         encoding = length;
         length = undefined;
@@ -1179,11 +1353,6 @@ pub fn install_buffer_global(
     if (length === undefined || length > remaining) length = remaining;
     length = length >>> 0;
 
-    // Bounds: empty string at end-of-buffer is OK; everything past it throws.
-    if ((string.length > 0 && (length < 0 || offset < 0)) || offset > this.length) {
-      throw new RangeError('Attempt to write outside buffer bounds');
-    }
-
     if (!encoding) encoding = 'utf8';
     encoding = ('' + encoding).toLowerCase();
 
@@ -1193,13 +1362,13 @@ pub fn install_buffer_global(
       case 'ascii': case 'binary': case 'latin1': return _bp.asciiWrite.call(this, string, offset, length);
       case 'base64': return _bp.base64Write.call(this, string, offset, length);
       case 'base64url': return _bp.base64urlWrite.call(this, string, offset, length);
-      case 'ucs2': case 'ucs-2': case 'utf16le': case 'utf-16le': return _bp.utf16leWrite.call(this, string, offset, length);
-      case 'utf16be': case 'utf-16be': return _bp.utf16beWrite.call(this, string, offset, length);
+      case 'ucs2': case 'ucs-2': case 'utf16le': case 'utf-16le': return _bp.ucs2Write.call(this, string, offset, length);
+      case 'utf16be': case 'utf-16be': return _utf16beWrite.call(this, string, offset, length);
       default: throw new TypeError('Unknown encoding: ' + encoding);
     }
   };
 
-  // @trace REQ-ENG-005 [api:Buffer.prototype.*Slice] — slice helpers that
+  // @trace REQ-ENG-007 [api:Buffer.prototype.*Slice] — slice helpers that
   // Node.js exposes on the prototype (hexSlice/utf8Slice/asciiSlice/
   // latin1Slice/base64Slice/base64urlSlice/ucs2Slice/utf16leSlice). These
   // produce the string form of [start,end) under the given encoding, sharing
@@ -1216,7 +1385,7 @@ pub fn install_buffer_global(
     }
   }
   function _sliceBounds(len, start, end) {
-    // @trace REQ-ENG-005 — Node.js *Slice bounds: out-of-range start or end
+    // @trace REQ-ENG-007 — Node.js *Slice bounds: out-of-range start or end
     // (negative OR > len) throws RangeError. An inverted range (start > end)
     // within bounds returns the empty slice (clamps end to start). buffer.test.js
     // "Buffer.latin1Slice()" drives:
@@ -1239,7 +1408,7 @@ pub fn install_buffer_global(
     }
     return [start, end];
   }
-  // @trace REQ-ENG-005 — Internal byte-read helper that bypasses
+  // @trace REQ-ENG-007 — Internal byte-read helper that bypasses
   // TypedArray.prototype.toString (which returns comma-joined bytes for a
   // plain Uint8Array). Each *Slice reads the raw byte at index i.
   function _byteAt(view, i) { return view[i] & 0xFF; }
@@ -1247,13 +1416,20 @@ pub fn install_buffer_global(
     _checkSliceReceiver.call(this);
     var b = _sliceBounds(this.length, start, end);
     var hexLen = (b[1] - b[0]) * 2;
-    // @trace REQ-ENG-005 — Node.js caps the output string at
+    // @trace REQ-ENG-007 — Node.js caps the output string at
     // constants.MAX_STRING_LENGTH (2147483647) chars. Hex doubles the
     // input length, so a buffer > MAX/2 throws RangeError. Test
     // "Buffer.hexSlice() throws for large buffers" drives this.
-    var MAX_STR = 2147483647;
+    var MAX_STR = 536870888; // node v24 MAX_STRING_LENGTH = (1<<29)-24
     if (hexLen > MAX_STR) {
-      throw new RangeError('Cannot create a string longer than ' + MAX_STR + ' characters');
+      // @trace REQ-ENG-007 — node v24 throws Error (not RangeError) with
+      // code ERR_STRING_TOO_LONG and the hex-prefixed message
+      // (test-buffer-tostring-rangeerror pins code+name).
+      var _ste = new Error(
+        'Cannot create a string longer than 0x' + MAX_STR.toString(16) +
+        ' (' + MAX_STR + ') characters');
+      _ste.code = 'ERR_STRING_TOO_LONG';
+      throw _ste;
     }
     var HEX = '0123456789abcdef';
     var out = '';
@@ -1274,7 +1450,7 @@ pub fn install_buffer_global(
   _bp.asciiSlice = function(start, end) {
     _checkSliceReceiver.call(this);
     var b = _sliceBounds(this.length, start, end);
-    // @trace REQ-ENG-005 — Node.js ascii slices mask each byte to 7 bits
+    // @trace REQ-ENG-007 — Node.js ascii slices mask each byte to 7 bits
     // (high bit cleared). buffer.test.js "asciiSlice()" drives this.
     var out = '';
     for (var i = b[0]; i < b[1]; i++) { out += String.fromCharCode(_byteAt(this, i) & 0x7F); }
@@ -1283,7 +1459,7 @@ pub fn install_buffer_global(
   _bp.latin1Slice = function(start, end) {
     _checkSliceReceiver.call(this);
     var b = _sliceBounds(this.length, start, end);
-    // @trace REQ-ENG-005 — Node.js latin1 maps each byte to its code point
+    // @trace REQ-ENG-007 — Node.js latin1 maps each byte to its code point
     // directly (no masking). buffer.test.js "Buffer.latin1Slice() on a
     // Uint8Array" drives this on a plain Uint8Array, where the inherited
     // toString returns comma-joined bytes — we must read bytes manually.
@@ -1319,28 +1495,75 @@ pub fn install_buffer_global(
     }
     return out;
   };
-  _bp.utf16leSlice = _bp.ucs2Slice;
+  // utf16leSlice removed from the prototype surface: node v24's
+  // Buffer.prototype has no utf16leSlice own property (ucs2Slice only —
+  // test-buffer-generic-methods drives the exact surface).
 
-  // @trace REQ-ENG-005 [api:Buffer.prototype.toLocaleString] — Node.js
+  // subarray SHARES the backing ArrayBuffer (view semantics, writes
+  // propagate both ways). BCE-20260816-BUF-VIEW: the old implementation
+  // copied into a fresh Buffer.alloc, so writes through either side never
+  // propagated. Delegate to the native shared-view slice path
+  // (JS_NewUint8ArrayWithBuffer + Buffer prototype in buffer_slice), which
+  // applies the identical normalization (ToInteger coercion, negative
+  // from-end, clamping) and preserves offset/length edges.
+  //
+  // Detach detection uses the REAL detached predicate
+  // (globalThis.__baoIsABDetached → JS::IsDetachedArrayBufferObject), NOT
+  // the byteLength===0 convention — a legitimately zero-length Buffer must
+  // subarray fine (node test-buffer-slice: Buffer.alloc(0).slice(0,1) →
+  // length 0), and only a genuinely detached backing store throws.
+  _bp.subarray = function subarray(start, end) {
+    if (typeof globalThis.__baoIsABDetached === 'function' && globalThis.__baoIsABDetached(this)) {
+      throw new TypeError('Cannot perform %TypedArray%.prototype.subarray on a detached ArrayBuffer');
+    }
+    return _bp.slice.call(this, start, end);
+  };
+
+  // reverse/entries/keys/values removed from the prototype surface: node
+  // v24's Buffer.prototype carries none of them as own properties —
+  // instances reach them through Uint8Array.prototype (Symbol.iterator /
+  // TypedArray generic methods) via the prototype chain. Keeping them as own
+  // properties broke the exact-surface assertion in
+  // test-buffer-generic-methods.
+
+  // @trace REQ-ENG-007 [api:Buffer.prototype.toLocaleString] — Node.js
   // alias of toString (Buffer.prototype.toLocaleString === toString).
   // Without overriding, the inherited TypedArray.toLocaleString returns a
   // comma-joined list of bytes (e.g. "116,101,115,116").
   _bp.toLocaleString = _bp.toString;
 
-  // @trace REQ-ENG-005 [api:Buffer.prototype.inspect] — legacy Node.js
-  // inspect method. Upstream tests assert it exists and matches
-  // Bun.inspect output. We delegate to Bun.inspect when present, else
-  // build a "<Buffer hex...>" string ourselves.
+  // @trace REQ-ENG-007 [api:Buffer.prototype.inspect] — node's Buffer
+  // inspect entry: renders the '<Buffer hex...>' summary form (lowercase
+  // space-separated hex byte pairs; the empty buffer keeps the trailing
+  // space '<Buffer >'; long buffers truncate at 512 bytes with
+  // ' ... N more bytes' — the same limit as the native util.inspect Buffer
+  // arm INSPECT_BUFFER_MAX_BYTES, which the repo overflow pin asserts).
+  // This function is ALSO the Symbol.for('nodejs.util.inspect.custom')
+  // target bound below, so util.inspect / console.log / util.format all
+  // reach this exact form through the custom-inspect dispatch. It must NOT
+  // delegate to Bun.inspect: that formatter renders typed arrays as
+  // 'Buffer(N) [ 112, 111, ... ]', which broke the node '<Buffer ...>'
+  // contract on every Buffer-bearing inspect path (node v24.19.0 oracle:
+  // util.inspect(Buffer.from('pong')) === '<Buffer 70 6f 6e 67>' — tls/
+  // child_process data-carrier inspectOk + the three util buffer pins).
   _bp.inspect = function(depth, options) {
-    if (typeof globalThis.Bun === 'object' && globalThis.Bun && typeof globalThis.Bun.inspect === 'function') {
-      return globalThis.Bun.inspect(this);
+    // Prefer the SM-internal byteLength slot (immune to user defineProperty
+    // on `length`, same guard _bp.fill uses).
+    var len = (typeof this.byteLength === 'number') ? this.byteLength : this.length;
+    if (typeof len !== 'number' || !(len >= 0)) len = 0;
+    var shown = len < 512 ? len : 512;
+    var parts = [];
+    for (var i = 0; i < shown; i++) {
+      var b = this[i];
+      parts.push((b < 16 ? '0' : '') + b.toString(16));
     }
-    var bytes = [];
-    for (var i = 0; i < this.length; i++) bytes.push(this[i]);
-    return '<Buffer ' + bytes.map(function(b) { return (b < 16 ? '0' : '') + b.toString(16); }).join(' ') + '>';
+    var s = '<Buffer' + (len === 0 ? ' ' : '');
+    if (parts.length > 0) s += ' ' + parts.join(' ');
+    if (len > 512) s += ' ... ' + (len - 512) + ' more bytes';
+    return s + '>';
   };
 
-  // @trace REQ-ENG-005 [api:Buffer.copyBytesFrom] — static constructor
+  // @trace REQ-ENG-007 [api:Buffer.copyBytesFrom] — static constructor
   // method. Copies the bytes referenced by a TypedArray view into a fresh
   // Buffer. Honours the view's byteOffset/byteLength so a sub-view of an
   // ArrayBuffer copies only the referenced bytes (Node.js parity). The
@@ -1369,14 +1592,27 @@ pub fn install_buffer_global(
     };
   }
 
-  _bp.readUInt8 = function(offset) { return this[offset || 0]; };
-  // Placeholder writeUInt8 — overridden by the Node-parity version below
-  // (offset+1 return + bounds check). Defined here only so a fill/write
-  // helper that runs before the full surface is installed still has the
-  // binding available; the later assignment wins.
-  _bp.writeUInt8 = function(val, offset) { this[offset || 0] = val & 0xFF; return (offset || 0) + 1; };
+  // @trace REQ-ENG-007 [api:Buffer.read/write] — node v24 offset validation
+  // for the whole typed read*/write* family (strict number check — no
+  // coercion; NaN/fractional → "It must be an integer."; ±Infinity / out of
+  // range → "It must be >= 0 and <= hi."). test-buffer-readint/readuint/
+  // readdouble/readfloat/writeint/writeuint/writedouble/writefloat drive the
+  // full matrix. Placeholder writeUInt8 — overridden by the Node-parity
+  // version below (offset+1 return + bounds check). Defined here only so a
+  // fill/write helper that runs before the full surface is installed still
+  // has the binding available; the later assignment wins.
+  _bp.readUInt8 = function(offset) {
+    offset = _validateOffset(offset, this.length - 1);
+    return this[offset];
+  };
+  _bp.writeUInt8 = function(val, offset) {
+    offset = _validateOffset(offset, this.length - 1);
+    _valueRangeCheck(val, 0, 255);
+    this[offset] = val & 0xFF;
+    return offset + 1;
+  };
 
-  // @trace REQ-ENG-005 [api:Buffer.prototype.fill] — Node.js fill(value[,
+  // @trace REQ-ENG-007 [api:Buffer.prototype.fill] — Node.js fill(value[,
   // start[, end]][, encoding]). Node ordering, with TOCTOU guards for
   // detach/resize triggered by user-visible valueOf / toString / toPrimitive
   // callbacks on `value`, `start`, `end`, and `encoding`:
@@ -1400,7 +1636,7 @@ pub fn install_buffer_global(
   //      If it was resized down → clamp start/end to the new length.
   //   8. Fill the range.
   _bp.fill = function fill(val, start, end, encoding) {
-    // @trace REQ-ENG-005 [api:Buffer.fill] — Use the SM-internal
+    // @trace REQ-ENG-007 [api:Buffer.fill] — Use the SM-internal
     // `byteLength` rather than the user-visible `length` property so that
     // buffer.test.js "bypassing `length` should not cause an abort" —
     // which does `Object.defineProperty(buf, "length", {value: 1337})` —
@@ -1413,7 +1649,7 @@ pub fn install_buffer_global(
       if (typeof start === 'string') { encoding = start; start = undefined; end = undefined; }
       else if (typeof end === 'string') { encoding = end; end = undefined; }
     }
-    // @trace REQ-ENG-005 [api:Buffer.fill] — encoding resolution. Bun coerces
+    // @trace REQ-ENG-007 [api:Buffer.fill] — encoding resolution. Bun coerces
     // the encoding argument via String() ONLY when it is an object (with a
     // user toString), which is the documented entry point for the encoding-
     // side TOCTOU detach repro (see buffer-copy-fill-detach.test.ts "Buffer.fill
@@ -1433,7 +1669,12 @@ pub fn install_buffer_global(
         encoding = String(encoding);
       } else if (encType !== 'string') {
         // boolean / number / NaN / symbol → TypeError (Node parity).
-        throw new TypeError('The "encoding" argument must be of type string or an instance of String. Received type ' + encType + '.');
+        // Message shape per node v24 (test-buffer-fill drives
+        // 'The "encoding" argument must be of type string.' + helper):
+        var _ete = new TypeError(
+          'The "encoding" argument must be of type string.' + _receivedDesc(encoding));
+        _ete.code = 'ERR_INVALID_ARG_TYPE';
+        throw _ete;
       }
     }
     var VALID_ENCODINGS = {
@@ -1445,10 +1686,10 @@ pub fn install_buffer_global(
       _e.code = 'ERR_UNKNOWN_ENCODING';
       throw _e;
     }
-    // @trace REQ-ENG-005 — ToNumber coercion of start/end runs user valueOf
+    // @trace REQ-ENG-007 — ToNumber coercion of start/end runs user valueOf
     // here (window 1 of 2 for TOCTOU). Use unary + to force ToNumber.
     //
-    // @trace REQ-ENG-005 — Node.js type-checks start/end BEFORE coercion when
+    // @trace REQ-ENG-007 — Node.js type-checks start/end BEFORE coercion when
     // the value is a Buffer / Uint8Array (object fill): if start/end is an
     // object (not undefined/null/number/boolean), throw ERR_INVALID_ARG_TYPE.
     // buffer.test.js "fill() should properly check `start` & `end`" drives
@@ -1473,7 +1714,7 @@ pub fn install_buffer_global(
     // Node parity: non-finite / NaN start/end become 0 / len.
     if (!isFinite(sRaw)) sRaw = 0;
     if (!isFinite(eRaw)) eRaw = len;
-    // @trace REQ-ENG-005 — Validate against the *entry* length (the snapshot
+    // @trace REQ-ENG-007 — Validate against the *entry* length (the snapshot
     // taken at fill() entry, before any user valueOf/toString on encoding /
     // start / end / value could have detached or resized the buffer). Node
     // throws ERR_OUT_OF_RANGE on a negative primitive or a primitive strictly
@@ -1498,7 +1739,7 @@ pub fn install_buffer_global(
     // fill({valueOf:throws}, 5, 3) returns buf without invoking valueOf).
     if (eRaw <= sRaw) return this;
 
-    // @trace REQ-ENG-005 — ToNumber/ToString on `value` runs user valueOf /
+    // @trace REQ-ENG-007 — ToNumber/ToString on `value` runs user valueOf /
     // toString here (window 2 of 2 for TOCTOU). Number branch uses +val to
     // force ToNumber; string branch is already a primitive; object branch
     // (Buffer / Uint8Array) reads .length without calling user code.
@@ -1517,13 +1758,18 @@ pub fn install_buffer_global(
       if (!isFinite(coercedVal)) coercedVal = 0;
     }
 
-    // @trace REQ-ENG-005 [TOCTOU] — Re-read this.length after all user
-    // callbacks have run. If detach happened (ArrayBuffer.byteLength === 0)
-    // return `this` per Node parity (no crash, fill is a no-op). If resize
-    // happened, clamp start/end to the new logical length.
-    var detached = (this.buffer && this.buffer.byteLength === 0);
-    if (detached) return this;
-    // @trace REQ-ENG-005 [api:Buffer.fill] — Same byteLength reasoning as
+    // @trace REQ-ENG-007 [TOCTOU] — Re-read this.length after all user
+    // callbacks have run. Detach detection uses the REAL detached predicate
+    // (globalThis.__baoIsABDetached → JS::IsDetachedArrayBufferObject) —
+    // the byteLength===0 convention misfired on legitimately zero-length
+    // buffers (fill on Buffer.alloc(0) must simply return this via the
+    // empty range below, not take the detach path). If a genuine detach
+    // happened → return `this` per Node parity (no crash, fill is a no-op).
+    // If a resize happened, clamp start/end to the new logical length.
+    if (typeof globalThis.__baoIsABDetached === 'function' && globalThis.__baoIsABDetached(this)) {
+      return this;
+    }
+    // @trace REQ-ENG-007 [api:Buffer.fill] — Same byteLength reasoning as
     // the entry snapshot: the user may have shadowed `.length` via
     // defineProperty. Re-read via byteLength so we never write past the
     // real byte storage.
@@ -1541,7 +1787,7 @@ pub fn install_buffer_global(
       var enc = (encoding || 'utf8').toLowerCase();
       var bytes;
       if (enc === 'hex') {
-        // @trace REQ-ENG-005 — Node.js fill throws ERR_INVALID_ARG_VALUE on
+        // @trace REQ-ENG-007 — Node.js fill throws ERR_INVALID_ARG_VALUE on
         // a hex-encoded string that is not a valid hex sequence (any non-
         // hex char, OR an odd-length string that leaves a dangling nibble).
         // buffer.test.js "Buffer.fill (Node.js tests)" drives
@@ -1581,7 +1827,7 @@ pub fn install_buffer_global(
     } else {
       // Buffer or Uint8Array fill: tile the source bytes.
       var src = coercedVal;
-      // @trace REQ-ENG-005 — empty / detached source buffer → no-op (Node
+      // @trace REQ-ENG-007 — empty / detached source buffer → no-op (Node
       // parity: fill(new Uint8Array(0), …) does not throw, returns buf).
       var srcLen = (src.buffer && src.buffer.byteLength === 0) ? 0 : src.length;
       if (srcLen === 0) return this;
@@ -1592,7 +1838,7 @@ pub fn install_buffer_global(
     return this;
   };
 
-  // @trace REQ-ENG-005 [api:Buffer.includes detach semantics] — Node.js:
+  // @trace REQ-ENG-007 [api:Buffer.includes detach semantics] — Node.js:
   // includes(val, byteOffset) coerces byteOffset via ToInteger (invoking any
   // valueOf). If the valueOf detaches the buffer, the haystack is treated as
   // length 0 → includes returns false. Delegate to indexOf (already detached-
@@ -1604,7 +1850,7 @@ pub fn install_buffer_global(
     return this.indexOf(val, byteOffset) !== -1;
   };
 
-  // @trace REQ-ENG-005 [api:Buffer.lastIndexOf] — Node.js:
+  // @trace REQ-ENG-007 [api:Buffer.lastIndexOf] — Node.js:
   // lastIndexOf(value[, byteOffset[, encoding]]). byteOffset coerces via
   // ToInteger (invoking valueOf). Negative byteOffset counts from the END:
   //   offset < 0  → starts at max(-1, len+offset)
@@ -1622,7 +1868,7 @@ pub fn install_buffer_global(
       byteOffset = undefined;
     }
     var enc = (encoding === undefined || encoding === null) ? 'utf8' : String(encoding).toLowerCase();
-    // @trace REQ-ENG-005 — Node.js semantics for byteOffset:
+    // @trace REQ-ENG-007 — Node.js semantics for byteOffset:
     //   • NOT passed (arguments.length < 2) → search from end (off = len-1)
     //   • undefined → search from end (treated as missing)
     //   • null / [] / {} → ToNumber coerces (null→0, []→0, {}→NaN→len-1)
@@ -1637,9 +1883,13 @@ pub fn install_buffer_global(
       var offNum = +byteOffset;
       offRaw = (Number.isNaN(offNum)) ? (len - 1) : (offNum | 0);
     }
-    // Check for detachment of haystack after valueOf ran.
-    var detached = (this.buffer && this.buffer.byteLength === 0);
-    var curLen = detached ? 0 : this.length;
+    // Check for detachment of haystack after valueOf ran — real predicate
+    // (JS::IsDetachedArrayBufferObject via globalThis.__baoIsABDetached), not
+    // the byteLength===0 convention (which misfired on zero-length buffers:
+    // lastIndexOf on Buffer.alloc(0) must behave as an empty haystack, which
+    // the length arithmetic below already handles).
+    var curLen = (typeof globalThis.__baoIsABDetached === 'function' && globalThis.__baoIsABDetached(this))
+      ? 0 : this.length;
     // Node parity: negative offset → from end; offset >= len → clamp to len-1.
     var start;
     if (offRaw < 0) {
@@ -1715,7 +1965,7 @@ pub fn install_buffer_global(
   };
 
   _bp.toJSON = function() {
-    // @trace REQ-ENG-005 [api:Buffer.toJSON] — Use byteLength instead of
+    // @trace REQ-ENG-007 [api:Buffer.toJSON] — Use byteLength instead of
     // the user-visible `length` so a Buffer whose `.length` was shadowed
     // via defineProperty still serializes only the real bytes
     // (buffer.test.js "bypassing `length` should not cause an abort").
@@ -1723,104 +1973,75 @@ pub fn install_buffer_global(
     return { type: 'Buffer', data: Array.prototype.slice.call(this, 0, realLen) };
   };
 
-  // @trace REQ-ENG-005 [api:Buffer.subarray detach] — Node.js throws
+  // @trace REQ-ENG-007 [api:Buffer.subarray detach] — Node.js throws
   // TypeError when subarray is called on a detached TypedArray.
   // buffer.test.js "subarray() on detached buffer throws TypeError" drives
   // this. SM: a detached TypedArray has buffer.byteLength === 0.
-  // @trace REQ-ENG-005 — Negative start counts from the end (Node.js parity).
+  // @trace REQ-ENG-007 — Negative start counts from the end (Node.js parity).
   // buffer.test.js "Buffer.subarray" drives sub.slice(-1) on "uf" → "f".
-  // @trace REQ-ENG-005 [api:Buffer.subarray zero-copy view] — Node.js
-  // subarray SHARES the backing ArrayBuffer (view semantics, writes
-  // propagate both ways). BCE-20260816-BUF-VIEW: the old implementation
-  // copied into a fresh Buffer.alloc, so writes through either side never
-  // propagated. Delegate to the native shared-view slice path
-  // (JS_NewUint8ArrayWithBuffer + Buffer prototype in buffer_slice), which
-  // applies the identical normalization (ToInteger coercion, negative
-  // from-end, clamping) and preserves offset/length edges.
-  _bp.subarray = function subarray(start, end) {
-    if (this.buffer && this.buffer.byteLength === 0) {
-      throw new TypeError('Cannot perform %TypedArray%.prototype.subarray on a detached ArrayBuffer');
-    }
-    return _bp.slice.call(this, start, end);
-  };
+  // (The subarray definition now lives above, next to the utf16leSlice
+  // removal note; reverse/entries/keys/values own-properties were removed —
+  // instances reach them through Uint8Array.prototype via the chain.)
 
-  _bp.reverse = function() {
-    for (var i = 0, j = this.length - 1; i < j; i++, j--) {
-      var tmp = this[i]; this[i] = this[j]; this[j] = tmp;
-    }
-    return this;
+  // @trace REQ-ENG-007 [api:Buffer.read/write] — typed read*/write* family
+  // rebuilt on the node v24 validation matrix (_validateOffset): strict
+  // number offset (no coercion), NaN/fractional → "It must be an integer.",
+  // ±Infinity/out-of-range → "It must be >= 0 and <= hi.". Bounds errors are
+  // ERR_OUT_OF_RANGE ("and" form) — NOT the legacy ERR_BUFFER_OUT_OF_BOUNDS
+  // (node oracle: readUInt8(4) on 4-byte buffer). test-buffer-readint/
+  // readuint/readdouble/readfloat/readint-offsets drive the full matrix.
+  // The *Write STRING family (utf8Write/latin1Write/asciiWrite/…) keeps the
+  // upstream aa8307619d ERR_BUFFER_OUT_OF_BOUNDS contract — see _writeBounds.
+  _bp.readInt8 = function(offset) {
+    offset = _validateOffset(offset, this.length - 1);
+    var v = this[offset];
+    return v > 127 ? v - 256 : v;
   };
-
-  _bp.entries = function() {
-    var buf = this; var idx = 0;
-    return { next: function() { return idx < buf.length ? { value: [idx, buf[idx++]], done: false } : { done: true }; }, [Symbol.iterator]: function() { return this; } };
-  };
-
-  _bp.keys = function() {
-    var buf = this; var idx = 0;
-    return { next: function() { return idx < buf.length ? { value: idx++, done: false } : { done: true }; }, [Symbol.iterator]: function() { return this; } };
-  };
-
-  _bp.values = function() {
-    var buf = this; var idx = 0;
-    return { next: function() { return idx < buf.length ? { value: buf[idx++], done: false } : { done: true }; }, [Symbol.iterator]: function() { return this; } };
-  };
-
-  _bp.readInt8 = function(offset) { var v = this[offset || 0]; return v > 127 ? v - 256 : v; };
-  _bp.readUInt16LE = function(offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkReadBounds(this.length, offset, 2); return this[offset] | (this[offset + 1] << 8); };
-  _bp.writeUInt16LE = function(val, offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkWriteBounds(this.length, offset, 2); this[offset] = val & 0xFF; this[offset + 1] = (val >> 8) & 0xFF; return offset + 2; };
-  _bp.readUInt32LE = function(offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkReadBounds(this.length, offset, 4); return ((this[offset]) | (this[offset+1] << 8) | (this[offset+2] << 16) | (this[offset+3] << 24)) >>> 0; };
-  _bp.writeUInt32LE = function(val, offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkWriteBounds(this.length, offset, 4); this[offset] = val & 0xFF; this[offset+1] = (val >> 8) & 0xFF; this[offset+2] = (val >> 16) & 0xFF; this[offset+3] = (val >> 24) & 0xFF; return offset + 4; };
+  _bp.readUInt16LE = function(offset) { offset = _validateOffset(offset, this.length - 2); return this[offset] | (this[offset + 1] << 8); };
+  _bp.writeUInt16LE = function(val, offset) { offset = _validateOffset(offset, this.length - 2); _valueRangeCheck(val, 0, 65535); this[offset] = val & 0xFF; this[offset + 1] = (val >> 8) & 0xFF; return offset + 2; };
+  _bp.readUInt32LE = function(offset) { offset = _validateOffset(offset, this.length - 4); return ((this[offset]) | (this[offset+1] << 8) | (this[offset+2] << 16) | (this[offset+3] << 24)) >>> 0; };
+  _bp.writeUInt32LE = function(val, offset) { offset = _validateOffset(offset, this.length - 4); _valueRangeCheck(val, 0, 4294967295); this[offset] = val & 0xFF; this[offset+1] = (val >> 8) & 0xFF; this[offset+2] = (val >> 16) & 0xFF; this[offset+3] = (val >> 24) & 0xFF; return offset + 4; };
   _bp.readInt16LE = function(offset) { var v = _bp.readUInt16LE.call(this, offset); return v > 32767 ? v - 65536 : v; };
-  _bp.writeInt16LE = function(val, offset) { return _bp.writeUInt16LE.call(this, val & 0xFFFF, offset); };
-  _bp.readInt32LE = function(offset) { return this[offset || 0] | (this[(offset||0)+1] << 8) | (this[(offset||0)+2] << 16) | (this[(offset||0)+3] << 24); };
-  _bp.writeInt32LE = function(val, offset) { return _bp.writeUInt32LE.call(this, val >>> 0, offset); };
+  _bp.writeInt16LE = function(val, offset) { offset = _validateOffset(offset, this.length - 2); _valueRangeCheck(val, -32768, 32767); return _bp.writeUInt16LE.call(this, val & 0xFFFF, offset); };
+  _bp.readInt32LE = function(offset) { offset = _validateOffset(offset, this.length - 4); return this[offset] | (this[offset+1] << 8) | (this[offset+2] << 16) | (this[offset+3] << 24); };
+  _bp.writeInt32LE = function(val, offset) { offset = _validateOffset(offset, this.length - 4); _valueRangeCheck(val, -2147483648, 2147483647); return _bp.writeUInt32LE.call(this, val >>> 0, offset); };
   _bp.readFloatLE = function(offset) {
-    offset = offset || 0;
+    offset = _validateOffset(offset, this.length - 4);
     var buf = new ArrayBuffer(4); var u8 = new Uint8Array(buf); var f32 = new Float32Array(buf);
     u8[0]=this[offset]; u8[1]=this[offset+1]; u8[2]=this[offset+2]; u8[3]=this[offset+3];
     return f32[0];
   };
-  // @trace REQ-ENG-005 [api:Buffer bounds] — write/read helpers that throw
-  // RangeError (ERR_BUFFER_OUT_OF_BOUNDS) when [offset, offset+byteLength)
-  // exceeds the buffer length. Used by writeFloat/Double{LE,BE},
-  // writeUInt16/32{LE,BE}, and read counterparts. buffer.test.js
-  // "buffer overflow" / "ERR_BUFFER_OUT_OF_BOUNDS" drive this.
-  function _checkWriteBounds(bufLen, offset, byteLength) {
-    if (offset > bufLen - byteLength) {
-      throw _ERR_BUFFER_OUT_OF_BOUNDS();
-    }
-  }
-  function _checkReadBounds(bufLen, offset, byteLength) {
-    if (offset > bufLen - byteLength) {
-      throw _ERR_BUFFER_OUT_OF_BOUNDS();
-    }
-  }
+  // @trace REQ-ENG-007 [api:Buffer bounds] — the legacy
+  // _checkWriteBounds/_checkReadBounds (ERR_BUFFER_OUT_OF_BOUNDS) are
+  // retired: node v24's typed read*/write* family validates offsets via the
+  // strict _validateOffset matrix and throws ERR_OUT_OF_RANGE (oracle:
+  // readUInt8(4) / writeDouble(1,9) → "The value of \"offset\" is out of
+  // range. It must be >= 0 and <= hi. Received X"). The STRING *Write family
+  // (utf8Write/latin1Write/asciiWrite/hexWrite/…) keeps its own
+  // ERR_BUFFER_OUT_OF_BOUNDS contract (_writeBounds) per upstream
+  // aa8307619d — untouched.
 
   _bp.writeFloatLE = function(val, offset) {
-    offset = offset === undefined ? 0 : (offset >>> 0);
-    _checkWriteBounds(this.length, offset, 4);
+    offset = _validateOffset(offset, this.length - 4);
     var buf = new ArrayBuffer(4); var u8 = new Uint8Array(buf); var f32 = new Float32Array(buf);
     f32[0] = val; this[offset]=u8[0]; this[offset+1]=u8[1]; this[offset+2]=u8[2]; this[offset+3]=u8[3];
     return offset + 4;
   };
   _bp.readDoubleLE = function(offset) {
-    offset = offset === undefined ? 0 : (offset >>> 0);
-    _checkReadBounds(this.length, offset, 8);
+    offset = _validateOffset(offset, this.length - 8);
     var buf = new ArrayBuffer(8); var u8 = new Uint8Array(buf); var f64 = new Float64Array(buf);
     for (var i = 0; i < 8; i++) u8[i] = this[offset + i];
     return f64[0];
   };
   _bp.writeDoubleLE = function(val, offset) {
-    offset = offset === undefined ? 0 : (offset >>> 0);
-    _checkWriteBounds(this.length, offset, 8);
+    offset = _validateOffset(offset, this.length - 8);
     var buf = new ArrayBuffer(8); var u8 = new Uint8Array(buf); var f64 = new Float64Array(buf);
     f64[0] = val; for (var i = 0; i < 8; i++) this[offset + i] = u8[i];
     return offset + 8;
   };
 
   _bp.swap16 = function() {
-    // @trace REQ-ENG-005 [api:Buffer.swap16] — Node.js throws RangeError
+    // @trace REQ-ENG-007 [api:Buffer.swap16] — Node.js throws RangeError
     // "Buffer size must be a multiple of 16-bits" when length is odd.
     if (this.length & 1) {
       throw new RangeError('Buffer size must be a multiple of 16-bits');
@@ -1852,39 +2073,60 @@ pub fn install_buffer_global(
     return this;
   };
 
+  // compare-family range validation — node v24 uses a DIFFERENT helper than
+  // the read/write offset matrix (oracle-pinned, test-buffer-compare-offset):
+  //   • non-number ('0' / null / {valueOf}) → TypeError ERR_INVALID_ARG_TYPE
+  //   • ±Infinity / NaN / fractional → ERR_OUT_OF_RANGE "It must be an
+  //     integer. Received X" (Infinity is non-integer here — the START
+  //     arguments validate against kMaxLength, not the buffer length, so the
+  //     integer check wins: compare(b, Infinity) → integer error)
+  //   • out of [0, hi] → "It must be >= 0 && <= hi. Received X" ("&&" form;
+  //     targetStart/sourceStart hi = kMaxLength — compare(b, 0xff) does NOT
+  //     throw; targetEnd/sourceEnd hi = respective buffer length)
+  function _compareOffsetError(name, v, hi) {
+    var msg = Number.isInteger(v)
+      ? ('The value of "' + name + '" is out of range. It must be >= 0 && <= ' + hi +
+         '. Received ' + v)
+      : ('The value of "' + name + '" is out of range. It must be an integer. Received ' + v);
+    var e = new RangeError(msg);
+    e.code = 'ERR_OUT_OF_RANGE';
+    throw e;
+  }
+  function _validateCompareArg(name, v, hi) {
+    if (v === undefined) return undefined;
+    if (typeof v !== 'number') _argTypeError(name, v);
+    if (!Number.isInteger(v)) _compareOffsetError(name, v, hi);
+    if (v < 0 || v > hi) _compareOffsetError(name, v, hi);
+    return v;
+  }
+  var K_MAX_LENGTH = 9007199254740991;
+
   // @trace REQ-ENG-006 [api:Buffer.prototype.compare]
   // Node.js Buffer.prototype.compare(target[, targetStart[, targetEnd[,
-  // sourceStart[, sourceEnd]]]]) — returns -1/0/1 ordering and performs
-  // out-of-range validation on `targetEnd` and `sourceEnd` BEFORE applying
-  // the `start >= end` early-return. This ordering matters: per Node.js
-  // semantics, an inverted range with end > buffer.length still throws
-  // ERR_OUT_OF_RANGE, while start >= end with both in range returns early.
+  // sourceStart[, sourceEnd]]]]) — returns -1/0/1 ordering. node v24
+  // argument matrix (test-buffer-compare-offset.js, oracle-verified):
+  //   • each range arg must be a NUMBER or undefined — '0' / null /
+  //     {valueOf} throw TypeError ERR_INVALID_ARG_TYPE (NO coercion)
+  //   • start args validate against kMaxLength (compare(b, 0xff) → 1);
+  //     end args against the respective buffer length (compare(b, 0, 100) →
+  //     ERR_OUT_OF_RANGE), BEFORE the start >= end early-return
+  //   • equal-prefix tie-break: the SHORTER remaining range is smaller —
+  //     source longer → 1, source shorter → -1 (the previous
+  //     implementation had both signs inverted; test-buffer-compare
+  //     d.compare(b) → 1 pins it).
   _bp.compare = function(other, targetStart, targetEnd, sourceStart, sourceEnd) {
     var thisLen = this.length;
     var otherLen = other.length;
-    // Defaults per Node.js: targetStart=0, targetEnd=otherLen, sourceStart=0,
-    // sourceEnd=thisLen.
-    var tStart = (targetStart === undefined) ? 0 : (targetStart | 0);
-    var tEnd = (targetEnd === undefined) ? otherLen : (targetEnd | 0);
-    var sStart = (sourceStart === undefined) ? 0 : (sourceStart | 0);
-    var sEnd = (sourceEnd === undefined) ? thisLen : (sourceEnd | 0);
+    var tStart = _validateCompareArg('targetStart', targetStart, K_MAX_LENGTH);
+    if (tStart === undefined) tStart = 0;
+    var tEnd = _validateCompareArg('targetEnd', targetEnd, otherLen);
+    if (tEnd === undefined) tEnd = otherLen;
+    var sStart = _validateCompareArg('sourceStart', sourceStart, K_MAX_LENGTH);
+    if (sStart === undefined) sStart = 0;
+    var sEnd = _validateCompareArg('sourceEnd', sourceEnd, thisLen);
+    if (sEnd === undefined) sEnd = thisLen;
 
-    // Node.js validates `end` against the respective buffer length BEFORE
-    // the start >= end early-return. So an inverted range whose end exceeds
-    // buffer length still throws.
-    if (tEnd > otherLen) {
-      var e1 = new RangeError('\"targetEnd\" is outside of buffer bounds');
-      throw e1;
-    }
-    if (sEnd > thisLen) {
-      var e2 = new RangeError('\"sourceEnd\" is outside of buffer bounds');
-      throw e2;
-    }
-
-    // Now apply the start >= end early-return. Zero-length comparison
-    // ordering: equal → 0; target empty / source non-empty → 1 (source is
-    // longer than the empty target → source "wins"); source empty / target
-    // non-empty → -1.
+    // start >= end early-return (all ranges validated already).
     if (tStart >= tEnd && sStart >= sEnd) return 0;
     if (tStart >= tEnd) {
       // target side is zero-length: source is longer → 1.
@@ -1902,66 +2144,66 @@ pub fn install_buffer_global(
       if (a < b) return -1;
       if (a > b) return 1;
     }
-    // Equal prefix: longer range wins.
-    if ((tEnd - tStart) < (sEnd - sStart)) return -1;
-    if ((tEnd - tStart) > (sEnd - sStart)) return 1;
+    // Equal prefix: the SHORTER remaining range is smaller (node oracle:
+    // Buffer.alloc(2,'aa').compare(Buffer.alloc(1,'a')) === 1).
+    if ((tEnd - tStart) < (sEnd - sStart)) return 1;
+    if ((tEnd - tStart) > (sEnd - sStart)) return -1;
     return 0;
   };
 
-  _bp.readUInt16BE = function(offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkReadBounds(this.length, offset, 2); return (this[offset] << 8) | this[offset + 1]; };
-  _bp.writeUInt16BE = function(val, offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkWriteBounds(this.length, offset, 2); this[offset] = (val >> 8) & 0xFF; this[offset + 1] = val & 0xFF; return offset + 2; };
-  _bp.readUInt32BE = function(offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkReadBounds(this.length, offset, 4); return ((this[offset] << 24) | (this[offset+1] << 16) | (this[offset+2] << 8) | this[offset+3]) >>> 0; };
-  _bp.writeUInt32BE = function(val, offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkWriteBounds(this.length, offset, 4); this[offset] = (val >> 24) & 0xFF; this[offset+1] = (val >> 16) & 0xFF; this[offset+2] = (val >> 8) & 0xFF; this[offset+3] = val & 0xFF; return offset + 4; };
+  _bp.readUInt16BE = function(offset) { offset = _validateOffset(offset, this.length - 2); return (this[offset] << 8) | this[offset + 1]; };
+  _bp.writeUInt16BE = function(val, offset) { offset = _validateOffset(offset, this.length - 2); _valueRangeCheck(val, 0, 65535); this[offset] = (val >> 8) & 0xFF; this[offset + 1] = val & 0xFF; return offset + 2; };
+  _bp.readUInt32BE = function(offset) { offset = _validateOffset(offset, this.length - 4); return ((this[offset] << 24) | (this[offset+1] << 16) | (this[offset+2] << 8) | this[offset+3]) >>> 0; };
+  _bp.writeUInt32BE = function(val, offset) { offset = _validateOffset(offset, this.length - 4); _valueRangeCheck(val, 0, 4294967295); this[offset] = (val >> 24) & 0xFF; this[offset+1] = (val >> 16) & 0xFF; this[offset+2] = (val >> 8) & 0xFF; this[offset+3] = val & 0xFF; return offset + 4; };
   _bp.readInt16BE = function(offset) { var v = _bp.readUInt16BE.call(this, offset); return v > 32767 ? v - 65536 : v; };
-  _bp.readInt32BE = function(offset) { var o = offset === undefined ? 0 : (offset >>> 0); _checkReadBounds(this.length, o, 4); return (this[o] << 24) | (this[o+1] << 16) | (this[o+2] << 8) | this[o+3]; };
+  _bp.readInt32BE = function(offset) { offset = _validateOffset(offset, this.length - 4); return (this[offset] << 24) | (this[offset+1] << 16) | (this[offset+2] << 8) | this[offset+3]; };
   _bp.readFloatBE = function(offset) {
-    offset = offset || 0;
+    offset = _validateOffset(offset, this.length - 4);
     var buf = new ArrayBuffer(4); var u8 = new Uint8Array(buf); var f32 = new Float32Array(buf);
     u8[3]=this[offset]; u8[2]=this[offset+1]; u8[1]=this[offset+2]; u8[0]=this[offset+3];
     return f32[0];
   };
   _bp.readDoubleBE = function(offset) {
-    offset = offset || 0;
+    offset = _validateOffset(offset, this.length - 8);
     var buf = new ArrayBuffer(8); var u8 = new Uint8Array(buf); var f64 = new Float64Array(buf);
     u8[7]=this[offset]; u8[6]=this[offset+1]; u8[5]=this[offset+2]; u8[4]=this[offset+3];
     u8[3]=this[offset+4]; u8[2]=this[offset+5]; u8[1]=this[offset+6]; u8[0]=this[offset+7];
     return f64[0];
   };
-  _bp.writeInt32BE = function(val, offset) { return _bp.writeUInt32BE.call(this, val >>> 0, offset); };
+  _bp.writeInt32BE = function(val, offset) { offset = _validateOffset(offset, this.length - 4); _valueRangeCheck(val, -2147483648, 2147483647); return _bp.writeUInt32BE.call(this, val >>> 0, offset); };
   _bp.writeFloatBE = function(val, offset) {
-    offset = offset === undefined ? 0 : (offset >>> 0);
-    _checkWriteBounds(this.length, offset, 4);
+    offset = _validateOffset(offset, this.length - 4);
     var buf = new ArrayBuffer(4); var u8 = new Uint8Array(buf); var f32 = new Float32Array(buf);
     f32[0] = val; this[offset+3]=u8[0]; this[offset+2]=u8[1]; this[offset+1]=u8[2]; this[offset]=u8[3];
     return offset + 4;
   };
   _bp.writeDoubleBE = function(val, offset) {
-    offset = offset === undefined ? 0 : (offset >>> 0);
-    _checkWriteBounds(this.length, offset, 8);
+    offset = _validateOffset(offset, this.length - 8);
     var buf = new ArrayBuffer(8); var u8 = new Uint8Array(buf); var f64 = new Float64Array(buf);
     f64[0] = val; for (var i = 0; i < 8; i++) this[offset + 7 - i] = u8[i];
     return offset + 8;
   };
 
-  // @trace REQ-ENG-005 [api:Buffer.writeInt8/16BE + writeInt/Uint{LE,BE}] —
+  // @trace REQ-ENG-007 [api:Buffer.writeInt8/16BE + writeInt/Uint{LE,BE}] —
   // Node.js variable-length signed/unsigned writers. byteLength range 1..6.
   // buffer.test.js "offset returns are correct" and "common write{U}IntLE/BE()"
   // drive these. Aliases writeUint8/16/32 + writeInt8.
   _bp.writeInt8 = function(val, offset) {
-    offset = offset === undefined ? 0 : (offset >>> 0);
-    _checkWriteBounds(this.length, offset, 1);
+    offset = _validateOffset(offset, this.length - 1);
+    _valueRangeCheck(val, -128, 127);
     this[offset] = val & 0xFF;
     return offset + 1;
   };
-  _bp.writeInt16BE = function(val, offset) { return _bp.writeUInt16BE.call(this, val & 0xFFFF, offset); };
-  // @trace REQ-ENG-005 [api:Buffer.writeUInt{LE,BE}] — Node.js accepts values
+  _bp.writeInt16BE = function(val, offset) { offset = _validateOffset(offset, this.length - 2); _valueRangeCheck(val, -32768, 32767); return _bp.writeUInt16BE.call(this, val & 0xFFFF, offset); };
+  // @trace REQ-ENG-007 [api:Buffer.writeUInt{LE,BE}] — Node.js accepts values
   // up to 6 bytes (48 bits) per call. `val >>> 0` truncates to 32 bits and
   // breaks the 5/6-byte path (buffer.test.js "common write{U}IntLE/BE()"
   // drives writeUIntLE(0x1234567890, 0, 5)). Use Math.floor to preserve the
   // full value across the 4-byte boundary.
   function _writeUIntLE(buf, val, offset, byteLength) {
-    offset = offset >>> 0;
-    _checkWriteBounds(buf.length, offset, byteLength);
+    _validateByteLength(byteLength);
+    offset = _validateOffset(offset, buf.length - byteLength);
+    _valueRangeCheck(val, 0, Math.pow(2, 8 * byteLength) - 1);
     var v = Math.floor(val);
     if (v < 0) v = 0;
     for (var i = 0; i < byteLength; i++) {
@@ -1971,8 +2213,9 @@ pub fn install_buffer_global(
     return offset + byteLength;
   }
   function _writeUIntBE(buf, val, offset, byteLength) {
-    offset = offset >>> 0;
-    _checkWriteBounds(buf.length, offset, byteLength);
+    _validateByteLength(byteLength);
+    offset = _validateOffset(offset, buf.length - byteLength);
+    _valueRangeCheck(val, 0, Math.pow(2, 8 * byteLength) - 1);
     var v = Math.floor(val);
     if (v < 0) v = 0;
     for (var i = byteLength - 1; i >= 0; i--) {
@@ -1984,14 +2227,20 @@ pub fn install_buffer_global(
   _bp.writeUIntLE = function(val, offset, byteLength) { return _writeUIntLE(this, val, offset === undefined ? 0 : offset, byteLength); };
   _bp.writeUIntBE = function(val, offset, byteLength) { return _writeUIntBE(this, val, offset === undefined ? 0 : offset, byteLength); };
   _bp.writeIntLE = function(val, offset, byteLength) {
-    var v = val < 0 ? Math.pow(2, 8 * byteLength) + val : val;
-    return _writeUIntLE(this, v, offset === undefined ? 0 : offset, byteLength);
+    var bl = _validateByteLength(byteLength);
+    offset = _validateOffset(offset, this.length - bl);
+    _valueRangeCheck(val, -Math.pow(2, 8 * bl - 1), Math.pow(2, 8 * bl - 1) - 1);
+    var v = val < 0 ? Math.pow(2, 8 * bl) + val : val;
+    return _writeUIntLE(this, v, offset, bl);
   };
   _bp.writeIntBE = function(val, offset, byteLength) {
-    var v = val < 0 ? Math.pow(2, 8 * byteLength) + val : val;
-    return _writeUIntBE(this, v, offset === undefined ? 0 : offset, byteLength);
+    var bl = _validateByteLength(byteLength);
+    offset = _validateOffset(offset, this.length - bl);
+    _valueRangeCheck(val, -Math.pow(2, 8 * bl - 1), Math.pow(2, 8 * bl - 1) - 1);
+    var v = val < 0 ? Math.pow(2, 8 * bl) + val : val;
+    return _writeUIntBE(this, v, offset, bl);
   };
-  // @trace REQ-ENG-005 — Node alias surface.
+  // @trace REQ-ENG-007 — Node alias surface.
   _bp.writeUint8 = _bp.writeUInt8;
   _bp.writeUint16LE = _bp.writeUInt16LE;
   _bp.writeUint16BE = _bp.writeUInt16BE;
@@ -2002,17 +2251,18 @@ pub fn install_buffer_global(
   // writeBigUint64 aliases are assigned AFTER _bp.writeBigUInt64LE/BE are
   // defined further down (line ~1719+). Defining them now would alias
   // undefined and silently break Buffer.from(...).writeBigUint64*.
-  // @trace REQ-ENG-005 [api:Buffer.prototype.read/writeBigInt*] — Node.js
+  // @trace REQ-ENG-007 [api:Buffer.prototype.read/writeBigInt*] — Node.js
   // BigInt read/write. Throws ERR_BUFFER_OUT_OF_BOUNDS (RangeError with
   // .code) when offset is out of bounds, and returns offset+8 (bytes written)
   // on success. Tests buffer.test.js:ERR_BUFFER_OUT_OF_BOUNDS drive this path
   // for bufferLength 0..6 with both (val) and (val, 0) call shapes.
+  // @trace REQ-ENG-007 [api:Buffer.read/writeBigInt*] — node v24 BigInt
+  // offset validation: same strict _validateOffset matrix as the rest of the
+  // typed family (readBigUInt64(9) on 8-byte buffer → ERR_OUT_OF_RANGE
+  // "It must be >= 0 and <= 0. Received 9"; oracle). The legacy
+  // ERR_BUFFER_OUT_OF_BOUNDS shape is retired.
   function _checkBigIntBounds(buf, offset) {
-    offset = offset >>> 0;
-    if (buf.length < 8 || offset > buf.length - 8) {
-      throw _ERR_BUFFER_OUT_OF_BOUNDS();
-    }
-    return offset;
+    return _validateOffset(offset, buf.length - 8);
   }
   _bp.readBigInt64LE = function(offset) {
     offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
@@ -2039,16 +2289,16 @@ pub fn install_buffer_global(
     return (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
   };
 
-  // @trace REQ-ENG-005 [api:Buffer.readInt/UintBE/LE] — Node.js variable-
+  // @trace REQ-ENG-007 [api:Buffer.readInt/UintBE/LE] — Node.js variable-
   // length (1..6 byte) big-endian / little-endian signed / unsigned integer
   // readers. `noAssert` (3rd positional) is accepted but ignored (Node
   // deprecated it and Bun matches — bounds-check always). buffer.test.js
   // "read" drives readIntLE(0,3)/readIntBE(0,3)/readIntLE(0,5)/readIntBE(0,5)
   // and readUintBE(0,5)/readUintBE(0,6) across the full set of test values.
   function _readUIntLE(buf, offset, byteLength) {
-    offset = offset >>> 0;
-    _checkReadBounds(buf.length, offset, byteLength);
-    // @trace REQ-ENG-005 [algorithm:LE] — Little-endian reads the low byte
+    _validateByteLength(byteLength);
+    offset = _validateOffset(offset, buf.length - byteLength);
+    // @trace REQ-ENG-007 [algorithm:LE] — Little-endian reads the low byte
     // first: byte at offset is multiplied by 256^0, next by 256^1, etc.
     // buffer.test.js "common write{U}IntLE/BE()" drives readUIntLE(0,3) on
     // buf=[0x56,0x34,0x12] expecting 0x123456.
@@ -2059,8 +2309,8 @@ pub fn install_buffer_global(
     return val;
   }
   function _readUIntBE(buf, offset, byteLength) {
-    offset = offset >>> 0;
-    _checkReadBounds(buf.length, offset, byteLength);
+    _validateByteLength(byteLength);
+    offset = _validateOffset(offset, buf.length - byteLength);
     var val = 0;
     for (var i = 0; i < byteLength; i++) {
       val = val * 256 + buf[offset + i];
@@ -2080,7 +2330,7 @@ pub fn install_buffer_global(
     return val >= msb ? val - msb * 2 : val;
   };
 
-  // @trace REQ-ENG-005 — Node alias surface: readUint8/16/32/LE/BE = readUInt*.
+  // @trace REQ-ENG-007 — Node alias surface: readUint8/16/32/LE/BE = readUInt*.
   _bp.readUint8 = _bp.readUInt8;
   _bp.readUint16LE = _bp.readUInt16LE;
   _bp.readUint16BE = _bp.readUInt16BE;
@@ -2088,52 +2338,27 @@ pub fn install_buffer_global(
   _bp.readUint32BE = _bp.readUInt32BE;
   _bp.readUintLE = _bp.readUIntLE;
   _bp.readUintBE = _bp.readUIntBE;
-  _bp.readInt8Alias = _bp.readInt8;
+  // readInt8Alias removed: node v24's Buffer.prototype has no such property
+  // (test-buffer-generic-methods drives the exact surface).
   _bp.readBigUint64LE = _bp.readBigUInt64LE;
   _bp.readBigUint64BE = _bp.readBigUInt64BE;
 
-  // @trace REQ-ENG-005 [api:Buffer.readFloat/DoubleLE/BE] — IEEE-754 readers
-  // using DataView on a 4/8-byte copy. Buffer.test.js "read" drives
-  // readFloatBE(0)=1000 and readFloatLE(0)=1000 on a 4-byte buffer.
-  _bp.readFloatLE = function(offset) {
-    offset = offset === undefined ? 0 : (offset >>> 0);
-    _checkReadBounds(this.length, offset, 4);
-    var ab = new ArrayBuffer(4);
-    var view = new DataView(ab);
-    for (var i = 0; i < 4; i++) view.setUint8(i, this[offset + i]);
-    return view.getFloat32(0, true);
-  };
-  _bp.readFloatBE = function(offset) {
-    offset = offset === undefined ? 0 : (offset >>> 0);
-    _checkReadBounds(this.length, offset, 4);
-    var ab = new ArrayBuffer(4);
-    var view = new DataView(ab);
-    for (var i = 0; i < 4; i++) view.setUint8(i, this[offset + i]);
-    return view.getFloat32(0, false);
-  };
-  _bp.readDoubleLE = function(offset) {
-    offset = offset === undefined ? 0 : (offset >>> 0);
-    _checkReadBounds(this.length, offset, 8);
-    var ab = new ArrayBuffer(8);
-    var view = new DataView(ab);
-    for (var i = 0; i < 8; i++) view.setUint8(i, this[offset + i]);
-    return view.getFloat64(0, true);
-  };
-  _bp.readDoubleBE = function(offset) {
-    offset = offset === undefined ? 0 : (offset >>> 0);
-    _checkReadBounds(this.length, offset, 8);
-    var ab = new ArrayBuffer(8);
-    var view = new DataView(ab);
-    for (var i = 0; i < 8; i++) view.setUint8(i, this[offset + i]);
-    return view.getFloat64(0, false);
-  };
+  // (The duplicate DataView-based readFloat/Double{LE,BE} block that used to
+  // live here was removed: it re-overrode the _validateOffset-based
+  // definitions above with legacy `_checkReadBounds` semantics, resurrecting
+  // the ERR_BUFFER_OUT_OF_BOUNDS contract and the silent non-number offset
+  // coercion the node v24 matrix forbids.)
+
   _bp.writeBigInt64LE = function(val, offset) {
     offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
     val = BigInt(val);
-    // @trace REQ-ENG-005 — range check for signed 64-bit. Node throws
-    // RangeError ERR_OUT_OF_RANGE when val is outside [-2^63, 2^63).
+    // @trace REQ-ENG-007 — range check for signed 64-bit. Node throws
+    // RangeError ERR_OUT_OF_RANGE with the underscore-formatted bigint when
+    // val is outside [-2^63, 2^63) (test-buffer-bigint64 drives the exact
+    // message: "…It must be >= -(2n ** 63n) and < 2n ** 63n. Received
+    // 9_223_372_036_854_775_808n").
     if (val < -0x8000000000000000n || val > 0x7fffffffffffffffn) {
-      var e = new RangeError('The value of "value" is out of range. >= -(2n ** 63n) and < 2 ** 63n');
+      var e = new RangeError('The value of "value" is out of range. It must be >= -(2n ** 63n) and < 2n ** 63n. Received ' + _formatBig(val));
       e.code = 'ERR_OUT_OF_RANGE';
       throw e;
     }
@@ -2145,7 +2370,7 @@ pub fn install_buffer_global(
     offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
     val = BigInt(val);
     if (val < 0n || val > 0xffffffffffffffffn) {
-      var e = new RangeError('The value of "value" is out of range. >= 0n and < 2n ** 64n');
+      var e = new RangeError('The value of "value" is out of range. It must be >= 0n and < 2n ** 64n. Received ' + _formatBig(val));
       e.code = 'ERR_OUT_OF_RANGE';
       throw e;
     }
@@ -2155,7 +2380,7 @@ pub fn install_buffer_global(
     offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
     val = BigInt(val);
     if (val < -0x8000000000000000n || val > 0x7fffffffffffffffn) {
-      var e = new RangeError('The value of "value" is out of range. >= -(2n ** 63n) and < 2 ** 63n');
+      var e = new RangeError('The value of "value" is out of range. It must be >= -(2n ** 63n) and < 2n ** 63n. Received ' + _formatBig(val));
       e.code = 'ERR_OUT_OF_RANGE';
       throw e;
     }
@@ -2167,24 +2392,24 @@ pub fn install_buffer_global(
     offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
     val = BigInt(val);
     if (val < 0n || val > 0xffffffffffffffffn) {
-      var e = new RangeError('The value of "value" is out of range. >= 0n and < 2n ** 64n');
+      var e = new RangeError('The value of "value" is out of range. It must be >= 0n and < 2n ** 64n. Received ' + _formatBig(val));
       e.code = 'ERR_OUT_OF_RANGE';
       throw e;
     }
     return _bp.writeBigInt64BE.call(this, val, offset);
   };
-  // @trace REQ-ENG-005 — Node alias surface (BigInt writers; assigned AFTER
+  // @trace REQ-ENG-007 — Node alias surface (BigInt writers; assigned AFTER
   // the canonical _bp.writeBigUInt64LE/BE are defined). buffer.test.js
   // "write alias" drives writeBigUint64LE/BE === writeBigUInt64LE/BE.
   _bp.writeBigUint64LE = _bp.writeBigUInt64LE;
   _bp.writeBigUint64BE = _bp.writeBigUInt64BE;
 
-  // @trace REQ-ENG-005 [api:Buffer.prototype.offset/parent] — Node.js
+  // @trace REQ-ENG-007 [api:Buffer.prototype.offset/parent] — Node.js
   // legacy aliases. `offset` mirrors `byteOffset` (deprecated in Node but
   // still read by upstream tests). `parent` is the owning ArrayBufferView's
   // buffer (Buffer.parent === Buffer.buffer for pooled buffers; we expose
   // the underlying ArrayBuffer for parity).
-  // @trace REQ-ENG-005 — Node.js Buffer.prototype.{parent,offset} are
+  // @trace REQ-ENG-007 — Node.js Buffer.prototype.{parent,offset} are
   // prototype-level accessors that must NOT throw when called on the
   // prototype itself (Buffer.prototype.parent === undefined,
   // Buffer.prototype.offset === undefined). buffer.test.js "prototype
@@ -2209,18 +2434,25 @@ pub fn install_buffer_global(
       }
     });
   }
-  _bp.readUInt8 = function(offset) { return this[offset || 0]; };
-  // @trace REQ-ENG-005 — Node.js writeUInt8 returns offset+1 (the next
-  // writable byte index). buffer.test.js "offset returns are correct"
-  // drives writeUInt8(0, 2) expecting 3.
+  // @trace REQ-ENG-007 — readUInt8/writeUInt8 canonical definitions (the
+  // earlier assignments are placeholders this later pair wins). node v24
+  // validation matrix applies: strict number offset via _validateOffset;
+  // writeUInt8 value range 0..255 via _valueRangeCheck (writeUInt8(300) →
+  // ERR_OUT_OF_RANGE "…It must be >= 0 and <= 255. Received 300"; oracle).
+  // writeUInt8 returns offset+1 (the next writable byte index;
+  // writeUInt8(0, 2) → 3).
+  _bp.readUInt8 = function(offset) {
+    offset = _validateOffset(offset, this.length - 1);
+    return this[offset];
+  };
   _bp.writeUInt8 = function(val, offset) {
-    offset = offset === undefined ? 0 : (offset >>> 0);
-    _checkWriteBounds(this.length, offset, 1);
+    offset = _validateOffset(offset, this.length - 1);
+    _valueRangeCheck(val, 0, 255);
     this[offset] = val & 0xFF;
     return offset + 1;
   };
 
-  // @trace REQ-ENG-005 [api:Buffer.alloc] — wrap the native alloc to support
+  // @trace REQ-ENG-007 [api:Buffer.alloc] — wrap the native alloc to support
   // multi-byte string fill + encoding and Buffer-fill (tiled). The native
   // alloc handles integer fills and single-char strings directly; for
   // anything richer we delegate to Buffer.prototype.fill after allocating a
@@ -2243,7 +2475,7 @@ pub fn install_buffer_global(
       }
       if (fill && typeof fill === 'object') {
         // Buffer or Uint8Array fill: tile the source bytes.
-        // @trace REQ-ENG-005 — Node.js throws ERR_INVALID_ARG_VALUE when the
+        // @trace REQ-ENG-007 — Node.js throws ERR_INVALID_ARG_VALUE when the
         // fill value is a zero-length Buffer / Uint8Array (there is no byte
         // to tile). buffer.test.js "alloc() should throw on invalid data"
         // drives Buffer.alloc(1, Buffer.alloc(0)).
@@ -2264,6 +2496,33 @@ pub fn install_buffer_global(
     Buffer.alloc.only = _nativeAlloc.only;
     Buffer.__bao_alloc_wrapped = true;
   }
+
+  // @trace REQ-ENG-007 [api:Buffer.prototype[inspect.custom]] — node v24's
+  // Buffer.prototype carries Symbol.for('nodejs.util.inspect.custom') as an
+  // own symbol-keyed function (test-buffer-generic-methods asserts the exact
+  // symbol surface alongside the 96 string-keyed methods). Bind it to the
+  // legacy inspect implementation.
+  _bp[Symbol.for('nodejs.util.inspect.custom')] = _bp.inspect;
+
+  // @trace REQ-ENG-007 [api:Buffer receiver contract] — node v24 throws
+  // TypeError when a Buffer.prototype method is invoked on a receiver that
+  // is not an ArrayBufferView (test-buffer-fakes drives the full matrix on
+  // a FakeBuffer whose prototype chain extends Buffer.prototype: write/
+  // readFloatLE/fill/… must ALL throw, previously they silently no-op'd on
+  // the fake's undefined .length). Applied once over the finished surface:
+  // every own function property gains a receiver guard that passes real
+  // Buffer/Uint8Array/DataView receivers straight through.
+  Object.getOwnPropertyNames(_bp).forEach(function(key) {
+    var orig = _bp[key];
+    if (typeof orig !== 'function') return;
+    if (key === 'constructor') return;
+    _bp[key] = function() {
+      if (!ArrayBuffer.isView(this)) {
+        throw new TypeError('The "this" value must be an instance of ArrayBufferView.');
+      }
+      return orig.apply(this, arguments);
+    };
+  });
 })();
 "#;
     unsafe {
@@ -2281,6 +2540,38 @@ pub fn install_buffer_global(
             mozjs::glue::DeleteCompileOptions(opts);
         }
     }
+}
+
+/// @trace REQ-ENG-007 [api:Buffer detach predicate] — Native backing for the
+/// JS-visible `globalThis.__baoIsABDetached(view)` helper: resolves the
+/// view's `buffer` slot and reports whether that ArrayBuffer is genuinely
+/// detached (JS::IsDetachedArrayBufferObject). Non-view inputs report false
+/// (the blob's detach paths then fall through to normal length handling).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_is_ab_detached(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut detached = false;
+    let input = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    if input.is_object() {
+        let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let obj_root = input.to_object());
+        let mut ab_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj_root.handle().into(),
+            c"buffer".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ab_val,
+            },
+        );
+        if ab_val.is_object() {
+            rooted!(&in(cx_ref) let ab_root = ab_val.to_object());
+            detached = mozjs_sys::jsapi::JS::IsDetachedArrayBufferObject(ab_root.get());
+        }
+    }
+    args.rval().set(mozjs::jsval::BooleanValue(detached));
+    true
 }
 
 /// Set Buffer.prototype as the prototype of a newly created buffer object.
@@ -2343,7 +2634,7 @@ unsafe fn set_buffer_proto(cx: *mut JSContext, obj: *mut JSObject) {
 /// `create_buffer_object` — pass `instanceof Uint8Array`, and inherit
 /// `length`/indexed access/`subarray`/`slice`/`set`/typed element reads
 /// directly from the SM typed-array implementation.
-// @trace REQ-ENG-005 [entity:Buffer]
+// @trace REQ-ENG-007 [entity:Buffer]
 unsafe fn wire_buffer_proto_to_uint8array(cx: *mut JSContext) {
     let global = CurrentGlobalOrNull(cx);
     if global.is_null() {
@@ -2421,7 +2712,7 @@ unsafe fn wire_buffer_proto_to_uint8array(cx: *mut JSContext) {
 /// a `(length, data_ptr)` pair, or `(0, null)` if `obj` isn't a typed array.
 /// The returned pointer is only valid until the next GC, so callers must copy
 /// the bytes out before any allocation.
-// @trace REQ-ENG-005 [entity:Buffer]
+// @trace REQ-ENG-007 [entity:Buffer]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn buffer_view_bytes(obj: *mut JSObject) -> (usize, *mut u8) {
     let mut length: usize = 0;
@@ -2436,14 +2727,14 @@ unsafe fn buffer_view_bytes(obj: *mut JSObject) -> (usize, *mut u8) {
     }
 }
 
-/// @trace REQ-ENG-005 [algorithm:base64_low_byte]
+/// @trace REQ-ENG-007 [algorithm:base64_low_byte]
 /// Push the base64 alphabet index of `low` (low byte of a UTF-16 code unit)
 /// onto `out`. A literal '=' (0x3D) — which can also arise as the low byte
 /// of a surrogate code unit — terminates the run and is signalled by
 /// returning `false` so the caller can `break`. Bytes outside the alphabet
 /// are silently dropped (Node treats them as whitespace).
 ///
-/// @trace REQ-ENG-005 — Lenient decoding. Bun/Node accept BOTH the standard
+/// @trace REQ-ENG-007 — Lenient decoding. Bun/Node accept BOTH the standard
 /// (`+`/`/`) and url-safe (`-`/`_`) alphabets in BOTH base64 and base64url
 /// modes (buffer.test.js "lenient decoding accepts both alphabets in the
 /// same input"). The `url_safe` flag is kept only for clarity / future
@@ -2466,7 +2757,7 @@ fn push_base64_index(out: &mut Vec<u8>, low: u8, _url_safe: bool) -> bool {
     true
 }
 
-/// @trace REQ-ENG-005 [algorithm:base64_low_byte]
+/// @trace REQ-ENG-007 [algorithm:base64_low_byte]
 /// Node.js base64 decoder that reads the LOW BYTE of each UTF-16 code unit
 /// of the JSString. This is the canonical Node.js behaviour (V8 stores
 /// strings as either latin1 or two-byte; base64 decoding inspects the
@@ -2589,8 +2880,56 @@ unsafe extern "C" fn buffer_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
             return true;
         }
     }
-    if first.is_int32() {
-        let size = first.to_int32().max(0) as usize;
+    // @trace REQ-ENG-007 [api:Buffer legacy constructor] — node v24 legacy
+    // Buffer(value, encodingOrOffset) numeric matrix (oracle +
+    // test-buffer-new/no-negative-allocation/over-max-length):
+    //   • (number, string) → TypeError ERR_INVALID_ARG_TYPE
+    //     'The "string" argument must be of type string. Received type
+    //     number (42)' (new Buffer(42, 'utf8'))
+    //   • NaN / negative / > kMaxLength → RangeError ERR_OUT_OF_RANGE
+    //     'The value of "size" is out of range. It must be >= 0 && <=
+    //     9007199254740991. Received X' (Buffer(-100), Buffer(NaN))
+    //   • fractional → floor (Buffer(1.5) → length 1)
+    // The previous implementation only handled is_int32 (silently clamping
+    // negatives/NaN to 0) and fell through for doubles — Buffer(2147483648)
+    // returned UNDEFINED because 2^31 is not an int32.
+    if first.is_int32() || first.is_double() {
+        if argc > 1 && (*args.get(1).ptr).is_string() {
+            let d = if first.is_int32() {
+                first.to_int32() as f64
+            } else {
+                first.to_double()
+            };
+            let msg = format!(
+                "The \"string\" argument must be of type string. Received type number ({})",
+                format_number_inspect(d)
+            );
+            let _ = throw_error_with_code(cx, false, "ERR_INVALID_ARG_TYPE", &msg);
+            return false;
+        }
+        let d = if first.is_int32() {
+            first.to_int32() as f64
+        } else {
+            first.to_double()
+        };
+        if d.is_nan() || d < 0.0 || d > 9007199254740991.0 {
+            let msg = format!(
+                "The value of \"size\" is out of range. It must be >= 0 && <= {}. Received {}",
+                format_number_inspect(9007199254740991.0),
+                inspect_range_received(d)
+            );
+            let _ = throw_error_with_code(cx, true, "ERR_OUT_OF_RANGE", &msg);
+            return false;
+        }
+        let size = d.floor() as usize;
+        if size > MAX_BUFFER_SIZE {
+            let msg = format!(
+                "Typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead.",
+                MAX_BUFFER_SIZE
+            );
+            let _ = throw_error_with_code(cx, true, "ERR_OUT_OF_RANGE", &msg);
+            return false;
+        }
         // `new Buffer(size)` allocates an UNINITIALISED buffer (Node.js
         // semantics, deprecated but supported). SM's JS_NewUint8Array zeroes
         // the backing store, which is stricter than Node.js but never leaks
@@ -2609,15 +2948,27 @@ unsafe extern "C" fn buffer_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
     if first.is_object() {
         return buffer_from(cx, argc, vp);
     }
-    args.rval().set(UndefinedValue());
-    true
+    // @trace REQ-ENG-007 — Non-string/number/object first argument (boolean,
+    // symbol, bigint, function): node's from() throws ERR_INVALID_ARG_TYPE
+    // with the full message + received descriptor. The previous
+    // implementation returned UNDEFINED here — Buffer(2147483648) hit this
+    // path (2^31 is a double) and produced `buf is undefined` downstream.
+    {
+        let desc = received_descriptor(cx, first);
+        let msg = format!(
+            "The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object.{}",
+            desc
+        );
+        let _ = throw_error_with_code(cx, false, "ERR_INVALID_ARG_TYPE", &msg);
+    }
+    false
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        // @trace REQ-ENG-005 — Buffer.from() (no args) throws
+        // @trace REQ-ENG-007 — Buffer.from() (no args) throws
         // ERR_INVALID_ARG_TYPE per Node.js (test "Buffer,poolSize").
         {
             let mut cx_s = unsafe {
@@ -2632,17 +2983,42 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     }
 
     let input = *args.get(0).ptr;
-    // @trace REQ-ENG-005 — Buffer.from(null/undefined/boolean/number) throws
+    // @trace REQ-ENG-007 — Buffer.from(null/undefined/boolean/number) throws
     // ERR_INVALID_ARG_TYPE (test "Buffer,poolSize" drives Buffer.from(null)).
+    // Message carries the node received descriptor ('Received null' /
+    // 'Received type number (32)' / 'Received type boolean (true)' …).
     if input.is_null() || input.is_undefined() || input.is_boolean() || input.is_number() {
+        let desc = received_descriptor(cx, input);
+        let msg = format!(
+            "The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object.{}",
+            desc
+        );
+        let c_msg = cstring_for_error(&msg);
         {
             let mut cx_s = unsafe {
                 mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
             };
-            mozjs::error::throw_type_error(
-                &mut cx_s,
-                    c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received null".as_ref(),
-            );
+            mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
+        }
+        if JS_IsExceptionPending(cx) {
+            rooted!(in(cx) let mut exn = UndefinedValue());
+            JS_GetPendingException(cx, exn.handle_mut().into());
+            let exn_val = exn.get();
+            if exn_val.is_object() {
+                rooted!(in(cx) let exn_root = exn_val.to_object());
+                let code_str = JS_NewStringCopyZ(cx, c"ERR_INVALID_ARG_TYPE".as_ptr());
+                if !code_str.is_null() {
+                    let code_val = StringValue(&*code_str);
+                    rooted!(in(cx) let code_r = code_val);
+                    JS_DefineProperty(
+                        cx,
+                        exn_root.handle().into(),
+                        c"code".as_ptr(),
+                        code_r.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
         }
         return false;
     }
@@ -2661,7 +3037,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         } else {
             String::new()
         };
-        // @trace REQ-ENG-005 — Validate the encoding name. Node.js throws
+        // @trace REQ-ENG-007 — Validate the encoding name. Node.js throws
         // ERR_UNKNOWN_ENCODING (TypeError matching /encoding/) for unknown
         // encodings. buffer.test.js "regression tests from Node.js" drives
         //   Buffer.from("", "buffer")  // "buffer" is not a valid encoding
@@ -2686,8 +3062,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             let enc_lower = encoding.to_lowercase();
             if !VALID_ENCODINGS.iter().any(|&v| v == enc_lower) {
                 let msg = format!("Unknown encoding: {}", encoding);
-                let c_msg = ::std::ffi::CString::new(msg)
-                    .unwrap_or_else(|_| ::std::ffi::CString::new("Unknown encoding").unwrap());
+                let c_msg = cstring_for_error(&msg);
                 {
                     let mut cx_s = unsafe {
                         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
@@ -2697,8 +3072,16 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 return false;
             }
         }
-        let bytes = if encoding == "hex" {
-            // @trace REQ-ENG-005 — Buffer.from(str, "hex") decodes pairs of
+        // @trace REQ-ENG-007 [api:Buffer.from encoding dispatch] — the
+        // dispatch must be CASE-INSENSITIVE. The validation above already
+        // lower-cases for the known-encoding check, but this chain matched
+        // the RAW string — Buffer.from('foo', 'UTF16LE')/'UCS2' fell through
+        // to the utf8 branch and produced garbage bytes that
+        // toString('utf16le') then rendered as mojibake ('潦').
+        // test-buffer-tostring drives the uppercase encoding loop.
+        let enc_dispatch = encoding.to_lowercase();
+        let bytes = if enc_dispatch == "hex" {
+            // @trace REQ-ENG-007 — Buffer.from(str, "hex") decodes pairs of
             // hex digits and STOPS at the first non-hex character (Node.js
             // behaviour). buffer.test.js "hex input containing byte 0xFF"
             // drives "ab\xff\xffcd" → [0xab] (the \xff stops decoding).
@@ -2718,13 +3101,13 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     _ => break,
                 }
             }
-            // @trace REQ-ENG-005 — Node.js discards a single trailing hex
+            // @trace REQ-ENG-007 — Node.js discards a single trailing hex
             // digit (odd-length input); it does NOT pad. buffer.test.js
             // "single hex character is discarded" drives Buffer.from("A","hex")
             // to length 0.
             out
-        } else if encoding == "base64" {
-            // @trace REQ-ENG-005 [algorithm:base64]
+        } else if enc_dispatch == "base64" {
+            // @trace REQ-ENG-007 [algorithm:base64]
             // Node.js parity: base64 decoding reads the LOW BYTE of each
             // UTF-16 code unit of the input string. A two-byte JSString
             // containing surrogate pairs therefore contributes only the
@@ -2741,20 +3124,20 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             // "ABCDEF" — wrong. We hand-roll the low-byte walker.
             let js_str = input.to_string();
             base64_low_byte_decode(cx, js_str, false)
-        } else if encoding == "base64url" {
-            // @trace REQ-ENG-005 [algorithm:base64]
+        } else if enc_dispatch == "base64url" {
+            // @trace REQ-ENG-007 [algorithm:base64]
             // Same low-byte semantics as standard base64, but accept the
             // url-safe alphabet (- and _ instead of + and /). Padding is
             // optional and may be missing; we honour a literal '=' or a
             // surrogate-derived 0x3D low byte as the terminator.
             let js_str = input.to_string();
             base64_low_byte_decode(cx, js_str, true)
-        } else if encoding == "utf-16le"
-            || encoding == "ucs2"
-            || encoding == "ucs-2"
-            || encoding == "utf16le"
+        } else if enc_dispatch == "utf-16le"
+            || enc_dispatch == "ucs2"
+            || enc_dispatch == "ucs-2"
+            || enc_dispatch == "utf16le"
         {
-            // @trace REQ-ENG-005 [algorithm:utf-16le]
+            // @trace REQ-ENG-007 [algorithm:utf-16le]
             // Node.js semantics: encode each UTF-16 code unit as little-endian
             // 2 bytes. Rust strings are UTF-8, so expand BMP chars to 2 bytes
             // (code units) and surrogate pairs (U+10000+) to 4 bytes.
@@ -2773,10 +3156,10 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 }
             }
             out
-        } else if encoding == "utf-16be"
-            || encoding == "utf16be"
-            || encoding == "ucs2be"
-            || encoding == "ucs-2be"
+        } else if enc_dispatch == "utf-16be"
+            || enc_dispatch == "utf16be"
+            || enc_dispatch == "ucs2be"
+            || enc_dispatch == "ucs-2be"
         {
             let mut out: Vec<u8> = Vec::with_capacity(s.len() * 2);
             for c in s.chars() {
@@ -2792,8 +3175,8 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 }
             }
             out
-        } else if encoding == "latin1" || encoding == "binary" || encoding == "ascii" {
-            // @trace REQ-ENG-005 [api:Buffer.from] — Latin1/binary/ascii encode
+        } else if enc_dispatch == "latin1" || enc_dispatch == "binary" || enc_dispatch == "ascii" {
+            // @trace REQ-ENG-007 [api:Buffer.from] — Latin1/binary/ascii encode
             // each char to a single byte clamped to 0-255. Node.js 'ascii'
             // historically preserves the high bit on encode (latin1 semantics)
             // so that buf.write("\xa4","ascii") round-trips through
@@ -2812,7 +3195,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         rooted!(&in(cx_ref) let obj_root = input.to_object());
         let obj_handle: mozjs::jsapi::Handle<*mut JSObject> = obj_root.handle().into();
-        // @trace REQ-ENG-005 — Functions are not valid Buffer.from inputs.
+        // @trace REQ-ENG-007 — Functions are not valid Buffer.from inputs.
         // Node.js's `from(value)` only enters the object branch when
         // `typeof value === 'object' && value !== null`; a function has
         // typeof === 'function' and reaches the throw fallback. SM treats
@@ -2830,7 +3213,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             return false;
         }
 
-        // @trace REQ-ENG-005 — String wrapper objects (new String("test"),
+        // @trace REQ-ENG-007 — String wrapper objects (new String("test"),
         // new MyString()) convert to the underlying string and recurse into
         // Buffer.from(string). Node.js parity: Buffer.from(new String("test"))
         // === Buffer.from("test"). buffer.test.js "Buffer.from (Node.js test/
@@ -2866,6 +3249,58 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 }
             }
         }
+        // @trace REQ-ENG-007 [api:Buffer.from String wrapper] — instanceof
+        // misses CROSS-REALM String wrappers (test-buffer-from drives
+        // Buffer.from(runInNewContext('new String(checkString)', …)) — the
+        // wrapper's [[Prototype]] belongs to another realm's String so the
+        // instanceof check against this realm's constructor fails, and the
+        // array-like fallback then ToNumber's the CHARACTERS 't'/'e'/'s'/'t'
+        // → [0,0,0,0]). node detects string wrappers via the realm-safe
+        // brand check Object.prototype.toString.call(x) === '[object String]'
+        // (oracle: cross-realm wrapper → 'test').
+        if !is_string_obj {
+            let brand_src = r#"(function(obj) {
+                return Object.prototype.toString.call(obj) === '[object String]';
+            })"#;
+            let brand_filename = ZBox::from_bytes("<buffer-from-string-brand>".as_bytes());
+            let brand_opts = mozjs::glue::NewCompileOptions(cx, brand_filename.as_ptr(), 1);
+            if !brand_opts.is_null() {
+                let mut brand_text = mozjs::rust::transform_str_to_source_text(brand_src);
+                let mut brand_fn = UndefinedValue();
+                let brand_fn_h = MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut brand_fn,
+                };
+                mozjs_sys::jsapi::JS::Evaluate2(cx, brand_opts, &mut brand_text, brand_fn_h);
+                mozjs::glue::DeleteCompileOptions(brand_opts);
+                if brand_fn.is_object() {
+                    rooted!(&in(cx_ref) let brand_root = brand_fn.to_object());
+                    rooted!(&in(cx_ref) let obj_val = ObjectValue(obj_root.get()));
+                    // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED
+                    // ValueArray — `&obj_val.get()` was a pointer to a bare
+                    // stack copy, invisible to GC (require.rs canary form).
+                    rooted!(&in(cx_ref) let args_array =
+                        mozjs_sys::jsgc::ValueArray::<1>::new([obj_val.get()]));
+                    let args_arr = JS::HandleValueArray::from(&args_array);
+                    rooted!(&in(cx_ref) let null_obj: *mut JSObject = ::std::ptr::null_mut());
+                    rooted!(&in(cx_ref) let fn_val = ObjectValue(brand_root.get()));
+                    let mut brand_rval = UndefinedValue();
+                    let ok = JS_CallFunctionValue(
+                        cx,
+                        null_obj.handle().into(),
+                        fn_val.handle().into(),
+                        &args_arr,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut brand_rval,
+                        },
+                    );
+                    if ok && brand_rval.is_boolean() {
+                        is_string_obj = brand_rval.to_boolean();
+                    }
+                }
+            }
+        }
         if is_string_obj {
             // ToString the object via SM's ToString (handles String wrappers,
             // subclass overrides, etc.) and recurse into the string branch.
@@ -2880,9 +3315,16 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         }
 
         // Check if it's an ArrayBuffer using mozjs_sys API
-        let is_ab = unsafe { mozjs_sys::jsapi::JS::IsArrayBufferObject(obj_root.get()) };
+        // @trace REQ-ENG-007 [api:Buffer.from SharedArrayBuffer] — node v24
+        // shares a SharedArrayBuffer's backing store too (test-buffer-
+        // sharedarraybuffer drives Buffer.from(new SharedArrayBuffer(8)) →
+        // 8-byte Buffer with buf.buffer === sab). The previous check only
+        // recognised plain ArrayBuffers, so SAB inputs fell into the
+        // array-like path (no .length → TypeError).
+        let is_sab = unsafe { mozjs_sys::jsapi::JS::IsSharedArrayBufferObject(obj_root.get()) };
+        let is_ab = unsafe { mozjs_sys::jsapi::JS::IsArrayBufferObject(obj_root.get()) } || is_sab;
 
-        // @trace REQ-ENG-005 — Node.js also recognises ArrayBufferView
+        // @trace REQ-ENG-007 — Node.js also recognises ArrayBufferView
         // (TypedArray / DataView / Buffer) inputs and shares their backing
         // ArrayBuffer. Buffer.test.js "creating a Buffer from a Uint32Array"
         // drives Buffer.from(ui32). We detect ArrayBuffer views BEFORE the
@@ -2895,7 +3337,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         };
 
         if is_ab {
-            // @trace REQ-ENG-005 [api:Buffer.from(arrayBuffer)] — Node parity:
+            // @trace REQ-ENG-007 [api:Buffer.from(arrayBuffer)] — Node parity:
             // the returned Buffer SHARES the source ArrayBuffer (no copy), so
             // `buf.buffer === ab` and `buf.byteOffset` reflects the view. We
             // build the typed-array view directly off the source ArrayBuffer.
@@ -2903,7 +3345,9 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             let mut data_len: usize = 0;
             let mut is_shared = false;
             unsafe {
-                mozjs_sys::jsapi::JS::GetArrayBufferLengthAndData(
+                // MaybeShared variant: covers plain ArrayBuffers AND
+                // SharedArrayBuffers with one call (is_shared outparam).
+                mozjs_sys::jsapi::JS::GetArrayBufferMaybeSharedLengthAndData(
                     obj_root.get(),
                     &mut data_len,
                     &mut is_shared,
@@ -2911,7 +3355,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 );
             }
 
-            // @trace REQ-ENG-005 — Node.js coerces byteOffset via ToNumber.
+            // @trace REQ-ENG-007 — Node.js coerces byteOffset via ToNumber.
             // Non-numeric / NaN byteOffset defaults to 0. Infinity throws.
             // buffer.test.js "new Buffer() (Node.js test/test-buffer-new.js)"
             // drives Buffer.from(ab, "fhqwhgads") → byteOffset 0,
@@ -2972,7 +3416,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 0
             };
 
-            // @trace REQ-ENG-005 — Node.js validates byteOffset against the
+            // @trace REQ-ENG-007 — Node.js validates byteOffset against the
             // ArrayBuffer length and throws RangeError on overflow
             // (buffer.test.js "ParseArrayIndex() should handle full uint32").
             if offset > data_len {
@@ -2988,7 +3432,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 return false;
             }
 
-            // @trace REQ-ENG-005 — Node.js coerces length via ToNumber. If the
+            // @trace REQ-ENG-007 — Node.js coerces length via ToNumber. If the
             // result is NaN, length defaults to 0 (NOT data_len-offset).
             // buffer.test.js "new Buffer() (Node.js test/test-buffer-new.js)"
             // drives Buffer.from(ab, 0, "fhqwhgads") → length 0,
@@ -3049,7 +3493,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 data_len.saturating_sub(offset)
             };
 
-            // @trace REQ-ENG-005 — Node.js throws RangeError when offset+len
+            // @trace REQ-ENG-007 — Node.js throws RangeError when offset+len
             // exceeds the source ArrayBuffer's length (explicit length that
             // overflows the available range). buffer.test.js "new Buffer()"
             // drives Buffer.from(ab.buffer, 3, 6) on a 5-byte buffer to throw.
@@ -3069,7 +3513,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             let end = (offset + len).min(data_len);
             let view_len = end.saturating_sub(offset);
 
-            // @trace REQ-ENG-005 [api:Buffer.from auto-length RAB view] — When
+            // @trace REQ-ENG-007 [api:Buffer.from auto-length RAB view] — When
             // the caller does NOT specify an explicit length (only byteOffset),
             // pass length = -1 to SM so the resulting Uint8Array is an
             // auto-length view that tracks the source ArrayBuffer's current
@@ -3111,7 +3555,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             args.rval().set(ObjectValue(view_root.get()));
             true
         } else if is_view {
-            // @trace REQ-ENG-005 [api:Buffer.from(TypedArray)] — Node.js
+            // @trace REQ-ENG-007 [api:Buffer.from(TypedArray)] — Node.js
             // creates a Buffer that COPIES the typed-array's ELEMENTS (not
             // raw bytes) and truncates each element to its low byte. So
             // `Buffer.from(new Uint32Array([256, 257]))` → <Buffer 00 01>.
@@ -3136,7 +3580,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 let elem_type =
                     unsafe { mozjs_sys::jsapi::JS_GetArrayBufferViewType(obj_root.get()) };
                 use mozjs_sys::jsapi::JS::Scalar::Type as ST;
-                // @trace REQ-ENG-005 [api:Buffer.from] — BigInt elements are
+                // @trace REQ-ENG-007 [api:Buffer.from] — BigInt elements are
                 // not number-coercible: the element-wise copy is ToNumber per
                 // element (same as `new Uint8Array(1).set(new BigInt64Array(1))`),
                 // so Node throws TypeError and upstream bun aeb1905d0a made
@@ -3210,7 +3654,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 create_buffer_from_bytes(cx, &args, &[])
             }
         } else {
-            // @trace REQ-ENG-005 — Symbol.toPrimitive: Node.js honours an
+            // @trace REQ-ENG-007 — Symbol.toPrimitive: Node.js honours an
             // object's [Symbol.toPrimitive]("string") hint and converts the
             // result to a Buffer via the string path. buffer.test.js
             // "Buffer.from (Node.js test/test-buffer-from.js)" drives
@@ -3247,10 +3691,12 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     if rval_fn.is_object() {
                         rooted!(&in(cx_ref_t) let fn_obj = rval_fn.to_object());
                         rooted!(&in(cx_ref_t) let obj_val = ObjectValue(obj_root.get()));
-                        let args_arr = mozjs::jsapi::HandleValueArray {
-                            length_: 1,
-                            elements_: &obj_val.get() as *const Value,
-                        };
+                        // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED
+                        // ValueArray — `&obj_val.get()` was a bare stack copy
+                        // (require.rs canary-pinned form).
+                        rooted!(&in(cx_ref_t) let args_array =
+                            mozjs_sys::jsgc::ValueArray::<1>::new([obj_val.get()]));
+                        let args_arr = JS::HandleValueArray::from(&args_array);
                         rooted!(&in(cx_ref_t) let null_obj: *mut JSObject = ::std::ptr::null_mut());
                         rooted!(&in(cx_ref_t) let fn_val = ObjectValue(fn_obj.get()));
                         let mut result_val = UndefinedValue();
@@ -3274,7 +3720,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             let _ = used_to_prim;
 
             // Array-like or Buffer object
-            // @trace REQ-ENG-005 — Node.js accepts an object here only if:
+            // @trace REQ-ENG-007 — Node.js accepts an object here only if:
             //   1. It is a Buffer (has Buffer.isBuffer true), OR
             //   2. It is an array-like (has a numeric `.length`), OR
             //   3. It is a JSON-serialized Buffer ({ type: "Buffer", data: [...] })
@@ -3304,7 +3750,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 ptr: &mut length_val,
             };
             JS_GetProperty(cx, obj_handle, c"length".as_ptr(), length_handle);
-            // @trace REQ-ENG-005 [api:Buffer.from array-like] — Node.js
+            // @trace REQ-ENG-007 [api:Buffer.from array-like] — Node.js
             // converts `.length` via ToLength/ToNumber so a fractional length
             // like 3.3 truncates to 3, a numeric string like "5" parses to 5,
             // and a non-numeric string like "BAM" yields NaN → length 0.
@@ -3334,7 +3780,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 0
             };
 
-            // @trace REQ-ENG-005 — Node.js throws TypeError when the object is
+            // @trace REQ-ENG-007 — Node.js throws TypeError when the object is
             // neither array-like (no numeric .length) nor a legacy Buffer blob
             // ({type:"Buffer", data:[...]}). buffer.test.js "Buffer.from" drives
             //   Buffer.from({}) // no length
@@ -3345,14 +3791,41 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             // accepted as an empty Buffer.
             let length_is_undefined = length_val.is_undefined() || length_val.is_null();
             if length_is_undefined && !is_legacy_buffer_blob {
+                // @trace REQ-ENG-007 [api:Buffer.from received suffix] —
+                // node v24 appends the received descriptor (test-buffer-
+                // arraybuffer pins '…Received an instance of AB' for a
+                // FakeArrayBuffer subclass instance).
+                let desc = received_descriptor(cx, input);
+                let msg = format!(
+                    "The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object.{}",
+                    desc
+                );
+                let c_msg = cstring_for_error(&msg);
                 {
                     let mut cx_s = unsafe {
                         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
                     };
-                    mozjs::error::throw_type_error(
-                        &mut cx_s,
-                            c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object.".as_ref(),
-                    );
+                    mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
+                }
+                if JS_IsExceptionPending(cx) {
+                    rooted!(in(cx) let mut exn = UndefinedValue());
+                    JS_GetPendingException(cx, exn.handle_mut().into());
+                    let exn_val = exn.get();
+                    if exn_val.is_object() {
+                        rooted!(in(cx) let exn_root = exn_val.to_object());
+                        let code_str = JS_NewStringCopyZ(cx, c"ERR_INVALID_ARG_TYPE".as_ptr());
+                        if !code_str.is_null() {
+                            let code_val = StringValue(&*code_str);
+                            rooted!(in(cx) let code_r = code_val);
+                            JS_DefineProperty(
+                                cx,
+                                exn_root.handle().into(),
+                                c"code".as_ptr(),
+                                code_r.handle().into(),
+                                JSPROP_ENUMERATE as u32,
+                            );
+                        }
+                    }
                 }
                 return false;
             }
@@ -3365,7 +3838,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     ptr: &mut elem,
                 };
                 JS_GetElement(cx, obj_handle, i as u32, elem_handle);
-                // @trace REQ-ENG-005 — Node.js converts each element to a byte
+                // @trace REQ-ENG-007 — Node.js converts each element to a byte
                 // via ToNumber→ToInt8/Uint8 truncation. buffer.test.js
                 // "construction from arrayish object" drives
                 //   { 0: "0", 1: "1", 2: "2", 3: "3", length: 4 } → [0,1,2,3].
@@ -3403,7 +3876,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 };
                 bytes.push(byte_val);
             }
-            // @trace REQ-ENG-005 — Legacy Buffer blob: { type: "Buffer",
+            // @trace REQ-ENG-007 — Legacy Buffer blob: { type: "Buffer",
             // data: [...] }. Read .data and convert each element to a byte.
             if is_legacy_buffer_blob && bytes.is_empty() {
                 let mut data_val = UndefinedValue();
@@ -3466,17 +3939,16 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             create_buffer_from_bytes(cx, &args, &bytes)
         }
     } else {
-        // @trace REQ-ENG-005 — Non-object, non-string input (Symbol, bigint,
-        // function, undefined, null already handled above). Node.js throws.
-        {
-            let mut cx_s = unsafe {
-                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
-            };
-            mozjs::error::throw_type_error(
-                &mut cx_s,
-                    c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object.".as_ref(),
-            );
-        }
+        // @trace REQ-ENG-007 — Non-object, non-string input (Symbol, bigint,
+        // function, undefined, null already handled above). Node.js throws
+        // with the received descriptor ('Received an instance of Object' /
+        // 'Received type symbol (Symbol(x))' …).
+        let desc = received_descriptor(cx, input);
+        let msg = format!(
+            "The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object.{}",
+            desc
+        );
+        let _ = throw_error_with_code(cx, false, "ERR_INVALID_ARG_TYPE", &msg);
         false
     }
 }
@@ -3504,7 +3976,7 @@ unsafe fn create_buffer_from_bytes(cx: *mut JSContext, args: &CallArgs, bytes: &
 /// Shared by globals.rs Buffer methods, node_crypto.rs (randomBytes) and
 /// node_fs.rs (readFileSync without encoding) so that all paths return real
 /// Buffer instances (`Buffer.isBuffer(x) === true`).
-// @trace REQ-ENG-005 [entity:Buffer]
+// @trace REQ-ENG-007 [entity:Buffer]
 #[allow(unsafe_op_in_unsafe_fn)]
 pub unsafe fn create_buffer_object(cx: *mut JSContext, bytes: &[u8]) -> *mut JSObject {
     let cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -3556,6 +4028,54 @@ pub unsafe fn create_buffer_object(cx: *mut JSContext, bytes: &[u8]) -> *mut JSO
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+/// @trace REQ-ENG-007 [api:Buffer.toString bounds] — node v24 start/end
+/// coercion for Buffer.prototype.toString(enc, start, end) (oracle +
+/// test-buffer-tostring-range):
+///   undefined → default (start: 0, end: len); NaN → 0 (for start) / 0
+///   (end); negative → 0; fractional → trunc; +Infinity → len; numeric
+///   strings coerce via ToNumber ('Infinity' → len).
+/// Note: unlike the typed read*/write* family there is NO throw here —
+/// node clamps (toString('ascii', 3.14, 3) → "", toString('ascii', -1) →
+/// the full string, toString('ascii', +Infinity) → "").
+unsafe fn buffer_to_string_bound(
+    cx_ref: &mut mozjs::context::JSContext,
+    v: JSVal,
+    len: usize,
+    default_v: f64,
+) -> usize {
+    let d = if v.is_undefined() {
+        default_v
+    } else if v.is_number() {
+        if v.is_int32() {
+            v.to_int32() as f64
+        } else {
+            v.to_double()
+        }
+    } else {
+        // Non-number (numeric strings etc.) → ToNumber; failure → NaN → 0.
+        let addr = &v as *const JSVal;
+        let h = mozjs::rust::HandleValue::from_marked_location(addr);
+        match mozjs::rust::ToNumber(cx_ref, h) {
+            Ok(n) => n,
+            Err(()) => f64::NAN,
+        }
+    };
+    if d.is_nan() {
+        return 0;
+    }
+    if d.is_infinite() {
+        return if d > 0.0 { len } else { 0 };
+    }
+    let t = d.trunc();
+    if t < 0.0 {
+        0
+    } else if t > len as f64 {
+        len
+    } else {
+        t as usize
+    }
+}
+
 unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
@@ -3564,8 +4084,27 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
         return true;
     }
 
-    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(cx_ref) let obj_root = this.to_object());
+
+    // @trace REQ-ENG-007 [api:Buffer.toString receiver] — node v24 throws
+    // TypeError when the receiver is not a real ArrayBufferView
+    // (test-buffer-fakes drives fb.toString() / +Buffer.prototype — the
+    // prototype itself has no backing store, so a plain-object receiver must
+    // NOT fall through to the empty-string path which made
+    // `+Buffer.prototype` evaluate to 0 instead of throwing).
+    let is_view = mozjs_sys::jsapi::JS_IsArrayBufferViewObject(obj_root.get());
+    let is_ab = mozjs_sys::jsapi::JS::IsArrayBufferObject(obj_root.get());
+    if !is_view && !is_ab {
+        let mut cx_s = unsafe {
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
+        };
+        mozjs::error::throw_type_error(
+            &mut cx_s,
+            c"The \"this\" value must be an instance of ArrayBufferView.".as_ref(),
+        );
+        return false;
+    }
 
     // Decode the encoding argument before reading the typed-array data, so the
     // JS_GetProperty / JS_NewStringCopyZ allocations do not race with the raw
@@ -3580,18 +4119,20 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
     };
     let enc_lower = encoding.to_lowercase();
 
-    // Honour start/end arguments (Node: toString(enc, start, end)). Default
-    // to the full buffer.
+    // Honour start/end arguments (Node: toString(enc, start, end)). Node v24
+    // coercion matrix (oracle + test-buffer-tostring-range):
+    //   start: undefined → 0; NaN → 0; negative → 0; fractional → floor;
+    //          +Infinity → len; numeric strings coerce ('Infinity' → len).
+    //   end:   undefined → len; NaN/negative → 0; fractional → floor;
+    //          +Infinity → len.
     let (len, data_ptr) = buffer_view_bytes(obj_root.get());
-
-    let start = if argc > 1 && (*args.get(1).ptr).is_int32() {
-        (*args.get(1).ptr).to_int32().max(0) as usize
+    let start = if argc > 1 {
+        buffer_to_string_bound(&mut cx_ref, *args.get(1).ptr, len, 0.0)
     } else {
         0
     };
-    let end = if argc > 2 && (*args.get(2).ptr).is_int32() {
-        let e = (*args.get(2).ptr).to_int32();
-        if e < 0 { 0 } else { e as usize }.min(len)
+    let end = if argc > 2 {
+        buffer_to_string_bound(&mut cx_ref, *args.get(2).ptr, len, len as f64)
     } else {
         len
     };
@@ -3611,7 +4152,7 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
         slice.to_vec()
     };
 
-    // @trace REQ-ENG-005 [algorithm:utf16le_decode]
+    // @trace REQ-ENG-007 [algorithm:utf16le_decode]
     // For ucs2/utf16le output we keep the raw u16 code units so we can build
     // a two-byte SM JSString that preserves ALL code units including lone
     // surrogates (Node.js never validates UTF-16 well-formedness; it just
@@ -3624,12 +4165,12 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
         "" | "utf8" | "utf-8" => String::from_utf8_lossy(&bytes).into_owned(),
         "hex" => bun_core::fmt::bytes_to_hex_lower_string(&bytes),
         "base64" => {
-            // @trace REQ-ENG-005 [algorithm:base64]
+            // @trace REQ-ENG-007 [algorithm:base64]
             let bytes_out = bun_base64::encode_alloc(&bytes);
             ::std::str::from_utf8(&bytes_out).unwrap_or("").to_owned()
         }
         "base64url" => {
-            // @trace REQ-ENG-005 [algorithm:base64]
+            // @trace REQ-ENG-007 [algorithm:base64]
             // bun_base64 has simdutf_encode_url_safe; use it for url-safe encoding.
             let bytes_out = bun_base64::simdutf_encode_url_safe_alloc(&bytes);
             ::std::str::from_utf8(&bytes_out).unwrap_or("").to_owned()
@@ -3640,7 +4181,7 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
             .map(|&b| (b & 0x7F) as char)
             .collect::<String>(),
         "ucs2" | "ucs-2" | "utf16le" | "utf-16le" => {
-            // @trace REQ-ENG-005 [algorithm:utf16le_decode]
+            // @trace REQ-ENG-007 [algorithm:utf16le_decode]
             // Node.js / WHATWG utf16le decoding yields the JS string from
             // raw 16-bit code units — INCLUDING lone surrogates (Node.js
             // never validates well-formedness; it just preserves code units
@@ -3666,7 +4207,7 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
             // unpaired surrogate with U+FFFD so String stays valid UTF-8.
             String::from_utf16_lossy(&units)
         }
-        // @trace REQ-ENG-005 [api:Buffer.toString] — Node.js throws
+        // @trace REQ-ENG-007 [api:Buffer.toString] — Node.js throws
         // ERR_UNKNOWN_ENCODING for unrecognised encodings (buffer.test.js
         // "invalid encoding"). Only the empty-encoding default falls back
         // to utf8; explicit unknown strings throw.
@@ -3677,8 +4218,7 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
                 String::from_utf8_lossy(&bytes).into_owned()
             } else {
                 let msg = format!("Unknown encoding: {}", other);
-                let c_msg = ::std::ffi::CString::new(msg)
-                    .unwrap_or_else(|_| ::std::ffi::CString::new("Unknown encoding").unwrap());
+                let c_msg = cstring_for_error(&msg);
                 {
                     let mut cx_s = unsafe {
                         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
@@ -3690,13 +4230,13 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
         }
     };
 
-    // @trace REQ-ENG-005 — use JS_NewStringCopyUTF8N so multi-byte UTF-8
+    // @trace REQ-ENG-007 — use JS_NewStringCopyUTF8N so multi-byte UTF-8
     // output (ucs2/utf16le/utf8 decoding produces あ-style chars) becomes a
     // proper SM two-byte JSString. JS_NewStringCopyZ treats the buffer as a
     // NUL-terminated C string and re-encodes latin1 chars verbatim, which
     // mangles non-ASCII output (e.g. toString("ucs2") returned mojibake).
     //
-    // @trace REQ-ENG-005 [algorithm:utf16le_decode] — when the source
+    // @trace REQ-ENG-007 [algorithm:utf16le_decode] — when the source
     // encoding was utf16le/ucs2 and the buffer holds lone or paired
     // surrogates, the resulting Rust `String` is NOT valid UTF-8 (Rust
     // rejects isolated surrogates). The encoding path above stashed the raw
@@ -3704,6 +4244,57 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
     // directly via JS_NewStringCopyN (treating each unit as a char16_t).
     // This preserves ALL code units including unpaired surrogates, matching
     // Node.js's byte-faithful ucs2 behaviour.
+    // @trace REQ-ENG-007 [api:Buffer.toString ERR_STRING_TOO_LONG] — node v24
+    // throws an ERROR (not RangeError) with code ERR_STRING_TOO_LONG when the
+    // decoded string exceeds MAX_STRING_LENGTH (536870888 UTF-16 units)
+    // (test-buffer-tostring-rangeerror pins code+name on Buffer(len).toString).
+    let max_units: usize = 536870888;
+    let unit_len: usize = if let Some(units) = &utf16_units_out {
+        units.len()
+    } else if enc_lower == "utf8" || enc_lower == "utf-8" || enc_lower.is_empty() {
+        if output.len() > max_units / 2 {
+            // UTF-16 units for non-ASCII output can exceed the byte count.
+            output.chars().map(|c| c.len_utf16()).sum()
+        } else {
+            output.len()
+        }
+    } else {
+        // hex/base64/latin1/ascii outputs are pure ASCII: 1 unit per char.
+        output.chars().count()
+    };
+    if unit_len > max_units {
+        let msg = format!(
+            "Cannot create a string longer than 0x{:x} ({}) characters",
+            max_units, max_units
+        );
+        let c_msg = cstring_for_error(&msg);
+        // JS_ReportErrorUTF8 creates a plain Error (name "Error") — node's
+        // ERR_STRING_TOO_LONG is Error, NOT TypeError/RangeError
+        // (test-buffer-tostring-rangeerror pins { code, name: 'Error' }).
+        JS_ReportErrorUTF8(cx, c_msg.as_ptr());
+        if JS_IsExceptionPending(cx) {
+            rooted!(in(cx) let mut exn = UndefinedValue());
+            JS_GetPendingException(cx, exn.handle_mut().into());
+            let exn_val = exn.get();
+            if exn_val.is_object() {
+                rooted!(in(cx) let exn_root = exn_val.to_object());
+                let code_str = JS_NewStringCopyZ(cx, c"ERR_STRING_TOO_LONG".as_ptr());
+                if !code_str.is_null() {
+                    let code_val = StringValue(&*code_str);
+                    rooted!(in(cx) let code_r = code_val);
+                    JS_DefineProperty(
+                        cx,
+                        exn_root.handle().into(),
+                        c"code".as_ptr(),
+                        code_r.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
+        }
+        return false;
+    }
+
     let js_str = if let Some(units) = utf16_units_out {
         // Build two-byte string from raw char16_t buffer via the UCString
         // API (preserves ALL code units including unpaired surrogates).
@@ -3719,8 +4310,13 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
                 &*chars as *const _ as *const mozjs_sys::jsapi::JS::UTF8Chars,
             )
         } else {
+            // @trace REQ-ENG-007 — JS_NewStringCopyN with an EXPLICIT length:
+            // the previous JS_NewStringCopyZ stopped at the first embedded
+            // U+0000, truncating every ascii/latin1/utf8 string that
+            // contained a NUL byte (test-buffer-ascii drives a buffer whose
+            // bytes contain 0x00 — the returned string stopped after 2 chars).
             let c_s = ZBox::from_bytes(utf8_bytes);
-            JS_NewStringCopyZ(cx, c_s.as_ptr())
+            JS_NewStringCopyN(cx, c_s.as_ptr(), utf8_bytes.len())
         }
     };
     if !js_str.is_null() {
@@ -3734,58 +4330,95 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_alloc(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    // @trace REQ-ENG-005 [api:Buffer.alloc] — Node.js requires the `size`
-    // argument to be a number (after ToNumber coercion). Objects with
-    // valueOf that return a number still pass, but plain objects (no
-    // valueOf) and other non-numeric types throw ERR_INVALID_ARG_TYPE.
-    // buffer.test.js "alloc() should throw on non-numeric size" drives this.
-    let size = if argc > 0 {
-        let v = *args.get(0).ptr;
-        if v.is_int32() {
-            v.to_int32().max(0) as usize
-        } else if v.is_double() {
-            v.to_double().max(0.0) as usize
-        } else if v.is_boolean() {
-            (v.to_boolean() as i32) as usize
-        } else if v.is_undefined() || v.is_null() {
-            0
+    // @trace REQ-ENG-007 [api:Buffer.alloc size validation] — alloc-family
+    // size matrix (node v24.19 oracle, live-verified 2026-10-26; c12 pin
+    // flipped from the old boolean/undefined coerce pin to node truth):
+    //   • ANY non-number primitive (boolean / undefined / missing / null /
+    //     string / symbol / bigint / object) → TypeError
+    //     ERR_INVALID_ARG_TYPE 'The "size" argument must be of type number.'
+    //     + received descriptor — node v24 does NOT ToNumber-coerce booleans
+    //     or default undefined/null to 0 (alloc(true) THROWS in node, the
+    //     old coerce pin was wrong).
+    //   • number → NaN / negative / > 2^53-1 → RangeError ERR_OUT_OF_RANGE
+    //     'The value of "size" is out of range. It must be >= 0 && <=
+    //     9007199254740991. Received X' (node v24 shape, live-verified for
+    //     -1/NaN/2**53; Received uses numeric-separator inspect for integer
+    //     strings >= 11 digits, e.g. 9_007_199_254_740_992).
+    let size_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let size: usize = if !size_val.is_number() {
+        let desc = received_descriptor(cx, size_val);
+        let msg = format!(
+            "The \"size\" argument must be of type number.{}",
+            desc
+        );
+        let _ = throw_error_with_code(cx, false, "ERR_INVALID_ARG_TYPE", &msg);
+        return false;
+    } else {
+        let d = if size_val.is_int32() {
+            size_val.to_int32() as f64
         } else {
-            // @trace REQ-ENG-005 — Node.js rejects object/string/symbol size
-            // (including objects with valueOf) with ERR_INVALID_ARG_TYPE.
-            // buffer.test.js "alloc() should throw on non-numeric size".
+            size_val.to_double()
+        };
+        // NaN / negative / above MAX_SAFE_INTEGER — node v24 validates the
+        // full [0, 9007199254740991] range at the argument layer
+        // (live-verified: alloc(2**53) → ERR_OUT_OF_RANGE 'Received
+        // 9_007_199_254_740_992'); only in-range sizes that still exceed
+        // the practical engine ceiling reach the allocation backstop below.
+        if d.is_nan() || d < 0.0 || d > 9007199254740991.0 {
+            let msg = format!(
+                "The value of \"size\" is out of range. It must be >= 0 && <= {}. Received {}",
+                format_number_inspect(9007199254740991.0),
+                inspect_range_received(d)
+            );
+            let c_msg = cstring_for_error(&msg);
             {
                 let mut cx_s = unsafe {
                     mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
                 };
-                mozjs::error::throw_type_error(
-                    &mut cx_s,
-                    c"The \"size\" argument must be of type number.".as_ref(),
-                );
+                mozjs::error::throw_range_error(&mut cx_s, c_msg.as_ref());
+            }
+            if JS_IsExceptionPending(cx) {
+                rooted!(in(cx) let mut exn = UndefinedValue());
+                JS_GetPendingException(cx, exn.handle_mut().into());
+                let exn_val = exn.get();
+                if exn_val.is_object() {
+                    rooted!(in(cx) let exn_root = exn_val.to_object());
+                    let code_str = JS_NewStringCopyZ(cx, c"ERR_OUT_OF_RANGE".as_ptr());
+                    if !code_str.is_null() {
+                        let code_val = StringValue(&*code_str);
+                        rooted!(in(cx) let code_r = code_val);
+                        JS_DefineProperty(
+                            cx,
+                            exn_root.handle().into(),
+                            c"code".as_ptr(),
+                            code_r.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
+                }
             }
             return false;
         }
-    } else {
-        0
+        d as usize
     };
 
-    // @trace REQ-ENG-005 [entity:Buffer] — RangeError guard for huge allocations.
+    // @trace REQ-ENG-007 [entity:Buffer] — RangeError guard for huge allocations.
     // Mirrors JSC's MAX_ARRAY_BUFFER_SIZE check: callers that ask for more than
     // the typed-array ceiling get a synchronous RangeError instead of an OOM
     // abort or multi-minute hang while we attempt to materialise 64 GiB of
     // per-byte JS properties.
     if size > MAX_BUFFER_SIZE {
+        // @trace REQ-ENG-007 — RangeError guard for huge allocations, carrying
+        // the node ERR_OUT_OF_RANGE code (test-buffer-over-max-length pins
+        // { code: 'ERR_OUT_OF_RANGE', name: 'RangeError' } for
+        // Buffer.alloc(kMaxLength + 1); the c12 pin also locks
+        // alloc(2**53) → this 'Typed arrays are currently limited…' face —
+        // this backstop is the ONLY upper-bound check on the size path).
         let msg = format!(
             "Typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead.",
             MAX_BUFFER_SIZE
         );
-        let c_msg = ::std::ffi::CString::new(msg)
-            .unwrap_or_else(|_| ::std::ffi::CString::new("Buffer size out of range").unwrap());
-        {
-            let mut cx_s = unsafe {
-                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
-            };
-            mozjs::error::throw_range_error(&mut cx_s, c_msg.as_ref());
-        }
+        let _ = throw_error_with_code(cx, true, "ERR_OUT_OF_RANGE", &msg);
         return false;
     }
 
@@ -3872,12 +4505,23 @@ unsafe extern "C" fn buffer_is_buffer(_cx: *mut JSContext, argc: u32, vp: *mut J
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 {
-        return create_buffer_from_bytes(cx, &args, &[]);
-    }
-    let list_val = *args.get(0).ptr;
+    // @trace REQ-ENG-007 [api:Buffer.concat list validation] — node v24
+    // throws ERR_INVALID_ARG_TYPE ('The "list" argument must be an instance
+    // of Array.' + received descriptor) for non-object list values; REGISTRY
+    // R2 (globals_coverage_c12_buffer_concat_total_length_matrix pin)
+    // additionally accepts ARRAY-LIKE objects (numeric .length) which node
+    // rejects — so the gate is "object with a numeric length", not
+    // IsArrayObject. The previous implementation returned an EMPTY buffer
+    // for missing/non-object list values.
+    let list_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
     if !list_val.is_object() {
-        return create_buffer_from_bytes(cx, &args, &[]);
+        let desc = received_descriptor(cx, list_val);
+        let msg = format!(
+            "The \"list\" argument must be an instance of Array.{}",
+            desc
+        );
+        let _ = throw_error_with_code(cx, false, "ERR_INVALID_ARG_TYPE", &msg);
+        return false;
     }
 
     let mut cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
@@ -3902,10 +4546,19 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             0
         }
     } else {
-        0
+        // Object without a numeric length ({} etc.) — not array-like; the
+        // node v24 TypeError face is kept for it (REGISTRY R2 accepts
+        // array-likes, not length-less objects).
+        let desc = received_descriptor(cx, list_val);
+        let msg = format!(
+            "The \"list\" argument must be an instance of Array.{}",
+            desc
+        );
+        let _ = throw_error_with_code(cx, false, "ERR_INVALID_ARG_TYPE", &msg);
+        return false;
     };
 
-    // @trace REQ-ENG-005 [algorithm:buffer_concat] — TOCTOU-safe concat.
+    // @trace REQ-ENG-007 [algorithm:buffer_concat] — TOCTOU-safe concat.
     //
     // bun/test/js/node/buffer-concat.test.ts exercises a class of bugs where
     // a user-defined getter on the input array detaches or resizes a
@@ -3947,36 +4600,22 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         // ERR_INVALID_ARG_TYPE — the old code silently dropped non-object
         // items (Buffer.concat(["hi"]) returned an EMPTY buffer).
         if !elem.is_object() {
+            let desc = received_descriptor(cx, elem);
             let msg = format!(
-                "The \"list[{}]\" argument must be an instance of Buffer or Uint8Array",
-                i
+                "The \"list[{}]\" argument must be an instance of Buffer or Uint8Array.{}",
+                i, desc
             );
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
-                ::std::ffi::CString::new("list argument must be Buffer or Uint8Array").unwrap()
-            });
-            {
-                let mut cx_s = unsafe {
-                    mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
-                };
-                mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
-            }
+            let _ = throw_error_with_code(cx, false, "ERR_INVALID_ARG_TYPE", &msg);
             return false;
         }
         let elem_obj = elem.to_object();
         if !mozjs_sys::jsapi::JS_IsArrayBufferViewObject(elem_obj) {
+            let desc = received_descriptor(cx, elem);
             let msg = format!(
-                "The \"list[{}]\" argument must be an instance of Buffer or Uint8Array",
-                i
+                "The \"list[{}]\" argument must be an instance of Buffer or Uint8Array.{}",
+                i, desc
             );
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
-                ::std::ffi::CString::new("list argument must be Buffer or Uint8Array").unwrap()
-            });
-            {
-                let mut cx_s = unsafe {
-                    mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
-                };
-                mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
-            }
+            let _ = throw_error_with_code(cx, false, "ERR_INVALID_ARG_TYPE", &msg);
             return false;
         }
         rooted_vec.append(elem_obj);
@@ -4015,7 +4654,7 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             }
             return false;
         }
-        // @trace REQ-ENG-005 [entity:Buffer] — refuse concat that would
+        // @trace REQ-ENG-007 [entity:Buffer] — refuse concat that would
         // overflow MAX_BUFFER_SIZE. `Buffer.concat([huge, huge, ...])` is
         // the common abuse vector (bun/test/js/node/buffer-concat.test.ts
         // allocates 1024 × 64 MiB), so we bail out as soon as the running
@@ -4025,9 +4664,7 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
                 "Typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead.",
                 MAX_BUFFER_SIZE
             );
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
-                ::std::ffi::CString::new("Buffer.concat total length out of range").unwrap()
-            });
+            let c_msg = cstring_for_error(&msg);
             {
                 let mut cx_s = unsafe {
                     mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
@@ -4041,42 +4678,61 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         total = total.saturating_add(cur_len);
     }
 
-    // @trace REQ-ENG-005 [algorithm:buffer_concat]
+    // @trace REQ-ENG-007 [algorithm:buffer_concat]
     // Node.js: when totalLength is provided, the result is truncated to
     // totalLength bytes (or zero-filled if totalLength > sum). When
     // omitted, the result length is the sum of list element lengths.
     // Validation per Node.js: negative total → RangeError; non-numeric
     // total → TypeError (buffer.test.js "Buffer.concat" drives both).
+    //
+    // @trace REQ-ENG-006 [api:Buffer.concat totalLength validation] — node
+    // v24 oracle (live-verified 2026-10-26, node-test/parallel/
+    // test-buffer-concat.js drives the same matrix): the third argument is
+    // rendered as "length" (NOT "totalLength") in every error message, and
+    // each face carries the node error code:
+    //   • non-number ('x'/true/{}…) → TypeError ERR_INVALID_ARG_TYPE
+    //     'The "length" argument must be of type number.' + received
+    //     descriptor
+    //   • non-integer double (3.5 / NaN / ±Infinity) → RangeError
+    //     ERR_OUT_OF_RANGE 'The value of "length" is out of range. It must
+    //     be an integer. Received X' (validateInteger checks integer-ness
+    //     BEFORE the range, so -1.5 also lands here)
+    //   • negative integer / > kMaxLength(2^53-1) → RangeError
+    //     ERR_OUT_OF_RANGE 'The value of "length" is out of range. It must
+    //     be >= 0 && <= 9007199254740991. Received X'
+    //   • undefined/null → treated as omitted (sum of lengths)
     let mut target_total = total;
     if argc >= 2 {
         let tl_val = *args.get(1).ptr;
         if tl_val.is_int32() {
             let n = tl_val.to_int32();
             if n < 0 {
-                {
-                    let mut cx_s = unsafe {
-                        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
-                    };
-                    mozjs::error::throw_range_error(
-                        &mut cx_s,
-                        c"\"totalLength\" must be a non-negative integer".as_ref(),
-                    );
-                }
+                let msg = format!(
+                    "The value of \"length\" is out of range. It must be >= 0 && <= {}. Received {}",
+                    BUFFER_CONCAT_MAX_TOTAL_LENGTH,
+                    inspect_range_received(n as f64)
+                );
+                let _ = throw_error_with_code(cx, true, "ERR_OUT_OF_RANGE", &msg);
                 return false;
             }
             target_total = n as usize;
         } else if tl_val.is_double() {
             let d = tl_val.to_double();
-            if !d.is_finite() || d < 0.0 {
-                {
-                    let mut cx_s = unsafe {
-                        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
-                    };
-                    mozjs::error::throw_range_error(
-                        &mut cx_s,
-                        c"\"totalLength\" must be a non-negative integer".as_ref(),
-                    );
-                }
+            if !d.is_finite() || d.fract() != 0.0 {
+                let msg = format!(
+                    "The value of \"length\" is out of range. It must be an integer. Received {}",
+                    inspect_range_received(d)
+                );
+                let _ = throw_error_with_code(cx, true, "ERR_OUT_OF_RANGE", &msg);
+                return false;
+            }
+            if d < 0.0 || d > BUFFER_CONCAT_MAX_TOTAL_LENGTH {
+                let msg = format!(
+                    "The value of \"length\" is out of range. It must be >= 0 && <= {}. Received {}",
+                    BUFFER_CONCAT_MAX_TOTAL_LENGTH,
+                    inspect_range_received(d)
+                );
+                let _ = throw_error_with_code(cx, true, "ERR_OUT_OF_RANGE", &msg);
                 return false;
             }
             target_total = d as usize;
@@ -4084,15 +4740,9 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             // undefined/null → use sum of lengths (Node treats as omitted).
         } else {
             // Strings, booleans, objects → ERR_INVALID_ARG_TYPE (TypeError).
-            {
-                let mut cx_s = unsafe {
-                    mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
-                };
-                mozjs::error::throw_type_error(
-                    &mut cx_s,
-                    c"\"totalLength\" must be a non-negative integer".as_ref(),
-                );
-            }
+            let desc = received_descriptor(cx, tl_val);
+            let msg = format!("The \"length\" argument must be of type number.{}", desc);
+            let _ = throw_error_with_code(cx, false, "ERR_INVALID_ARG_TYPE", &msg);
             return false;
         }
         if target_total > MAX_BUFFER_SIZE {
@@ -4100,9 +4750,7 @@ unsafe extern "C" fn buffer_concat(cx: *mut JSContext, argc: u32, vp: *mut JSVal
                 "Typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead.",
                 MAX_BUFFER_SIZE
             );
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| {
-                ::std::ffi::CString::new("Buffer.concat totalLength out of range").unwrap()
-            });
+            let c_msg = cstring_for_error(&msg);
             {
                 let mut cx_s = unsafe {
                     mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
@@ -4146,14 +4794,16 @@ unsafe extern "C" fn buffer_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         return true;
     }
 
-    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let mut cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(cx_ref) let obj_root = this.to_object());
 
-    // @trace REQ-ENG-005 [api:Buffer.slice detach] — Node.js throws TypeError
-    // when the buffer's backing ArrayBuffer has been detached (e.g. via
-    // structuredClone transfer). Detect via the ArrayBuffer.byteLength === 0
-    // convention (SM surfaces a detached ArrayBuffer as byteLength 0).
-    // buffer.test.js "slice() on detached buffer throws TypeError" drives this.
+    // @trace REQ-ENG-007 [api:Buffer.slice detach] — Node.js throws TypeError
+    // when the buffer's backing ArrayBuffer has been genuinely detached (e.g.
+    // via structuredClone transfer). Detection uses the REAL detached
+    // predicate (JS::IsDetachedArrayBufferObject) — the previous
+    // `byteLength === 0` convention misfired on legitimately zero-length
+    // Buffers: node test-buffer-slice drives Buffer.alloc(0).slice(0, 1)
+    // → length 0, which must slice (as an empty view), NOT throw.
     {
         let mut ab_val = UndefinedValue();
         JS_GetProperty(
@@ -4167,22 +4817,7 @@ unsafe extern "C" fn buffer_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         );
         if ab_val.is_object() {
             rooted!(&in(cx_ref) let ab_root = ab_val.to_object());
-            let mut byte_len_val = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                ab_root.handle().into(),
-                c"byteLength".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut byte_len_val,
-                },
-            );
-            let byte_len = if byte_len_val.is_int32() {
-                byte_len_val.to_int32()
-            } else {
-                -1
-            };
-            if byte_len == 0 {
+            if mozjs_sys::jsapi::JS::IsDetachedArrayBufferObject(ab_root.get()) {
                 {
                     let mut cx_s = unsafe {
                         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
@@ -4221,7 +4856,7 @@ unsafe extern "C" fn buffer_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         }
     };
 
-    // @trace REQ-ENG-005 [api:Buffer.slice] — Node.js coerces start/end via
+    // @trace REQ-ENG-007 [api:Buffer.slice] — Node.js coerces start/end via
     // ToInteger (handles strings like "0"/"-5", -0 → 0, NaN → 0, Infinity →
     // len). Negative offsets count from the end. buffer.test.js "Buffer.compare"
     // exercises buf.slice("0","1"), buf.slice("-5","10"), buf.slice("-10","-0"),
@@ -4292,7 +4927,7 @@ unsafe extern "C" fn buffer_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     let slice_end = (end_i.max(0) as usize).min(len);
     // If end < start, clamp to empty slice (Node semantics: empty).
     let slice_end = slice_end.max(start);
-    // @trace REQ-ENG-005 [api:Buffer.slice shares backing ArrayBuffer] —
+    // @trace REQ-ENG-007 [api:Buffer.slice shares backing ArrayBuffer] —
     // Node.js Buffer.prototype.slice SHARES the underlying ArrayBuffer (it
     // returns a view into the same memory, NOT a copy). buffer.test.js
     // "only top level parent propagates from a non-pooled instance" drives
@@ -4391,7 +5026,7 @@ unsafe extern "C" fn buffer_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 unsafe extern "C" fn buffer_copy(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
-    // @trace REQ-ENG-005 [api:Buffer.copy] — Node.js throws ERR_INVALID_ARG_TYPE
+    // @trace REQ-ENG-007 [api:Buffer.copy] — Node.js throws ERR_INVALID_ARG_TYPE
     // (TypeError) when `target` is missing or not a Buffer/Uint8Array. Test
     // "Buffer,poolSize" drives Buffer.allocUnsafe(10).copy().
     if !this.is_object() || argc == 0 || !(*args.get(0).ptr).is_object() {
@@ -4415,7 +5050,7 @@ unsafe extern "C" fn buffer_copy(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     }
     rooted!(&in(cx_ref) let tgt_root = target_val.to_object());
 
-    // @trace REQ-ENG-005 [api:Buffer.copy TOCTOU] — Node.js evaluates the
+    // @trace REQ-ENG-007 [api:Buffer.copy TOCTOU] — Node.js evaluates the
     // numeric arguments left-to-right via ToNumber, which invokes user
     // valueOf callbacks. Those callbacks can detach or resize the source /
     // target backing ArrayBuffer (ArrayBuffer.prototype.transfer / resize).
@@ -4498,7 +5133,7 @@ unsafe extern "C" fn buffer_copy(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         src_len_pre as f64
     };
 
-    // @trace REQ-ENG-005 [TOCTOU] — Re-read lengths AFTER all user callbacks
+    // @trace REQ-ENG-007 [TOCTOU] — Re-read lengths AFTER all user callbacks
     // have run. detach → (0, null); resize-down → smaller logical length.
     let (src_len, src_data) = buffer_view_bytes(src_root.get());
     let (tgt_len, tgt_data) = buffer_view_bytes(tgt_root.get());
@@ -4543,8 +5178,16 @@ unsafe extern "C" fn buffer_copy(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     }
 
     if !src_data.is_null() && !tgt_data.is_null() {
-        // Fast path: both sides are Typed arrays → memcpy.
-        ::std::ptr::copy_nonoverlapping(src_data.add(src_start), tgt_data.add(tgt_start), copy_len);
+        // Fast path: both sides are Typed arrays → memmove semantics.
+        // @trace REQ-ENG-007 [api:Buffer.copy overlap] — src and tgt can be
+        // views into the SAME ArrayBuffer with overlapping ranges
+        // (test-buffer-copy drives buf.copy(buf, 2, 0, 4) — "ababcd"). The
+        // previous `ptr::copy_nonoverlapping` violated its safety contract
+        // there (debug-builds UB check aborted the process:
+        // "ptr::copy_nonoverlapping requires ... the specified memory ranges
+        // do not overlap"). `ptr::copy` is memmove: correct for every
+        // overlap shape, same cost when disjoint.
+        ::std::ptr::copy(src_data.add(src_start), tgt_data.add(tgt_start), copy_len);
     } else {
         // Legacy per-element copy. Node writes from source to target at
         // targetStart + i, NOT at i (canonical Node semantics).
@@ -4577,14 +5220,226 @@ unsafe extern "C" fn buffer_copy(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     true
 }
 
-// @trace REQ-ENG-005 — Construct a TypeError or RangeError, attach a Node.js
+// @trace REQ-ENG-007 — Single escape point for converting a Rust error-message
+// String into a `CString` safe for `throw_type_error` / `throw_range_error`.
+//
+// Node.js oracle (measured against node v24 on this host, 2026-10-26):
+//   `JSON.stringify("Received type string ('a" + "\x00" + "b')")`
+//     → `"Received type string ('a\\u0000b')"`
+// i.e. when a JS string carries an embedded NUL byte, node renders it as the
+// six-character escape `\u0000`. CString::new rejects any interior NUL, so
+// the previous `unwrap_or_else(|_| CString::new("<static fallback>"))` pattern
+// swapped the whole real message ("Received type string ('a<NUL>b')") for a
+// static placeholder — silently discarding the received descriptor. The only
+// in-tree producer of interior NULs is `received_descriptor` (JS strings can
+// carry `\x00`; static literal messages never do), so one helper covers the
+// whole class.
+//
+// Escape rule: replace every interior NUL byte with the literal six characters
+// `\u0000`, matching node's JSON rendering. After escaping there are zero NUL
+// bytes left, so `CString::new(...).unwrap()` is structurally infallible
+// (铁律第二行①: a structurally-unreachable failure is allowed to panic).
+fn cstring_for_error(msg: &str) -> ::std::ffi::CString {
+    let escaped = if msg.as_bytes().contains(&0) {
+        msg.replace('\0', "\\u0000")
+    } else {
+        msg.to_string()
+    };
+    ::std::ffi::CString::new(escaped).unwrap()
+}
+
+// @trace REQ-ENG-007 — Node.js test/common/index.js `invalidArgTypeHelper`
+// equivalent: renders the " Received ..." suffix appended to ERR_INVALID_ARG_TYPE
+// messages. Shape (node test/common/index.js:802):
+//   null/undefined → " Received null" / " Received undefined"
+//   function       → " Received function <name>"
+//   object         → " Received an instance of <constructor.name>" (when the
+//                    constructor has a non-empty name) else " Received <inspect>"
+//   primitive      → " Received type <typeof> (<inspected>)" — inspected
+//                    truncated at 28 chars ("..." after 25).
+// Shared by the Buffer natives (equals/concat/byteLength/from/isAscii/…) so
+// every validation site renders byte-identical text to Node.js.
+pub(crate) unsafe fn received_descriptor(cx: *mut JSContext, v: JSVal) -> String {
+    if v.is_null() {
+        return " Received null".to_string();
+    }
+    if v.is_undefined() {
+        return " Received undefined".to_string();
+    }
+    if v.is_object() {
+        let mut cx_ref =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let obj_root = v.to_object());
+        let mut ctor_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            obj_root.handle().into(),
+            c"constructor".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ctor_val,
+            },
+        );
+        if ctor_val.is_object() {
+            rooted!(&in(cx_ref) let ctor_root = ctor_val.to_object());
+            let mut name_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                ctor_root.handle().into(),
+                c"name".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut name_val,
+                },
+            );
+            if name_val.is_string() {
+                let name = jsstr_to_string(
+                    &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+                    ::std::ptr::NonNull::new_unchecked(name_val.to_string()),
+                );
+                if !name.is_empty() {
+                    return format!(" Received an instance of {}", name);
+                }
+            }
+        }
+        // No named constructor — fall back to String(v) (inspect depth:-1
+        // approximation; node renders "[object Object]" / "[object Array]").
+        let obj_val = ObjectValue(obj_root.get());
+        rooted!(&in(cx_ref) let obj_val_root = obj_val);
+        let js_str = mozjs::rust::ToString(&mut cx_ref, obj_val_root.handle());
+        if !js_str.is_null() {
+            let s = jsstr_to_string(
+                &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+                ::std::ptr::NonNull::new_unchecked(js_str),
+            );
+            return format!(" Received {}", s);
+        }
+        return " Received [object Object]".to_string();
+    }
+    if v.is_string() {
+        let s = jsstr_to_string(
+            &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+            ::std::ptr::NonNull::new_unchecked(v.to_string()),
+        );
+        let inspected = truncate_inspect(format!("'{}'", s));
+        return format!(" Received type string ({})", inspected);
+    }
+    if v.is_number() {
+        // @trace REQ-ENG-007 [entity:Buffer] — to_number (NOT to_double): an
+        // int32 JSVal satisfies is_number()==true but to_double() asserts
+        // is_double() and aborts the process (jsval.rs:431) — that abort was
+        // the SIGSEGV behind c12_buffer_byte_length_matrix (descriptor arm
+        // for byteLength(42)) and c3_buffer_global_static_predicates
+        // (isAscii(42)). to_number branches int32/double safely.
+        let d = v.to_number();
+        return format!(" Received type number ({})", format_number_inspect(d));
+    }
+    if v.is_boolean() {
+        return format!(" Received type boolean ({})", v.to_boolean());
+    }
+    if v.is_symbol() {
+        let mut cx_ref =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let sym_root = v);
+        let js_str = mozjs::rust::ToString(&mut cx_ref, sym_root.handle());
+        if !js_str.is_null() {
+            let s = jsstr_to_string(
+                &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+                ::std::ptr::NonNull::new_unchecked(js_str),
+            );
+            return format!(" Received type symbol ({})", s);
+        }
+        return " Received type symbol (Symbol())".to_string();
+    }
+    if v.is_bigint() {
+        let mut cx_ref =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let big_root = v);
+        let js_str = mozjs::rust::ToString(&mut cx_ref, big_root.handle());
+        if !js_str.is_null() {
+            let s = jsstr_to_string(
+                &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+                ::std::ptr::NonNull::new_unchecked(js_str),
+            );
+            return format!(" Received type bigint ({}n)", s);
+        }
+        return " Received type bigint (0n)".to_string();
+    }
+    " Received unknown".to_string()
+}
+
+// 28-char inspect truncation used by received_descriptor ("..." keeps the
+// first 25 chars) — mirrors node's invalidArgTypeHelper.
+fn truncate_inspect(s: String) -> String {
+    if s.chars().count() > 28 {
+        let head: String = s.chars().take(25).collect();
+        format!("{}...", head)
+    } else {
+        s
+    }
+}
+
+// Node's util.inspect number rendering for error messages: 32 → "32",
+// 1.01 → "1.01", NaN → "NaN", Infinity/-Infinity spelled out.
+fn format_number_inspect(d: f64) -> String {
+    if d.is_nan() {
+        return "NaN".to_string();
+    }
+    if d.is_infinite() {
+        return if d > 0.0 { "Infinity".to_string() } else { "-Infinity".to_string() };
+    }
+    if d.fract() == 0.0 && d.abs() < 1e15 {
+        return format!("{}", d as i64);
+    }
+    format!("{}", d)
+}
+
+/// Received-value rendering for ERR_OUT_OF_RANGE messages — unlike the bare
+/// `format_number_inspect` used for TypeError received-descriptors and the
+/// range's max literal, node v24 inserts '_' every 3 digits once the integer
+/// string reaches 11 digits (live-verified 2026-10-26: Received -9999999999
+/// stays bare, -12345678901 → -12_345_678_901, alloc(2**53) →
+/// 9_007_199_254_740_992; while the same numbers inside TypeError messages
+/// like `Buffer(12345678901, "utf8")` stay bare). >= 1e21 node switches to
+/// exponent notation ('1e+21'); no pin drives that face today — honest
+/// boundary, left as Rust Display here.
+fn inspect_range_received(d: f64) -> String {
+    if d.is_nan() || d.is_infinite() || (d.fract() == 0.0 && d.abs() < 1e21) {
+        let bare = format_number_inspect(d);
+        return add_numeric_separators(&bare);
+    }
+    format_number_inspect(d)
+}
+
+fn add_numeric_separators(s: &str) -> String {
+    let digits_start = usize::from(s.starts_with('-'));
+    let (sign, digits) = s.split_at(digits_start);
+    if digits.len() < 11 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    out.push_str(sign);
+    let first_group = digits.len() % 3;
+    if first_group > 0 {
+        out.push_str(&digits[..first_group]);
+        out.push('_');
+    }
+    for (i, ch) in digits[first_group..].chars().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            out.push('_');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+// @trace REQ-ENG-007 — Construct a TypeError or RangeError, attach a Node.js
 // `.code` property (e.g. "ERR_OUT_OF_RANGE", "ERR_UNKNOWN_ENCODING"), set it
 // as the pending exception, and return false for use in `extern "C"` hooks.
 // Mirrors the node_fs.rs pending-exception pattern.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn throw_error_with_code(cx: *mut JSContext, range: bool, code: &str, msg: &str) -> bool {
-    let c_msg = ::std::ffi::CString::new(msg)
-        .unwrap_or_else(|_| ::std::ffi::CString::new("error").unwrap());
+    let c_msg = cstring_for_error(msg);
     if range {
         {
             let mut cx_s = unsafe {
@@ -4635,18 +5490,65 @@ unsafe extern "C" fn buffer_equals(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() || argc == 0 {
-        args.rval().set(mozjs::jsval::BooleanValue(false));
-        return true;
+        // @trace REQ-ENG-007 [api:Buffer.equals validation] — node v24:
+        // equals(otherBuffer) requires a Buffer/Uint8Array argument and a
+        // view receiver (test-buffer-fakes drives fb.equals(alloc(0)) →
+        // TypeError; test-buffer-equals pins the exact message:
+        // 'The "otherBuffer" argument must be an instance of Buffer or
+        // Uint8Array.' + received descriptor for 'abc').
+        let mut cx_s = unsafe {
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
+        };
+        mozjs::error::throw_type_error(
+            &mut cx_s,
+            c"The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array.".as_ref(),
+        );
+        return false;
     }
 
     let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(cx_ref) let src_root = this.to_object());
+    {
+        // Receiver must be a real ArrayBufferView (node generic-methods
+        // contract: equals works on plain Uint8Arrays; fakes throw).
+        let is_view = mozjs_sys::jsapi::JS_IsArrayBufferViewObject(src_root.get());
+        let is_ab = mozjs_sys::jsapi::JS::IsArrayBufferObject(src_root.get());
+        if !is_view && !is_ab {
+            let mut cx_s = unsafe {
+                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
+            };
+            mozjs::error::throw_type_error(
+                &mut cx_s,
+                c"The \"this\" value must be an instance of ArrayBufferView.".as_ref(),
+            );
+            return false;
+        }
+    }
     let (src_len, src_data) = buffer_view_bytes(src_root.get());
 
-    let other_val = *args.get(0).ptr;
-    if !other_val.is_object() {
-        args.rval().set(mozjs::jsval::BooleanValue(false));
-        return true;
+    let other_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    // node accepts Buffer OR Uint8Array only — JS_GetObjectAsUint8Array
+    // recognises exactly the Uint8Array kind (a Float32Array/{} /string
+    // returns null → TypeError, matching instanceof checks in node).
+    let other_ok = other_val.is_object() && {
+        let obj = other_val.to_object();
+        let mut l: usize = 0;
+        let mut s = false;
+        let mut d: *mut u8 = ::std::ptr::null_mut();
+        !mozjs_sys::jsapi::JS_GetObjectAsUint8Array(obj, &mut l, &mut s, &mut d).is_null()
+    };
+    if !other_ok {
+        let desc = received_descriptor(cx, other_val);
+        let msg = format!(
+            "The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array.{}",
+            desc
+        );
+        let c_msg = cstring_for_error(&msg);
+        let mut cx_s = unsafe {
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
+        };
+        mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
+        return false;
     }
     rooted!(&in(cx_ref) let tgt_root = other_val.to_object());
     let (tgt_len, tgt_data) = buffer_view_bytes(tgt_root.get());
@@ -4718,71 +5620,61 @@ unsafe extern "C" fn buffer_index_of(cx: *mut JSContext, argc: u32, vp: *mut JSV
     rooted!(&in(cx_ref) let obj_root = this.to_object());
 
     let (_buf_len, data_ptr) = buffer_view_bytes(obj_root.get());
-    if data_ptr.is_null() {
-        // Fallback to JS-level access for non-typed-array Buffer-likes.
-        let mut len_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            obj_root.handle().into(),
-            c"length".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut len_val,
-            },
-        );
-        // Reuse the legacy implementation on this slow path.
-        let len = if len_val.is_int32() {
-            len_val.to_int32() as usize
-        } else {
-            0
-        };
-        return buffer_index_of_legacy(cx, &args, argc, obj_root.handle().into(), len);
-    }
 
-    // @trace REQ-ENG-005 [api:Buffer.indexOf detach semantics] — Node.js:
-    // byteOffset is coerced via ToInteger which invokes valueOf callbacks.
-    // The user's valueOf may detach the backing ArrayBuffer (ArrayBuffer.transfer),
-    // in which case the haystack must be treated as length 0 → indexOf returns -1.
-    // We coerce BEFORE reading bytes so the detach is observable, then re-read
-    // the view to detect it.
+    // @trace REQ-ENG-007 [api:Buffer.indexOf byteOffset] — byteOffset coerces
+    // via ToNumber (NOT ToInt32): node v24 (test-buffer-indexof, oracle)
+    //   Infinity → -1 (past-the-end), -Infinity → 0, NaN → 0, fractional →
+    //   trunc, negative → from-end. The previous ToInt32 coercion mapped
+    //   Infinity to 0 and made b.indexOf('a', Infinity) return 0 instead
+    //   of -1. Rust's `f64 as usize` cast saturates, so ±Infinity map to
+    //   usize::MAX / (len+(-inf)).max(0) = 0 respectively, which the
+    //   downstream `byte_offset > buf_len → -1` check consumes.
     //
-    // @trace REQ-ENG-005 — encoding-as-2nd-arg overload: when the needle is a
+    // @trace REQ-ENG-007 [api:Buffer.indexOf detach semantics] — the user's
+    // valueOf may detach the backing ArrayBuffer (ArrayBuffer.transfer), in
+    // which case the haystack must be treated as length 0 → -1. We coerce
+    // BEFORE reading bytes so the detach is observable, then re-read the
+    // view to detect it.
+    //
+    // @trace REQ-ENG-007 — encoding-as-2nd-arg overload: when the needle is a
     // string and the second argument is a string, it's an encoding (not a
     // byteOffset). buffer.test.js "indexOf(value, encoding) is unchanged by
     // the lastIndexOf fix" drives b.indexOf("hello", "utf16le"). Detect this
-    // case BEFORE the ToInt32 coercion so we don't treat "utf16le" as offset 0.
+    // case BEFORE the numeric coercion so we don't treat "utf16le" as an
+    // offset.
     let encoding_arg_at_pos1 =
         argc >= 2 && (*args.get(0).ptr).is_string() && (*args.get(1).ptr).is_string();
-    let byte_offset: i64 = if argc >= 2 && !encoding_arg_at_pos1 {
+    let byte_offset_raw: f64 = if argc >= 2 && !encoding_arg_at_pos1 {
         let off_val = *args.get(1).ptr;
         rooted!(&in(cx_ref) let off_root = off_val);
-        match mozjs::rust::ToInt32(&mut cx_ref, off_root.handle()) {
-            Ok(v) => v as i64,
+        match mozjs::rust::ToNumber(&mut cx_ref, off_root.handle()) {
+            Ok(v) => v,
             Err(_) => {
                 // Coercion threw — propagate.
                 return false;
             }
         }
     } else {
-        0
+        0.0
     };
-    let byte_offset_raw = byte_offset;
 
     // Re-read the buffer view AFTER coercion — if valueOf detached the
     // backing store, data_ptr is now null and length is 0.
     let (buf_len_post, data_ptr_post) = buffer_view_bytes(obj_root.get());
-    let detached = data_ptr_post.is_null() || buf_len_post == 0;
+    let detached = data_ptr_post.is_null();
 
-    // @trace REQ-ENG-005 — Node parity: a negative byteOffset is interpreted
-    // as an offset from the END of the buffer (offset = max(0, len+offset)).
-    // buffer.test.js "indexOf/lastIndexOf with an explicit byteOffset" drives
-    // `b.indexOf("hello", -5)` on "hello world hello" (len=17) to start the
-    // search at index 12 (the second "hello"), NOT at index 0. Computed
-    // against the post-coercion length so a valueOf that resized the buffer
-    // is honoured.
-    let byte_offset = if byte_offset_raw < 0 {
-        let from_end = buf_len_post as i64 + byte_offset_raw;
-        if from_end < 0 { 0 } else { from_end as usize }
+    // @trace REQ-ENG-007 — Node parity: a negative byteOffset is interpreted
+    // as an offset from the END of the buffer (offset = max(0, len+offset));
+    // NaN → 0; ±Infinity / huge values saturate (usize cast) and fall out of
+    // the downstream bounds check → -1. test-buffer-indexof drives
+    // indexOf('a', Infinity) === -1 and indexOf('a', -Infinity) === 0.
+    // Computed against the post-coercion length so a valueOf that resized
+    // the buffer is honoured.
+    let byte_offset: usize = if byte_offset_raw.is_nan() {
+        0
+    } else if byte_offset_raw < 0.0 {
+        let from_end = buf_len_post as f64 + byte_offset_raw;
+        if from_end < 0.0 { 0 } else { from_end as usize }
     } else {
         byte_offset_raw as usize
     };
@@ -4823,7 +5715,7 @@ unsafe extern "C" fn buffer_index_of(cx: *mut JSContext, argc: u32, vp: *mut JSV
 
     // Re-read again after encoding toString coercion.
     let (buf_len_final, data_ptr_final) = buffer_view_bytes(obj_root.get());
-    let detached_final = data_ptr_final.is_null() || buf_len_final == 0;
+    let detached_final = data_ptr_final.is_null();
 
     if detached || detached_final {
         // Haystack detached → treat as length 0 → indexOf returns -1.
@@ -4836,7 +5728,7 @@ unsafe extern "C" fn buffer_index_of(cx: *mut JSContext, argc: u32, vp: *mut JSV
     let search_val = *args.get(0).ptr;
     let _ = buf_len; // silence unused warning if buffer was re-read above
 
-    // @trace REQ-ENG-005 — Number needle: ToNumber coercion so a double like
+    // @trace REQ-ENG-007 — Number needle: ToNumber coercion so a double like
     // 99.9 or an out-of-range integer like 256+99=355 is masked to its low
     // byte (Node parity — buffer.test.js "indexOf" drives b.indexOf(99.9) and
     // b.indexOf(256 + 99) both to match 'c'=99). We accept any numeric
@@ -4980,7 +5872,7 @@ unsafe extern "C" fn buffer_index_of(cx: *mut JSContext, argc: u32, vp: *mut JSV
         }
     } else if search_val.is_object() {
         // Buffer/Uint8Array needle — use the typed-array view bytes directly.
-        // @trace REQ-ENG-005 [api:Buffer.indexOf detach needle] — Node.js:
+        // @trace REQ-ENG-007 [api:Buffer.indexOf detach needle] — Node.js:
         // if the needle was detached via the byteOffset/encoding callbacks,
         // treat it as length 0 → matches at byte_offset (empty needle).
         let cx_ref_nd = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
@@ -5009,134 +5901,6 @@ unsafe extern "C" fn buffer_index_of(cx: *mut JSContext, argc: u32, vp: *mut JSV
     true
 }
 
-/// Legacy per-element indexOf, used only when `this` is not a typed array
-/// (kept for any non-Buffer array-like callers that predate the typed-array
-/// refactor). Mirrors the previous implementation verbatim.
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn buffer_index_of_legacy(
-    cx: *mut JSContext,
-    args: &CallArgs,
-    argc: u32,
-    obj_h: Handle<*mut JSObject>,
-    buf_len: usize,
-) -> bool {
-    let byte_offset = if argc >= 2 {
-        let off_val = *args.get(1).ptr;
-        if off_val.is_int32() {
-            off_val.to_int32().max(0) as usize
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
-    let search_val = *args.get(0).ptr;
-    if search_val.is_int32() {
-        let needle = search_val.to_int32() as u8;
-        for i in byte_offset..buf_len {
-            let mut elem = UndefinedValue();
-            JS_GetElement(
-                cx,
-                obj_h,
-                i as u32,
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut elem,
-                },
-            );
-            if elem.is_int32() && elem.to_int32() as u8 == needle {
-                args.rval().set(Int32Value(i as i32));
-                return true;
-            }
-        }
-    } else if search_val.is_string() {
-        let js_str = search_val.to_string();
-        let needle_str = jsstr_to_string(
-            &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
-            NonNull::new_unchecked(js_str),
-        );
-        // @trace REQ-ENG-005 [api:Buffer.indexOf/lastIndexOf] — Node.js
-        // honours the optional encoding argument (positional idx 2 for
-        // indexOf, idx 2 for lastIndexOf): encode the needle string under
-        // that encoding before scanning. Default is utf8.
-        let encoding = if argc >= 3 && (*args.get(2).ptr).is_string() {
-            jsstr_to_string(
-                &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
-                NonNull::new_unchecked((*args.get(2).ptr).to_string()),
-            )
-            .to_lowercase()
-        } else {
-            "utf8".to_string()
-        };
-        let needle: Vec<u8> = match encoding.as_str() {
-            "utf8" | "utf-8" | "" => needle_str.bytes().collect(),
-            "ucs2" | "ucs-2" | "utf16le" | "utf-16le" => {
-                let mut out = Vec::with_capacity(needle_str.len() * 2);
-                for c in needle_str.chars() {
-                    let code = c as u32;
-                    if code <= 0xFFFF {
-                        out.extend_from_slice(&(code as u16).to_le_bytes());
-                    } else {
-                        let v = code - 0x10000;
-                        out.extend_from_slice(&(0xD800 + (v >> 10) as u16).to_le_bytes());
-                        out.extend_from_slice(&(0xDC00 + (v & 0x3FF) as u16).to_le_bytes());
-                    }
-                }
-                out
-            }
-            "latin1" | "binary" | "ascii" => needle_str
-                .chars()
-                .map(|c| (c as u32 & 0xFF) as u8)
-                .collect(),
-            "hex" => {
-                let mut out = Vec::new();
-                let chars: Vec<char> = needle_str.chars().collect();
-                let mut i = 0;
-                while i + 1 < chars.len() {
-                    let hi = chars[i].to_digit(16).unwrap_or(0);
-                    let lo = chars[i + 1].to_digit(16).unwrap_or(0);
-                    out.push(((hi << 4) | lo) as u8);
-                    i += 2;
-                }
-                out
-            }
-            "base64" => bun_base64::decode_alloc(needle_str.as_bytes()).unwrap_or_default(),
-            "base64url" => bun_base64::decode_alloc(needle_str.as_bytes()).unwrap_or_default(),
-            _ => needle_str.bytes().collect(),
-        };
-        if needle.is_empty() || needle.len() > buf_len {
-            args.rval().set(DoubleValue(byte_offset as f64));
-            return true;
-        }
-        'outer: for i in byte_offset..=(buf_len - needle.len()) {
-            for (j, &nbyte) in needle.iter().enumerate() {
-                let mut elem = UndefinedValue();
-                JS_GetElement(
-                    cx,
-                    obj_h,
-                    (i + j) as u32,
-                    MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut elem,
-                    },
-                );
-                let b = if elem.is_int32() {
-                    elem.to_int32() as u8
-                } else {
-                    0
-                };
-                if b != nbyte {
-                    continue 'outer;
-                }
-            }
-            args.rval().set(Int32Value(i as i32));
-            return true;
-        }
-    }
-    args.rval().set(Int32Value(-1));
-    true
-}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_is_encoding(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
@@ -5177,21 +5941,23 @@ unsafe extern "C" fn buffer_is_encoding(_cx: *mut JSContext, argc: u32, vp: *mut
 unsafe extern "C" fn buffer_byte_length(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        // @trace REQ-ENG-005 — Buffer.byteLength() (no args) throws
-        // ERR_INVALID_ARG_TYPE (a TypeError) per Node.js.
+        // @trace REQ-ENG-007 — Buffer.byteLength() (no args) throws
+        // ERR_INVALID_ARG_TYPE (a TypeError) per Node.js. Message per node
+        // v24 (test-buffer-bytelength drives the exact string via
+        // common.invalidArgTypeHelper(undefined)).
         {
             let mut cx_s = unsafe {
                 mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
             };
             mozjs::error::throw_type_error(
                 &mut cx_s,
-                    c"The \"string\", \"Buffer\", or \"TypedArray\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received undefined".as_ref(),
+                    c"The \"string\" argument must be of type string or an instance of Buffer or ArrayBuffer. Received undefined".as_ref(),
             );
         }
         return false;
     }
     let input = *args.get(0).ptr;
-    // @trace REQ-ENG-005 [api:Buffer.byteLength] — Node.js honours the
+    // @trace REQ-ENG-007 [api:Buffer.byteLength] — Node.js honours the
     // optional encoding argument: utf8/ascii/latin1/hex count via the
     // encoded byte length, ucs2/utf16le is 2 bytes per code unit (4 per
     // surrogate pair), base64/base64url is the decoded length. Default
@@ -5260,7 +6026,7 @@ unsafe extern "C" fn buffer_byte_length(cx: *mut JSContext, argc: u32, vp: *mut 
                 if canonical.is_empty() {
                     0
                 } else {
-                    // @trace REQ-ENG-005 — RFC 4648 decoded length: only the
+                    // @trace REQ-ENG-007 — RFC 4648 decoded length: only the
                     // non-padding characters contribute (each group of 4
                     // non-pad chars → 3 bytes); pad chars are stripped first.
                     // Node parity: "aaaa==" (4 non-pad + 2 pad) → 3 bytes,
@@ -5270,7 +6036,7 @@ unsafe extern "C" fn buffer_byte_length(cx: *mut JSContext, argc: u32, vp: *mut 
                     (non_pad as i32 * 3) / 4
                 }
             }
-            // @trace REQ-ENG-005 — latin1/binary/ascii → 1 byte per code unit
+            // @trace REQ-ENG-007 — latin1/binary/ascii → 1 byte per code unit
             // (chars().count(), NOT UTF-8 byte length). utf8/utf-8/"" → UTF-8
             // byte length (s.len()). buffer.test.js "Buffer.byteLength()"
             // drives "Il était tué" latin1 → 12 (12 code units) vs utf8 → 14.
@@ -5280,7 +6046,7 @@ unsafe extern "C" fn buffer_byte_length(cx: *mut JSContext, argc: u32, vp: *mut 
         };
         args.rval().set(Int32Value(n));
     } else if input.is_object() {
-        // @trace REQ-ENG-005 — ArrayBuffer / TypedArray / Buffer / DataView
+        // @trace REQ-ENG-007 — ArrayBuffer / TypedArray / Buffer / DataView
         // → byte length. Non-view plain objects (e.g. {}) must still throw
         // ERR_INVALID_ARG_TYPE (test "Buffer.byteLength()").
         let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
@@ -5288,18 +6054,23 @@ unsafe extern "C" fn buffer_byte_length(cx: *mut JSContext, argc: u32, vp: *mut 
         let is_ab = mozjs_sys::jsapi::JS::IsArrayBufferObject(obj_root.get());
         let is_view = unsafe { mozjs_sys::jsapi::JS_IsArrayBufferViewObject(obj_root.get()) };
         if !is_ab && !is_view {
+            // node v24 message + received descriptor (test-buffer-bytelength
+            // drives '…Received an instance of Object' for {}).
+            let desc = received_descriptor(cx, input);
+            let msg = format!(
+                "The \"string\" argument must be of type string or an instance of Buffer or ArrayBuffer.{}",
+                desc
+            );
+            let c_msg = cstring_for_error(&msg);
             {
                 let mut cx_s = unsafe {
                     mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
                 };
-                mozjs::error::throw_type_error(
-                    &mut cx_s,
-                        c"The \"string\", \"Buffer\", or \"TypedArray\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received [object Object]".as_ref(),
-                );
+                mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
             }
             return false;
         }
-        // @trace REQ-ENG-005 — ArrayBuffer → byteLength via the JS
+        // @trace REQ-ENG-007 — ArrayBuffer → byteLength via the JS
         // ArrayBuffer.prototype.byteLength accessor; TypedArray / Buffer /
         // DataView → use the typed-array view bytes. buffer.test.js
         // "Buffer.byteLength()" drives ArrayBuffer(8) → 8, Int8Array(8) → 8,
@@ -5321,7 +6092,7 @@ unsafe extern "C" fn buffer_byte_length(cx: *mut JSContext, argc: u32, vp: *mut 
                 0
             }
         } else {
-            // @trace REQ-ENG-005 — Any ArrayBuffer view (TypedArray /
+            // @trace REQ-ENG-007 — Any ArrayBuffer view (TypedArray /
             // DataView / Buffer) — read its `.byteLength` property directly
             // rather than going through JS_GetObjectAsUint8Array (which only
             // recognises Uint8Array and returns 0 for Int8Array etc.).
@@ -5343,17 +6114,23 @@ unsafe extern "C" fn buffer_byte_length(cx: *mut JSContext, argc: u32, vp: *mut 
         };
         args.rval().set(DoubleValue(n as f64));
     } else {
-        // @trace REQ-ENG-005 — Node.js throws ERR_INVALID_ARG_TYPE (a
+        // @trace REQ-ENG-007 — Node.js throws ERR_INVALID_ARG_TYPE (a
         // TypeError) for non-string/non-ArrayBufferView/non-ArrayBuffer
-        // input. Test "Buffer.byteLength()" drives 32/NaN/{}/().
+        // input. Test "Buffer.byteLength()" drives 32/NaN/{}/() — message
+        // per node v24: 'The "string" argument must be of type string or an
+        // instance of Buffer or ArrayBuffer.' + received descriptor
+        // ("Received type number (32)" for 32).
+        let desc = received_descriptor(cx, input);
+        let msg = format!(
+            "The \"string\" argument must be of type string or an instance of Buffer or ArrayBuffer.{}",
+            desc
+        );
+        let c_msg = cstring_for_error(&msg);
         {
             let mut cx_s = unsafe {
                 mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))
             };
-            mozjs::error::throw_type_error(
-                &mut cx_s,
-                    c"The \"string\", \"Buffer\", or \"TypedArray\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ".as_ref(),
-            );
+            mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
         }
         return false;
     }
@@ -5410,13 +6187,28 @@ unsafe extern "C" fn buffer_compare(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         (bytes, len)
     };
 
-    let a_val = *args.get(0).ptr;
-    let b_val = *args.get(1).ptr;
+    let a_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let b_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
     // @trace REQ-ENG-006 [api:Buffer.compare] — Node.js throws ERR_INVALID_ARG_TYPE
     // ("The \"buf1\", \"buf2\" arguments must be of type Uint8Array") when either
     // argument is not a Buffer/Uint8Array. Mirror that here so the static
-    // `Buffer.compare(x, nonBuffer)` path matches prototype semantics.
-    if !a_val.is_object() || !b_val.is_object() {
+    // `Buffer.compare(x, nonBuffer)` path matches prototype semantics. The
+    // Uint8Array-kind check (JS_GetObjectAsUint8Array) also rejects
+    // FakeBuffer-style prototype-chain impostors (test-buffer-fakes drives
+    // Buffer.compare(fb, alloc(0)) → TypeError) and non-Uint8Array typed
+    // arrays — matching node's instanceof-based validation.
+    let args_ok = a_val.is_object()
+        && b_val.is_object() && {
+            let check = |v: JSVal| -> bool {
+                let obj = v.to_object();
+                let mut l: usize = 0;
+                let mut s = false;
+                let mut d: *mut u8 = ::std::ptr::null_mut();
+                !mozjs_sys::jsapi::JS_GetObjectAsUint8Array(obj, &mut l, &mut s, &mut d).is_null()
+            };
+            check(a_val) && check(b_val)
+        };
+    if !args_ok {
         JS_ReportErrorUTF8(
             cx,
             c"The \"buf1\", \"buf2\" arguments must be of type Uint8Array or Buffer".as_ptr(),
@@ -6088,7 +6880,7 @@ if (typeof _g.AbortController === 'undefined') {
   };
 }
 
-// @trace REQ-ENG-005 [api:EventTarget/Event/CustomEvent] — WHATWG DOM event
+// @trace REQ-WEB-001 [api:EventTarget/Event/CustomEvent] — WHATWG DOM event
 // basics for globals that lack them (CLI runtime realm). Guarded installs: a
 // servo page global already carries the real DOM constructors and keeps them.
 if (typeof _g.EventTarget === 'undefined') {
@@ -6201,7 +6993,7 @@ if (typeof _g.CustomEvent === 'undefined') {
   _g.CustomEvent.prototype.constructor = _g.CustomEvent;
 }
 
-// @trace REQ-ENG-005 [entity:Blob] — Web Blob (size/type/arrayBuffer/text/slice/stream).
+// @trace REQ-WEB-001 [entity:Blob] — Web Blob (size/type/arrayBuffer/text/slice/stream).
 // Backed by Uint8Array chunks so non-ASCII UTF-8 round-trips correctly.
 // A process-global registry (_bao_blob_registry) keeps Blob references alive
 // for URL.createObjectURL/resolveObjectURL/revokeObjectURL (Node.js buffer.resolveObjectURL).
@@ -6316,7 +7108,7 @@ if (typeof _g.Blob === 'undefined') {
   };
 }
 
-// @trace REQ-ENG-005 [api:URL.createObjectURL/revokeObjectURL] — Blob URL
+// @trace REQ-WEB-001 [api:URL.createObjectURL/revokeObjectURL] — Blob URL
 // registry. URL.createObjectURL(blob) returns "blob:<origin>/<uuid>" and
 // stores the Blob; resolveObjectURL(url) / fetch("blob:...") can retrieve it.
 // URL is defined later (node_url.rs) as JSPROP_PERMANENT — use defineProperty
@@ -7066,7 +7858,7 @@ mod tests {
     /// Buffer.allocUnsafe / Buffer.concat must throw RangeError rather than
     /// attempting to allocate (which would OOM or hang on the per-byte property
     /// storage used by the bao Buffer implementation).
-    // @trace REQ-ENG-005 [entity:Buffer]
+    // @trace REQ-ENG-007 [entity:Buffer]
     #[test]
     fn max_buffer_size_matches_typed_array_ceiling() {
         assert_eq!(MAX_BUFFER_SIZE, (1usize << 32) - 1);

@@ -330,16 +330,23 @@ fn terminal_of(mut deliveries: Vec<Delivery>, label: &str) -> Delivery {
 /// never a fake success.
 #[test]
 fn connection_refused_fails_the_delivery() {
-    // Bind to grab a free port, then drop the listener: connect() must be
-    // refused.
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-
-    let deliveries = run_request(format!("http://127.0.0.1:{port}/"));
-    let term = terminal_of(deliveries, "connection-refused");
-    assert!(term.fail.is_some(), "refused connect must fail: {term:?}");
-    assert_eq!(term.status, None, "no response status can exist");
+    // Bind-and-drop: a port that is deterministically not listening — the
+    // helper's probe drops before each attempt. E26 ledger class B
+    // (probe-release rebind window, inverted carrier): a parallel suite
+    // process claiming the port between the drop and the connect turns the
+    // expected refusal into a successful delivery — such an attempt retries
+    // on a FRESH dropped port; the failed delivery is the winning arm.
+    common::port_probe::retry_probed_port(|port| {
+        let deliveries = run_request(format!("http://127.0.0.1:{port}/"));
+        let term = terminal_of(deliveries, "connection-refused");
+        if term.fail.is_none() {
+            // Port claimed between drop and connect — fresh dropped port, retry.
+            return None;
+        }
+        assert!(term.fail.is_some(), "refused connect must fail: {term:?}");
+        assert_eq!(term.status, None, "no response status can exist");
+        Some(())
+    });
 }
 
 /// A status line that is not `HTTP/1.x <code>` cannot be parsed into a

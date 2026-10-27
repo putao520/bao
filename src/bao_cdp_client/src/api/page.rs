@@ -35,6 +35,8 @@
 //! - `screenshot()` → `Page.captureScreenshot`
 //! - `close()` → `Page.close`
 //! - `title()` → `document.title`(via Runtime.evaluate)
+//! - `create_cdp_session()` → `Target.attachToTarget`(Playwright 形
+//!   CDPSession,REQ-LIB-003)
 //!
 //! @trace REQ-BAO-API-006 [class:Page]
 
@@ -47,6 +49,7 @@ use serde_json::Value;
 
 use super::accessibility::Accessibility;
 use super::browser_context::BrowserContext;
+use super::cdp_session::CdpSession;
 use super::coverage::Coverage;
 use super::event_emitter::{EventEmitter, EventEmitterInner};
 use super::frame::Frame;
@@ -659,6 +662,48 @@ impl Page {
             None => Err(CdpError::ConnectionClosed),
         }
     }
+
+    /// 创建 Playwright/Puppeteer 形 CDP 子会话(REQ-LIB-003 AC2
+    /// `page.createCDPSession()`)。
+    ///
+    /// 通过 `Target.attachToTarget {targetId, flatten: true}` 协议往返铸造
+    /// 会话 —— sessionId 唯一真源是服务端 session 表(bao_browser
+    /// `ws_registry`,flatten 模式);客户端永不伪造 session(与
+    /// `BridgeSenderBackend` / `bao_cdp::protocol` 的 not_supported 裁决
+    /// 同源:「never a fabricated sessionId」)。
+    ///
+    /// # 错误(fail-closed,禁 silent-fake)
+    /// - `CdpError::ConnectionClosed`: 未绑定 Connection(memory://bao lazy
+    ///   形 / 无 servo bridge 的 CLI `bao run` 模式)—— 镜像 node_inspector
+    ///   Session 的 fail-closed 形态:与其交付 mode-dependent 假会话,不如
+    ///   显式失败
+    /// - `CdpError::ProtocolError`: 服务端拒绝 attach(memory:// 生产面无
+    ///   session 表,-32000 not_supported 如实传播)或响应缺 sessionId
+    ///
+    /// @trace REQ-LIB-003 [method:Page.create_cdp_session]
+    pub fn create_cdp_session(&self) -> crate::error::Result<CdpSession> {
+        let conn = match &*self.connection.borrow() {
+            Some(conn) => conn.clone(),
+            None => return Err(CdpError::ConnectionClosed),
+        };
+        let response = conn.borrow_mut().send_command_with_session(
+            "Target.attachToTarget",
+            serde_json::json!({"targetId": self.target_id, "flatten": true}),
+            None,
+        )?;
+        let session_id = response
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                CdpError::ProtocolError(
+                    "Target.attachToTarget response missing sessionId; the client never fabricates a session"
+                        .into(),
+                )
+            })?
+            .to_string();
+        Ok(CdpSession::new(session_id, self.target_id.clone(), conn))
+    }
 }
 
 impl EventEmitter for Page {
@@ -1008,5 +1053,56 @@ mod tests {
         assert!(p.is_service_worker());
         p.set_is_service_worker(false);
         assert!(!p.is_service_worker());
+    }
+
+    #[test]
+    fn create_cdp_session_without_connection_fails_closed() {
+        let ctx = make_browser_ctx();
+        let p = make_page_with_ctx(ctx);
+        let err = p.create_cdp_session().unwrap_err();
+        assert!(matches!(err, CdpError::ConnectionClosed));
+    }
+
+    #[test]
+    fn create_cdp_session_returns_server_session_id() {
+        // 服务端 session 表最小同构:attach 铸造 sessionId(ws_registry 同判:
+        // flatten 必需,响应即 {sessionId})。
+        use crate::transport::{InMemoryBridge, InMemoryBridgeResponse, InMemoryTransport};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        struct AttachMockBridge {
+            next_id: AtomicU32,
+        }
+        impl InMemoryBridge for AttachMockBridge {
+            fn dispatch_command(
+                &self,
+                method: &str,
+                params: Value,
+                _session_id: Option<&str>,
+            ) -> InMemoryBridgeResponse {
+                assert_eq!(method, "Target.attachToTarget");
+                assert_eq!(params["targetId"], "TARGET-1");
+                assert_eq!(params["flatten"], true);
+                let n = self.next_id.fetch_add(1, Ordering::SeqCst);
+                InMemoryBridgeResponse::Ok(serde_json::json!({ "sessionId": format!("s-{n}") }))
+            }
+        }
+
+        let ctx = make_browser_ctx();
+        let transport = InMemoryTransport::new(Arc::new(AttachMockBridge {
+            next_id: AtomicU32::new(1),
+        }));
+        let conn = Rc::new(RefCell::new(Connection::from_transport(Box::new(
+            transport,
+        ))));
+        let p = Rc::new(Page::new_with_connection(
+            "TARGET-1",
+            Rc::downgrade(&ctx),
+            Some(conn),
+        ));
+        let session = p.create_cdp_session().unwrap();
+        assert_eq!(session.session_id(), "s-1");
+        assert_eq!(session.target_id(), "TARGET-1");
     }
 }

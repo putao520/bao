@@ -48,8 +48,11 @@
 //      encoding, #17 fs.cp cb, and writeFileSync options.flag are FIXED in
 //      the fs6 wave and now asserted against the node v24.19.0 oracle (see
 //      c11_fs_sync_gap_faces / c11_fs_registry_fixed_faces).
-//   #12 fs.exists cb arg shape and #5/#6 utimesSync/lutimesSync remain
-//      registered gaps (characterization below).
+//   #12 fs.exists cb arg shape remains a registered gap (characterization
+//      below). #5/#6 utimesSync/lutimesSync were registered by the fs wave —
+//      the "unregistered gap" characterization pins were falsified by the
+//      product fix and now assert the registered faces (node v24.19.0 oracle:
+//      typeof fs.utimesSync/lutimesSync === "function").
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
@@ -69,10 +72,11 @@ fn js_escape(p: &std::path::Path) -> String {
         .replace('"', "\\\"")
 }
 
-/// Unique per-test temp dir (nextest runs each test in its own process, but
-/// keep names collision-free anyway).
+/// Unique per-test temp dir. Includes the pid: libtest workers share /tmp and
+/// the old fixed name let one worker's `remove_dir_all` delete another
+/// worker's directory mid-test (ENOENT under parallel load).
 fn tmp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("bao_fs_c11_{tag}"));
+    let dir = std::env::temp_dir().join(format!("bao_fs_c11_{}_{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -969,8 +973,11 @@ fn c11_fs_sync_gap_faces() {
 
 // ===========================================================================
 // Former characterization registry — the C1 #4/#10/#13/#17 deviations are
-// FIXED this wave and now pinned to the node v24.19.0 oracle. Remaining
-// entries (#5/#6: utimesSync/lutimesSync unregistered) are still gaps.
+// FIXED this wave and now pinned to the node v24.19.0 oracle. The #5/#6
+// (utimesSync/lutimesSync) gaps were likewise fixed by the fs registration
+// wave; the former "unregistered" characterization pins were falsified by
+// that product fix and now pin the registered faces. Remaining gap: #12
+// fs.exists cb arg shape.
 // ===========================================================================
 
 #[test]
@@ -990,10 +997,12 @@ fn c11_fs_registry_fixed_faces() {
         ck("rmSync_force_silences_enoent", function() {{
             return codeof(function() {{ fs.rmSync("{dir_absent}", {{ force: true }}); }}) === "NOTHROW";
         }});
-        // C1 #5/#6: utimesSync / lutimesSync are NOT registered on the sync
-        // face (node has both; fchownSync/lchownSync exist). Registered gap.
-        ck("char_utimesSync_unregistered", function() {{ return typeof fs.utimesSync === "undefined"; }});
-        ck("char_lutimesSync_unregistered", function() {{ return typeof fs.lutimesSync === "undefined"; }});
+        // C1 #5/#6 fixed: utimesSync / lutimesSync are registered on the sync
+        // face (node v24.19.0 oracle: both typeof === "function", same as
+        // fchownSync/lchownSync). The former "unregistered gap"
+        // characterization was falsified when the fs wave registered them.
+        ck("char_utimesSync_registered", function() {{ return typeof fs.utimesSync === "function"; }});
+        ck("char_lutimesSync_registered", function() {{ return typeof fs.lutimesSync === "function"; }});
         ck("char_fchownSync_registered", function() {{ return typeof fs.fchownSync === "function"; }});
         R.join("|");
         "#,

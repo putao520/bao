@@ -156,6 +156,42 @@ impl NodeRuntime {
         // Path::init_top_level_dir, dotenv's node/ccache lookup — follows
         // this overlay until the runtime drops.
         let resolver_root = crate::resolver_bridge::install_runtime_root();
+        // TEMP-DIAG (JIT-probe, remove after root-cause): BAO_DIAG_NOJIT=1
+        // disables baseline-interpreter/baseline/Ion to test the JIT-entry
+        // corruption theory for the host import.meta+require crash.
+        // TEMP-DIAG (nursery-race probe): BAO_DIAG_NONURSERY=1 sets max
+        // nursery bytes to 0 (disables generational GC → no nursery sweep
+        // task) to pin the NurserySweepTask/BufferAllocator concurrency race.
+        if ::std::env::var("BAO_DIAG_NONURSERY").is_ok() {
+            unsafe {
+                mozjs::jsapi::JS_SetGCParameter(
+                    ctx.raw_cx(),
+                    mozjs::jsapi::JSGCParamKey::JSGC_MAX_NURSERY_BYTES,
+                    0,
+                );
+            }
+        }
+        if ::std::env::var("BAO_DIAG_NOJIT").is_ok() {
+            use mozjs::jsapi::{JSJitCompilerOption, JS_SetGlobalJitCompilerOption};
+            unsafe {
+                let cx_ref = ctx.raw_cx();
+                JS_SetGlobalJitCompilerOption(
+                    cx_ref,
+                    JSJitCompilerOption::JSJITCOMPILER_BASELINE_INTERPRETER_ENABLE,
+                    0,
+                );
+                JS_SetGlobalJitCompilerOption(
+                    cx_ref,
+                    JSJitCompilerOption::JSJITCOMPILER_BASELINE_ENABLE,
+                    0,
+                );
+                JS_SetGlobalJitCompilerOption(
+                    cx_ref,
+                    JSJitCompilerOption::JSJITCOMPILER_ION_ENABLE,
+                    0,
+                );
+            }
+        }
         ctx.set_global_setup(globals::install_all);
         // Drain the event loop first; once it is done (natural end or
         // process.exit()), dispatch process 'exit' listeners inside the live

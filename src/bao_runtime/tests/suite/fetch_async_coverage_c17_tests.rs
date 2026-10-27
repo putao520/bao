@@ -177,34 +177,45 @@ fn c17_fetch_null_body_status_family() {
 
 #[test]
 fn c17_fetch_conn_refused_error_arm() {
-    // Bind-and-drop: a port that is deterministically not listening.
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-
     let mut ctx = fresh_ctx();
-    eval_string(
-        &mut ctx,
-        &format!(
-            r#"
-            globalThis.__e = {{ state: "PENDING", detail: "" }};
-            fetch("http://127.0.0.1:{port}/").then(function(r) {{
-                __e.state = "RESOLVED:" + r.status;
-            }}).catch(function(e) {{
-                __e.state = "REJECTED";
-                __e.detail = (e && e.name) + "|" + (e && e.message);
-            }});
-            'started'
-            "#
-        ),
-    );
-    let state = pump_until_settled(&mut ctx, "globalThis.__e.state", Duration::from_secs(20));
-    assert_eq!(state, "REJECTED", "refused connection must reject, not resolve/hang");
-    let detail = eval_string(&mut ctx, "globalThis.__e.detail");
-    assert!(
-        !detail.is_empty() && detail != "undefined|undefined",
-        "rejection must carry an observable error shape, got: {detail:?}"
-    );
+    // Bind-and-drop: a port that is deterministically not listening. E26
+    // ledger class B (probe-release rebind window, inverted carrier): a
+    // parallel suite process claiming the port between the probe's drop and
+    // the fetch turns the expected refusal into a RESOLVED fetch — the
+    // helper's probe drops before each attempt and a RESOLVED attempt
+    // retries on a FRESH dropped port; REJECTED is the winning arm.
+    common::port_probe::retry_probed_port(|port| {
+        eval_string(
+            &mut ctx,
+            &format!(
+                r#"
+                globalThis.__e = {{ state: "PENDING", detail: "" }};
+                fetch("http://127.0.0.1:{port}/").then(function(r) {{
+                    __e.state = "RESOLVED:" + r.status;
+                }}).catch(function(e) {{
+                    __e.state = "REJECTED";
+                    __e.detail = (e && e.name) + "|" + (e && e.message);
+                }});
+                'started'
+                "#
+            ),
+        );
+        let state = pump_until_settled(&mut ctx, "globalThis.__e.state", Duration::from_secs(20));
+        if state.starts_with("RESOLVED") {
+            // Port claimed between drop and fetch — fresh dropped port, retry.
+            return None;
+        }
+        assert_eq!(
+            state, "REJECTED",
+            "refused connection must reject, not resolve/hang"
+        );
+        let detail = eval_string(&mut ctx, "globalThis.__e.detail");
+        assert!(
+            !detail.is_empty() && detail != "undefined|undefined",
+            "rejection must carry an observable error shape, got: {detail:?}"
+        );
+        Some(())
+    });
 }
 
 // ---------------------------------------------------------------------------

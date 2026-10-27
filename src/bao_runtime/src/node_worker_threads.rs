@@ -15,8 +15,8 @@
 use ::std::cell::RefCell;
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
-use ::std::sync::OnceLock;
 use ::std::sync::atomic::{AtomicU32, Ordering};
+use ::std::sync::OnceLock;
 
 use dashmap::DashMap;
 use mozjs::conversions::jsstr_to_string;
@@ -27,8 +27,8 @@ use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
-use mozjs::rust::JSAutoStructuredCloneBufferWrapper;
 use mozjs::rust::wrappers2 as w2;
+use mozjs::rust::JSAutoStructuredCloneBufferWrapper;
 
 use crate::require::cache_builtin;
 
@@ -335,10 +335,9 @@ unsafe fn sc_boundary_helper_call(
     }
     rooted!(&in(cx) let fn_obj = fn_val.to_object());
     rooted!(&in(cx) let arg = value);
-    let args = HandleValueArray {
-        length_: 1,
-        elements_: &arg.get() as *const Value,
-    };
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(cx) let args_rooted = mozjs_sys::jsgc::ValueArray::<1>::new([arg.get()]));
+    let args = mozjs_sys::jsapi::JS::HandleValueArray::from(&args_rooted);
     rooted!(&in(cx) let fn_handle = ObjectValue(fn_obj.get()));
     let mut rval = UndefinedValue();
     if !JS_CallFunctionValue(
@@ -891,11 +890,10 @@ fn deliver_message_to_worker(raw_cx: *mut JSContext, sc_bytes: &[u8]) {
 
         rooted!(&in(cx) let fn_obj = fn_val.to_object());
 
-        let call_args_elements = [data_val.get()];
-        let call_args = HandleValueArray {
-            length_: 1,
-            elements_: call_args_elements.as_ptr() as *const Value,
-        };
+        // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+        rooted!(&in(cx) let call_args_rooted =
+            mozjs_sys::jsgc::ValueArray::<1>::new([data_val.get()]));
+        let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
 
         rooted!(&in(cx) let fn_obj_val = ObjectValue(fn_obj.get()));
         rooted!(&in(cx) let mut rval = UndefinedValue());
@@ -1466,11 +1464,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 // EventEmitter — on/once/off/addListener/removeListener/emit,
                 // with 'message'/'error'/'exit' as the live event set). The
                 // natives are node_events' own ee_* machine: listener state
-                // lives in the hidden \x00__ee_state prop of the INSTANCE the
-                // methods are invoked on, so prototype-mounting covers every
-                // Worker instance without per-construction wiring. The
-                // message/error/exit dispatch itself rides the main-side pump
-                // (worker_pump_native below).
+                // lives in node_events' Rust-side registry keyed by the
+                // INSTANCE the methods are invoked on (the retired
+                // \x00__ee_state hidden prop was JS-forgeable and is gone), so
+                // prototype-mounting covers every Worker instance without
+                // per-construction wiring. The message/error/exit dispatch
+                // itself rides the main-side pump (worker_pump_native below).
                 w2::JS_DefineFunction(
                     cx,
                     proto.handle(),
@@ -2110,11 +2109,9 @@ unsafe fn make_worker_error(cx: *mut JSContext, msg: &str) -> Option<JSVal> {
         // Root the value (not the raw string): the traced JSVal keeps the
         // string alive through the constructor call below.
         rooted!(&in(cx) let msg_val = StringValue(&*msg_str));
-        let arg_elems = [msg_val.get()];
-        let args = HandleValueArray {
-            length_: 1,
-            elements_: arg_elems.as_ptr(),
-        };
+        // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+        rooted!(&in(cx) let args_rooted = mozjs_sys::jsgc::ValueArray::<1>::new([msg_val.get()]));
+        let args = mozjs_sys::jsapi::JS::HandleValueArray::from(&args_rooted);
         rooted!(&in(cx) let ctor_val = ObjectValue(ctor.to_object()));
         let mut rval = UndefinedValue();
         if !JS_CallFunctionValue(
@@ -2159,9 +2156,8 @@ unsafe fn pump_one_worker(cx: *mut JSContext, thread_id: u32) {
         // roots would then pin an already-moved address (same UB class as the
         // bun_serve fetch-handler dispatch SIGSEGV). Every use reads through
         // the root slot so a GC that moves the object is observed.
-        let mut worker_cx = mozjs::context::JSContext::from_ptr(
-            ::std::ptr::NonNull::new_unchecked(cx),
-        );
+        let mut worker_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         rooted!(&in(worker_cx) let worker_root = worker_obj_raw.unwrap_or(::std::ptr::null_mut()));
         let has_worker = !worker_root.get().is_null();
 

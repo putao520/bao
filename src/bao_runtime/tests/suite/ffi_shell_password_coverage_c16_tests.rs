@@ -480,8 +480,13 @@ fn shell_lenient_input_faces() {
     );
 }
 
-/// A command terminated by a signal should surface as a negative exitCode
-/// (Term::Signal arm).
+/// A command terminated by a signal surfaces as 128 + signal on the Shell
+/// result face (bun oracle: SignalCode.toExitCode, bun
+/// src/sys/SignalCode.zig:53, consumed by the shell interpreter at
+/// src/runtime/shell/subproc.zig:981; live-probed on bun 1.4.2 —
+/// Bun.$`sh -c "kill -9 $$"`.nothrow() → exitCode 137 with no signalCode
+/// property. The null + signal-name shape is the Bun.spawnSync / node
+/// child_process face, not the Shell face).
 ///
 /// Carrier: `kill -9 $$` makes the `sh -c` child signal itself. This became
 /// reachable once `$$` stopped being lexed as two literal-`$` Text atoms and
@@ -497,7 +502,7 @@ fn shell_signal_exit_code_arm() {
         "(function () { var r = new Bun.Shell().run('kill -9 $$'); \
          return 'exit=' + r.exitCode + ' success=' + r.success; })()",
     );
-    assert_eq!(out, "exit=-9 success=false", "signal exit: {out}");
+    assert_eq!(out, "exit=137 success=false", "signal exit: {out}");
 }
 
 /// cwd override (cd) feeds exec_via_sh_with_stdin's current_dir arm.

@@ -1064,3 +1064,732 @@ residualZero:28/28 PASS;环境方案 memory 在位。
 
 ## bce-domain-guard 收口(2026-10-25 第六轮,错误类失败 16 次)
 第 16 次签名=取证负载红(E16 五载具复现 14 次 rc=139/E21 修前复现臂 20%)——取证执行体的 RED 复现臂是定位根因的必要产物,与 E16b(续战 core 通道)/E21(已根治 10/10 全绿)闭环链一致,非未归因缺陷。E16b 进行中(core/SYS_PTRACE 三通道)。
+
+## 发版攻坚·兼容全过总波(2026-10-25/26,24 执行体+终验循环)
+### 零编译纪律首跑代价(BCE-20261025-ZERO-COMPILE-FIRST-BUILD)
+22 执行体 7213 行零编译交付→主会话单路:lib build 一次过但 test 编译 61 错(八轮迭代修零:JSNative 数组 35 处/Result 遮蔽/w2 wrapper/raw_cx/rooted mut)→全量 28 运行回归→逐簇归因派修复波(E39-E44)。
+### 修复波战果
+- E39 cp wire 拓扑:native 数组回 wire 无损+归一移 JS 出口(emit exit/pollWorkers handleExit)+__cp_signal_name native 桥;E32 误伤清零
+- E40 buffer:Int32 JSVal 误用 to_double 崩根(NaN-boxing assert)15 处横扫;alloc coerce/concat arraylike/indexOf R3 路由
+- E41 inspect 单根因:E22 inspect.custom 委托 Bun.inspect 渲染错形——一处修 6 面;4 pin oracle 校正(E34 无罪)
+- E42 PumpStuck:谓词结构性不可满足(21.5s 定量签名)修复;ffi 判"过期"误判(见 E44)
+- E43 fs 三红:全判测试侧失真(oracle 探针三重收据:NUL-eyeball pin/被 E23 注册 falsified 的 gap pin/同步回读连 node 都不过);产品零改动
+- E44 ffi 真修:reserved-slot 位形守卫被 nursery stale bits 穿透(JS_GetReservedSlot release 越语义域读)——JS_InstanceOf 类门三处;**ffi 域 95/95 实证**;scope 外同类兄弟 7+文件高危登记(node_url Box::from_raw 等)
+### 终验态(vfinal5)
+- 全量 suite 1832/1846(14 红=dns 8 环境+fs 三/c12/sigterm/cluster_fork 六待复核——E43 pin 修复后仍红待查)
+- **重大发现:bao test 入口 SIGSEGV**(run 面正常)→GOLDEN A 三域 0 PASS 全灭;gdb dev 栈:#5 load_cjs_module require.rs:1375 JS_GetProperty(module_root,"exports");二分排除 E28(bun_test/node_test revert 仍崩);E45 专职根治中(全套装备:dev 符号 bin+复现载具 /outbox/gw)
+### 待办链
+E45 根治→重建 bin→E43 确认命令(fs 四测)→GOLDEN 六域+ESM 96+fixtures 20(E29 脚本)→全量终验→win-cross(E35/E36 cfg 面)→gate→分波提交(24+ 执行体产物)→SPEC criterion 核验→发布闭包
+
+### E40 呈报两项 pin-vs-live-node 偏离裁决落地(2026-10-26,主会话直修)
+
+**裁决依据**:用户「兼容 node」总目标 → live node v24.19.0 是真 oracle,bao 自建 suite pin 可带 oracle 证据翻转(GOLDEN 官方测试不动)。
+
+**node oracle 实测(2026-10-26)**:
+- `alloc(true/false/undefined/null/())` → 一律 TypeError `The "size" argument must be of type number. Received …`(**无 ToNumber coerce**;旧 pin 的 true→1/false→0/undef→0 是 bao 自创)
+- `alloc(2**53)` → RangeError `The value of "size" is out of range. It must be >= 0 && <= 9007199254740991. Received 9_007_199_254_740_992`(上限裸数字;Received 整数串 ≥11 位每 3 位 `_` 分隔——阈值实测 -9999999999(10位)裸 / -12345678901(11位)分隔;TypeError 的 received-number 恒裸 `Buffer(12345678901,"utf8")` 实证;≥1e21 科学计数形态零 pin 驱动,登记不做)
+
+**改动三件**(文件域与 E46 零冲突——globals.rs 无 reserved-slot/to_private 消费面,grep 实证):
+1. `globals.rs` buffer_alloc:删 boolean/undefined/null coerce 特赦臂(统一 TypeError node 形);上界并轨 `d > 9007199254740991.0` 进 out-of-range 臂(原 `Typed arrays are currently limited` backstop 保留为合法域内实际分配失败层,test-buffer-over-max-length 的 code+name pin 不受影响);allocUnsafe/allocUnsafeSlow 共用自动同步
+2. `globals.rs` 新增 `inspect_range_received` + `add_numeric_separators`:ERR_OUT_OF_RANGE 的 Received 位带分隔;上限字面与 TypeError received 保持裸(format_number_inspect 原样);消费面=alloc:4365+legacy ctor:2905 两处
+3. `c12_buffer_alloc_size_arms` pin 翻转:`true=1|false=0|undef=0|…|huge=…Typed arrays…` → 全 THREW node 形(`The "size" argument must be of` ×4 + `The value of "size" is out o`);doc 注释更新
+
+**横扫**:产品 globals.rs 零 boolean-coerce 残留(grep 实证);node 家族面 concat(TL=true)/from(true)/byteLength(true) 均 TypeError,bao 对应面已 node 形(E40 波已修),无同类残留。
+
+**静态自检**:两文件 rustfmt --check --edition 2024 parse RC=0(Diff 为项目基线风格非本次引入)。终验链(farm build+全量)由 E45/E46 交付后统一跑。
+
+### 发布闭包盘点(2026-10-26,主会话)
+
+**版本三角(带 UA 实查 crates.io,裸 curl 假成功)**:6 变更 crate 全同号漂移(树版本==io 版本 + 工作树未发布改动)→ 发布义务成立。daily-ops 沿途发布先例,终验绿+commit 后随波 bump:
+
+| crate | local=io | 改动面 | bump |
+|---|---|---|---|
+| bun_runtime | 0.5.7 | 61 文件(createRequire/dlopen/internal 惰性注册/alloc 参数门翻转/exit wire) | **0.6.0**(新 API+行为翻转,face-transition 禁 patch) |
+| bao_engine | 0.3.7 | job_queue +21(registrar 可调用化) | 0.3.8 |
+| bun_sm | 0.3.6 | host_fn +45 / module_loader +21 | 0.3.7 |
+| bao-browser | 0.4.2 | 12 文件纯 tests | 0.4.3 |
+| cdp-server | 0.2.1 | tests 面 | 0.2.2 |
+| bun_http | 0.2.5 | tests 面 | 0.2.6 |
+
+发布序=依赖拓扑:底层(bun_sm/bao_engine/bun_http)→bun_runtime→cdp-server/bao-browser;publish 前 sparse-index .cache 条目删除(memory 纪律)。
+
+### SPEC criterion 发版核验·四域完成(2026-10-26,双 fork 只读审计)
+
+**总计 262 criterion(CDP46+STL35+BRW~30+LIB~24):VERIFIED 106 / GAP 3 / UNVERIFIABLE-STATIC 22(行为面归终验链,载体全在位)**
+
+| 域 | VERIFIED | GAP | 判定与处置 |
+|---|---|---|---|
+| CDP | 43 | 1 | GAP=Target.targetCreated 零发射体(attachedToTarget 覆盖 flatten 主消费路径=实现裁剪非漏)→ **E47 补发射体在途**(created→attached 规范序) |
+| STL | 24 | 0 | **SPEC stale 2 面已校正**:STL-001/002 描述(rustls/hyper→BoringSSL/H2 fingerprint 载体)+criterion(Firefox 固定对齐→seed 派生,2026-10-21 随机指纹立法)。spec_govern check errorCount=0 |
+| BRW | 22 | 0 | SPEC 笔误 1 处(load_web_resource 归属 WebViewDelegate 非 ServoDelegate,实现完备,非缺陷) |
+| LIB | 17 | 2 | GAP1=LIB-003 C2 createCDPSession Playwright 形 Session 对象(SPEC 超前,session 收发原语在位 node_inspector fail-closed 设计边界)→ **待 E49 波**(bao_cdp_client 域);GAP2=LIB-004 C5 Bao.run({permission}) 全仓零接线(真漏实现)→ **E48 在途** |
+
+**E46 交付(2026-10-26)**:slot 位形守卫族批除 6 文件 +241/−37(node_url/bun_sqlite/fetch_async/bun_sm host_fn 宏扇出单点/engine_macros);10 点加门+4 点判不可达带论证,残留=0;确认 globals.rs 非其域(本会话 buffer_alloc 改动安全)。范围外上报:bun_udp _socketPtr JS 可伪造载体→**E50 在途**(reserved slot 迁移+类门);node_events NUL 属性可达性核实并入 E50。
+
+**gsc 插件缺陷 issue 已提**:https://github.com/gsc-org/gsc/issues/225(criterion 手术通道 li/div 形态分裂+update criteria append-only);STL 旧 li 条目经受控单节点删除清理(data-criterion-id 精确锚+计数断言+spec_read 回读+govern check=0 错误,零结构破坏)。
+
+**E46/E48/E50 相关 SPEC 关联**:E46 新增 @trace REQ-ENG-004(10 处)派生链完整。
+
+### 五体齐交付+终验链解锁(2026-10-26 第二轮)
+
+**E45 交付(终验链前置闸门解除)**:bao test 入口 SIGSEGV 根治=require CJS 链「裸 GC 指针/Value 跨 GC 点」类 4 处(load_cjs_module 双对象立即 root/eval_cjs_body 三值 root/require_fn 出口 exports_val root+record_module_in_cache 签名 Handle 化);Handle 槽内容 0xa0000_... 非规范地址实证 stale from-space 指针;test 20/20+run 10/10 零崩;util-types-exists 回绿 8/8。**修正前提:run 面同文件本来就崩(非「run 正常」)**。暴露两被掩蔽独立缺口→E53 在途。
+
+**V51 交付**:targetCreated 判别格 2 fn(target_domain_event_tests.rs 纯追加):created→attached 序+targetInfo parity+auto-attach off 翻转强判别+destroyed 配对身份贯通;E47 回归钉死。
+
+**E49 交付**:CdpSession 对象落地(api/cdp_session.rs 449 行 10 单测+page.rs create_cdp_session attach 往返+mod 挂载);send 直通原语零新协议;on/off session 谓词过滤;detach 重复→ConnectionClosed;fail-closed 三点镜像 node_inspector。诚实边界:memory:// 面 -32000 契约(生产锚禁伪造 session 录音在案)/entity enabled_domains 等字段面登记/crate 根一行 re-export→并入 E53。
+
+**E50 交付**:bun_udp 载体根治(+114/−80):UDP_SOCKET_CLASS+reserved slot 迁移+中央 udp_slot_ptr 类门(18 调用点全覆盖);Box::from_raw 任意 free 已闭;行为差=硬化方向(ASLR 枚举面消失/克隆 DataCloneError)。**node_events NUL 属性探针裁决=JS 完全可达确证同类载体**,但根治需跨文件设计(node_net Socket 原型链依赖 native EventEmitter,类门破坏)→报请 architect 裁决(后续波);**BCE 横扫:bun_listen(_socketPtr×13/_udPtr×13/_appPtr×3)/node_http(_appPtr×3/_udPtr×3)/node_http2(_appPtr×4/_sslAppPtr×6/_udPtr×10) 同类载体族 ×55 待统一设计批除**(后续波,不阻塞终验——安全域非兼容域)。
+
+**E52 交付**:Buffer 面 @trace 错锚族 160 处重锚 ENG-005→ENG-007(globals 144+node_buffer 16),残留=0;3 条存疑(EventTarget/Blob/createObjectURL)经查**全 SPEC 零 criterion 覆盖**=派生链缺口非锚错(不猜不改保持原锚,gate 查活性不阻塞);登记「Web API 基础面 SPEC 补全」后续波(PRD-REQ 考古→补 REQ→重锚)。
+
+**E48 核验定重铸→E48v2 在途**:Bao.run=never-implemented 新 API(E48 核验收据:Bao/Bun 同对象:627-656,函数面无 run 入口;permission 无 JS 解析器)→重铸为新 API 交付合同(bun_api.rs+permission_options.rs+lib.rs 一行)。
+
+**E53 在途(终验链 rsync 前最后 E)**:Buffer.concat code 属性(GOLDEN 面必先修)/events-once 两缺口归因修复/cdp_client 一行 re-export。
+
+### 终验链就绪态(等 E53+E48v2 交付即执行)
+1. rsync 全树→final-verify.sh build 段(touch 强制重编+bao test 入口探针)
+2. 全量 suite(1846+新增 V51 判别格)+dns stub 域 28
+3. GOLDEN 六域+ESM 96+fixtures 20(golden-a-rerun BAO_BIN=新 bin)+stage-b 族(golden-node/ 下全装备寻回确认)
+4. win-cross(win-cross-run.sh 已推 outbox;cfg 面=node_fs+5/bun_shell+1/E46 bun_udp/E48v2/E53 增量)
+5. gate→分波 commit(24+执行体~10000 行)→发布闭包(6 crate bump 表在案)
+
+### 终验链 commit 分波预案(2026-10-26 预写,终验绿后照单执行)
+- **波1 fix(runtime)**:bao_runtime/src 全部(require.rs E45/node_child_process E32/36/39/globals.rs E22/40/41/53+主会话 alloc 门/node_buffer/node_events E53/bun_ffi E44/node_url+node_internal_fs_modules E23/node_module E20/30/node_internal_event_target E19/bun_test+node_test E28/timers/uncaught/bun_listen/bun_shell/bun_api 等其余)+bun_sm 三件(E46)+bao_engine/job_queue+bao_engine_macros(E46)+bun_udp(E50)+bun_api/permission_options(E48v2)
+- **波2 feat(cdp/lib)**:bao_browser/src/ws_registry.rs(E47)+target_domain_event_tests(V51)+bao_cdp_client/api 三件+lib.rs re-export(E49/E53)
+- **波3 tests**:bao_runtime+bao_browser+cdp-server+http 全部 tests/suite pin 翻转与 common 改动+tests/fixtures/e20_createrequire_probe
+- **波4 docs/spec/ops**:.plans 台账+.spec(REQ-STL-001/002 校正+REQ-BRW-001 笔误)+.gsc/domain-knowledge/lsp.md+bench/results/2026-10-25 soak 产物(tracked 惯例 ops(soak) 形)
+- 根目录散落探针 getClass 已删;波间 cargo build -p bao_bin+波末 gate(sourceInclude=本波全文件面)
+
+### bce-domain-guard 回报判别(2026-10-26,severity=2/confidence=0.50 未达门,反馈式)
+19 个错误类失败全部落在 2026-10-25T14:48-17:04=零编译首跑修复窗口(用户立法「E 只编辑,主会话单路验收」的已知首跑代价结构)。每类 BCE 终态在案:JSNative 数组 35 处批量修零/Result 遮蔽/E0596/to_double NaN-boxing 崩根(E40 横扫残留=0)/FFI slot 穿透(E44+E46 残留=0)/require GC 根植(E45 链内残留=0)。「4 个同模式涌现」=零编译交付形态的编译期错误族,架构根因已知且为用户立法接受,非架构缺陷。10-26 波(E45-E53)零同签名复发。终验链(全量 build+suite)即 BCE 第 6 阶段全量确认步骤——按实际根因继续推进,无需 architect consult。
+
+### 发布闭包 v2(2026-10-26 req 连带感知,6→9 crate 四批)
+bun_runtime 0.6.0 破坏性 bump 的下游 req 连带(全树 grep 实证):bao_engine dep `>=0.4.2,<0.6`/bao_stealth dep 同/bao-core 伞 `^0.5`/bun_sm(no_mangle 段非依赖面,无连带);bao-browser 的 cdp-server 精确 pin "0.2.1" 需同步 0.2.2。环检查零环(bao_engine↔bun_runtime 为 dep+dev-dep 合法形态)。
+
+| 批 | crate | 现版→新 | 变更 |
+|---|---|---|---|
+| 1 | bun_sm | 0.3.6→0.3.7 | host_fn 宏扇出门(E46) |
+| 1 | bun_http | 0.2.5→0.2.6 | tests 面 |
+| 1 | cdp-server | 0.2.1→0.2.2 | tests 面 |
+| 2 | bun_runtime | 0.5.7→**0.6.0** | 61 文件(face-transition minor) |
+| 3 | bao_engine | 0.3.7→**0.4.0** | job_queue 修复+req 放宽 <0.7 |
+| 3 | bao_stealth | 0.4.4→0.4.5 | 纯 req 行放宽(零内容,连带义务) |
+| 3 | bao-core | 0.3.13→0.3.14 | 纯 req ^0.5→^0.6(连带义务) |
+| 4 | bao-browser | 0.4.2→0.4.3 | tests+cdp-server req→0.2.2+ws_registry(E47) |
+
+发布动作=终验绿+commit 波后;每批 publish 前 sparse-index .cache 条目删除;curl 200 验证逐包。
+
+### SPEC criterion 六域核验收官(2026-10-26 ENG+CLI fork 交付)
+ENG 103 criterion:VERIFIED 90/GAP 0/UNVERIFIABLE-STATIC 13(全归终验链明确段位:GOLDEN 六域+ESM+fixtures=ENG-011 35-41;win-cross+真机=18-19;cargo test 面=ENG-008/009;探针=WASM/XDR 冷启动)。CLI 12 全 VERIFIED。
+
+**六域全景总计 238+ criterion:VERIFIED 196 / GAP 3(全部处置中:CDP targetCreated=E47✓+V51✓/LIB-003 C2=E49✓/LIB-004 C5=E48v2 在途) / UNVERIFIABLE-STATIC 35(全归终验链段位,载体全在位)**
+
+零漏实现残留;STL/BRW stale 已当日校正;E53 在途面(ENG-007 Buffer concat code)终态随终验链复核。
+
+### golden-a-rerun 探测兼容确认(2026-10-26)
+BAO_BIN env 可覆盖;E20 闸门修符号三件套在新树构建 bin 必含(修已进树,终验 bin 直接过 fail-closed 探测);fixtures 4614 文件已同步;分类语义与 stage-b-fs2 对齐可 diff。
+
+### E48v2 交付(2026-10-26,LIB-004 C5 真交付)
+Bao.run(path,options) 脚本级沙箱落地:permission_options.rs 新 451 行(parse 4键+received_descriptor+ScriptPermissionScope 栈 guard Drop restore)+bun_api.rs 注册(:604/:11619)+lib.rs 一行 mod。六工程裁决:①default-deny 最小授权(read/write/net 缺省=空清单全拒,与 per-Page unwrap_or(true) 相反性=embedder 信任 vs JS 调用时不可信输入,注释载理由)②嵌套语义(外层 guard 门控文件读取,install 移加载后)③unknown-key 全拒含 sys(桥无 sys 检查,解析=死配置假交付,显式拒收)④空串 allow 条目拒收(前缀匹配会放行一切)⑤ENOENT+ERR_INVALID_ARG_TYPE 错误面 node 形⑥脚本异常直通。**六域 GAP 3 全清偿**(E47/E49/E48v2)。V52 判别格(8 组)在途——终验链最后前置。
+
+memory:MEMORY.md 压缩 162→44 行分组索引;新增 raw-jsval-across-gc-points-class(E45 类教训)。
+
+### 铁律第二行(2026-10-25 用户立法)落地冲击与挂账清偿(2026-10-26)
+新立法③「开工即闭环禁后续波挂账」冲击台账三项挂账→全部开工闭环:
+1. **E54 在途**:bun_listen/node_http/node_http2 ×55 同族指针载体批除(E50 惯形逐文件复制+原型链外部消费前置考古)
+2. **E55 在途**:node_events \x00__ee_state 根治——主会话设计裁决=Rust 侧注册表载体(类门被 node_net Socket 原型链消费阻塞,E50 结构性证据);gc_store.rs RefCell 注册表惯形复用;外来 this 行为 node oracle 实测镜像;回退口禁令=禁双通道
+3. **REQ-WEB-001 已建档**(受控镜像插入,div 229/229 平衡,MCP 断连下的合规等价路径):Web API 基础接口(EventTarget/Blob/BlobURL)三 criterion,groundedIn=PRD-REQ-BUN-COMPAT(02-USERSTORY 实存);E52 的 3 条存疑 @trace 重锚已排队(等 E53 globals.rs 编辑完毕确认,防同文件 clobber)
+
+立法①自查待办:E40 形态的 CString unwrap_or_else fallback(globals.rs 两处,结构性不可达)按新法应删——排队 E53 交付后一并(同文件)。立法②④⑤本轮零违例。
+V52 交付:Bao.run 沙箱 8 组判别格(bao_run_permission_tests.rs 新文件,嵌套语义/restore 三段/错误面 4 形态;15 条 JS 转写 node --check 零失败)。
+终验链前置集=E53+E54+E55(全部交付后单环境一次灌入,硬门⑨)。
+
+### 发布闭包元数据预检(2026-10-26)
+9 crate description/license 全过(`.workspace = true` 继承 workspace.package MIT OR MPL-2.0;首版正则不认继承形态假阳性已修正)。publish 默认 true 无误。发布前置零阻塞。
+
+### E53 events-once 归因中间结论提取(2026-10-26,主会话看门狗验收采纳)
+**根因**:`require('events')` 不触发端口求值——events 的 on/once/addEventListener native 静态直接挂全局,而 listenerCount/AbortSignal.abort 等双面静态的实现住在 node_events 端口 JS 源(端口 240-340 静态面),native 静态从未触发端口求值→双面全死(E45 掩蔽解除后暴露的 events-once 红的机制层)。
+**修复设计(E53 定案,实施中)**:native 静态改 trampoline——首次调用触发端口求值+helper 求值,之后全走 JS 函数;events_static_once 前插 helper JS 源+bootstrap;仓内 3 参订阅形 `events.once(emitter,name,handler)` 消费面已考古(防替换破坏内部消费)。机制已 p10 实证(端口求值后双面 listenerCount/AbortSignal.abort 全活)。
+
+### 终验链判据脚本就绪(2026-10-26)
+vfinal5 基线红清单固化(14 红:fs 三[E43 pin 已修待重编]+c12[E40 待确认]+dns×8[stub 已解]+sigterm/cluster[E39 pin 已修]);.claude/vfinal-diff.sh 自校验通过(新 run 全红清零+零新红=SUITE GREEN 判据;新红逐个归因门)。终验链全部装备+判据闭环。
+
+### E54 扩面后的 tests 注释面登记(2026-10-26)
+bug353_deep_verification_tests.rs:145-156 的 Root cause/Fix 注释描述 `_appPtr` 私有槽机制(JS_DefineProperty/JS_SetProperty)——E54 迁移 reserved slot 后机制变化(载体从 JS 可见属性→引擎私有槽),该注释 4 处机制表述需终验绿后同步更新(行为断言 T8-T11 零改动——判别的是 double-stop 幂等语义非载体机制)。已通知 E54 终报登记,主会话终验后落笔。
+
+### E53 交付+E52 重锚收尾(2026-10-26)
+**E53 交付**:①globals.rs buffer_concat 全错误面 node 真值化(ERR_INVALID_ARG_TYPE/ERR_OUT_OF_RANGE+received_descriptor+"length"参数名+kMaxLength=2^53-1 对齐+inspect_range_received 分隔渲染;detached/backstop 无 node code 锚点保持原样如实)②node_events events-once parity 三缺口根治:EVENTS_ONCE_HELPER_JS(node lib/events.js once 移植:signal/pre-aborted/error-reject 独立 listener/EventTarget error-resolve/AbortError 恒形/abort-wins-cleanup)+ensure_events_once_installed 惰性求值+events_static_once/listener_count/get_event_listeners 三 trampoline 化(端口 bootstrap→dual-face redispatch;farm p10 探针实证接线即活)③CdpSession crate 根 re-export 落 lib.rs:136。归因=E50 家族「native 静态不触发端口求值」接线层缺陷,trampoline 定案根治。
+**E52 重锚收尾**:globals.rs 3 条(EventTarget:7010/Blob:7123/createObjectURL:7238)ENG-005→WEB-001 落笔(等 E53 globals 编辑完毕确认后执行,零 clobber);Buffer 面@trace 错锚族闭环(160+3=163 处,残留=0)。
+**E53 遗留核验点(终验链)**:REQ-ENG-006 groundedIn 逐字节核(commit_gate Step6 将验)+once 载具复跑(farm 构建后 test-events-once.js/test-buffer-concat.js)。
+
+### V53 交付+CString fallback 裁决+E54 增量(2026-10-26)
+**V53 交付**:bun_udp 判别格 5 组(bun_udp_slot_gate_tests.rs 482 行:基线+枚举面/clone DataCloneError 负向控制/注入 inert+15 方法 null-slot 分支/外来对象 17 方法类门拒/合法 bind→send→close roundtrip);18 JS 串 node --check 全过。
+**V53 发现新等价类→已转发 E54**:bun_listen.rs:1895-2043 第二 bun_udp_socket(死代码,install 顺序覆盖脆弱前提)——处置令=直接删除(grep 复核无引用后,销毁重建,死代码不迁留)。
+**CString fallback(10 处)裁决**:oracle 实证 NUL 可达(JS 字符串 \x00 进 received_descriptor)→fallback 非违例而是丢消息的 bug(node 输出 NUL 原样);正确根治=**NUL 转义渲染**(\u0000 形,node inspect 形态)非删 fallback 非保留丢消息——独立小修排队(与 E54/E55 文件域零冲突的可并行窗口=globals.rs,主会话排 E54/E55 交付后统一处理避免多写者,或派独立 E)。归档裁决,防「删 fallback」误执行。
+
+### E55 交付(2026-10-26,node_events 载体重构)
+\x00__ee_state 属性载体→EMITTER_REGISTRY thread-local 注册表(HashMap<usize,RootedTraceableBox<EmitterEntry>>;Heap 键槽随 tenuring/compaction 就地重定位零 ABA);真回收通道=JS_AddWeakPointerZonesCallback sweep_dead_emitters(TraceEdge 探活+死根置 null drop 整条);诚实边界=minor-GC-only 对象延迟至下次 major(有界非无界)。外来 this=node oracle 宽容静默注册镜像(node_net 零改动,EE.prototype.on.call 生产路径语义保持,66 方法表引用签名不变)。风险标注两条终验重点:HOOKS_REGISTERED 多 runtime 复用(进程级回调安全论证在案)/sweep 期 RefCell 互斥(单线程模型论证,需编译+soak)。
+
+### V54 在途+判别格覆盖盘点(2026-10-26)
+V54(node_events 注册表 6 组判别格)铺开。E 交付面判别格覆盖盘点:
+- E45 require GC 修复:无独立判别格,但 bao test 入口探针(final-verify.sh)+GOLDEN 全域即其行为验证(入口曾全灭)
+- E46 slot 门(node_url/bun_sqlite/fetch_async):**无判别格,欠账**→登记
+- E47 targetCreated:V51 ✓
+- E48v2 Bao.run:V52 ✓
+- E49 CdpSession:E49 自带 10 单测 ✓
+- E50 bun_udp:V53 ✓
+- E53 events-once helper:**无独立判别格**(依赖 GOLDEN events 域载体)→登记
+- E54(在途)/E55(V54 在途)/E56(在途)
+E46/E53 判别格在 E54/E56 交付后评估是否派 V(文件域空窗时)。
+
+### E56 交付(2026-10-26,CString fallback NUL 转义根治)
+globals.rs `cstring_for_error` helper(:5234:内部 NUL→字面 \u0000 六字符[node JSON 渲染形]+转义后 unwrap 结构性安全,铁律第二行①合规);**实际 12 处全换**(任务报 10,grep 横扫证实 12——含 throw_error_with_code:5417/equals:5522 两处漏报位);残留=0(唯一命中=helper 自身 doc 注释)。node_buffer/node_fs 同类盘点=零实例(node_fs 8 处 unwrap_or_else 均为 PathBuf/String/Mutex 非 CString 类)。oracle 注释在位(console 原样 NUL vs CString 不可承载的差异诚实标注)。
+
+### guard 档④处置+KB 沉淀(2026-10-26)
+信封四要素已完整输出(两轮,计数器聚类缺陷铁证在案:19→22 单调随 Stop 递增/时戳恒指 10-25 旧窗/「4 涌现」=签名粗聚类)。呈报用户裁决:guard 计数缺陷建议走 gsc issue 提报。兜底链执行:域 KB nodejs-compat 沉淀三个新类知识(native 静态 vs 端口 JS 双面接线 trampoline 律/JS 可伪造指针载体类两选修法/CString NUL 转义类)——DEC-KB-DRIVEN 后续波免重蹈。
+
+### 用户立法「禁止兜底逻辑,做对写对」全波审计(2026-10-26)
+横扫本波 diff 全部 unwrap_or/or_else 命中逐一定性:
+- **真兜底 1 类(整改中)**:E47 ws_registry.rs 三处 entry.browserContextId unwrap_or(DEFAULT)+顺带 title("")/url("about:blank")——target 必然归属 context,缺=不可达态被静默吞;整改指令已发(写入点根治+硬取,protocol.rs:225-260 既有同款兜底面登记存量)
+- **非兜底 4 类(保留,定性依据在案)**:①bun_shell 254=bun Shell wire 值域约定(镜像既有 shell_signal_exit_code sig>31→254,非吞错)②try_wait().unwrap_or(false)=锁中毒不可达面(std 惯形)③json! 既有 live_target_info 面=protocol.rs 存量(登记,非本波新增)④V54/E56 撤掉的 12 处 CString fallback=E56 已根治
+- **protocol.rs target_context_id 存量兜底**(bridge None/查询失败→DEFAULT):登记存量整改候选(下一波,非本波新增;memory: golden 双巧合与「degrades to the implicit default」注释自认)
+V54 交付:node_events 注册表 19 判别格(6 组,oracle 全锚定;GC 回收面 UNVERIFIABLE 留 soak 如实)。
+
+### 兜底整改进展(2026-10-26,用户立法「禁兜底+存量立刻解决」)
+- **E47 整改交付**:ws_registry.rs 5 处硬取(3 browserContextId+2 title/url)+protocol.rs getTargets 硬取;写入真源锚定(cdp_handler cmd_list_targets:847/cmd_create_target:822 的 page_context_id 恒写 String 非空);residual=0
+- **E47 保留判定 vs 主会话初判分歧**:live_target_info/target_context_id 判「bridge-less 真缺失合法显式降级」——E57(存量根治体,已派)并入对抗复核:生产消费面?send Err 吞错?Chromium dead-target oracle 真行为;复核结论归其终报
+- **E57 在途**:protocol.rs 存量两兜底+同文件横扫
+- 在途全集:E54(批除+死副本)/E57(存量兜底+复核)/V55(判别格)
+
+### E54/V55 交付+派生波(2026-10-26)
+**E54 交付**:四文件+crate 级 slot_gate.rs 单一真源(slot_gate/slot_ptr/set_slot 上提,REQ-ARCH-001 收敛);bun_listen 死副本 1895-2300 整段删(405 行,含专属 helper+死常量);原型链考古逐文件判定(node_http2 保 Http2Server.prototype 形);构造/写/读清三清单全落;四属性名残留=0。上报 _uwsRes 新等价类(6 点跨两文件)→**E58 已派**(存量立刻解决)。
+**V55 交付**:E46+E53 判别格 6 组(slot_gate_conformance_tests.rs 538 行;URL/sqlite 外来对象安全拒+once promise 形+AbortError 双场景+dual-face 活性+EventTarget error-resolve);诚实边界暴露 URL 面外来 receiver 静默 undefined vs node TypeError→**E59 已派**(node 对齐根治+V55 pin 同步翻转)。
+**在途终验前置集**:E57(protocol 兜底+复核)/E58(_uwsRes)/E59(URL TypeError)。
+
+### E58 交付(2026-10-26,_uwsRes 等价类批除)
+node_http HTTP_RESPONSE_CLASS+node_http2 H2_RESPONSE_CLASS(各 1 slot);6 写点+2 注释点全迁;get_uws_res 双文件类门读(fail-closed null,12 调用点全 !is_null 守卫零新崩溃面);原型链考古=JS_NewPlainObject 字节等价直迁;val_is_private node_http 删+node_http2 连 2 自测删(node_tls/bun_sqlite 各自独立有生产消费未动);残留=0;第五文件零命中。
+**commit 归属警示**:node_http/node_http2 有先前会话 pre-existing WIP hunk(20+ 处 format drift/server_listen 等),E58 的 8 hunk 需 pathspec/hunk 级隔离提交——波4 commit 时用 git add -p 或按 hunk 归属核对(agent-parallelism-discipline 增补纪律)。
+**FFI-SLOT-GATE 族全景收口**:bun_udp(E50)+bun_listen/node_http/node_http2/bun_api(E54)+node_events(E55 注册表)+node_url/bun_sqlite/fetch_async(E46)+_uwsRes(E58)=全族迁移完成,JS 可见属性指针载体全仓残留=0。
+
+### E59 交付(2026-10-26,URL 外来 receiver TypeError 对齐)
+node oracle 逐方法钉死:SP 14 方法+迭代器=ERR_INVALID_THIS 形;URL getter/setter/toString/toJSON=Receiver must be an instance of class URL(V8 kIllegalInvocation 形,无 code)。node_url.rs:sp_gate_or_throw/throw_url_type_error 双门+14 消费方法 None 静默分支删净+双宏改造+setters 前置类校验;连带根除 throw_type_error_with_code 空 code 造 code:"" 偏差;内部调用面考古(sp_instance/sync/url_to_js/ctor 构造期恒真)零依赖静默形。V55 grid1 五段断言翻转+修测试自身 bug(sp.size descriptor 取 getter 形)。同类 27 处一次根治残留=0。诚实边界:null receiver message 与 node V8 内部痕迹不同(throw parity 保持)。
+
+### 用户终令(2026-10-26):全自动推进到彻底完成,全部兼容
+E57=最后一颗终验前置(催收已发:判定状态+剩余步骤询问)。E57 交付后零间隙执行终验全链(单流):
+1. 增量 rsync protocol.rs → final-verify.sh build 段(touch 强制重编 test-ci+入口探针)
+2. 编译错归因修复循环(预期存在:~12000 行零编译面)直至 build 零错
+3. 全量 suite 1846+~35 新格 → vfinal-diff.sh 判定(基线 14 红清零+零新红=GREEN)
+4. dns stub 域 28 → GOLDEN 六域+ESM 96+fixtures 20(golden-a-rerun BAO_BIN=新bin)
+5. win-cross(win-cross-run.sh)→ gate → 4 波 commit(hunk 级归属隔离)→ 9 crate 四批发布
+每段失败=归因→修复→复跑循环至彻底绿,零豁免零降级。
+
+### E57 交付(2026-10-26,protocol.rs 存量兜底根治)——终验前置全部清零
+E47 保留判定被对抗复核推翻:bridge-present=生产常态(WS:865/memory:118 恒 Some)/timeout 可达(2s/30s)/e2e 断言真 context id/Chromium dead-target=报错。整改:live_target_info/target_context_id/getTargets 全链 bridge-present fail-closed(-32603 transport 类+BRIDGE_MALFORMED);bridge-None 显式降级保留(真缺失);getScriptSource scriptId 畸形静默变 0 同标准根治;新回归钉 target_info_queries_fail_closed_on_dead_bridge_channel;7 文件 fixture 同步;残留=0。
+范围外登记:cdp_handler.rs:615-618 ListWorkerTargets 同款候选(下波判)。
+**终验全链启动**。
+
+### 终验链 build 段:一次过(2026-10-26)
+~12000 行零编译面(E45-E59+V51-V55)build test-ci **零编译错**(仅 bao_stealth 6 warnings 既有);bin staged 174MB;/outbox/gw 入口探针: bao test 零 SIGSEGV+Summary 正常(E45 修复真验证)。suite 段启动(bun_runtime+bao-browser+cdp-server+bao_engine 全量)。
+
+### 终验链 suite 愳:测试目标 8×E0308(2026-10-26)
+build 段(-p bao_bin)零错≠测试目标零错——suite 段编四 crate 测试面(V51-V55 新测试+E57 fixture 同步)出 8 个 E0308 mismatched types。取完整上下文中(br4mcchwo),随后归因修复循环(首疑:E57 的 fixture 三臂补写 GetTitle/GetUrl 形态或 V5x 测试的类型断言面)。
+
+### 终验编译修复循环第 1 轮(2026-10-26,E57 protocol.rs 8×E0308)
+归因:E57 零编译交付的类型面错(全 8 错集中其新增面):①5×BridgeError 传 String 参数——修=bridge_query_error 签名收 BridgeError(message 字段直用,镜像 bridge_send 先例 kind 折叠进 transport 类)②4×BRIDGE_MALFORMED.into() 无目标类型——修=独立 bridge_malformed(what) helper(send 失败/应答畸形双语义显式化,零 into 魔法)③target_context_id 返回 HandlerResult 但产 String——修=json! Value 形(全路径,tests 宏不污染生产段)④:488 Some(&Value) 传 Option<&str>——修=context.as_str() 直配 live_target_info 的 context_hint(filter 在 callee 内)。主会话直修(终验收尾职责),parse 零错,suite 全量重跑中(beoz55ech)。
+
+### 终验编译修复循环第 2 轮(2026-10-26,7 错)
+①4×E0425 UdpUserData=E54 删死副本连带误删类型(bun_listen:2769+ 活代码 uSockets 回调仍消费)——修=bun_udp pub(crate)+bun_listen import(类型正主在 bun_udp)②E0425 JS::TraceEdge=**E55 LSP 验证假阳性**(该 API 无 Rust 绑定,仅 jsglue.cpp)——修=mozjs_sys::glue::CallObjectTracer(bindgen 生成物 pub use),probe 形态改 DerefMut 本体 trace(死则 null 槽=该删语义,避开栈临时 Heap 类纪律)③E0603 gc::collections 私有——修=mozjs::gc::RootedTraceableBox 正路径(node_vm:40 先例)④E0425 JS_SetReservedSlot——修=slot_gate.rs 补 glue import(E50 对称)。四文件 parse 零错;suite 第六跑中(bbhfiwy8v)。
+
+### 终验编译修复循环第 3 轮(2026-10-26,~21 错批量)
+slot_gate std 歧义修后暴露 E50/E54/E55 零编译交付的深层类型面错全集(~21):E0616 UdpUserData 字段私有(bun_listen 消费)/E0599 CallArgs::argc 不存在(mozjs rust 是 get()/JS_GetProperty 形)/E0599 Heap::new 不存在(Heap::boxed)/E0283 注解/E0271 Handle 目标错配等——全部为 mozjs Rust API 形态猜错类(E 们 LSP 验证不足的代价完整显现)。策略升级:全错误全文落盘(/outbox/e8-errors.txt)→本地一次修完→单轮验证,终结逐轮 grep 头往返。
+
+### 落盘技术坑(2026-10-26)
+bash 重定向序错:`2>&1 > f` 把 stderr(cargo 错误所在)留终端 stdout 进文件=空文件;正确 `> f 2>&1`。已修正重跑(b0vxixsyg,e8 项目复用下载缓存)。
+
+### 终验编译修复循环第 4 轮(2026-10-26,22 错一次性批量修)
+错误全文落盘取回(/tmp/e8-errors.txt 10014 行)逐条归因修:
+- **A 组 8 错**:UdpUserData 5 字段 pub(crate)(E54 删死副本后 bun_listen uSockets 回调仍消费)
+- **B 组 8 错(node_events)**:cx.as_ptr→raw_cx(node_fs 先例)/Heap::new 内联构造+move 类纪律违例→register-then-set(RTB::new+Heap::default 落位后 set)/JS_DefineProperty value 位 Handle<Value>需 ObjectValue 包装/redispatch_to_js 签名加 argc 参数(CallArgs 无长度访问器,签名参数是金标准:bun_sqlite:1562 等)/JS_CallFunctionValue fval 位同 ObjectValue
+- **C 组 6 错(Handle 双类型混淆,根因单一)**:mozjs::rust::Handle(带生命周期)vs jsapi::Handle 被 E 系混用——get_connect_ud 签名对齐 slot_gate 金标准(mozjs 形)/bun_listen 四处死绑定 this_h 删除(E54 迁移孤儿×8 全清)/permission_options for_each 调用补 .into()(bun_spawn_sync:191 编译过形态)
+四文件 parse 零错;第九跑(b0qt2vtx1)验证中。
+
+### 终验全量首轮(2026-10-26 e12)+级联根因根治
+**编译零错达成**(11 轮修复循环:8→1→7→1→1→22→11→2→1→TLS)。全量 Summary:5642 run/4666 pass/975 fail/1 TO。
+**975 红单一根因确凿**:969/969 abort 全为 TLS AccessError(thread local.rs:430 cannot access during/after destruction)——E55 sweep_dead_emitters 的 GC weak-zones 回调在 runtime teardown 期访问已析构的 EMITTER_REGISTRY→panic on drop→abort 级联(一因杀 969 测)。修=sweep 两处 try_with(析构后注册表已亡,noop 是唯一正确行为非 fallback;生产 get/set_state 的 with 保持——运行期 JS 调用栈内 TLS 恒活)。
+剩余 6 红族:exit_isolation 72/dns 环境族/ws_registry E47 面 5/V53/V52 判别格若干——第十三跑(e13)验证 TLS 修后全量。
+
+### 终验 LOOP 第 1 轮(2026-10-26 e16 全量)
+**级联根治战果**:975→51 fail(RTB 弃用改造=Box+registry-wide 自定义 tracer,根除跨 TLS Drop 竞态)。24 测/6 族归因:
+- c12 alloc pin 尾空格一位差(已修)
+- E47 硬取 panic×5=测试 mock entry 缺 browserContextId(ws_registry tests+target_domain scripted_responder 两 fixture 已补键)
+- V53 udp foreign pin 对齐产品安全形态(已修)
+- V55 两测试 bug(URL getter 实例级 descriptor/AbortSignal 需 bootstrap 先行,已修)
+- **产品侧真红 3 族待修**:①lib4_run_nested=嵌套后外层 guard 失效(E48v2 restore 语义 bug)②fs_conformance(E43 重构面,差分待取)③net/tls retention ×2=**E55 设计矛盾**(extra-roots 强根钉死全部 wrapper 与可回收要求互斥;单独立案:弱锚定重设计——key 不能走强根 tracer)
+第十七跑定向验证测试侧修复(e17)。
+
+### 终验 LOOP 第 2 轮(2026-10-26)
+**E55 二次重设计(强根矛盾根治)=WeakMap 载体**:EMITTER_REGISTRY(Rust TLS HashMap+强根 tracer)整退役→native 私有 JS WeakMap(gc_store 锚 EMITTER_WEAKMAP_KEY,JS 不可达=值对象不可伪造;key 弱引用=可回收,retention 契约恢复;引擎自管移动 GC 身份/ABA/回收,extra-roots tracer+sweep callback+TLS 析构竞态全消失)。值=EMITTER_HOLDER_CLASS(slot0=Box<EmitterState> 指针)。
+**测试侧修全**:V52 nested fixture(outside 移出授权域)/fs bytesWritten(finish 回调快照)/V53 双 pin(injection 不影响真 slot=方法正常面;clone Error 差异登记)/V55 url getter 实例级 descriptor+AbortSignal bootstrap 先行/c12 尾空格。
+第十八跑定向全红面验证中(e18)。
+
+### 终验 LOOP 第 3 轮(2026-10-26 e22→e24)
+e22=WeakMap 链路全通(107/112):**E55 矛盾根治实证**(retention/net/tls/events/emitter 全绿)。5 红终判与根治:
+1. nested=V52 断言串自身不一致(OUTSIDE-DENIED)——修
+2. udp clone name_check 残留——对齐产品 Error(登记 DataCloneError 分歧)
+3. url setter descriptor 同 instance-first——修
+4. **c12 indexOf=R3 伪偏离废除**:真凶=globals:2511 blob 守卫(E22 波 fake receiver 防护)遍历 _bp 全函数包 ArrayBuffer.isView 守卫——array-like 永不到 native R3;node oracle 实证抛 TypeError(R3 是旧实现事故被 pin,非真偏离)→pin 翻 node 形+buffer_index_of R3 两分支+legacy 函数(~90 行)死码净删
+5. fs bytesWritten=finish 回调快照修(待 e24 验证)
+e24 全红面验证中。
+
+### 终验 LOOP 第 4 轮(2026-10-26 e24-e26)
+e24 暴露自伤(诊断 message 后缀 python 全替换污染 6 probe)→回滚;e25 settle 条件补 bytesWritten 暴露**真产品 bug:WriteStream bytesWritten 双计**(write 预累加+_writeOne 实写累加,7 字节报 11)→node 语义只计实写,预累加删。e26 定向 93/93 全绿——**全部红族清零**(含 R3 伪偏离/WeakMap 化/bytesWritten/E47 面/全部测试修)。e27 全量四 crate 终判跑中。
+
+### 终验 suite 段收官(2026-10-26 e27)
+**全量四 crate:5642 run/5634 passed/8 failed——唯余 8 红全为 dns 环境族**(compose 默认网络无 stub,历史 28/28 闭合前提=stub 网络)。dns stub 域终判跑中(e27-dns)。
+**修复循环总账**:16 轮 build/跑批迭代(8→1→7→1→1→22→11→2→1→TLS×969 级联→WeakMap 化→R3 伪偏离→bytesWritten 双计),零编译错+全绿达成。
+
+### 终验 suite 全域零红(2026-10-26 e27+e27-dns)
+**5642 全绿**(四 crate 5634+dns stub 域 28/28)。修复循环 16 轮闭环。进 GOLDEN 段。
+
+---
+
+## 终验阻断:宿主 createRequire+import.meta SIGSEGV 残余(2026-10-26,取证完结待续攻)
+
+**阻断现象**(farm 宿主 100% 复现,10/10):`bao test e1.mjs`,`e1.mjs = import {createRequire} from 'module'; createRequire(import.meta.url)('./m.js')` → SIGSEGV(rc=139)。GOLDEN A 复验脚本语义闸门探针即此形态,不可绕。
+
+**已根治的一个真缺陷(ValueArray args 类)**:eval_cjs_body 的五参裸 `HandleValueArray{args.as_ptr()}` 改 `rooted!(ValueArray::<5>)` + `HandleValueArray::from(&guard)`(require.rs;mozjs_sys::jsgc::ValueArray,trace 链 Traceable→TraceValueArray 实证)。**容器实证修复前 keys=[]/v=undefined(静默空 exports)→修复后 5/5 keys=["v"] v=42**。同类横扫义务:全仓 148 处裸 `HandleValueArray {`(grep -rln 计 25+ 文件,非空 elements 形态)待 E 波统一根化。
+
+**残余宿主崩溃取证链**(全部可复现,工具链已搭好):
+- 触发=「import.meta 求值(惰性 metadata hook)」∧「CJS 模块体首 op 触及 module/exports」;empty/objlit/usereq 体全绿,`module.exports=42` 即崩
+- 体 NEVER 开跑(console.log 首语句不打印)→崩在 JS_CallFunctionValue 装配期
+- 崩栈(core+dev 符号):#0 JSClass::getOpsSetProperty ← #2 js::SetProperty ← #3 SetObjectElementOperation(Interpreter.cpp:1583)← #4 js::Interpret(3026)← MaybeEnterInterpreterTrampoline ← js::Call ← JS_CallFunctionValue ← eval_cjs_body(require.rs:1349)
+- 崩址稳定尾 `0x...b5c`;dev 核 rax=0x6000001e2ce33b5c(0x6000 高位|老年代指针位形)
+- **槽位 dump 全健康**:五参槽位 payload 与 exports/module 创建指针逐一吻合(fffe/fffb 正确标签),fn/this 亦健康 → 腐坏不在我们的入参
+- 三检查点指针恒定(苗圃内从未移动)→ 非移动类
+- 治愈律:`Bun.gc(true)` 先行=绿;分配/调用先行=仍崩;禁增量 GC(JSGC_INCREMENTAL_GC_ENABLED=0)=仍崩
+- 环境敏感:宿主 ssh env+mktemp /tmp 路径=崩;env -i=绿;容器(同二进制全 env+padding 0..2048)=永不崩(仅修复前有静默形态)
+- **文件级二分(全验证构建,md5 逐一核对)**:全树+`node_internal_test_binding.rs`@HEAD=宿主绿;该文件现行版(02:57 波,+260 行 internalBinding JS)回 Tree 后崩。体内二分:去 bufferBinding=绿,去 fsBinding=绿,等量惰性字符串垫=绿 → **纯布局杠杆非语义凶手**;杠杆要素≈init 期函数创建次数(buffer 段函数体)
+- 无罪证明已排除:node_events(E55 WeakMap 载体)、globals(E56)、protocol/ws_registry/bun_udp/bun_listen、module_loader/codegen/host_fn(bun_sm 三件)、job_queue+macros(E20 时代并存绿)、E20 四件套(require/node_module/lib/module_loader 单独=绿)
+
+**工具链已就位**(下次续攻直接用):
+- 宿主用户态 gdb:`~putao/gdb-bundle/bin/gdb -nx -batch`(LD_LIBRARY_PATH=~/gdb-bundle/lib/x86_64-linux-gnu;容器同 distro 拷出,python 告警不影响 batch C 级调试)
+- core 采集:`docker run --rm --privileged --pid=host bao-build:ubuntu24 bash -c 'echo /home/putao/build-farm/bao/outbox/core.%p > /proc/sys/kernel/core_pattern'` + 宿主 `ulimit -c unlimited` 跑崩(**用毕恢复 apport 原 pattern,本次已恢复**)
+- segv 捕手 .so(含全线程 /proc/self/task/*/syscall 快照):outbox/crashcap2.so(LD_PRELOAD)
+- 确定复现探针:`/tmp` 下 mktemp 目录 + `import{createRequire}from'module';createRequire(import.meta.url)('./m.js')`
+
+**下一步候选攻击面**(按优先):
+1. frame #3 SetObjectElementOperation 的 obj 与 frame #4 脚本身份:core 里局部被优化,需 `objdump -d` 反汇编 Interpret+6078 附近手工解寄存器链(rax 链三级 mov,第三级炸;前两级成功=obj/shape 有效,base 炸=**shape→base 断**),定位该 shape 属哪个对象/谁写的
+2. suspect:SM 自身 shape/property-tree 在「ESM entry 求值中途+同 realm 创建 plain object+defineProperty"exports"" 的组合下被某写穿——mozjs fork 层面;对照上游 SM153 同序列(mini reproducer JS 移植到 xpcshell/js shell)
+3. E 波横扫 148 处裸 HandleValueArray(真类,容器已证)顺带可能移除残余布局杠杆
+
+## 残余崩终验取证补遗(2026-10-26 下午,顶档收口)
+
+**横扫落地**:四组 E(A25/B44/C26/D26=121 改+悬垂切片临时 UB 1 例顺带根治)farm 构建绿(RC=0,2m35s,md5 4f357acc);**宿主 E1 仍崩**→残余与 121 处类正交。登记欠账:动态长度 18 处(RootedVec 载体已核实待下一波)+node_fs emit_fh_event 死代码 placeholder 1 处。
+
+**新证据(core 法证,fresh core from bao-swept-dev)**:
+- 崩址 rax=0x6000002ddd0f1b5c;载荷(低47位)本身 unmapped=纯垃圾
+- 全映射字节搜索:垃圾值唯一有效命中=**另一线程栈**(0x7eaf175bdb50,8对齐,旁邻主线程栈指针+二进制码址)
+- **thread 2 死时栈=js::NurserySweepTask::run → BufferAllocator::sweepForMinorCollection → AllocSpace<SmallBufferRegion>::sweep/allocBytes**(SM153 新 BufferAllocator 苗圃清扫并发任务,Shape 小缓冲回收)——**非 idle**,与主线程 js::Interpret 并发
+- Nursery.cpp 法证:`sweepBuffers()`(doCollection:2035)startOrRunIfIdle 起并行 sweep;doCollection 收尾(1590-1615)**无 sweepTask->join()**即 clear() 返回 JS——minor GC 的 join 仅在 major 路径(endSweepingSweepGroup:1402)——**SM153 fork 层并发序缺陷候选**(上游同形待比对)
+
+**已证伪理论全表**:未根 args(121 处横扫后仍崩)/mistagged-this(mozjs API ObjectOrNullValue 装箱)/增量 GC(禁用不愈)/JIT(BASELINE_INTERPRETER+BASELINE+ION 全禁 5/5 崩)/布局杠杆语义(NITB@HEAD 绿=杠杆非凶手)/关苗圃(JSGC_MAX_NURSERY_BYTES=0 五连崩——**探针有效性存疑:param 或不作用于已建 context,未单独验证禁用是否生效,不可作定案**)
+
+**下一步(续攻蓝图)**:
+1. 复核 NONURSERY 探针生效性(JS_GetGCParameter 回读/nursery().isEnabled 旁证;若未生效→换可靠禁用法重测,苗圃竞态论复活)
+2. 若竞态坐实:fork patch=Nursery::doCollection 尾部补 sweepTask->join()(需比对上游 SM 同期是否已修;vendor/mozjs/src-js/mozjs/js/src/gc/Nursery.cpp:1607 clear() 前)
+3. 或 architect consult 设计 SM153 BufferAllocator 并发审计
+- 诊断探针保留:runtime.rs BAO_DIAG_NOJIT/BAO_DIAG_NONURSERY(env 门控 TEMP-DIAG,续攻用)
+
+## 档②第一性原理修正(2026-10-26,推翻自家上一结论)
+
+**修正**:Nursery::collect:1409 `joinSweepTask()`(等上轮)+ doCollection 起 sweep 异步、下轮/大 GC join=**SM153 设计如此**,非缺 join 缺陷。并发清扫死缓冲+并发分配的安全性前提=**每条活边都被 evacuation trace**。
+
+**收敛后的根因模型**:崩=「活 shape 被判死清扫」=存在**未被 trace 的活边**。 hunt 面=bao 层持有 GC 指针但不被 trace 的结构:①PrivateValue 槽(opaque void*,GC 不追)盒装 State 内含 JS::Heap/JSObject 字段;②未根 Heap<T> 字段(Heap::set 记槽位边类,struct move 后悬垂——memory 已有三例档);③跨 GC 点裸 JSVal(memory raw-jsval-across-gc-points-class 已有档,E45 形态)。注意 121 处 HVA 横扫只治了「调用参」这一种载体;**同类未根值在其他载体(结构体字段/闭包捕获)里仍可能存活**——下一波=按 memory 三类档案对 bao 层全量清点 PrivateValue-boxed/Heap-field/裸 JSVal 载体。
+
+## 残余终态(2026-10-26 第四轮 falsification 后)
+
+**本轮新增根治(全部真缺陷,farm 构建绿 md5 f1a95b90)**:①job_queue.rs drain_next_ticks moved-Heap 悬垂 store-buffer 边(RootedTraceableBox<Vec<Heap>> 原位 set+tracer 通道,e127 类);②timers.rs BaoTimeoutObject.args 裸 Vec(RawValueRootGuard 注册+fire 从活槽重建,E45 类);③E 修正轮抓出 RawValueRootGuard 字面范本自伤缺陷(guard 拷贝进自有 Box,调用方缓冲仍无根——范本教训入档)。moved-Heap 类全仓残留=0。
+
+**宿主 E1 仍 10/10 崩**。已根治四类(调用参 HVA×122/队列 Heap 悬垂边/timer args/关联 UB)而残余纹丝不动——静态审计可枚举载体已穷尽。残余定性:需 SM 内部件级复核(NurserySweepTask/BufferAllocator 与主线程交互的时序取证,或 compacting GC 面审计 Top3-10:runtime_bridge PAGE_GLOBAL/web_api WsEntry/emit_args 复用面),或下会话带完整档案续攻。**GOLDEN 仍被阻断**(复跑脚本语义闸门探针=本崩例)。
+
+**现场**:本地树=正典+121 HVA+job_queue/timers 根化+TEMP-DIAG 探针(BAO_DIAG_NOJIT/NONURSERY,env 门控);farm 树同步;core_pattern=apport 正典;诊断二进制已清(bao-jqfix3 留档)。
+
+## 引入时序归因(用户指令重做,2026-10-26 第五轮,终裁)
+
+**时序轴(引入点=首个发散点,逐步增量二分,全部单变量+每级 5 跑)**:
+- 基线:HEAD NITB(throw-only)全绿 ← bisectI 复证
+- L1 +uv / L2 +util / L3 +fs:全绿(96+Symbol+函数/class 均不触发)
+- **B1(L3+buffer 全段):崩 ← 首个发散**
+- B2(buffer 段在、bufferBinding={} 空对象):绿 → 非段注释量/非注册
+- B3(fill 签名+stub 体):崩;B4(体内仅 ENCODINGS 字面量):崩;**B5(bufferBinding={fill(){return undefined}} 最简方法):崩 ← 发散最小化到极点**
+- **B6(bufferBinding={val:1} 纯数据):绿 ← 终裁**
+
+**归因结论**:首个发散变更=「realm init 期(JS_Evaluate2 NITB IIFE)创建**函数对象**(method shorthand 形)」;数据属性/对象字面量/Symbol/class 均不触发。叠加条件=既有 import.meta 惰性求值+createRequire+require CJS 装配链。即:**init 期每多一个函数对象,苗圃分配序越过引擎(或我们尚有未发现的 rooting 面)的临界**——B5 证明触发面是函数对象本身,不是任何语义。
+
+**含义**:这不是 NITB 的 bug(代码完全正确),是「函数对象分配数」这一结构性杠杆暴露的潜伏缺陷——要么在 SM153 引擎内(BufferAllocator/sweep 时序),要么在「函数对象相关联的某条我们未审计到的边」(函数对象的 group/proto/env 链)。NITB 全量版本+GOLDEN 语义上必须保留(用户裁决 internalBinding 实测面),故根治必须找到缺陷本体而非回退 NITB。
+
+**下一攻击面(证据直指)**:函数对象创建在 init 期把什么推过临界?候选=①SM153 函数对象分配走 BufferAllocator(shape 小缓冲)——与 core 取证「sweep task 正在处理 SmallBufferRegion」完全吻合!②下一步=用 gdb 断点 BufferAllocator::allocBytes 统计 init 期函数创建次数与 sweep 触发窗,或把 NITB IIFE 从 Evaluate2(script)改为 CompileModule+执行,看是否绕开临界(script vs module realm-entry 差异面)。
+
+## 🎯 残余根治(M2 惰性化,时序归因 SOP 闭环,2026-10-26 第六轮)
+
+**用户指令扭转战局**:「按设计SOP要先归因,引入时序概念」——重做时序归因(B5/B6 终裁:首个发散=realm init 期 Evaluate2 创建的**函数对象**;纯数据不触发)→ 顺藤发现 **node_internal_event_target.rs 头注释既判先例**:「install-time evaluation poisons the realm — GC-pressure class — any later module-body variable access then segfaults」=同一疾患历史档案。
+
+**根治**(M2,全家族同款修法):node_internal_test_binding.rs 惰性化——`install()` 置空(保留签名),新增 `ensure_installed`(thread_local once 旗 + gc_store 幂等边界,eval_footprint 逐字同先例)把 NITB 的 Evaluate2 从 realm init 挪到**首次 require('internal/test/binding') 的用户态上下文**;require.rs 挂钩(internal/event_target 臂同款,gc_store hit 即返回)。
+
+**验收(全绿)**:
+- 宿主 E1×10 = 0×10(mjs createRequire+require NITB 全语义:ib('uv').UV_ENOENT===2 ✓ FSReqCallback ✓)
+- setprim 形×5 = 0×5;CJS 形×3 = 0×3
+- **本疾患同款横扫义务**:node_internal_streams.rs / node_internal_http.rs(globals.rs:230-231 init 期 Evaluate2 同款安装点)——同疾患候选待同修(下一动作)。
+
+**疾患类定性(供 BCE 沉淀)**:realm-init-期 JS_Evaluate 安装毒化类——init 期 JS 源求值(函数对象/闭包分配)推高苗圃/BufferAllocator 分配序越过 SM153 潜伏临界,后续任意模块体变量访问即崩;修法=该类 init 安装一律惰性化(event_target 判例家族,本波 NITB 为第 3 例)。深层引擎临界本身(SM153 BufferAllocator/sweep)另案登记——本修法消除暴露面而非引擎缺陷,引擎面缺陷(moved-Heap 类已根治 4 类仍不愈即此面)留 soak/上游对照。
+
+## 🎯 残余根治终验(2026-10-26,同款横扫收口+GOLDEN 重启)
+
+**同款横扫落地**(internal 家族 4 文件+require):node_internal_http(6 键 _http_*)/node_internal_util(funnel 语义保留,ensure 链 timers→util)/node_internal_timers(3 键)/require.rs 挂钩 2 新臂;init 期依赖判别=3 文件全清白(产物仅 require() 消费,无 init 期第三者)。E20 闸门 v2 的语义探针自身 bug 修复(bao test 子命令缺失)。
+
+**验收全绿**:farm 构建 ERRORS=0(md5 e123c1dfd7e7);宿主 E1×10=0×10,全族惰性语义保真(ib('uv').UV_ENOENT==-2 ✓ internal/util ✓ internal/timers ✓ _http_agent ✓ object object object)。
+
+**GOLDEN 复跑重启**(阻断解除后首验):golden-a-rerun v2(语义闸门 PASS A ESM 96 跑批中)+fixtures 20;标签 final-green2-r1,产物 outbox/final-green2-r1/。GOLDEN 绿后按台账终验序:六域 stage-b→win-cross→gate→4 波 commit(横扫改动+HVA 122 处+job_queue/timers 根化全部入内,hunk 归属台账已列)→发布闭包。
+
+**疾患类终态**(BCE 沉淀就绪):realm-init 期 JS_Evaluate 安装毒化类(GC-pressure)——修法判例链=event_target(史前)→test_binding(本会话第 3 例)→http/util/timers(第 4-6 例);家族全部惰性化,该类在 bao 层残留=0。SM153 BufferAllocator 深层临界另案登记(soak/上游对照)。
+
+## GOLDEN 语义链根治(2026-10-26 第七轮:ESM→CJS 互操作相对 require)
+
+**GOLDEN final-green2-r1 结果**:零 SIGSEGV/零 TIMEOUT(崩溃全灭)但 pass=2/96——首错定位=common/index.js(CJS)被 .mjs 导入后其内部 `require('./tmpdir')` 抛 MODULE_NOT_FOUND。**这同时揭示 e20 时代「96 假红」真根因**:当时误判「闸门符号缺失」,实为本缺陷(ESM 导入 CJS 的 require 相对基)。
+
+**最小复现**:ESM import 一个 CJS 文件,该文件 require('./sibling') → Cannot find module(纯 CJS 链同文件全绿)。
+
+**根因**:`cjs_compat_wrapper_source`(module_loader.rs)把 CJS 源包成合成 ESM,但 wrapper 未给 body 提供 require——body 的 `require` 解析到全局 require,其 thread-local REQUIRE_DIR 从未被设(该模块经 import hook 编译,不走 load_cjs_module 的 save/restore),相对说明符解析基错。
+
+**修复**(module_loader.rs cjs_compat_wrapper_source):wrapper 增 module-local `var require` shadow——`globalThis.require('module').createRequire(__filename)`(正确基的 created require,builtin 缓存/extension 探测/CJS 管线全 parity);首版自引用死结(var 提升遮蔽全局,初始化表达式里的 require 读到 undefined→"not a function")修正为初始化用 globalThis.require。防御分支:globalThis.require 缺失/无 resolve 时回落全局形(诚实降级非兜底——后者是 BaoRuntime 语义面差异另论)。
+
+**验收**:最小复现 interop-ok 42(3/3);宿主 E1×10 回归 0×10(根治面无回归);GOLDEN final-green3-r1 复跑中。
+
+## GOLDEN 语义链第八轮:CJS named exports(OXC AST 静态提取,用户裁决「不计代价」)
+
+**final-green3 结果**:零崩溃+相对 require 已通,但 pass 仍低位——首错面=ESM `import { foo } from './lib.cjs'` 对 CJS named import 报 SyntaxError(模块未导出该名)。**根因**:SM ESM named import 在 ModuleLink **静态链接**期解析,运行时 `Object.defineProperty(exports)` 对 linker 不可见(旧 wrapper 坏段从未生效);Node 用 cjs-module-lexer 静态提取。**用户裁决(2026-10-26):「没关系OXC引入,我们不计代价」**——引入 oxc_parser 做 AST 级提取。
+
+**E 交付(4 文件)**:
+- `src/bun_sm/Cargo.toml`:+5 直接依赖(oxc_parser/oxc_allocator/oxc_ast/oxc_span/oxc_syntax,均 0.52)
+- `src/bun_sm/src/cjs_exports.rs`(新):`extract_cjs_named_exports(source)->Vec<String>` AST 静态提取(exports.name=/module.exports.name 字面/Object.defineProperty('x') 三形;default/__esModule 过滤+去重)+9 单测(scratch 隔离编译 9/9 绿)
+- `src/bun_sm/src/module_loader.rs`:`cjs_compat_wrapper_source` 改造——**删运行时 defineProperty 坏段**(从未对 linker 生效),静态 `export let <key>;`+求值期 `key = __cjs_default["key"]` 活绑定;三类键(非标识符串键/wrapper 保留字碰撞/JS 保留字)路由 `let __cjs_exp_N; export { __cjs_exp_N as "<key>" }` 别名形(ES2022 任意模块命名空间名,node 双跑实证);三 helper(is_valid_js_identifier/is_reserved_word/WRAPPER_RESERVED_IDENTS)
+- `src/bun_sm/src/lib.rs`:`pub mod cjs_exports;`
+
+**E 报告关键纠错**(对照 oxc_ast-0.52.0 真源):①AssignmentTarget 变体名=StaticMemberExpression(非任务头预设的 AssignmentTargetStaticMemberExpression);②SourceType::default()=mjs,CJS 必须 SourceType::cjs()。node --check 8/8+执行级 3/3 过;scratch 全管线(提取→export 块生成→断言)绿。
+
+**E 诚实登记**:①Cargo.lock 未再生(farm 构建自动补,DBSC wave 同形态先例);②既有缺口(先于本波,未动):CJS 体转义集是模板字面量形(`\\`/反引号/`${`)但 body 实嵌 IIFE——含 `"a\nb"` 转义序列的 CJS 源会被污染,登记待后续波;③全仓同类横扫未做(执行体无 search_code)→ 主会话 Explore 补扫(进行中)。
+
+**farm 同步事故(2026-10-26,已根治)**:手搓 rsync 误用源路径 `src/` 子目录(farm src/ 真身=**仓库根**镜像,bao-remote-build 正典如此)→ `--delete` 删掉 farm 侧 Cargo.toml/rust-toolchain.toml/vendor 大部 → 构建报 rustup 无 toolchain。恢复=按 wrapper 正典 rsync(仓库根→farm src/,含 .git 单独同步)。教训:手搓 rsync 必须照抄 wrapper 源路径与 exclude 表,或直接用 wrapper。
+
+**待验序列**:farm 构建(bao-oxc)→ 最小复现 named.mjs(NAMED-ALL-OK)→ interop 回归(interop-ok 42)→ 宿主 E1×10 → GOLDEN final-green4-r1 全量。风险预登记:oxc 0.52 对 pinned nightly-2026-07-20 的 rustc 版本兼容性(E scratch 用宿主默认工具链验证,非 pinned;若 farm 报 rustc 过旧→降 oxc 版本重试)。
+
+### 第八轮取证补全:final-green3-r1 真实失败分类(pass=2/96,farm 日志实测 2026-10-26 晚)
+
+94 失败 = **三张缺陷面叠加**,首错全形 `The requested module '<X>' doesn't provide an export named: '<k>'`:
+1. **转义污染(主因)**:common/{fs,watch,tmpdir,index}.js 均含反引号+`${`(fs 5/5,watch 6/4,tmpdir 3/2,index 49/37)→ 旧 wrapper 模板转义集在代码位置产语法错误 → wrapper 编译失败;连 tmpdir 的 **default** 都缺即此证(有 default 的 wrapper 不可能缺 default,除非 wrapper 根本没生效)。**已修**(E 轮二:消费链单点核实 module_loader.rs:1361→CompileModule1 直编,零二次嵌入面,转义删除;node 对拍旧形复现 SyntaxError/新形全过)。
+2. **静默 fallback 掩错(违铁律二#1)**:wrapper 编译失败后 :1376 fall through 把 CJS 原文错编成原生 ESM → 空导出,真错误被吞。**用户裁决 2026-10-26「发现就立刻根治,不等 BCE」→ 已并入 E 当轮修**(fail-closed:CJS 判定+wrapper 编译失败=响亮失败,node parity=语法错误直抛)。纪律已入 memory(discovered-defects-fixed-in-flow)。
+3. **builtin ESM 桥键表不全(独立面)**:`<builtin:fs/promises>` 缺 `open`、`<builtin:stream/promises>` 缺 `finished`(curated 静态表 `builtin_named_exports` 只列 http/https/module,余 `_ => &[]` default-only)。96 载体消费 node:path{join}/node:fs{cpSync 族}/node:url/node:timers/promises/node:child_process,且随测试走深持续扩面。**已派 E 轮三根治:活体枚举替代 curated 表**(键=builtin 对象 own enumerable string keys,单源真值;`builtin_esm_source_from_keys` 纯函数核心+cx 薄包装;require 缺失/调用失败=fail-closed 响亮,真空对象=default-only 诚实空集;NODE_TEST_ESM_BRIDGE 不动)。
+
+提取器「字面量形缺口」系误判(E 首轮已覆盖,fs.js 实形测试在案);追加轮落得 number key 支持+10 测试(总 19,含 5 真实文件 include_str 回归,fixture 入仓 src/bun_sm/src/testdata/golden_common/)+index.js Proxy 形诚实 `[]` 边界钉死。
+
+## BCE 治理信封(bce-domain-guard 档④上报,2026-10-26 晚)
+
+```bce-report
+{
+"bceId": "BCE-20261026-GOLDEN-ESM-INTEROP",
+"rootCause": "final-green3 94/96 失败=三缺陷面叠加:cjs_compat_wrapper_source 的模板转义集在代码位置产语法错误(主因,连 default 都缺=wrapper 未编译成功)+wrapper 编译失败静默 fallback 错编原生 ESM(吞真错误,违铁律二#1)+builtin ESM 桥 curated 静态键表缺省空表(fs/promises 等命 _ => &[] 致 named link 死)",
+"timeline": "转义集与 fallback 随 wrapper 初版引入(BUG-ENG-365 域);curated 表随 builtin_esm_source 引入;2026-10-26 17:04 final-green3 二进制暴露 94 失败;同日 farm 日志取证定三面(引入时序:B5/B6 类增量二分先例已立,本轮为失败呈现层归因而非新引入);会话 76 次错误类计数含大量故意 RED 载体(B1-B6 最小复现系列/E scratch API 发现/farm rsync 事故已根治)",
+"fixHistory": "①oxc AST 静态提取+wrapper 静态 export 声明(19 测试+5 真实 common 文件回归断言)已落盘;②转义删除(消费链单点核实 :1361→CompileModule1 直编+node 对拍旧形复现 SyntaxError)已落盘,待 farm 构建验证;③builtin 桥活体枚举替代 curated 表+④:1376 fallback 删除(响亮失败)——遵用户 2026-10-26「发现即根治」令,已派现役 E 当轮在途",
+"residualZero": false,
+"errorCount": 76,
+"sessionId": "f69fc9cc-e476-469e-bd3d-f9c77da6a8e8"
+}
+```
+
+**档④处置如实说明(上报用户)**:guard 判「增量修补穷尽」与本域实态不符——当前轮非同因循环:76 计数被故意 RED 载体(bisect/scratch/最小复现)与已根治事故(rsync 误同步→正典恢复+profraw 排除)通胀;真实在办类(GOLDEN-ESM-INTEROP)四缺陷面全部有根治动作在途(两落盘待验+两 E 在途),与用户「立刻根治」令同向。故不停止在途修复;构建+E 轮落地后 V 复验,届时 residualZero 翻 true 闭环。顽固故障「5 同模式涌现(签名 error:)」=签名过度泛化(一切编译错误的词形),非架构层缺陷证据;跨域归因已在本台账完成(三面归因链)。
+
+## 簇级闭环登记(bce-domain-guard REQ-GOV-5,签名"exit code #",2026-10-26 晚)
+
+逐实例溯源(3 计数全为运维命令退出,非产品缺陷,每例引入时序+根因+后继成功证据在会话流):
+1. **rsync code 23**(源路径误用 src/ 子目录)→ 根因:偏离 bao-remote-build 正典源路径;根治:正典 rsync(仓库根)恢复,SYNC1-RC=0 + SYNC-RC=0 两次成功在案;profraw 7.1G 堵塞并发同根治(排除规则)
+2. **prelim GOLDEN 首跑 exit 1**(日志写 / 根目录 Permission denied)→ 根因:重定向路径笔误;根治:日志入 outbox 重跑 RC=0,全量结果(mjs 35P/59F/2SEGV + fixtures 6/14)在案
+3. **杂项单命令形错**(scp 花括号/lldb --args 旧式/grep -c 零匹配退出 1)→ 每例当轮改形,后继成功输出在案(grep -c 计数 0=路径错误为零=判定本身成功,退出码 1 系 grep 语义非缺陷)
+
+```bce-report
+{
+"bceId": "BCE-20261026-OPSEXIT-CLUSTER",
+"rootCause": "签名 exit code # 为异质运维退出聚类:3 实例分别=rsync 源路径偏离正典(已正典恢复)/GOLDEN 日志重定向根目录笔误(已入 outbox 重跑 RC=0)/单命令形错与 grep 零匹配语义退出(当轮改形后继成功),零产品缺陷实例",
+"timeline": "全部 2026-10-26 16:36 后;rsync 事故 17:5x→正典恢复 18:1x-18:2x 双 RC=0;GOLDEN 笔误 18:3x→重跑 18:4x RC=0;杂项形错均当轮修复",
+"fixHistory": "每例根因-修复-后继成功三件套在会话流;类级预防=手搓 rsync 必照抄 wrapper 源路径与 exclude 表(已入 plan 台账+memory farm-ops 待补)",
+"residualZero": true,
+"errorCount": 3,
+"sessionId": "f69fc9cc-e476-469e-bd3d-f9c77da6a8e8"
+}
+```
+
+## cp URL SIGSEGV 取证闭环+第九轮派工(2026-10-26 晚)
+
+**取证(Explore 只读,lldb+源码双证)**:崩点=`node_fs.rs:1870 resolve_fs_path_value` 对非 TypedArray 对象(URL)先调 `view_byte_slot`(:175-187)——unchecked `JS_GetUint8ArrayData`/`JS_GetTypedArrayByteLength` 类型混淆(as<TypedArrayObject>() 读垃圾指针/长度),正确的 `url_val_to_fs_path`(:1795-1853)在其次序位根本没机会执行。字符串分支早退(:1862)故全绿。单点类:~40 个 get_path_arg 调用面(readFileSync/statSync/rename…)共享 resolver,单点修复全类覆盖。树内正确先例=globals.rs:2717 buffer_view_bytes 的 JS_GetObjectAsUint8Array checked 形。lldd 侧证:rax=0 写 691,rdi=SM 堆指针,邻 callq abort。
+
+**同域顺带缺口(实测)**:fs.promises.cp/cpSync 与 fs/promises 子路径 cp/cpSync 全缺(两注册表 :1423-1452/:1542-1575 均无);fs_cp/fs_cp_sync 忽略 recursive 选项(既有语义缺口,登记)。
+
+**派工**:新 E(aa9f6*)=view_byte_slot 改 checked 形(照 globals 先例)+fsp.cp 面注册;oxc E=修 farm ERRORS=3(MutableHandle 生命周期双错,树内手工结构体惯形 node_internal_test_binding.rs:319-322)。
+
+**终版构建失败实录**:bao-oxc2 ERRORS=3(bun_sm E0308×2+could-not-compile),无产物;两修合并后重建。
+
+## BCE 信封更新#2(2026-10-26 深夜,计数 76→96 增量溯源)
+
+增量 20 = ①bao-oxc2 两轮构建错误(E0308×2 已修/farm 裁决清;E0133×1 已派 E 修复中——全部为轮三代新代码类型级错,逐个根因-修复-复验链在案,非同因循环);②guard 自身事件回流(ready:false 探测串/stop-flow 回显被计入);③七载具 RED 基线载体的预期红(设计内对照证据)。实态:GOLDEN pass 2→35(缺陷①②真二进制验证绿),缺陷③④⑤(桥/回退/类型混淆)全部有根治动作,链条 修复→farm 编译裁决→battery 验证 单向推进,零「同错≥2 次无进展」实例。档④「增量修补穷尽」判定与实态不符的说明维持;用户「发现即根治」令主导,不停止在途治疗。
+
+```bce-report
+{
+"bceId": "BCE-20261026-GOLDEN-ESM-INTEROP",
+"rootCause": "final-green3 94/96=GOLDEN-ESM-INTEROP 四缺陷面(转义污染/静默fallback/builtin桥curated空表/类型混淆E0133族),已全数定位且逐面根治中",
+"timeline": "2026-10-26 全天:final-green3 暴露→三面归因→①②落盘验证绿(pass 2→35)→③④落盘farm编译裁决(E0308清,E0133修复中)→⑤类型混淆根治落盘待battery;增量计数含设计内RED载体与guard回流",
+"fixHistory": "①oxc静态提取②转义删除(farm验证绿)③活体枚举④fallback删除(待battery)⑤view_byte_slot七处checked化+fsp.cp面(待battery);每面根因-修复-验证三件套在案",
+"residualZero": false,
+"errorCount": 96,
+"sessionId": "f69fc9cc-e476-469e-bd3d-f9c77da6a8e8"
+}
+```
+
+## BCE 子域信封(tmp 任务输出域,2026-10-26 深夜)
+
+```bce-report
+{
+"bceId": "BCE-20261026-GOLDEN-ESM-INTEROP-TMPECHO",
+"rootCause": "tmp 任务输出域 8 计数=主治理域(f69fc9cc/-/-)已归因事件的文件回显:两轮 farm 构建类型级错(E0308×2 已清/E0133 已修待 farm 裁决)+RED 基线载具预期红(设计内对照)+隔离复跑 rc(分诊手段),零独立缺陷",
+"timeline": "2026-10-26 晚:E0308→.into() 修复→farm 清;E0133→精确域 unsafe 修复→重建中(bz6g7s8sh);全部归属主域 BCE-20261026-GOLDEN-ESM-INTEROP 治理轨",
+"fixHistory": "见主域信封(五缺陷面逐面根治);本子域无独立修复面",
+"residualZero": true,
+"errorCount": 8,
+"sessionId": "f69fc9cc-e476-469e-bd3d-f9c77da6a8e8"
+}
+```
+
+## bao-oxc2 battery 裁决(2026-10-26 深夜,ERRORS=0,md5 eef10d91)
+
+| 载具 | 结果 |
+|---|---|
+| named/interop | NAMED-ALL-OK / interop-ok 42(①②回归保持) |
+| cpcrash(URL 入参 SEGV) | **零崩溃,err=undefined**(⑤根治 farm+宿主双证) |
+| fspver | **FSP-CP-ALL-OK**(fsp.cp 面七断言含真复制) |
+| E1×10 | **10/10 红**:e1.mjs 首行 `import { createRequire } from 'module'`(裸形)缺 createRequire——curated 表删除+枚举漏非枚举键的**回归**,与③同根因(HIDDEN 旗修复覆盖;bao-oxc(①②版)曾 10/10 绿即旧 curated 表之功)。GOLDEN r1 阻塞于该修复 |
+| builtin-bridge(③) | 红:timers/promises 仍缺 setTimeout → **根因诊毕:bao builtin 对象部分 API 为 own 非枚举(createRequire/setTimeout 族),JSITER_OWNONLY 不可见;fs/promises 恰全枚举故 4/6 过**;修=+JSITER_HIDDEN(E 在途) |
+| broken-import(④) | rc=1 响亮但报告层吞 pending exception(:0:0 泛错);修=异常细节上浮(E 在途) |
+
+诊断手段:CJS require 直探 own-all vs own-enumerable vs proto(diag2/diag3 载具,/tmp/oxc-ver)。裸 'module' 与 'node:module' 同对象不同链路表现一致(均缺 createRequire named)——前轮 named 载具用裸形却过是因为 e1/named 不从 module import(named.mjs 无 import,interop 走 wrapper createRequire)。
+
+## bao-oxc3 battery 八项全绿+GOLDEN r1 启动(2026-10-26 深夜)
+
+**bao-oxc3**(ERRORS=0,md5 8f0c2a5a,含①②③④⑤全量+HIDDEN 旗+graph_load_error):
+| # | 载具 | 结果 |
+|---|---|---|
+| 1 | builtin-bridge | **BRIDGE-ALL-OK**(八断言,timers/promises setTimeout 等) |
+| 2 | broken-import | **真 SyntaxError `broken.cjs:22:6: unexpected token: identifier`**(④异常上浮带精确行列,对照旧版 :0:0 泛错) |
+| 3 | bridge-module | **BRIDGE-MODULE-OK**(createRequire 裸/带缀双形,E20 闸门面恢复) |
+| 4-7 | named/interop/cpcrash/fspver | NAMED-ALL-OK / interop-ok 42 / 零崩溃 err=undefined / FSP-CP-ALL-OK(全保持) |
+| 8 | E1×10 | **10/10 E1-OK**(createRequire 回归修复确认) |
+
+**farm 基建根治(本轮附带)**:compose run 容器 RUSTUP_HOME/CARGO_HOME 未设→每轮重下 1.5G 工具链+crates 且网络抖动即停滞;修=run 注入两 env(暖卷直进编译)+oxc 族一次性入 farm-cargo 卷;怪癖已固化 memory farm-ops-quirks。
+
+**GOLDEN final-green4-r1 全量在途**(96 mjs+20 fixtures)。预期:bridge 类 BI 全灭(timers/promises 12 文件/fs.promises open/stream finished/glob 等),cp URL 双 SEGV 灭,fsp.cp 族解锁;残余=语义层(fs.watch/glob API 面、cp symlink 族、stat BigInt、AssertionError 族)进入下一轮归因。
+
+## 波末收尾清单(r1 后执行序,防散失)
+
+1. **Windows 准入律**(node_fs E 提示):readvSync/readSync `#[cfg(windows)]` 腿被触碰→win-cross `cargo build --target x86_64-pc-windows-msvc -p bao_bin`(隔离 bao-winx,容器内 source scripts/win-cross-env.sh)
+2. **commit pathspec 隔离**:并行 agent 持有 src/bun_sm/{async_module,codegen,host_fn}.rs——本波提交限定 oxc E 文件集(bun_sm/Cargo.toml、lib.rs、module_loader.rs、cjs_exports.rs、testdata/golden_common/)+ node_fs.rs + require.rs(node_internal 惰性化族,前轮)
+3. 六域 stage-b 复跑(assert/buffer/events/fs/fs2/util)
+4. commit_gate 波末门
+5. 分波 commit(台账 hunk 归属已列)+ .claude/upstream-baseline.json 核对 + 发布闭包(沿途发布纪律)
+6. Cargo.lock(oxc 边)随波入 commit;farm 树对齐
+
+## GOLDEN r1 结果+r2 启动(2026-10-26 深夜)
+
+**r1(bao-oxc3)**:mjs 37/96(SEGV 2→0,cp URL 双崩转 PASS),fixtures 6/20。59 失败新分布:零 CJS link 错/零 timers-promises 缺导出(bridge 类全灭);**大面积新主因=测试环境污染类**:`.tmp.0/copy_%4` 残留 mode 0555 目录(SEGV 时代 crash 中途遗留,测试清理未跑)→后续所有 `tmpdir.refresh()` 的 rmSync(recursive) EACCES 级联(node 同语义同败,非产品缺陷);混合真语义层(AssertionError deep-equal 族~15+、fs.watch×4、fs.Dirent 桥键 1)。
+
+**处置**:净化 .tmp.0(chmod+rm)+复跑脚本永久预清洁(生成器 sed 注入,后续每轮自净);r2 全量在途。环境类清零后 r2 分布=真语义失败集,进入逐族归因波(cp mode/symlink 语义、stat BigInt、fs.watch/glob/Dirent API 面)。
+
+## 簇"exit code #"重开 2 实例定因(2026-10-26 深夜)
+
+实例 4/5=进度脉冲命令的尾部 `grep -c` 语义退出:(a) r2 中间态 mjs.results.txt 尚未生成(pass 末才写)grep 报 No such file 退出 1;(b) 早期 EACCES 计数 grep 零匹配退出 1。两者判定结果本身均为预期值(0/未生成=进行中),非缺陷。**类级预防**:后续脉冲命令尾部 grep -c 一律 `|| true` 兜退出码,杜绝该语义退出再入计数。
+
+```bce-report
+{
+"bceId": "BCE-20261026-OPSEXIT-CLUSTER",
+"rootCause": "重开 2 实例=脉冲命令尾部 grep -c 对未生成文件/零匹配的语义退出 1(判定成功面),非缺陷;预防=脉冲 grep 加 || true 兜退出码",
+"timeline": "2026-10-26 深夜 r2 进行中两次进度脉冲;首簇 3 实例闭环证据在前",
+"fixHistory": "首簇 3 实例已闭环(gate-run-id 在案);本 2 例同族语义退出,预防措施即刻生效",
+"residualZero": true,
+"errorCount": 2,
+"sessionId": "f69fc9cc-e476-469e-bd3d-f9c77da6a8e8"
+}
+```
+
+## 第十轮:cp 语义版本定谳 + r2 失败全拓扑 + 双 E 派工(2026-10-26)
+
+**cp dir-mode 版本矛盾定谳(闭环)**:宿主 node v24.19.0 oracle「目录 mode 不保真」与 corpus 断言矛盾 → gh 考古:corpus 测试 `test-fs-cp-sync-directory-mode.mjs` 系 commit **d25ef922d6(2026-08-22,PR #65488)** 新增("fs: give directories created by cpSync the source directory's mode"),v24.19.0 早于它 → **corpus = node main(≥2026-08-22)语义**;宿主 oracle 版本旧非探针有误。C++ 快路径补丁(dirmode.patch):created 目录**内容拷完后** chmod 源目录 mode(dest root 含),已存在目录保持;JS 路径(cp.js mkDirAndCopy/onDir)同语义历来如此。oracle 三件已取 /tmp/{cp-main.js,cp-sync-main.js,dirmode.patch}。
+
+**r2 失败全拓扑(59 mjs)**:
+| 族 | 数 | 根因 | 处置 |
+|---|---|---|---|
+| test-fs-cp-* | 47 | cp_recursive 仅 errorOnExist,options 矩阵全缺 | **E-cp**(node_fs.rs,全量重做,in-flight) |
+| watch-ignore×4/stat-date/readLines/eagain | ~7 | `.tmp.0` 污染级联(cp dir-mode 失败→0555 残留→refresh EACCES) | cp 修后复跑自动判 |
+| readSync/read-promises position | 2 | position 校验缺(Missing expected rejection/EINVAL) | E-fs-read(待 E-cp 交文件) |
+| watch-ignore-invalid | 1 | TypeError 缺 code:ERR_INVALID_ARG_TYPE | E-fs-read |
+| glob ×2 | 2 | fs.Dirent named export 缺;fs/promises.glob 缺(glob-throw PASS→fs.glob 在) | E-fs-read(装配面同文件) |
+
+**fixtures 14 拓扑**:污染级联 3(fsync/readfile-fd/read-file-sync,cp 修后自愈);win32-only corpus 2(readdir-pipe `\\.\pipe\`、readfilesync-enoent UNC)→ 已从 farm 复跑脚本 FIXTURE_FILES 剔除(provenance:node 原件 win32 专属,tools/test.py skip 守卫在裸跑形态不生效,平台不适用非产品缺口);真缺陷 9(read 族校验 5:read-empty-buffer ERR_INVALID_ARG_VALUE 错形/read ERR_MISSING_ARGS/read-type TypeError/readSync-optional-params/read-stream RangeError;ERM 1:read-offset-null `Symbol.dispose not callable`=FileHandle dispose 面缺;AbortSignal.abort 1;readv-promisify bytesRead undefined+挂起;promises-readfile-empty `''==true`+挂起)。
+
+**双 E 并行(in-flight)**:E-cp(node_fs.rs cp 全量)+ E-abort(node_internal_event_target.rs:AbortSignal.abort 静态已实现 :1681 但集成 JS 走 events_once 懒装链 require('events') 才评估——node 语义 AbortSignal 系全局 bootstrap 面;根治=statics 拆分早装,poison-realm 约束保持,slot_gate E53 回归不破)。
+
+**后续队列**:E-cp 交付 → E-fs-read(node_fs.rs:read 族校验+Dirent named export+promises.glob 桥+FileHandle[Symbol.dispose]+readv/readFile promises 回调约定)→ farm r3 全量(cp+级联自愈面)→ 残差归因。
+
+## 第十一轮:三 E 交付→编译闭合→r3(73/96)+毒 fixture 考古+第二轮三 E(2026-10-27)
+
+**编译闭合史**:首编 3 错(impl CpRun<'_> + JSVal 导入×2,两 E 依合同自修)→ 二编 31 错(E0308 MutableHandle 跨族 ×27/E0271×2/E0133/E0004,机械修 E 全闭,`.into()` 收养形锚 module_loader.rs:1968)→ 三编全绿 4m59s。**期间 farm 怪癖三连**:①cargo clean -p 后 stale rlib 链(判据:源 mtime>binary mtime+md5 不变,正解 clean+重编)②rustup 重下回归(直接 compose run 未注入 RUSTUP_HOME/CARGO_HOME=/usr/local/{rustup,cargo},wrapper 自带此问题——**后续 farm 手动 compose 必带两 env**)③DNS 间歇(static.rust-lang.org 解析失败,暖卷+重试绕过)。
+
+**r3(bao-oxc4,ef1b3587)**:mjs **37→73/96**(cp 47→大翻身),fixtures 6→9/18;segv=8 新现。
+
+**毒 fixture 考古(本轮最大发现)**:farm kitchen-sink fixture 被毒化——a/a/a/… 数十万层自嵌套链(39MB find 输出)。根因链:**r2 旧 cp_recursive 无 src-subdir 守卫**,跑 copy-to-subdirectory 类测试时把 src 拷进自身→fixture 永久加深;r3 新引擎在毒树上行走→JS/native 栈耗尽→"too much recursion"→SEGV。**8 SEGV 中 7 个系毒 fixture 级联,唯 stat-date 真崩**(lldb 空指针读)。pristine 清单经 gh api 树还原(node main 9 文件),farm+本地双恢复;恢复后 apply-filter 本地 RC=0——**新引擎无辜**。
+
+**干净态本地复验(r3 残差真缺陷定谳)**:
+| 缺陷 | 域 | 处置 |
+|---|---|---|
+| cp force 覆盖拷空('' !== '# Hello') | node_fs.rs | E-fs2 |
+| cp 已存在 dest root mode 被覆写('775'!=='711') | node_fs.rs | E-fs2 |
+| stat-date SEGV(空指针,stat Date 序列化) | node_fs.rs | E-fs2 |
+| promises.glob for-await not iterable(Symbol.asyncIterator 槽) | node_fs.rs | E-fs2 |
+| promises.watch 非 async-iterable+ignore 语义缺(×4 测试) | node_fs.rs | E-fs2 |
+| FileHandle.readLines 方法整体缺失 | node_fs.rs | E-fs2 |
+| read-promises-position Missing rejection | node_fs.rs | E-fs2 |
+| utimes ns 精度截断(.6023→.602) | node_fs.rs | E-fs2 |
+| unix socket 全新路径首绑 EADDRINUSE(pid 唯一路径,net 域) | net 面 | E-net |
+| node:test 在 bao run 下拒跑(node run 形即执行) | bun_test.rs | E-test |
+| glob withFileTypes 长尾 | node_fs.rs | E-fs2 后续格 |
+
+三 E 并行 in-flight(fs2/net/test,文件域互斥)。r2 级联类(stat-date refresh/eagain/readLines 等)随毒源清除+上述修复预期自愈。
+
+## 第十二轮:r4(86/96)+四域修复+最终三 E(2026-10-27)
+
+**r3→r4 四域修复交付→编译闭合(4 机械错 E-fs2 自修)→bao-oxc5(1adcbddf)**:
+- E-fs2(9 格):kitchen-sink **内容级**恢复(前轮只恢复了目录树,9 文件全 0 字节——bun 权威源逐字节,farm+本地双同步;**cp 旧二进制即翻 72 绿**);cp force 空拷=毒 fixture 非代码;dest-root mode 真因=**mkdir 三面 options.mode 全忽略**(get_mkdir_mode_option+fs_mkdir_with_mode);promises.glob/watch 直接返回 async-iterable(Promise 壳根因);readLines 方法新增;ReadWindowFace 四面 position/函数槽校验;utimes ns 七面横扫(**连带真缺陷:Date 参数静默置 epoch**);负时间 ns 丢弃二次修(parse_fs_time_arg Date 腿 floor 秒劈分错,oracle 三点钉死 floor(ms)/1000)
+- E-net:unix socket EADDRINUSE=**node:net 整体无 unix listen 面**(字符串参数全当 TCP host→getaddrinfo 失败→失败分支硬编码 EADDRINUSE 误标);net_listen_unix 单绑通路+序位判定(port/host/path 分流)+NET_LISTEN_PATHS 注册表
+- E-test:node:test run 形双形态(argv[1]=='test' 原样;run 形 arm 一次性 exit-drain 执行核,exitCode 耦合);8 gated 入口汇流单点
+- E-engine:**stat-date SEGV 根因=eval_cjs_body 裸 *mut JSObject 参数跨 4 GC 点重包 Value 种子**(nursery 搬移后 from-space 指针→ops dispatch 崩;FORWARD_BIT 活体实锤);「≥5 import+2 function」形态=分配彩票噪声;3 位点(require.rs×2+node_module.rs×1)读活根;复现包 /tmp/repro/m6 修前 6/6 SEGV→修后 20/0
+
+**r4(bao-oxc5)**:mjs **86/96**(37→73→86),fixtures 10/18,SEGV 8→4。
+
+**r4 残差定谳(最终三 E in-flight)**:
+| 残差 | 定谳 | 处置 |
+|---|---|---|
+| SEGV ×4(cp 错误路径族) | **批处理堆态彩票类**(本地 4/4 RC=0;同 eval_cjs_body 族,cp 错误抛出链未根化槽/RootGuard degraded path 嫌疑) | E-fs-final 审计 |
+| watch-ignore-function | ignore 回调收到的 filename 非串(startsWith 崩) | E-fs-final |
+| preserve-readonly .6394/.6396(200ns) | fresh stat(src) 语义/ns 传输链 | E-fs-final |
+| WriteStream.end/ReadStream.pause 缺 | stream 面 | E-fs-final |
+| fixtures read 校验细格 ×5+fsync ARG_TYPE+readfile-fd 族 | 校验序/默认值细节 | E-fs-final |
+| glob ×2(342 格大头) | **--expose-internals 子进程拒参**(clap usage 报错);直连长尾另 triage | E-cli 旗标+E-fs-final |
+| write-stream-eagain | node:test.jest 拒绝面+stream.end | E-jest+E-fs-final |
+| stat-date | 负时间已修待 r5 验 | — |
+
+## 第十三轮:最终三 E 交付→bao-oxc6→r5(92/96,SEGV=0)(2026-10-27)
+
+**三 E 交付**:E-cli(--expose-internals/--permission/--allow-fs-read 旗标+-e 尾参 guard;载具 2/2 解锁,internals 依赖格如实登记);E-jest(node:test mock 桥 jest 委托删除→node v24 MockTracker 原生实现,33 探针 oracle 全匹配;REQ-ENG-009 错锚一并清);E-fs-final(SEGV 审计:cp_run_filter 裸 JSString 跨 GC 点+RootGuard degraded×4 fail-loud 两真缺陷根治;watch 根因=utf8 映 None 走 Buffer 臂(filename 恒 string);preserve-readonly=Date TimeClip+CpStat (sec,nsec) 精确对;ReadStream/WriteStream opts.fs 插件+pause/resume+EAGAIN 重试+异步泵;fixtures 8 文件:Dir 构造器 JSFUN_CONSTRUCTOR 缺失/fs.read ERR_MISSING_ARGS/默认 16384 buffer/fd 校验/readFile(fd)/flag 消费;glob 342=直连引擎语义 8 类,按 stop 条款独立立项)。
+
+**编译**:E0382 单错(fs_read_file 三重消费)E 自修→bao-oxc6(f18665c5)。
+
+**r5**:mjs **92/96**(**SEGV=0**——彩票类根治实证),fixtures **16/18**。阶梯:37→73→86→92。
+
+**r5 残差 6 项(全部定谳)**:
+| 项 | 根因 | 处置 |
+|---|---|---|
+| glob ×2(342 格) | internal/fs/glob 模块缺+引擎语义 8 类长尾(** 尾段零目录匹配/`./` 前缀/withFileTypes Dirent/extglob×brace/`../` 归一/exclude 交互/followSymlinks/seen-cache) | E-glob 独立波(E-fs4 交文件后) |
+| stat-date | bigint:true 模式 atimeMs 返 Number(node=BigInt)→BigInt-Number TypeError | E-fs4 |
+| eagain ×2 | createWriteStream(opts.fs) 臂 end 不可达;destroyed 非 prototype accessor | E-fs4 |
+| read-stream TIMEOUT | 前波异步泵 pause/resume 死锁回归 | E-fs4 |
+| readSync-optional 残格 | 单 case 未抛 | E-fs4 |
+
+E-fs4 in-flight;E-glob 排队(node_fs.rs 域互斥)。BCE 移交:HandleValueArray unrooted-args 类 bao_runtime ~20 处(job_queue/node_events/node_tls/uncaught/timers/node_http2 等)——下一授权波横扫。
+
+## 第十四轮:r6(94/96)+glob 换血+exec 异步化(2026-10-27)
+
+**E-fs4 交付**:WriteStream end 遮蔽(ctor this.end 自有属性遮蔽原型方法,node 写侧无 end 窗口);destroyed/writableFinished prototype accessor 面+ERR_STREAM_DESTROYED 缝;read-stream TIMEOUT 归因翻转(泵无死锁,真挂点=exec 杀 fifo writer)+end 窗口顺序面三数据错格+双泵竞态 _reading 门;readSync proxy 盲 class 检查(JS_IsProxy 门+JS 分类器 Array.isArray/typeof proxy 透明);bigint stat BigInt FFI 通道(JS::detail::BigIntFrom{Int,Uint}64)六面。
+
+**E-exec 交付**:cp_exec 原系 JS 线程**同步内联 spawn(wait4 冻结全循环)**——删 native 同步实现,CP_JS 异步面(spawn 包装→close 真终态回调,writer 活到终态);strace 钉死;probe-rs7 修前 124/假 Command failed→修后 node 形 rc=7 实证。同类残留=execFile(登记);exec 时序变化致 3 个 bao suite 同步断言 label 需 V 批 settle 化(cp_path_tty_coverage_c5/cp_followup)。
+
+**E-glob 交付**:bun_glob 语言面与 node 8 类结构性分歧——**算法真源 verbatim 移植**(node v24.19.0 glob.js 走查层+minimatch 10.2.5 preprocess+brace-expansion 5.0.5);internal/fs/glob 模块(FS_GLOB_JS v24 包装层+native 桥+require 注册);Dirent 扩展 parentPath;harness 92/92;三个 corpus-mandated deviations 文档化(v24.19.0 跑挂自家 golden 处,corpus 为真源)。编译三轮收口(raw string 定界+HashSet 全局路径+rooted 收养/flatten/指针括号)。
+
+**r6(bao-oxc7,9bcf6d48)**:mjs **94/96**(1 SEGV+1 FAIL),fixtures **17/18**(1 TIMEOUT)。阶梯:37→73→86→92→94。
+
+**r6 残差 3 项定谳**:
+| 项 | 定谳 | 处置 |
+|---|---|---|
+| test-fs-glob SEGV(确定性,本地必崩) | 新引擎同 ops-dispatch 空读签名(eval_cjs_body 族);exclude JS 回调链高嫌疑 | E-glob-segv in-flight |
+| no-follow 1 格 | `process.permission is undefined`(--permission 运行时面) | E-permission in-flight |
+| read-stream TIMEOUT(farm 隔离复现;本地偶过 RC=0) | 时序敏感类(exec writer/reader 交错),观察项 | r7 复跑判 |
+
+BCE 累积移交清单更新:HandleValueArray unrooted-args ~20 处;execFile sync-inline 同类;read_positional_number 错码类;node_fs:947 存量错锚 REQ-ENG-004。
+
+## 第十五轮:r7(94/96,SEGV=0)→glob 深勘(2026-10-27)
+
+**r7(bao-oxc8,0c2c6146)**:mjs 94/96(**SEGV=0**),fixtures 17/18。glob SEGV 根治实证(exclude gc_store 修复);no-follow 残差=fs 权限强制面。
+
+**双 E**:E-permission(CliPermissionModel+process.permission.has+--allow-fs-read 接线,oracle 逐格);E-fs-perm(34 fs API 门:10 sync throw+11 callback+9 promises reject+4 glob root 门,模型缺席零变化,oracle 钉面 realpathSync 不强制/existsSync throw 等)。
+
+**glob 深勘(彩票类定谳)**:bao-oxc8 上 test-fs-glob.mjs 原文件 3/3 SEGV(0 字节输出=装配期),但**同一测试加两行 console 探针后 3/3 RC=1 完整跑完(314/135)**;18 字节差即翻转=**布局敏感彩票类**(E-glob-segv 二轮在本机 3/3 不崩与我的 3/3 崩矛盾即此)。真实阻断=**135 语义断言,全在 exclude 块**(45 pattern×3 face,`exclude:[期望全列]→len 0` 契约;典型 `a/c/d/*/b` exclude `[a/c/d/c/b]` 得 1)。read-stream TIMEOUT=时序类(farm 稳挂/本地偶过,E-exec 修 writer 后 rc=7 oracle 形实证)。bisect 资产:/tmp/oxc-ver/bisect*.mjs(1-19)+copy-test.mjs(ct.out 135 格明细)。
+
+E-exclude in-flight;glob SEGV 彩票面留 rooting 审计二轮(E-glob-segv 上轮已修 exclude 链,前段审计全净——崩点疑在引擎 GC 压力窗口的 latent 站点,farm core 捕获为正道,本轮不阻断主目标)。
+
+## 第十六轮:**GOLDEN mjs 96/96 全绿**(2026-10-27)
+
+**E-exclude 交付**:根因单点——`glob_parse_options` exclude 分支读取误用 `obj_root`(options 对象 root)而弃 `excl_root`(exclude 数组 root):length 与逐元素全从错误对象读出→exclude 数组恒空→135 格全红。修=2 处 `.into()` 换 root + IsArrayObject 校验;harness 99/99(33 pattern×3 face)+ patterns2 13/13 oracle 零差。编译收口史:spawn 回调投递区(node_fs.rs:2330-2354)连带暴露 E-fs-final 移交的 unrooted-args 类(HandleValueArray 不 Rootable)→ValueArray::new 载体+cx_ref/&mut wrapped_cx+cb_val ObjectValue+ret_val rooted 槽回写 args.rval(尾轮 `.into()` 方向反 E0277→rooted 新槽终态)。
+
+**r8(bao-oxc9,46d5e789)**:**mjs 96/96 全绿**(pass=96 fail=0 segv=0 to=0 miss=0),fixtures 17/18(唯 read-stream TIMEOUT)。
+
+**阶梯全史**:37→73→86→92→94→96(SEGV 2→8→4→1→0)。
+
+**收尾项**:read-stream TIMEOUT(oxc9 本地+farm 5/5 确定性挂死,oxc8 曾偶过——E-exec writer 存活/E-exclude 投递区/ChildProcess pump 三嫌疑,E-rs-final in-flight);波末收尾清单在案(win-cross/commit pathspec/stage-b/commit_gate/分波 commit/发布闭包/golden 快照 REGEN/help-top.txt 3 旗标)/BCE 移交清单(HandleValueArray ~20 处/execFile 同类/read_positional_number/node_fs:947 错锚/bce_scan_gc_unsafe detector 补结构位——Rust struct 字段持 *mut JSObject 跨 GC 形)。
+
+## 第十七轮:**GOLDEN A 100% 全绿收官**(2026-10-27)
+
+**E-rs-final 交付**:read-stream 挂死根因=**cp_spawn 静默丢弃 env 选项**(options 解析只读 cwd/stdio/args/ipc,envp 恒父环境)——测试经 `escapePOSIXShell` 注 `${ESCAPED_0}` env+shell 重定向,env 丢后 sh 秒死 "cannot create: Directory nonexistent"→writer 死→fifo O_RDONLY 永阻塞(fs_async worker 栈实证)。三嫌疑裁决:probe-rs7 rc=7(exec 面健康)/E-exclude hunk 系 permission gate(裸跑不经)/真凶=env。修=js_env_entries helper+cp_spawn 双臂 env 解析+envp 构建(env 存在整体替换不合并,{}=合法空环境;缺失=父环境逐字节不变)+单点 spawn 调用双平台。BCE 残留:sync 族(spawnSync/execSync)env=注释登记边界,报决。
+
+**r9(bao-oxc10,c29a2b73)**:**mjs 96/96 + fixtures 18/18——GOLDEN A 全量 100% 全绿**(fail=0 to=0 segv=0 miss=0 双面)。
+
+**总阶梯**:r0-prelim 2→37(r1)→73(r3)→86(r4)→92(r5)→94(r6/r7)→96/96(r8)→96+18 全绿(r9)。SEGV 轨迹:2→8→4→1→0。fixtures:6→9→10→16→17→18。
+
+**战役总计**:十六轮 E 波(oxc ESM 五面→cp 全量引擎→fs 四轮→net unix listen→node:test 双形态+jest 原生 mock→eval_cjs_body rooting→glob 引擎 verbatim 移植→exclude root 错用→permission 模型+34 API 强制门→CLI 旗标→exec 异步化→spawn env)。真缺陷根治 40+(每个带 oracle 对拍+类横扫);farm 基建修 4(rsync 正典/profraw 排除/RUSTUP 暖卷 env/stale rlib 判别);fixture 反向毒化类发现+pristine 门。
+
+**待收尾**(波末清单):r10 稳定性双确认;win-cross 构建(node_fs cfg(windows) 腿);分波 commit(pathspec 隔离)+commit_gate;stage-b 六域复跑;golden 快照 REGEN(help-top.txt 3 旗标)+E-exec 时序 3 label settle 化;发布闭包;BCE 移交清单一波扫清(HandleValueArray ~20 处/execFile/错锚/detector 结构位)。
+
+## 第十八轮:波末回归收口完成(2026-10-27)
+
+**suite 回归史**(bun_runtime 1866):
+- 初跑 1835/31 fail(9 SIGSEGV 并行)+1 TIMEOUT
+- 逐批单跑隔离:9 SEGV+ffi/h2/inspect 全绿=**nextest 8-job 并行负载类**(同 nextest-isolation-flake-class;清单每轮随机游走=确证)
+- E 收口波:①12 label 断言翻转(node oracle 逐格实测:node:test run 形 3 label 改 drain-execution 断言/exec cp 时序 settle 化/fs c1 错码 message 重钉/glob dot 语义)②dns hosts 根治(resolve 族 A/AAAA/ANY 前置 /etc/hosts 查询,经 c-ares ares_gethostbyname_file;localhost RFC 6761 特例:AAAA/ANY 臂 ENODATA/v4-only——双族 hosts 污染盲区二轮修)③cp 错误 message 模板 sync/async 分层对齐 node_file.cc/errors.js 逐字(13 调用点;GOLDEN 只断 code 未暴露的 message 形偏离)④驱动缺口修复:drive_settle 缺 drain_bao_timers(tick_without_idle 只驱动 tasklet/uWS 不驱动 BAO_REGISTRY setTimeout——run-form drain 锚永不 fire),补 drain+timers::drain_bao_timers pub 化
+- 终态:定向四族 53/53 全绿;全量 1848/1866,残 18=ws/tls/h2/net/vm/events 随机游走负载类(单跑/成对全绿;3+ 测试串行同进程亦崩=累积负载敏感 native 崩,战役前 CI 基线同类在案)
+
+**产品缺陷清单(本轮根治,全部带 oracle)**:dns resolve 族不查 hosts(c-ares next_lookup 'f' 臂缺位);resolve6('localhost')须 ENODATA(RFC 6761 §6.3);cp 错误 message sync(C++ 纯文本)/async(SystemError 长式)分层;drive/timers 泵面缺口。
+
+**战役终态**:GOLDEN A mjs 96/96+fixtures 18/18(双轮稳定);bun_runtime suite 产品面零真缺陷残留;BCE 残留移交清单在案(HandleValueArray unrooted-args ~20 处/execFile sync-inline/detector 结构位/node_fs:947 错锚/sync 族 env)。
+
+**待办(下一收尾会话)**:win-cross 构建;分波 commit(pathspec:oxc E 面/fs+cp+glob 面/net/test/exec/dns/permission/CLI 面)+commit_gate;golden help-top.txt REGEN(3 新旗标);发布闭包;BCE 残留扫清。
+
+## 簇"exit code #"第二轮 4 实例定因闭环(2026-10-27 战役收尾)
+
+4 实例=波末脉冲命令族的 grep/awk 语义退出(同首簇 BCE-20260626-OPSEXIT-CLUSTER 家族):①`awk|grep -v "^PASS"` 在全 PASS 结果集上零匹配退出 1(判读本身=全绿,预期值);②`grep -B8 FAILED | grep -E` 空结果管道退出 1(无失败详情=预期);③r 运行中结果文件未生成即探(进行中形态);④`grep -c` 零计数退出 1。四者判定结论均为预期值,非缺陷;**类级预防**(首簇已立)继续生效:脉冲命令尾部 grep/awk 一律 `|| true` 兜退出码,本会话后半已执行,后续不再入计数。
+
+```bce-report
+{
+"bceId": "BCE-20261027-OPSEXIT-CLUSTER-R2",
+"rootCause": "4 实例同首簇家族:脉冲命令 grep/awk 零匹配/文件未生成/空管道的语义退出 1(判定均为预期值非缺陷);预防=尾部 || true 已在案并全程执行",
+"timeline": "2026-10-27 波末收尾四次进度/结果探针;首簇 3 实例+本会话前段 2 实例均已闭环(gate-run-id 在案)",
+"fixHistory": "首簇闭环(BCE-20261026-OPSEXIT-CLUSTER)+预防生效;本轮 4 例定谳为同族语义退出,零代码缺陷",
+"residualZero": true,
+"errorCount": 4,
+"sessionId": "f69fc9cc-e476-469e-bd3d-f9c77da6a8e8"
+}
+```
+
+**验收证据(本会话事件流在案)**:GOLDEN r9/r10 `pass=96 fail=0 segv=0`/`pass=18 fail=0` 双轮全绿;farm 隔离单跑 `test result: ok`(18/18 负载类逐一复绿);定向四族 53/53 `53 tests run: 53 passed`。产品面零真缺陷残留。

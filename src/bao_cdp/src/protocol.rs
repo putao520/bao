@@ -34,19 +34,20 @@
 // `router.rs`) and the crate root can refer to them as `protocol::CdpError`
 // etc. These ARE `cdp_server` types — no duplicate definitions.
 pub use cdp_server::{
-    parse_message, serialize_event, serialize_response, CdpError, CdpMessage, CdpResponse,
+    CdpError, CdpMessage, CdpResponse, parse_message, serialize_event, serialize_response,
 };
 // Private before M4, private after: same items, now imported instead of
 // re-implemented. ERR_INVALID_PARAMS keeps pub(crate) reach for devtools_dom.
-use cdp_server::{error_response, ok_response, ERR_METHOD_NOT_FOUND};
 pub(crate) use cdp_server::ERR_INVALID_PARAMS;
+use cdp_server::{ERR_METHOD_NOT_FOUND, error_response, ok_response};
 use serde_json::Value;
 
 use crate::devtools_dom;
 // FetchResolveAction: REQ-CDP-006 C6 — the Fetch domain and the legacy
 // Network interception face both resolve paused requests through it.
 use crate::servo_bridge::{
-    BridgeCommand, BridgeErrorKind, BridgeSender, FetchResolveAction, DEFAULT_BROWSER_CONTEXT_ID,
+    BridgeCommand, BridgeError, BridgeErrorKind, BridgeSender, DEFAULT_BROWSER_CONTEXT_ID,
+    FetchResolveAction,
 };
 
 // Chrome DevTools "server error" code used for not-supported commands.
@@ -187,77 +188,150 @@ pub(crate) fn eval_json(
         },
         other => other,
     };
-    extracted
-        .filter(|v| v.is_object())
-        .ok_or_else(|| CdpError {
-            code: ERR_NOT_SUPPORTED,
-            message: "page query failed: target did not return a JSON document".into(),
-        })
+    extracted.filter(|v| v.is_object()).ok_or_else(|| CdpError {
+        code: ERR_NOT_SUPPORTED,
+        message: "page query failed: target did not return a JSON document".into(),
+    })
 }
 
+/// Live TargetInfo for the Target faces — every field is a REAL bridge query,
+/// fail-closed on the query channel. There is no default-value track: a dead
+/// or unresolvable target fails the whole info lookup (Chromium oracle:
+/// `Target.getTargetInfo` for a dead target is an error, never a synthetic
+/// TargetInfo), and a broken bridge fails with the transport-class -32603.
+/// The bridge-less face (unit-test harnesses without a PagePool) reports the
+/// explicit degraded defaults below — that absence is a REAL path (there is
+/// no pool to query), not a swallowed error.
+// @trace REQ-CDS-009 [criterion:5] [level:unit]
 fn live_target_info(
     target_id: &str,
     bridge: Option<&BridgeSender>,
     context_hint: Option<&str>,
-) -> Value {
-    let title = bridge
-        .and_then(|b| {
-            b.send(BridgeCommand::GetTitle {
+) -> HandlerResult {
+    // Some(bridge) ⇒ the query channel must answer: channel-closed/timeout
+    // surfaces as -32603 (never a canned title masquerading as a live read).
+    // None ⇒ bridge-less face: the documented degraded defaults, honestly
+    // labeled (same shape as the unit-test fixtures assert).
+    let title = match bridge {
+        Some(b) => {
+            let resp = b.send(BridgeCommand::GetTitle {
                 target_id: target_id.to_string(),
-            })
-            .result
-            .ok()
-        })
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "Bao".into());
-    let url = bridge
-        .and_then(|b| {
-            b.send(BridgeCommand::GetUrl {
+            });
+            let title = resp
+                .result
+                .map_err(|e| bridge_query_error("Target title query failed", e))?;
+            title.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                bridge_malformed("Target title query failed")
+            })?
+        }
+        None => "Bao".into(),
+    };
+    let url = match bridge {
+        Some(b) => {
+            let resp = b.send(BridgeCommand::GetUrl {
                 target_id: target_id.to_string(),
-            })
-            .result
-            .ok()
-        })
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "about:blank".into());
-    serde_json::json!({
+            });
+            let url = resp
+                .result
+                .map_err(|e| bridge_query_error("Target url query failed", e))?;
+            url.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                bridge_malformed("Target url query failed")
+            })?
+        }
+        None => "about:blank".into(),
+    };
+    // context_hint attribution — the two production callers both hand the
+    // real registry value (getTargets: hard-taken from the listing entry;
+    // getTargetInfo: queried via target_context_id). None ⇒ the bridge-less
+    // face, where the implicit default is the honest attribution (there is
+    // no registry to ask). This is not a read-side fallback: the value is
+    // minted at page creation/registration (browser_context attribute_page /
+    // page_context_id), never re-derived here.
+    let browser_context_id = match context_hint {
+        Some(ctx) if !ctx.is_empty() => ctx.to_string(),
+        // Structurally unreachable when a bridge is present (both callers
+        // supply a non-empty registry value) — hard-fail to keep the shape.
+        Some(_) if bridge.is_some() => {
+            return Err(CdpError {
+                code: -32603,
+                message: "target info lookup: empty context attribution from the registry".into(),
+            });
+        }
+        _ => DEFAULT_BROWSER_CONTEXT_ID.to_string(),
+    };
+    Ok(serde_json::json!({
         "targetId": target_id,
         "type": "page",
         "title": title,
         "url": url,
         "attached": true,
-        // Real attribution (REQ-CDS-009): the context id the target was
-        // created in — passed through from the listing entry, queried from
-        // the bridge registry, or the implicit default when the target was
-        // created outside any explicit BrowserContext. Clients like
-        // Playwright require the field present.
-        "browserContextId": context_hint
-            .filter(|s| !s.is_empty())
-            .unwrap_or(DEFAULT_BROWSER_CONTEXT_ID),
-    })
+        "browserContextId": browser_context_id,
+    }))
 }
 
-/// Per-target attribution query for the single-target faces (`getTargetInfo`):
-/// the browser-side context registry is the truth source. A dead/unresolvable
-/// target degrades to the implicit default — the same fallback every
-/// bridge-less face uses — rather than failing the info lookup.
-fn target_context_id(target_id: &str, bridge: Option<&BridgeSender>) -> String {
-    bridge
-        .and_then(|b| {
-            b.send(BridgeCommand::GetTargetContextId {
+/// The per-target attribution query behind `getTargetInfo` — the browser-side
+/// context registry is the truth source and the query is fail-closed on the
+/// CHANNEL: with a bridge connected, a dead target (page not found), a
+/// malformed answer, or a closed/timeout bridge fails the info lookup with
+/// the real error (Chromium oracle: getTargetInfo on a dead target errors; it
+/// never reports a synthetic default context — that would forge attribution
+/// for a page that may live in any context). The bridge-less face (no pool,
+/// unit-test harnesses) has NO registry to ask — that absence is a real
+/// state, and the implicit default is the honest attribution there.
+// @trace REQ-CDS-009 [criterion:5] [level:unit]
+fn target_context_id(target_id: &str, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let v = match bridge {
+        Some(b) => {
+            let resp = b.send(BridgeCommand::GetTargetContextId {
                 target_id: target_id.to_string(),
-            })
-            .result
-            .ok()
-        })
-        .and_then(|v| {
-            v.get("browserContextId")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| DEFAULT_BROWSER_CONTEXT_ID.to_string())
+            });
+            resp.result
+                .map_err(|e| bridge_query_error("Target context query failed", e))?
+        }
+        // Bridge-less face: no registry exists to ask — the explicit
+        // degraded default (the same value the registry itself answers for
+        // unattributed pages), never a laundered send error.
+        None => return Ok(serde_json::json!(DEFAULT_BROWSER_CONTEXT_ID)),
+    };
+    // cmd_get_target_context_id answers the registry's page_context_id() —
+    // a non-empty String for any live page (absence = the implicit default,
+    // written registry-side at attribute_page). An empty string back would
+    // be a registry-protocol violation; surface it, never launder it.
+    v.get("browserContextId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| serde_json::json!(s))
+        .ok_or_else(|| bridge_malformed("Target context query failed"))
 }
+
+/// Transport-class error for a failed Target-info bridge query — mirrors the
+/// `bridge_send` -32603 classification so the two query styles report the
+/// same failure class on the same channel. Takes the `BridgeError` itself
+/// (field-direct use, same as `bridge_send`'s map_err — the kind is already
+/// folded into the transport class; the message carries the channel detail).
+fn bridge_query_error(what: &str, e: BridgeError) -> CdpError {
+    CdpError {
+        code: -32603,
+        message: format!("{what}: {}", e.message),
+    }
+}
+
+/// Same transport class for a well-formed channel whose *answer* is
+/// malformed (wrong JSON shape for the query) — distinct helper from
+/// [`bridge_query_error`] because the two failure sites have different
+/// provenance (send Err vs response shape).
+fn bridge_malformed(what: &str) -> CdpError {
+    CdpError {
+        code: -32603,
+        message: format!("{what}: {BRIDGE_MALFORMED}"),
+    }
+}
+
+/// Marker message for a structurally-malformed bridge answer (the command
+/// succeeded but the payload lacks the promised field) — the registry writer
+/// (cmd_get_target_context_id / cmd_get_title / cmd_get_url) always emits the
+/// full shape, so this is a protocol violation, not a value to launder.
+const BRIDGE_MALFORMED: &str = "bridge answer malformed";
 
 fn handle_target(
     command: &str,
@@ -270,22 +344,38 @@ fn handle_target(
             // Real page enumeration via the bridge (PagePool). Falls back to
             // the session's own target only when no bridge is connected (the
             // bridge-less unit-test face).
+            // @trace REQ-CDS-009 [criterion:5] [level:unit]
             let mut target_infos: Vec<Value> = Vec::new();
-            let listed = bridge
-                .and_then(|b| b.send(BridgeCommand::ListTargets).result.ok())
-                .and_then(|v| v.as_array().cloned());
-            match listed {
-                Some(entries) => {
+            match bridge {
+                Some(b) => {
+                    // Bridge present ⇒ the listing channel must answer: a
+                    // closed/timeout bridge is a transport failure surfaced
+                    // as -32603, never an empty or default list masquerading
+                    // as the live target set.
+                    let listed = b
+                        .send(BridgeCommand::ListTargets)
+                        .result
+                        .map_err(|e| bridge_query_error("Target listing failed", e))?;
+                    let entries = listed.as_array().ok_or_else(|| {
+                        bridge_malformed("Target listing failed")
+                    })?;
                     for entry in entries {
-                        let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        // cmd_list_targets writes every entry's id — an absent
+                        // id is a listing-protocol violation, surfaced.
+                        let id = entry.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
+                            bridge_malformed("Target listing failed")
+                        })?;
                         // REQ-CDS-009 attribution: the listing entry carries
                         // the context the browser-side registry recorded at
                         // creation — passed through verbatim, never re-minted.
+                        // cmd_list_targets(cdp_handler.rs)经 `page_context_id()`
+                        // 恒写 browserContextId ——真缺失属结构性不可达,硬取显形,
+                        // 禁兜底造值。
                         let context = entry
                             .get("browserContextId")
                             .and_then(|v| v.as_str())
-                            .unwrap_or(DEFAULT_BROWSER_CONTEXT_ID);
-                        let mut info = live_target_info(id, bridge, Some(context));
+                            .expect("list_targets entry must carry browserContextId");
+                        let mut info = live_target_info(id, bridge, Some(context))?;
                         // REQ-CDP-010: pass the real opener relationship the
                         // listing entry already carried through (never
                         // re-derived, never a default).
@@ -297,7 +387,7 @@ fn handle_target(
                         target_infos.push(info);
                     }
                 }
-                None => target_infos.push(live_target_info(target_id, bridge, None)),
+                None => target_infos.push(live_target_info(target_id, bridge, None)?),
             }
             push_worker_target_infos(&mut target_infos, target_id, bridge);
             Ok(serde_json::json!({ "targetInfos": target_infos }))
@@ -351,8 +441,9 @@ fn handle_target(
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| CdpError {
                     code: ERR_INVALID_PARAMS,
-                    message: "'Target.disposeBrowserContext' requires a non-empty browserContextId param"
-                        .into(),
+                    message:
+                        "'Target.disposeBrowserContext' requires a non-empty browserContextId param"
+                            .into(),
                 })?;
             bridge_send(
                 bridge,
@@ -403,21 +494,33 @@ fn handle_target(
                 .filter(|s| !s.is_empty())
                 .unwrap_or(target_id);
             // REQ-CDS-009 attribution: the single-target face queries the
-            // browser-side registry (criterion 5).
-            let context = target_context_id(tid, bridge);
-            let mut info = live_target_info(tid, bridge, Some(&context));
+            // browser-side registry (criterion 5) — fail-closed through
+            // target_context_id (a dead target fails the lookup, mirroring
+            // Chrome's getTargetInfo-on-dead-target error, instead of
+            // reporting a fabricated default context).
+            let context = target_context_id(tid, bridge)?;
+            let mut info = live_target_info(tid, bridge, context.as_str())?;
             // REQ-CDP-010: the opener relationship — the projection of the
             // real BaoWebViewState.opener_page_id (window.open popups only).
-            let has_opener = bridge
-                .and_then(|b| {
-                    b.send(BridgeCommand::GetTargetOpenerAccess {
-                        target_id: tid.to_string(),
-                    })
-                    .result
-                    .ok()
-                })
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            // Bridge present ⇒ the query must answer (same fail-closed class
+            // as the other Target-info queries above); None ⇒ bridge-less
+            // face, where no opener registry exists and `false` is the honest
+            // answer (a real boolean projection of "no registry", not a
+            // swallowed error).
+            let has_opener = match bridge {
+                Some(b) => {
+                    let v = b
+                        .send(BridgeCommand::GetTargetOpenerAccess {
+                            target_id: tid.to_string(),
+                        })
+                        .result
+                        .map_err(|e| bridge_query_error("Opener query failed", e))?;
+                    v.as_bool().ok_or_else(|| {
+                        bridge_malformed("Opener query failed")
+                    })?
+                }
+                None => false,
+            };
             if let Some(obj) = info.as_object_mut() {
                 obj.insert("canAccessOpener".into(), serde_json::json!(has_opener));
             }
@@ -443,8 +546,16 @@ fn handle_target(
     }
 }
 
-/// REQ-BRW-004: append Worker sub-targets to the Target.getTargets response
-/// (list miss / bridge-less → nothing appended).
+/// REQ-BRW-004: append Worker sub-targets to the Target.getTargets response.
+///
+/// Non-holding semantics (explicit, not a silent fallback): the worker face
+/// is an APPENDIX to the main listing — the page entries above are the
+/// fail-closed core. A worker-list miss (dead page / no worker registry row)
+/// degrades to "no worker sub-targets appended", which is the truthful
+/// projection of that state; failing the whole getTargets response over the
+/// appendix would let a worker-table hiccup mask the real page enumeration.
+/// Bridge-present channel failures (closed/timeout) are equally contained
+/// here for the same reason — the appendix can only shrink, never fabricate.
 // @trace REQ-BRW-004 [criterion:19] Worker targets are CDP-observable
 fn push_worker_target_infos(
     target_infos: &mut Vec<Value>,
@@ -486,7 +597,8 @@ fn handle_page(
         // enable-gated delivery). The install is best-effort with a warn: a
         // page that cannot host the listener keeps a truthful enable ack,
         // exactly like the Runtime registry prelude's install convention.
-        "enable" => { // @evidence SPEC/10-REQUIREMENTS.html:2324
+        "enable" => {
+            // @evidence SPEC/10-REQUIREMENTS.html:2324
             if bridge.is_some() {
                 let _ = bridge_send(
                     bridge,
@@ -753,8 +865,9 @@ fn handle_page(
             if identifier.is_empty() {
                 return Err(CdpError {
                     code: ERR_INVALID_PARAMS,
-                    message: "'Page.removeScriptToEvaluateOnNewDocument' requires an identifier param"
-                        .into(),
+                    message:
+                        "'Page.removeScriptToEvaluateOnNewDocument' requires an identifier param"
+                            .into(),
                 });
             }
             // Real removal from the vendor registry (REQ-CDP-004): later
@@ -782,7 +895,8 @@ fn handle_page(
         // entry shape {id, title, transitionType, url, userTypedURL}; the
         // journal lives browser-side (BaoWebViewState), so the data rides
         // the bridge instead of a page query.
-        "getNavigationHistory" => bridge_send( // @evidence SPEC/10-REQUIREMENTS.html:2324
+        "getNavigationHistory" => bridge_send(
+            // @evidence SPEC/10-REQUIREMENTS.html:2324
             bridge,
             BridgeCommand::GetNavigationHistory { target_id: tid },
         ),
@@ -968,7 +1082,8 @@ fn handle_runtime(
         // -32602; anything else (including `:`-scoped names) is accepted.
         // Without a bridge there is no page global — -32603, never a silent
         // no-op ack.
-        "addBinding" => { // @evidence SPEC/10-REQUIREMENTS.html:2324
+        "addBinding" => {
+            // @evidence SPEC/10-REQUIREMENTS.html:2324
             let name = params_str(params, "name");
             if name.is_empty() {
                 return Err(CdpError {
@@ -984,7 +1099,8 @@ fn handle_runtime(
                 },
             )
         }
-        "removeBinding" => { // @evidence SPEC/10-REQUIREMENTS.html:2324
+        "removeBinding" => {
+            // @evidence SPEC/10-REQUIREMENTS.html:2324
             let name = params_str(params, "name");
             if name.is_empty() {
                 return Err(CdpError {
@@ -1009,7 +1125,8 @@ fn handle_runtime(
         // Runtime.runScript is not wired), so the honest face is the explicit
         // capability-absent -32000, the same class as Page.printToPDF. Never a
         // fabricated scriptId that maps to nothing.
-        "compileScript" => { // @evidence SPEC/10-REQUIREMENTS.html:2324
+        "compileScript" => {
+            // @evidence SPEC/10-REQUIREMENTS.html:2324
             let expression = params_str(params, "expression");
             let source_url = params_str(params, "sourceURL");
             let persist_script = params
@@ -1079,11 +1196,7 @@ fn handle_dom(
         // the document nodeId and was unusable by the style faces.
         "querySelector" => {
             let selector = devtools_dom::require_selector(params)?;
-            devtools_dom::eval_dom(
-                bridge,
-                &tid,
-                &devtools_dom::query_selector_body(&selector),
-            )
+            devtools_dom::eval_dom(bridge, &tid, &devtools_dom::query_selector_body(&selector))
         }
         // Every match's real canonical nodeId in document order — the former
         // 1..=count sequence fabricated ids that addressed wrong nodes.
@@ -1114,11 +1227,7 @@ fn handle_dom(
                 .and_then(|p| p.get("depth"))
                 .and_then(|v| v.as_i64())
                 .unwrap_or(1);
-            devtools_dom::eval_dom(
-                bridge,
-                &tid,
-                &devtools_dom::flattened_document_body(depth),
-            )
+            devtools_dom::eval_dom(bridge, &tid, &devtools_dom::flattened_document_body(depth))
         }
         // REQ-BRW-048: RemoteObject → nodeId mapping (the half that closes
         // the Runtime object protocol with the DOM face): an objectId minted
@@ -1127,26 +1236,28 @@ fn handle_dom(
         // detached nodes are explicit errors — never a fabricated id.
         "getNodeForOwner" => {
             let object_id = devtools_dom::require_object_id(params)?;
-            devtools_dom::eval_dom(
-                bridge,
-                &tid,
-                &devtools_dom::node_for_owner_body(&object_id),
-            )
+            devtools_dom::eval_dom(bridge, &tid, &devtools_dom::node_for_owner_body(&object_id))
         }
         // REQ-CDP-010 golden-oracle parity (Chrome 155, measured): the real
         // attribute list of the addressed node in CDP's flat pair form; a
         // non-element node fails with Chrome's exact "Node is not an
         // Element" (-32000 class). The former face was absent (-32601).
-        "getAttributes" => { // @evidence SPEC/10-REQUIREMENTS.html:2324
+        "getAttributes" => {
+            // @evidence SPEC/10-REQUIREMENTS.html:2324
             let node_ref = devtools_dom::require_node_ref(params)?;
             devtools_dom::eval_dom(bridge, &tid, &devtools_dom::attributes_body(&node_ref))
         }
         // REQ-CDP-010 golden-oracle parity (Chrome 155, measured): a real
         // scroll of the addressed element into the viewport (nearest, only
         // when out of view). The former face was absent (-32601).
-        "scrollIntoViewIfNeeded" => { // @evidence SPEC/10-REQUIREMENTS.html:2324
+        "scrollIntoViewIfNeeded" => {
+            // @evidence SPEC/10-REQUIREMENTS.html:2324
             let node_ref = devtools_dom::require_node_ref(params)?;
-            devtools_dom::eval_dom(bridge, &tid, &devtools_dom::scroll_into_view_body(&node_ref))
+            devtools_dom::eval_dom(
+                bridge,
+                &tid,
+                &devtools_dom::scroll_into_view_body(&node_ref),
+            )
         }
         "setAttributeValue" => {
             let node_id = params
@@ -1234,20 +1345,12 @@ fn handle_dom(
                 .as_ref()
                 .and_then(|p| p.get("backendNodeIds"))
                 .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_i64())
-                        .collect::<Vec<i64>>()
-                })
+                .map(|a| a.iter().filter_map(|v| v.as_i64()).collect::<Vec<i64>>())
                 .ok_or_else(|| CdpError {
                     code: ERR_INVALID_PARAMS,
                     message: "missing required parameter: backendNodeIds".into(),
                 })?;
-            devtools_dom::eval_dom(
-                bridge,
-                &tid,
-                &devtools_dom::push_nodes_body(&backend_ids),
-            )
+            devtools_dom::eval_dom(bridge, &tid, &devtools_dom::push_nodes_body(&backend_ids))
         }
         _ => Err(CdpError {
             code: -32601,
@@ -1683,20 +1786,23 @@ fn handle_network(
         "continueInterceptedRequest" => {
             let interception_id = interception_id(params, "Network.continueInterceptedRequest")?;
             reject_request_modification("Network.continueInterceptedRequest", params)?;
-            if params.as_ref().is_some_and(|p| p.get("rawResponse").is_some()) {
+            if params
+                .as_ref()
+                .is_some_and(|p| p.get("rawResponse").is_some())
+            {
                 return Err(not_supported(
                     "Network.continueInterceptedRequest",
                     "raw HTTP wire-format response reassembly is phase-2 — the servo pause face answers with Fetch.fulfillRequest-shaped synthesized responses, not raw response bytes (design §7)",
                 ));
             }
             let action = match params.as_ref().and_then(|p| p.get("errorReason")) {
-                Some(Value::String(s)) => {
-                    FetchResolveAction::Fail { error_reason: Some(s.clone()) }
-                }
+                Some(Value::String(s)) => FetchResolveAction::Fail {
+                    error_reason: Some(s.clone()),
+                },
                 Some(_) => {
                     return Err(invalid_params(
                         "Network.continueInterceptedRequest: 'errorReason' must be a CDP ErrorReason string",
-                    ))
+                    ));
                 }
                 None => FetchResolveAction::Continue,
             };
@@ -1832,27 +1938,15 @@ fn handle_css(
         // list standing in for data.
         "getComputedStyleForNode" => {
             let node_id = devtools_dom::require_node_id(params)?;
-            devtools_dom::eval_dom(
-                bridge,
-                &tid,
-                &devtools_dom::computed_style_body(node_id),
-            )
+            devtools_dom::eval_dom(bridge, &tid, &devtools_dom::computed_style_body(node_id))
         }
         "getMatchedStylesForNode" => {
             let node_id = devtools_dom::require_node_id(params)?;
-            devtools_dom::eval_dom(
-                bridge,
-                &tid,
-                &devtools_dom::matched_styles_body(node_id),
-            )
+            devtools_dom::eval_dom(bridge, &tid, &devtools_dom::matched_styles_body(node_id))
         }
         "getInlineStylesForNode" => {
             let node_id = devtools_dom::require_node_id(params)?;
-            devtools_dom::eval_dom(
-                bridge,
-                &tid,
-                &devtools_dom::inline_styles_body(node_id),
-            )
+            devtools_dom::eval_dom(bridge, &tid, &devtools_dom::inline_styles_body(node_id))
         }
         // REQ-BRW-048 follow-up: the real write path. Addressing on this
         // face: styleSheetId = document.styleSheets ordinal (the id
@@ -1864,11 +1958,7 @@ fn handle_css(
         // read-back. The former {"styles": []} shape-shell is eradicated.
         "setStyleTexts" => {
             let edits = devtools_dom::require_edits(params)?;
-            devtools_dom::eval_dom(
-                bridge,
-                &tid,
-                &devtools_dom::set_style_texts_body(&edits),
-            )
+            devtools_dom::eval_dom(bridge, &tid, &devtools_dom::set_style_texts_body(&edits))
         }
         _ => Err(CdpError {
             code: -32601,
@@ -2133,9 +2223,7 @@ fn handle_overlay(
 /// `require_node_ref` shapes with `backendNodeId` folded in (backendNodeId ≡
 /// canonical nodeId on this face — the DOM.resolveNode documented identity).
 /// None of the three accepted shapes present → -32602.
-fn require_overlay_node_ref(
-    params: &Option<Value>,
-) -> Result<devtools_dom::NodeRef, CdpError> {
+fn require_overlay_node_ref(params: &Option<Value>) -> Result<devtools_dom::NodeRef, CdpError> {
     devtools_dom::require_node_ref(params).or_else(|_| {
         let backend = params
             .as_ref()
@@ -2333,12 +2421,21 @@ fn handle_debugger(
             }
         }
         "getScriptSource" => {
+            // scriptId is the bridge-side script-table key: a malformed value
+            // is a client-protocol error (-32602), not a valid key that
+            // happens to be 0 — a silent `unwrap_or(0)` would query a wrong
+            // row (or fabricate an "unknown script id 0" failure) for what is
+            // really a malformed param.
             let script_id = params
                 .as_ref()
                 .and_then(|p| p.get("scriptId"))
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or(0);
+                .ok_or_else(|| {
+                    invalid_params(
+                        "Debugger.getScriptSource: 'scriptId' must be a numeric script id string",
+                    )
+                })?;
             if bridge.is_some() {
                 bridge_send(
                     bridge,
@@ -2443,9 +2540,11 @@ fn parse_interception_patterns(
             request_stage: FetchRequestStage::Request,
         }]);
     };
-    let arr = patterns_val
-        .as_array()
-        .ok_or_else(|| invalid_params(format!("{label}: 'patterns' must be an array of pattern objects")))?;
+    let arr = patterns_val.as_array().ok_or_else(|| {
+        invalid_params(format!(
+            "{label}: 'patterns' must be an array of pattern objects"
+        ))
+    })?;
     let mut out = Vec::with_capacity(arr.len());
     for entry in arr {
         let obj = entry.as_object().ok_or_else(|| {
@@ -2459,7 +2558,7 @@ fn parse_interception_patterns(
             Some(_) => {
                 return Err(invalid_params(format!(
                     "{label}: 'urlPattern' must be a string glob"
-                )))
+                )));
             }
         };
         let resource_type = match obj.get("resourceType") {
@@ -2468,7 +2567,7 @@ fn parse_interception_patterns(
             Some(_) => {
                 return Err(invalid_params(format!(
                     "{label}: 'resourceType' must be a non-empty CDP ResourceType string"
-                )))
+                )));
             }
         };
         let request_stage = match face {
@@ -2479,7 +2578,7 @@ fn parse_interception_patterns(
                 Some(_) => {
                     return Err(invalid_params(format!(
                         "{label}: 'requestStage' must be \"Request\" or \"Response\""
-                    )))
+                    )));
                 }
             },
             PatternFace::LegacyNetwork => match obj.get("interceptionStage") {
@@ -2488,7 +2587,7 @@ fn parse_interception_patterns(
                 Some(_) => {
                     return Err(invalid_params(format!(
                         "{label}: interception stage must be \"Request\" — the servo pause point is request-time only, there is no headers-received pause"
-                    )))
+                    )));
                 }
             },
         };
@@ -2549,8 +2648,7 @@ fn handle_fetch(
         // Real: arms the per-target interception slot (browser-side). Without
         // a bridge there is no slot owner — -32603, never a canned "enabled".
         "enable" => {
-            if params.as_ref().and_then(|p| p.get("handleAuthRequests"))
-                == Some(&Value::Bool(true))
+            if params.as_ref().and_then(|p| p.get("handleAuthRequests")) == Some(&Value::Bool(true))
             {
                 return Err(invalid_params(
                     "Fetch.enable: handleAuthRequests=true is not supported — the auth interception facet is not wired (no Fetch.authRequired event is ever emitted and Fetch.continueWithAuth is an explicit error; design §7)",
@@ -2594,7 +2692,7 @@ fn handle_fetch(
                 Some(_) => {
                     return Err(invalid_params(
                         "Fetch.failRequest: 'errorReason' must be a CDP ErrorReason string",
-                    ))
+                    ));
                 }
             };
             bridge_send(
@@ -2617,18 +2715,18 @@ fn handle_fetch(
                     None => {
                         return Err(invalid_params(
                             "Fetch.fulfillRequest: 'responseCode' must be an integer HTTP status",
-                        ))
+                        ));
                     }
                 },
                 Some(_) => {
                     return Err(invalid_params(
                         "Fetch.fulfillRequest: 'responseCode' must be an integer HTTP status",
-                    ))
+                    ));
                 }
                 None => {
                     return Err(invalid_params(
                         "Fetch.fulfillRequest: missing required 'responseCode'",
-                    ))
+                    ));
                 }
             };
             let status_message = match params.as_ref().and_then(|p| p.get("responsePhrase")) {
@@ -2637,13 +2735,15 @@ fn handle_fetch(
                 Some(_) => {
                     return Err(invalid_params(
                         "Fetch.fulfillRequest: 'responsePhrase' must be a string",
-                    ))
+                    ));
                 }
             };
             let response_headers = match params.as_ref().and_then(|p| p.get("responseHeaders")) {
                 None | Some(Value::Null) => None,
                 Some(h @ Value::Object(_)) => {
-                    if h.as_object().is_some_and(|o| o.values().all(Value::is_string)) {
+                    if h.as_object()
+                        .is_some_and(|o| o.values().all(Value::is_string))
+                    {
                         Some(h.clone())
                     } else {
                         return Err(invalid_params(
@@ -2654,7 +2754,7 @@ fn handle_fetch(
                 Some(_) => {
                     return Err(invalid_params(
                         "Fetch.fulfillRequest: 'responseHeaders' must be an object of {name: value}",
-                    ))
+                    ));
                 }
             };
             let body = match params.as_ref().and_then(|p| p.get("body")) {
@@ -2672,7 +2772,7 @@ fn handle_fetch(
                 Some(_) => {
                     return Err(invalid_params(
                         "Fetch.fulfillRequest: 'body' must be a base64 string",
-                    ))
+                    ));
                 }
             };
             bridge_send(
@@ -2759,30 +2859,22 @@ fn handle_heap_profiler(
         // Snapshot/tracking resolve to explicit errors at the bridge handler
         // (no heap-snapshot API in the mozjs FFI surface); collectGarbage is
         // REAL — it drives servo's GarbageCollectAllContexts → JS_GC.
-        "takeHeapSnapshot" => {
-            bridge_send(
-                bridge,
-                BridgeCommand::HeapProfilerTakeSnapshot { target_id: tid },
-            )
-        }
-        "startTrackingHeapObjects" => {
-            bridge_send(
-                bridge,
-                BridgeCommand::HeapProfilerStartTracking { target_id: tid },
-            )
-        }
-        "stopTrackingHeapObjects" => {
-            bridge_send(
-                bridge,
-                BridgeCommand::HeapProfilerStopTracking { target_id: tid },
-            )
-        }
-        "collectGarbage" => {
-            bridge_send(
-                bridge,
-                BridgeCommand::HeapProfilerCollectGarbage { target_id: tid },
-            )
-        }
+        "takeHeapSnapshot" => bridge_send(
+            bridge,
+            BridgeCommand::HeapProfilerTakeSnapshot { target_id: tid },
+        ),
+        "startTrackingHeapObjects" => bridge_send(
+            bridge,
+            BridgeCommand::HeapProfilerStartTracking { target_id: tid },
+        ),
+        "stopTrackingHeapObjects" => bridge_send(
+            bridge,
+            BridgeCommand::HeapProfilerStopTracking { target_id: tid },
+        ),
+        "collectGarbage" => bridge_send(
+            bridge,
+            BridgeCommand::HeapProfilerCollectGarbage { target_id: tid },
+        ),
         _ => Err(CdpError {
             code: -32601,
             message: format!("'HeapProfiler.{}' wasn't found", command),
@@ -2797,12 +2889,10 @@ fn handle_memory(command: &str, target_id: &str, bridge: Option<&BridgeSender>) 
         // (jsEventListeners is not introspectable in SpiderMonkey) — never a
         // zeroed counters object. forciblyPurgeJavaScriptMemory is REAL — it
         // drives servo's GarbageCollectAllContexts → JS_GC.
-        "getDOMCounters" => {
-            bridge_send(
-                bridge,
-                BridgeCommand::MemoryGetDOMCounters { target_id: tid },
-            )
-        }
+        "getDOMCounters" => bridge_send(
+            bridge,
+            BridgeCommand::MemoryGetDOMCounters { target_id: tid },
+        ),
         "prepareForLeakDetection" => ok_empty(),
         "forciblyPurgeJavaScriptMemory" => {
             bridge_send(bridge, BridgeCommand::MemoryPurgeJS { target_id: tid })
@@ -2824,12 +2914,10 @@ fn handle_performance(
         "enable" | "disable" => ok_empty(),
         // Real metrics (Timestamp/Documents/Frames/Nodes) computed from the
         // live document at the bridge handler — never an empty canned list.
-        "getMetrics" => {
-            bridge_send(
-                bridge,
-                BridgeCommand::PerformanceGetMetrics { target_id: tid },
-            )
-        }
+        "getMetrics" => bridge_send(
+            bridge,
+            BridgeCommand::PerformanceGetMetrics { target_id: tid },
+        ),
         _ => Err(CdpError {
             code: -32601,
             message: format!("'Performance.{}' wasn't found", command),
@@ -3050,7 +3138,9 @@ mod tests {
     /// no bridge + missing required nodeId → explicit -32602 naming the param.
     fn assert_css_style_query_requires_nodeid(id: i64, method: &str) {
         let resp = dispatch_no_bridge(id, method, None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32602);
         assert!(err.message.contains("nodeId"));
     }
@@ -3072,7 +3162,7 @@ mod tests {
         let msg = cdp_msg(id, method, params);
         let params = msg.params.clone();
         handle_command(msg, "t1", &params, None)
-}
+    }
 
     // 1. parse_message valid JSON → Some(CdpMessage) with correct id/method/params
     #[test]
@@ -3173,12 +3263,10 @@ mod tests {
     /// Scripted bridge responder serving the context-management commands and
     /// the context-aware create routing — the same live-channel shape the
     /// ws_registry tests use.
-    fn context_responder(
-        rx: crate::servo_bridge::BridgeReceiver,
-    ) -> std::thread::JoinHandle<()> {
-        std::thread::spawn(move || loop {
-            let handled = rx.try_process(|cmd| {
-                crate::servo_bridge::BridgeResponse {
+    fn context_responder(rx: crate::servo_bridge::BridgeReceiver) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            loop {
+                let handled = rx.try_process(|cmd| crate::servo_bridge::BridgeResponse {
                     result: match cmd {
                         BridgeCommand::CreateBrowserContext => {
                             Ok(json!({"browserContextId": "bao-context-1"}))
@@ -3195,7 +3283,9 @@ mod tests {
                                 )))
                             }
                         }
-                        BridgeCommand::CreateTargetInContext { browser_context_id, .. } => {
+                        BridgeCommand::CreateTargetInContext {
+                            browser_context_id, ..
+                        } => {
                             if browser_context_id == "bao-context-1" {
                                 Ok(json!({
                                     "targetId": "7",
@@ -3218,10 +3308,10 @@ mod tests {
                         ])),
                         _ => Ok(json!({})),
                     },
+                });
+                if !handled {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
-            });
-            if !handled {
-                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         })
     }
@@ -3317,12 +3407,80 @@ mod tests {
         let _keeper = context_responder(rx);
         let resp = dispatch_with_bridge(1, "Target.getTargets", None, &tx);
         assert!(resp.error.is_none());
-        let infos = resp.result.unwrap()["targetInfos"].as_array().unwrap().clone();
+        let infos = resp.result.unwrap()["targetInfos"]
+            .as_array()
+            .unwrap()
+            .clone();
         let page = infos
             .iter()
             .find(|i| i["type"] == "page")
             .expect("page entry present");
         assert_eq!(page["browserContextId"], "bao-context-1");
+    }
+
+    // REQ-CDS-009 兜底根治回归钉(2026-10-26 存量兜底根治波):bridge 可达时
+    // Target-info 查询的 send Err 一律 fail-closed(-32603 transport 类),
+    // 禁静默 DEFAULT/假值冒充真读。三臂:①context 查询通道死 →
+    // getTargetInfo 报错;②title/url 查询通道死 → getTargetInfo 报错;
+    // ③listing 通道死 → getTargets 报错。死通道 responder(立即 drop rx)
+    // = channel-closed Err 的确定性载具。
+    // @trace TEST-CDS-009 [req:REQ-CDS-009] [criterion:5] [level:unit]
+    #[test]
+    fn target_info_queries_fail_closed_on_dead_bridge_channel() {
+        // ① dead context-query channel → getTargetInfo errors (never a
+        //    fabricated default-context TargetInfo).
+        {
+            let (tx, rx) = crate::servo_bridge::bridge_channel(std::time::Duration::from_secs(2));
+            drop(rx);
+            let resp = dispatch_with_bridge(1, "Target.getTargetInfo", None, &tx);
+            let err = resp.error.expect("dead channel must fail getTargetInfo");
+            assert_eq!(err.code, -32603);
+            assert!(
+                err.message.contains("Target context query failed"),
+                "{err:?}"
+            );
+        }
+        // ② context alive but title query dead → getTargetInfo errors (never
+        //    a canned "Bao" title masquerading as a live read).
+        {
+            let (tx, rx) = crate::servo_bridge::bridge_channel(std::time::Duration::from_secs(2));
+            let _keeper = std::thread::spawn(move || {
+                loop {
+                    let handled = rx.try_process(|cmd| match cmd {
+                        BridgeCommand::GetTargetContextId { .. } => BridgeResponse {
+                            result: Ok(json!({"browserContextId": "ctx-1"})),
+                        },
+                        BridgeCommand::GetTitle { .. } => BridgeResponse {
+                            result: Err(crate::servo_bridge::BridgeError::no_bridge(
+                                "bridge channel closed",
+                            )),
+                        },
+                        _ => BridgeResponse {
+                            result: Ok(json!({})),
+                        },
+                    });
+                    if !handled {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                }
+            });
+            let resp = dispatch_with_bridge(2, "Target.getTargetInfo", None, &tx);
+            let err = resp
+                .error
+                .expect("dead title channel must fail getTargetInfo");
+            assert_eq!(err.code, -32603);
+            assert!(err.message.contains("Target title query failed"), "{err:?}");
+        }
+        // ③ dead listing channel → getTargets errors (never an empty/default
+        //    target set).
+        {
+            let (tx, rx) = crate::servo_bridge::bridge_channel(std::time::Duration::from_secs(2));
+            drop(rx);
+            let resp = dispatch_with_bridge(3, "Target.getTargets", None, &tx);
+            let err = resp.error.expect("dead channel must fail getTargets");
+            assert_eq!(err.code, -32603);
+            assert!(err.message.contains("Target listing failed"), "{err:?}");
+        }
     }
 
     // ─── handle_command table-driven protocol matrix ──────────────────
@@ -3636,9 +3794,7 @@ mod tests {
             (
                 100,
                 "Fetch.fulfillRequest",
-                Some(
-                    json!({"interceptionId": "i3", "responseCode": 404, "body": "dGVzdA=="}),
-                ),
+                Some(json!({"interceptionId": "i3", "responseCode": 404, "body": "dGVzdA=="})),
                 -32603,
                 "no servo bridge connected",
             ),
@@ -3673,7 +3829,13 @@ mod tests {
             // 175. Fetch.enable without patterns (no bridge) → -32603 (an
             //      omitted patterns param is a catch-all pattern — still a
             //      real bridge arming)
-            (104, "Fetch.enable", None, -32603, "no servo bridge connected"),
+            (
+                104,
+                "Fetch.enable",
+                None,
+                -32603,
+                "no servo bridge connected",
+            ),
             // 176. Fetch.enable with multiple patterns (no bridge) → -32603
             (
                 105,
@@ -3704,37 +3866,41 @@ mod tests {
     /// miss (the no-bridge transport-class -32603 is pinned by the suite).
     #[test]
     fn page_get_navigation_history_reads_journal_through_bridge() {
-        use crate::servo_bridge::{bridge_channel, BridgeError, BridgeResponse};
+        use crate::servo_bridge::{BridgeError, BridgeResponse, bridge_channel};
         let (tx, rx) = bridge_channel(std::time::Duration::from_secs(2));
-        let _keeper = std::thread::spawn(move || loop {
-            let handled = rx.try_process(|cmd| match cmd {
-                BridgeCommand::GetNavigationHistory { .. } => BridgeResponse { // @evidence SPEC/10-REQUIREMENTS.html:2324
-                    result: Ok(json!({
-                        "currentIndex": 1,
-                        "entries": [
-                            {
-                                "id": 1,
-                                "title": "",
-                                "transitionType": "auto_toplevel",
-                                "url": "about:blank",
-                                "userTypedURL": "about:blank"
-                            },
-                            {
-                                "id": 2,
-                                "title": "t",
-                                "transitionType": "typed",
-                                "url": "https://example.com/",
-                                "userTypedURL": "https://example.com/"
-                            }
-                        ]
-                    })),
-                },
-                _ => BridgeResponse { // @evidence SPEC/10-REQUIREMENTS.html:2324
-                    result: Err(BridgeError::no_bridge("unexpected bridge command")),
-                },
-            });
-            if !handled {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+        let _keeper = std::thread::spawn(move || {
+            loop {
+                let handled = rx.try_process(|cmd| match cmd {
+                    BridgeCommand::GetNavigationHistory { .. } => BridgeResponse {
+                        // @evidence SPEC/10-REQUIREMENTS.html:2324
+                        result: Ok(json!({
+                            "currentIndex": 1,
+                            "entries": [
+                                {
+                                    "id": 1,
+                                    "title": "",
+                                    "transitionType": "auto_toplevel",
+                                    "url": "about:blank",
+                                    "userTypedURL": "about:blank"
+                                },
+                                {
+                                    "id": 2,
+                                    "title": "t",
+                                    "transitionType": "typed",
+                                    "url": "https://example.com/",
+                                    "userTypedURL": "https://example.com/"
+                                }
+                            ]
+                        })),
+                    },
+                    _ => BridgeResponse {
+                        // @evidence SPEC/10-REQUIREMENTS.html:2324
+                        result: Err(BridgeError::no_bridge("unexpected bridge command")),
+                    },
+                });
+                if !handled {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
             }
         });
         let msg = cdp_msg(1, "Page.getNavigationHistory", None);
@@ -3754,10 +3920,11 @@ mod tests {
     /// oracle), and the id is never minted on this command face.
     #[test]
     fn page_get_frame_tree_reads_loader_id_from_registry_row() {
-        use crate::servo_bridge::{bridge_channel, BridgeError, BridgeResponse};
+        use crate::servo_bridge::{BridgeError, BridgeResponse, bridge_channel};
         let (tx, rx) = bridge_channel(std::time::Duration::from_secs(2));
-        let _keeper = std::thread::spawn(move || loop {
-            let handled = rx.try_process(|cmd| match cmd {
+        let _keeper = std::thread::spawn(move || {
+            loop {
+                let handled = rx.try_process(|cmd| match cmd {
                 BridgeCommand::EvaluateJs { .. } => BridgeResponse { // @evidence SPEC/10-REQUIREMENTS.html:2324
                     result: Ok(json!({
                         "result": {
@@ -3773,8 +3940,9 @@ mod tests {
                     result: Err(BridgeError::no_bridge("unexpected bridge command")),
                 },
             });
-            if !handled {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                if !handled {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
             }
         });
         let msg = cdp_msg(1, "Page.getFrameTree", None);
@@ -3823,10 +3991,22 @@ mod tests {
             (12, "Page.getFrameTree", None, -32603, "no servo bridge"),
             // 84. Page.getNavigationHistory → -32000 (servo WebView exposes
             //     no session-history enumeration)
-            (13, "Page.getNavigationHistory", None, -32000, "not supported"),
+            (
+                13,
+                "Page.getNavigationHistory",
+                None,
+                -32000,
+                "not supported",
+            ),
             // 85. Page.captureScreenshot (no bridge) → -32603 (no renderer
             //     without the bridge — never empty image data)
-            (14, "Page.captureScreenshot", None, -32603, "no servo bridge"),
+            (
+                14,
+                "Page.captureScreenshot",
+                None,
+                -32603,
+                "no servo bridge",
+            ),
             // 87. Page.removeScriptToEvaluateOnNewDocument (no bridge) →
             //     -32603 (real removal lives behind the servo bridge — the
             //     vendor registry is per-page state)
@@ -3931,7 +4111,9 @@ mod tests {
     #[test]
     fn handle_command_dom_get_document() {
         let resp = dispatch_no_bridge(10, "DOM.getDocument", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32603);
         assert!(err.message.contains("no servo bridge"));
     }
@@ -3943,7 +4125,9 @@ mod tests {
     #[test]
     fn handle_command_dom_query_selector() {
         let resp = dispatch_no_bridge(11, "DOM.querySelector", Some(json!({"selector": "div"})));
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32603);
     }
 
@@ -3970,7 +4154,9 @@ mod tests {
     #[test]
     fn handle_command_debugger_set_breakpoint_by_url() {
         let resp = dispatch_no_bridge(20, "Debugger.setBreakpointByUrl", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32603);
     }
 
@@ -4529,7 +4715,9 @@ mod tests {
     #[test]
     fn handle_command_dom_describe_node() {
         let resp = dispatch_no_bridge(32, "DOM.describeNode", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32602);
         assert!(err.message.contains("nodeId or objectId"));
     }
@@ -4539,7 +4727,9 @@ mod tests {
     #[test]
     fn handle_command_dom_get_box_model() {
         let resp = dispatch_no_bridge(33, "DOM.getBoxModel", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32602);
         assert!(err.message.contains("nodeId or objectId"));
     }
@@ -4549,7 +4739,9 @@ mod tests {
     #[test]
     fn handle_command_dom_resolve_node() {
         let resp = dispatch_no_bridge(40, "DOM.resolveNode", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32602);
         // CDP spec: nodeId / objectId / backendNodeId — none present is
         // -32602 (the message pins all three accepted shapes).
@@ -4561,7 +4753,9 @@ mod tests {
     #[test]
     fn handle_command_dom_push_nodes_by_backend_ids() {
         let resp = dispatch_no_bridge(41, "DOM.pushNodesByBackendIdsToFrontend", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32602);
         assert!(err.message.contains("backendNodeIds"));
     }
@@ -4618,7 +4812,10 @@ mod tests {
                 .error
                 .unwrap_or_else(|| panic!("{method}: explicit error required"));
             assert_eq!(err.code, code, "{method}: wrong error code");
-            assert!(resp.result.is_none(), "{method}: error must not carry result");
+            assert!(
+                resp.result.is_none(),
+                "{method}: error must not carry result"
+            );
         }
     }
 
@@ -4628,7 +4825,9 @@ mod tests {
     #[test]
     fn handle_command_css_set_style_texts() {
         let resp = dispatch_no_bridge(57, "CSS.setStyleTexts", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32602);
         assert!(err.message.contains("edits"));
     }
@@ -4753,11 +4952,9 @@ mod tests {
         let responder = std::thread::spawn(move || {
             receiver.recv_and_process(std::time::Duration::from_secs(2), |cmd| BridgeResponse {
                 result: Err(match cmd {
-                    BridgeCommand::FetchResolve { .. } => {
-                        BridgeError::domain(
-                            "unknown interceptionId: i-1 (never paused or already resolved)",
-                        )
-                    }
+                    BridgeCommand::FetchResolve { .. } => BridgeError::domain(
+                        "unknown interceptionId: i-1 (never paused or already resolved)",
+                    ),
                     _ => BridgeError::no_bridge("bridge response timeout"),
                 }),
             })
@@ -4770,14 +4967,23 @@ mod tests {
         );
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, Some(&bridge));
-        let err = resp.error.expect("unknown interceptionId must fail explicitly");
-        assert_eq!(err.code, ERR_NOT_SUPPORTED, "domain class → -32000: {err:?}");
+        let err = resp
+            .error
+            .expect("unknown interceptionId must fail explicitly");
+        assert_eq!(
+            err.code, ERR_NOT_SUPPORTED,
+            "domain class → -32000: {err:?}"
+        );
         assert!(
             err.message.contains("unknown interceptionId"),
             "message verbatim: {err:?}"
         );
         // Control: transport-class face keeps -32603.
-        let msg = cdp_msg(91, "Page.navigate", Some(json!({"url": "https://example.com/"})));
+        let msg = cdp_msg(
+            91,
+            "Page.navigate",
+            Some(json!({"url": "https://example.com/"})),
+        );
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, Some(&bridge));
         let err = resp.error.expect("transport failure must fail explicitly");
@@ -4870,12 +5076,10 @@ mod tests {
     //     a real bridge command, never a canned ok.
     #[test]
     fn overlay_highlight_node_no_bridge() {
-        let resp = dispatch_no_bridge(
-            80,
-            "Overlay.highlightNode",
-            Some(json!({"nodeId": 5})),
-        );
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let resp = dispatch_no_bridge(80, "Overlay.highlightNode", Some(json!({"nodeId": 5})));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32603);
         assert!(err.message.contains("no servo bridge connected"));
     }
@@ -4885,7 +5089,9 @@ mod tests {
     #[test]
     fn overlay_highlight_node_missing_node_ref() {
         let resp = dispatch_no_bridge(81, "Overlay.highlightNode", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32602);
         assert!(err.message.contains("nodeId, objectId or backendNodeId"));
     }
@@ -4896,7 +5102,9 @@ mod tests {
     #[test]
     fn overlay_set_inspect_mode_not_supported() {
         let resp = dispatch_no_bridge(82, "Overlay.setInspectMode", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, ERR_NOT_SUPPORTED);
         assert!(err.message.contains("Overlay.setInspectMode"));
         assert!(err.message.contains("nodeHighlightRequested"));
@@ -4912,7 +5120,9 @@ mod tests {
             "Overlay.highlightNode",
             Some(json!({"backendNodeId": 7, "highlightSpec": {"borderColor": {"r": 255}} })),
         );
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32603);
         assert!(err.message.contains("no servo bridge connected"));
     }
@@ -4922,7 +5132,9 @@ mod tests {
     #[test]
     fn overlay_hide_highlight_no_bridge() {
         let resp = dispatch_no_bridge(84, "Overlay.hideHighlight", None);
-        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32603);
         assert!(err.message.contains("no servo bridge connected"));
     }
@@ -4936,7 +5148,7 @@ mod tests {
     // message, and every malformed param is a fail-fast -32602 that fires
     // before the bridge check.
     // @trace REQ-CDP-006 [criterion:6]
-    use crate::servo_bridge::{bridge_channel, BridgeResponse, FetchRequestStage};
+    use crate::servo_bridge::{BridgeResponse, FetchRequestStage, bridge_channel};
 
     /// Bridge-capture fixture: a helper thread answers `{}` while `drive`
     /// dispatches on this thread; returns the BridgeCommand the handler
@@ -4966,7 +5178,13 @@ mod tests {
     }
 
     /// One-off δ shape: dispatch and pin the error code + message fragment.
-    fn expect_dispatch_error(id: i64, method: &str, params: Option<Value>, code: i64, fragment: &str) {
+    fn expect_dispatch_error(
+        id: i64,
+        method: &str,
+        params: Option<Value>,
+        code: i64,
+        fragment: &str,
+    ) {
         let resp = dispatch_no_bridge(id, method, params);
         let err = resp
             .error
@@ -5064,7 +5282,10 @@ mod tests {
             ("object", json!({"patterns": ["*"]})),
             ("string", json!({"patterns": [{"urlPattern": 5}]})),
             ("non-empty", json!({"patterns": [{"resourceType": ""}]})),
-            ("Request", json!({"patterns": [{"requestStage": "Headers"}]})),
+            (
+                "Request",
+                json!({"patterns": [{"requestStage": "Headers"}]}),
+            ),
         ];
         for (i, (fragment, params)) in cases.into_iter().enumerate() {
             expect_dispatch_error(
@@ -5080,7 +5301,13 @@ mod tests {
     #[test]
     fn fetch_disable_without_bridge_is_32603() {
         // Real command: the slot + pending drains live browser-side.
-        expect_dispatch_error(20, "Fetch.disable", None, -32603, "no servo bridge connected");
+        expect_dispatch_error(
+            20,
+            "Fetch.disable",
+            None,
+            -32603,
+            "no servo bridge connected",
+        );
     }
 
     #[test]
@@ -5088,7 +5315,10 @@ mod tests {
         // design §7: the servo pause face can only pass through or answer
         // with a synthesized response — modification params must not be
         // silently ignored.
-        for (i, field) in ["url", "method", "postData", "headers"].into_iter().enumerate() {
+        for (i, field) in ["url", "method", "postData", "headers"]
+            .into_iter()
+            .enumerate()
+        {
             let params = json!({"interceptionId": "i1", (field): "x"});
             expect_dispatch_error(
                 30 + i as i64,
@@ -5102,9 +5332,13 @@ mod tests {
 
     #[test]
     fn fetch_resolution_missing_interception_id_is_32602() {
-        for (i, method) in ["Fetch.continueRequest", "Fetch.failRequest", "Fetch.fulfillRequest"]
-            .iter()
-            .enumerate()
+        for (i, method) in [
+            "Fetch.continueRequest",
+            "Fetch.failRequest",
+            "Fetch.fulfillRequest",
+        ]
+        .iter()
+        .enumerate()
         {
             expect_dispatch_error(
                 40 + i as i64,
@@ -5119,7 +5353,10 @@ mod tests {
     #[test]
     fn fetch_fulfill_request_param_validation_is_32602() {
         let cases: Vec<(&str, Value)> = vec![
-            ("missing required 'responseCode'", json!({"interceptionId": "i"})),
+            (
+                "missing required 'responseCode'",
+                json!({"interceptionId": "i"}),
+            ),
             (
                 "'responseCode' must be an integer",
                 json!({"interceptionId": "i", "responseCode": "404"}),
@@ -5167,8 +5404,11 @@ mod tests {
     fn fetch_resolution_commands_carry_bridge_action_shapes() {
         // continue → the pass-through verdict.
         let cmd = capture_bridge_command(|bridge| {
-            let msg =
-                cdp_msg(70, "Fetch.continueRequest", Some(json!({"interceptionId": "i-7"})));
+            let msg = cdp_msg(
+                70,
+                "Fetch.continueRequest",
+                Some(json!({"interceptionId": "i-7"})),
+            );
             let params = msg.params.clone();
             handle_command(msg, "t1", &params, Some(bridge));
         });
@@ -5221,12 +5461,13 @@ mod tests {
             BridgeCommand::FetchResolve {
                 target_id,
                 interception_id,
-                action: FetchResolveAction::Fulfill {
-                    response_code,
-                    status_message,
-                    response_headers,
-                    body,
-                },
+                action:
+                    FetchResolveAction::Fulfill {
+                        response_code,
+                        status_message,
+                        response_headers,
+                        body,
+                    },
             } => {
                 assert_eq!(target_id, "t1");
                 assert_eq!(interception_id, "i-9");
@@ -5263,7 +5504,10 @@ mod tests {
                 legacy_network_events,
                 ..
             } => {
-                assert!(legacy_network_events, "legacy face emits requestIntercepted");
+                assert!(
+                    legacy_network_events,
+                    "legacy face emits requestIntercepted"
+                );
                 assert_eq!(patterns.len(), 1);
                 assert_eq!(patterns[0].url_pattern.as_deref(), Some("*"));
                 assert_eq!(patterns[0].request_stage, FetchRequestStage::Request);
@@ -5278,7 +5522,9 @@ mod tests {
         expect_dispatch_error(
             81,
             "Network.setRequestInterception",
-            Some(json!({"patterns": [{"urlPattern": "*", "interceptionStage": "HeadersReceived"}]})),
+            Some(
+                json!({"patterns": [{"urlPattern": "*", "interceptionStage": "HeadersReceived"}]}),
+            ),
             -32602,
             "request-time only",
         );

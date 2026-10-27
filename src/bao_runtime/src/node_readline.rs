@@ -384,11 +384,11 @@ unsafe extern "C" fn rl_question(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 return false;
             }
             rooted!(&in(wrapped_cx) let str_val = StringValue(&*js_str));
-            let elems = [str_val.get()];
-            let call_args = HandleValueArray {
-                length_: 1,
-                elements_: elems.as_ptr(),
-            };
+            // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray
+            // across JS_CallFunctionValue (require.rs canary-pinned form).
+            rooted!(&in(wrapped_cx) let args_array =
+                mozjs_sys::jsgc::ValueArray::<1>::new([str_val.get()]));
+            let call_args = JS::HandleValueArray::from(&args_array);
             rooted!(&in(wrapped_cx) let cb_val = ObjectValue(callback.get()));
             rooted!(&in(wrapped_cx) let global = CurrentGlobalOrNull(cx));
             rooted!(&in(wrapped_cx) let mut call_rval = UndefinedValue());
@@ -684,11 +684,11 @@ unsafe extern "C" fn rl_promises_question(cx: *mut JSContext, argc: u32, vp: *mu
         },
     };
     rooted!(&in(wrapped_cx) let payload_root = payload);
-    let elems = [payload_root.get()];
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: elems.as_ptr(),
-    };
+    // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray
+    // (require.rs canary-pinned form).
+    rooted!(&in(wrapped_cx) let args_array =
+        mozjs_sys::jsgc::ValueArray::<1>::new([payload_root.get()]));
+    let call_args = JS::HandleValueArray::from(&args_array);
     rooted!(&in(wrapped_cx) let thunk_val = ObjectValue(thunk_obj.get()));
     rooted!(&in(wrapped_cx) let global = CurrentGlobalOrNull(cx));
     rooted!(&in(wrapped_cx) let mut call_rval = UndefinedValue());

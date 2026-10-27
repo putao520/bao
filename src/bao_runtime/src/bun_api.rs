@@ -21,7 +21,7 @@ use mozjs::jsval::{
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{
-    JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject, NewArrayObject1,
+    JS_DefineFunction, JS_DefineProperty3, JS_NewObject, JS_NewPlainObject, NewArrayObject1,
 };
 
 use bun_uws_sys::app::App;
@@ -33,6 +33,36 @@ use bun_uws_sys::web_socket::{NewWebSocket, RawWebSocket, WebSocketBehavior};
 use bun_uws_sys::{Opcode, SendStatus, WebSocketUpgradeContext, uws_res};
 
 use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove};
+use crate::slot_gate::{set_slot, slot_ptr};
+
+// Reserved-slot index on BUN_SERVE_SERVER_CLASS. The uWS App pointer of a
+// `Bun.serve()` server object lives ONLY in an engine-private reserved slot:
+// JS can neither read nor write it. This retires the former `_appPtr`
+// own-property carrier (attrs=0 writable+configurable own property holding
+// PrivateValue — a page could assign any subnormal double, e.g.
+// `s._appPtr = 1e-320`, whose bits pass the `(asBits & 0xFFFF000000000000) == 0`
+// private-encoding check and reach `to_private()` → wild `&*ptr` deref /
+// arbitrary-address `Box::from_raw`). A JS-visible carrier is unfixable at the
+// bit level: any x86-64 userland pointer (< 2^48) encodes to a double whose
+// top 16 bits are zero, and every such bit pattern is itself a JS-expressible
+// double, so the encoding check cannot discriminate engine-written from
+// JS-written values (BCE-20261025-FFI-SLOT-GATE).
+const SLOT_BUN_SERVE_APP_PTR: u32 = 0;
+
+/// Instance class of every `Bun.serve()` server object. One reserved slot
+/// (app ptr), no ops. `JS_NewObject` resolves the default proto for an
+/// op-less class to Object.prototype — the same proto `JS_NewPlainObject`
+/// gave — so the JS-visible surface is unchanged apart from the retired
+/// private property.
+/// @trace REQ-ENG-004 [api:Bun.serve]
+const BUN_SERVE_SERVER_CLASS: JSClass = JSClass {
+    name: c"BunServeServer".as_ptr(),
+    flags: (1 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: ::std::ptr::null(),
+    spec: ::std::ptr::null(),
+    ext: ::std::ptr::null(),
+    oOps: ::std::ptr::null(),
+};
 
 /// Install Bun.* namespace on a target object (REQ-SEC-002 parameter injection).
 ///
@@ -601,6 +631,18 @@ unsafe fn populate_bun_object(
         JSPROP_ENUMERATE as u32,
     );
 
+    // @trace REQ-LIB-004 [criterion:5] — Bao.run(path, options?): per-script
+    // permission sandbox (script-level face of the shared permission bridge;
+    // options parser + guard scope in permission_options.rs).
+    JS_DefineFunction(
+        cx,
+        bun_obj,
+        c"run".as_ptr(),
+        Some(bao_run),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+
     // Bao.browser 全局对象(连接 CDP client — REQ-BAO-API-008)
     crate::bao_browser_global::install_bao_browser_on_bun(cx, bun_obj);
     // CC Dynamic Workflow host marker on Bun (plan-25); globals installed on realm separately.
@@ -990,16 +1032,13 @@ unsafe fn populate_process_object(
                         ::std::ptr::null(),
                     );
                     let allowed_obj = JS_GetFunctionObject(allowed_fn);
-                    let args = [
+                    rooted!(&in(cx) let args_rooted = mozjs_sys::jsgc::ValueArray::<4>::new([
                         args_val.handle().get(),
                         set_env_root.handle().get(),
                         del_env_root.handle().get(),
                         ObjectValue(allowed_obj),
-                    ];
-                    let args_arr = HandleValueArray {
-                        length_: 4,
-                        elements_: args.as_ptr(),
-                    };
+                    ]));
+                    let args_arr = JS::HandleValueArray::from(&args_rooted);
                     rooted!(&in(cx) let null_obj = ::std::ptr::null_mut::<JSObject>());
                     let mut ret = UndefinedValue();
                     let ret_h = MutableHandle::<Value> {
@@ -1682,6 +1721,59 @@ unsafe fn populate_process_object(
         JSPROP_ENUMERATE as u32,
     );
 
+    // @trace REQ-ENG-004 — process.getuid/getgid/geteuid/getegid (node
+    // POSIX-only face: real/effective user and group ids). Windows: the four
+    // properties are absent entirely — node does not define them there (the
+    // -1 sentinels live on os.userInfo, not on process).
+    #[cfg(not(windows))]
+    {
+        JS_DefineFunction(
+            cx,
+            proc_obj,
+            c"getuid".as_ptr(),
+            ::std::option::Option::Some(process_getuid),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        JS_DefineFunction(
+            cx,
+            proc_obj,
+            c"getgid".as_ptr(),
+            ::std::option::Option::Some(process_getgid),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        JS_DefineFunction(
+            cx,
+            proc_obj,
+            c"geteuid".as_ptr(),
+            ::std::option::Option::Some(process_geteuid),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+        JS_DefineFunction(
+            cx,
+            proc_obj,
+            c"getegid".as_ptr(),
+            ::std::option::Option::Some(process_getegid),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    // @trace REQ-ENG-004 — process.getActiveResourcesInfo() (node v24 face):
+    // resource-type strings of the live event-loop handles. Real registry
+    // mapping with a registered honest-subset boundary — see
+    // active_resource_info_names.
+    JS_DefineFunction(
+        cx,
+        proc_obj,
+        c"getActiveResourcesInfo".as_ptr(),
+        ::std::option::Option::Some(process_get_active_resources_info),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+
     // process.config
     {
         rooted!(&in(cx) let config_obj = JS_NewPlainObject(cx));
@@ -1786,6 +1878,33 @@ unsafe fn populate_process_object(
         }
     }
 
+    // @trace REQ-ENG-007 [criterion:7] — process.permission(node parity;
+    // oracle v24.19.0):无 `--permission` 旗标时为 undefined(面不定义);
+    // 有旗标时为普通对象仅含 `has`,属性描述符 {enumerable: true,
+    // writable: false, configurable: false}(= ENUMERATE|READONLY|PERMANENT)。
+    // 真语义:has() 对 CLI 装入的显式 allow 清单做路径包含判定
+    // (permission_bridge::CliPermissionModel),非伪造恒真。
+    if crate::permission_bridge::cli_permission_model().is_some() {
+        rooted!(&in(cx) let perm_obj = JS_NewPlainObject(cx));
+        if !perm_obj.get().is_null() {
+            JS_DefineFunction(
+                cx,
+                perm_obj.handle(),
+                c"has".as_ptr(),
+                Some(process_permission_has),
+                2,
+                JSPROP_ENUMERATE as u32,
+            );
+            JS_DefineProperty3(
+                cx,
+                proc_obj,
+                c"permission".as_ptr(),
+                perm_obj.handle(),
+                (JSPROP_ENUMERATE | JSPROP_READONLY | JSPROP_PERMANENT) as u32,
+            );
+        }
+    }
+
     // process EventEmitter — delegate to node_events implementations
     JS_DefineFunction(
         cx,
@@ -1849,6 +1968,55 @@ unsafe fn populate_process_object(
     if !proc_ptr.is_null() {
         crate::require::cache_builtin(cx, "process", proc_ptr);
     }
+}
+
+/// `process.permission.has(scope[, reference])` — node v24 parity(oracle
+/// v24.19.0)。校验面(oracle 逐字):
+///   * scope 非 string → TypeError ERR_INVALID_ARG_TYPE
+///     `The "scope" argument must be of type string. Received <desc>`
+///   * reference 非 null/undefined 且非 string → 同形 "reference" 报错
+///     (null/undefined = 缺省 → 判定层 false,不抛)
+/// 判定委托 permission_bridge::cli_permission_has(真 allow 清单包含判定);
+/// has.length === 2、方法属性可写可枚举可配置(= JSPROP_ENUMERATE 缺省形)。
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_permission_has(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let scope_val = if args.argc_ > 0 {
+        *args.get(0).ptr
+    } else {
+        UndefinedValue()
+    };
+    if !scope_val.is_string() {
+        let desc = crate::permission_options::received_descriptor(cx, scope_val);
+        return crate::bun_inspect_api::throw_invalid_arg_type(
+            cx,
+            &::std::format!(
+                "The \"scope\" argument must be of type string. Received {desc}"
+            ),
+        );
+    }
+    let scope = crate::js_to_rust_string(cx, scope_val);
+    let ref_val = if args.argc_ > 1 {
+        *args.get(1).ptr
+    } else {
+        UndefinedValue()
+    };
+    let reference = if ref_val.is_undefined() || ref_val.is_null() {
+        ::std::option::Option::None
+    } else if ref_val.is_string() {
+        ::std::option::Option::Some(crate::js_to_rust_string(cx, ref_val))
+    } else {
+        let desc = crate::permission_options::received_descriptor(cx, ref_val);
+        return crate::bun_inspect_api::throw_invalid_arg_type(
+            cx,
+            &::std::format!(
+                "The \"reference\" argument must be of type string. Received {desc}"
+            ),
+        );
+    };
+    let granted = crate::permission_bridge::cli_permission_has(&scope, reference.as_deref());
+    args.rval().set(BooleanValue(granted));
+    true
 }
 
 pub fn install_process_global(
@@ -1935,17 +2103,24 @@ pub fn spawn_watch_pump_all(raw_cx: *mut JSContext) {
         // the finish callback — e.g. a 'close' handler spawning the next
         // proc — must not see a stale entry for this pid).
         SPAWN_WATCHES.with(|w| w.borrow_mut().retain(|&p| p != pid));
-        unsafe { fire_spawn_watch_finish(raw_cx, pid, code, signal) };
+        unsafe { fire_spawn_watch_finish(raw_cx, pid, (code, signal)) };
     }
 }
 
-/// Invoke the finish callback registered for `pid` (GcStore namespace
-/// "spawn-watch", key = pid). Missing callback (realm teardown) is a silent
-/// no-op — there is nothing left to notify.
+/// @trace REQ-ENG-005 [api:Bun.spawn exit delivery] — invoke the finish
+/// callback registered for `pid` (GcStore namespace "spawn-watch", key =
+/// pid). Missing callback (realm teardown) is a silent no-op — there is
+/// nothing left to notify.
+///
+/// The internal exit wire tuple (`code = -signal` on a signal death) is
+/// rendered through `normalize_exit_info` BEFORE it reaches JS: the proc's
+/// exit/close events carry the oracle shape — code null + the signal NAME
+/// string on a signal death, the numeric code + null signal otherwise
+/// (bun 1.4.2 oracle 2026-10-25: proc.exitCode=null, signalCode="SIGTERM").
 ///
 /// # Safety
 /// `raw_cx` must be the live JSContext on this thread.
-unsafe fn fire_spawn_watch_finish(raw_cx: *mut JSContext, pid: i32, code: i32, signal: i32) {
+unsafe fn fire_spawn_watch_finish(raw_cx: *mut JSContext, pid: i32, info: (i32, i32)) {
     unsafe {
         let key = format!("{}", pid);
         let Some(finish) = crate::gc_store::gc_store_get_ns(raw_cx, "spawn-watch", &key) else {
@@ -1958,16 +2133,32 @@ unsafe fn fire_spawn_watch_finish(raw_cx: *mut JSContext, pid: i32, code: i32, s
         if global.is_null() {
             return;
         }
+        let (code, signal_name) = crate::node_child_process::normalize_exit_info(info);
         let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
         rooted!(&in(cx_ref) let global_r = global);
         rooted!(&in(cx_ref) let fval = ObjectValue(finish));
-        rooted!(&in(cx_ref) let code_v = Int32Value(code));
-        rooted!(&in(cx_ref) let sig_v = Int32Value(signal));
-        let elems = [*code_v.handle(), *sig_v.handle()];
-        let args = HandleValueArray {
-            length_: elems.len(),
-            elements_: elems.as_ptr(),
+        rooted!(&in(cx_ref) let code_v = match code {
+            Some(c) => Int32Value(c),
+            ::std::option::Option::None => NullValue(),
+        });
+        let sig_v = match signal_name {
+            Some(name) => {
+                let c_name = ZBox::from_bytes(name.into_bytes());
+                let js_str = JS_NewStringCopyZ(raw_cx, c_name.as_ptr());
+                if js_str.is_null() {
+                    NullValue()
+                } else {
+                    StringValue(&*js_str)
+                }
+            }
+            ::std::option::Option::None => NullValue(),
         };
+        rooted!(&in(cx_ref) let sig_root = sig_v);
+        rooted!(&in(cx_ref) let args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+            code_v.handle().get(),
+            sig_root.handle().get(),
+        ]));
+        let args = JS::HandleValueArray::from(&args_rooted);
         let mut rval = UndefinedValue();
         let ok = JS_CallFunctionValue(
             raw_cx,
@@ -2557,12 +2748,24 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
   // the child is reaped AND its pipes drained. No JS-timer chain: the first
   // cut's chained-setTimeout watcher spontaneously died at a ~1/300 rate
   // (timer popped with its gc_store callback missing → close never fired).
+  //
+  // (code, signal) arrive in the oracle shape from the native boundary
+  // (normalize_exit_info): a signal death is (null, "SIGTERM") — the name
+  // string, no exit code; a plain exit is (code, null).
   var _finished = false;
+  // Signal NAME → signum, for the bun `exited` contract (128+signal on a
+  // signal death — bun 1.4.2 live probe 2026-10-25: `await proc.exited`
+  // resolves 137 for SIGKILL, 143 for SIGTERM).
+  var __SIG_NUM = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGABRT: 6, SIGKILL: 9,
+                    SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13,
+                    SIGALRM: 14, SIGTERM: 15, SIGCHLD: 17, SIGCONT: 18,
+                    SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22 };
   function _finish(code, signal) {
     if (_finished) return;
     _finished = true;
     proc.exitCode = code;
-    try { _exitResolve(code); } catch (e) {/*CS-EMPTY-CATCH exempt: disposed/replaced resolver must not break the teardown chain*/}
+    var exitedVal = (code === null && signal) ? 128 + (__SIG_NUM[signal] || 0) : code;
+    try { _exitResolve(exitedVal); } catch (e) {/*CS-EMPTY-CATCH exempt: disposed/replaced resolver must not break the teardown chain*/}
     try { proc.emit('exit', code, signal); } catch (e) {/*CS-EMPTY-CATCH exempt: Node EventEmitter parity*/}
     if (proc._pipedOut) {
       try {
@@ -2639,10 +2842,9 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                     rooted!(&in(cx_ref) let wrapper_fn = dispose_rval.to_object());
                     // Call wrapper(subproc_obj) — pass proc as `this` and arg.
                     rooted!(&in(cx_ref) let proc_val_elem = ObjectValue(subproc_obj.get()));
-                    let args_arr = HandleValueArray {
-                        length_: 1,
-                        elements_: &*proc_val_elem.handle(),
-                    };
+                    rooted!(&in(cx_ref) let args_arr_rooted =
+                        mozjs_sys::jsgc::ValueArray::<1>::new([proc_val_elem.handle().get()]));
+                    let args_arr = JS::HandleValueArray::from(&args_arr_rooted);
                     let mut call_rval = UndefinedValue();
                     let call_rval_h = MutableHandle::<Value> {
                         _phantom_0: ::std::marker::PhantomData,
@@ -2724,10 +2926,36 @@ unsafe fn set_int_prop_on_this(
     }
 }
 
-/// `proc.wait()` — block until the pump publishes exit info (reaped + pipes
-/// drained), then return the exit code (signal deaths → -1). The pump thread
-/// owns reaping, so this must NOT touch Child::wait (its waitpid would steal
-/// the status out from under the pump).
+/// JSVal twin of [`set_int_prop_on_this`] — carries the oracle shape's null
+/// arms (e.g. `exitCode = null` on a signal death) without an i32 detour.
+unsafe fn set_value_prop_on_this(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    name: *const ::std::os::raw::c_char,
+    v: JSVal,
+) {
+    unsafe {
+        let this = args.thisv();
+        if !this.is_object() {
+            return;
+        }
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let obj = this.to_object());
+        rooted!(&in(cx_ref) let v_root = v);
+        JS_SetProperty(cx, obj.handle().into(), name, v_root.handle().into());
+    }
+}
+
+/// @trace REQ-ENG-005 [api:Bun.spawn proc.wait] — block until the pump
+/// publishes exit info (reaped + pipes drained), then return the exit
+/// status: the numeric code on a plain exit, **128 + signum on a signal
+/// death** (the bun `exited` contract — bun 1.4.2 live probe 2026-10-25:
+/// SIGKILL death → 137; superseded REGISTRY R-A8, which pinned the leaked
+/// internal `-signal` wire encoding). The proc's `exitCode` property mirrors
+/// the oracle shape: null on a signal death. The pump thread owns reaping,
+/// so this must NOT touch Child::wait (its waitpid would steal the status
+/// out from under the pump).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn subproc_wait(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
@@ -2738,21 +2966,30 @@ unsafe extern "C" fn subproc_wait(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
     // Bounded-frequency poll of the published exit info. The pump always
     // publishes (drain-before-publish invariant), so this terminates when
     // the child does.
-    let info = loop {
+    let (code, signal) = loop {
         if let Some(info) = crate::node_child_process::poll_exit_info(pid) {
             break info;
         }
         ::std::thread::sleep(::std::time::Duration::from_millis(2));
     };
-    set_int_prop_on_this(cx, &args, c"exitCode".as_ptr(), info.0);
-    args.rval().set(Int32Value(info.0));
+    // exitCode prop: null on a signal death (a signal death has no exit
+    // code — bun oracle); the numeric code otherwise.
+    let (code_v, wait_val) = if signal != 0 {
+        (NullValue(), 128 + signal)
+    } else {
+        (Int32Value(code), code)
+    };
+    set_value_prop_on_this(cx, &args, c"exitCode".as_ptr(), code_v);
+    args.rval().set(Int32Value(wait_val));
     true
 }
 
-/// `proc._pollExitInfo()` — non-blocking probe for the event-surface
-/// watcher: `null` while the child runs or its pipes are still draining,
-/// `[exitCode, signal]` once published. Also mirrors the exit code onto the
-/// `exitCode` property.
+/// @trace REQ-ENG-005 [api:Bun.spawn _pollExitInfo] — non-blocking probe for
+/// the event-surface watcher: `null` while the child runs or its pipes are
+/// still draining, the oracle-shaped `[exitCode, signal]` pair once
+/// published — a signal death is `[null, "SIGTERM"]` (name string, no exit
+/// code), a plain exit `[code, null]` (normalize_exit_info boundary). Also
+/// mirrors the code onto the `exitCode` property (null on a signal death).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn subproc_poll_exit_info(
     cx: *mut JSContext,
@@ -2764,18 +3001,47 @@ unsafe extern "C" fn subproc_poll_exit_info(
         args.rval().set(NullValue());
         return true;
     };
-    let Some((code, signal)) = crate::node_child_process::poll_exit_info(pid) else {
+    let Some(info) = crate::node_child_process::poll_exit_info(pid) else {
         args.rval().set(NullValue());
         return true;
     };
-    set_int_prop_on_this(cx, &args, c"exitCode".as_ptr(), code);
-    let vals = [Int32Value(code), Int32Value(signal)];
-    let hva = HandleValueArray {
-        length_: vals.len(),
-        elements_: vals.as_ptr(),
+    let (code, signal_name) = crate::node_child_process::normalize_exit_info(info);
+    set_value_prop_on_this(
+        cx,
+        &args,
+        c"exitCode".as_ptr(),
+        match code {
+            Some(c) => Int32Value(c),
+            ::std::option::Option::None => NullValue(),
+        },
+    );
+    let code_v = match code {
+        Some(c) => Int32Value(c),
+        ::std::option::Option::None => NullValue(),
     };
-    // SAFETY: `hva` points at the rooted-by-scope local `vals` for the
-    // duration of this single engine call.
+    let sig_v = match signal_name {
+        Some(name) => {
+            let c_name = ZBox::from_bytes(name.into_bytes());
+            let js_str = JS_NewStringCopyZ(cx, c_name.as_ptr());
+            if js_str.is_null() {
+                NullValue()
+            } else {
+                StringValue(&*js_str)
+            }
+        }
+        ::std::option::Option::None => NullValue(),
+    };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let code_r = code_v);
+    rooted!(&in(cx_ref) let sig_r = sig_v);
+    rooted!(&in(cx_ref) let hva_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+        code_r.handle().get(),
+        sig_r.handle().get(),
+    ]));
+    let hva = JS::HandleValueArray::from(&hva_rooted);
+    // SAFETY: `hva` borrows the GC-traced storage of the scope-rooted
+    // `hva_rooted` ValueArray for the duration of this single engine call.
     let arr = unsafe { NewArrayObject(cx, &hva) };
     args.rval().set(if arr.is_null() {
         NullValue()
@@ -3534,7 +3800,10 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     // Build JS server object
     let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let server_obj = JS_NewPlainObject(cx_ref));
+    // BUN_SERVE_SERVER_CLASS carries the app-pointer reserved slot
+    // (BCE-20261025-FFI-SLOT-GATE; default proto stays Object.prototype, same
+    // as the retired JS_NewPlainObject shape)
+    rooted!(&in(cx_ref) let server_obj = JS_NewObject(cx_ref, &BUN_SERVE_SERVER_CLASS));
     if server_obj.get().is_null() {
         args.rval().set(UndefinedValue());
         return true;
@@ -3573,11 +3842,17 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         }
     }
 
-    // Store app_ptr as private property for stop() — use PrivateValue to
-    // preserve full 64-bit pointer (Int32Value truncates upper 32 bits).
-    let app_val = mozjs::jsval::PrivateValue(app_ptr as *const core::ffi::c_void);
-    rooted!(&in(cx_ref) let app_h = app_val);
-    JS_DefineProperty(cx, srv_h, c"_appPtr".as_ptr(), app_h.handle().into(), 0);
+    // Store app_ptr in the engine-private reserved slot for stop() — JS can
+    // neither read nor write reserved slots (BCE-20261025-FFI-SLOT-GATE).
+    // PrivateValue preserves the full 64-bit pointer (Int32Value truncates
+    // upper 32 bits).
+    unsafe {
+        set_slot(
+            server_obj.get(),
+            SLOT_BUN_SERVE_APP_PTR,
+            app_ptr as *const core::ffi::c_void,
+        );
+    }
 
     // Store GcStore keys on the server object for cleanup in stop()
     if let Some(ref fk) = fetch_cb_key_for_js {
@@ -3608,24 +3883,15 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         let cx_ref_stop = &mut wrapped_cx_stop;
         rooted!(&in(cx_ref_stop) let this_obj = args.thisv().to_object());
         let this_h = this_obj.handle().into();
-        let mut app_val = UndefinedValue();
-        JS_GetProperty(
+        // Read and clear the engine-private reserved slot (BCE-20261025-FFI-SLOT-GATE).
+        // server.stop() before serve() actually listens leaves the slot null →
+        // no-op, same as the retired undefined `_appPtr` guard path.
+        let app_ptr = slot_ptr(
             cx,
-            this_h,
-            c"_appPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut app_val,
-            },
-        );
-        // @trace BCE-20260618-002 — guard non-private doubles before to_private().
-        // server.stop() before serve() actually listens leaves _appPtr undefined
-        // (PrivateValue) — to_private() on undefined asserts is_double() → panic.
-        let app_ptr = if app_val.is_double() && (app_val.asBits_ & 0xFFFF000000000000) == 0 {
-            app_val.to_private() as *mut App<false>
-        } else {
-            core::ptr::null_mut()
-        };
+            this_obj.handle(),
+            &BUN_SERVE_SERVER_CLASS,
+            SLOT_BUN_SERVE_APP_PTR,
+        ) as *mut App<false>;
         if !app_ptr.is_null() {
             // Close listen sockets first, then destroy app.
             // Skip destroys socket group with dangling listen sockets → assertion.
@@ -3641,20 +3907,15 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             log::info!("Bun.serve() stopped");
 
             // @trace BCE-20260618-006 [level:regression] [api:Bun.serve stop]
-            // Clear `_appPtr` on the JS server object so subsequent `stop()`
-            // calls are idempotent no-ops instead of use-after-free on the
-            // destroyed `*mut App`. Without this, a second `server.stop()`
-            // (common in try/finally cleanup paths and `test_http_depth.js`'s
-            // `finishTests`) reads the stale pointer and calls `close()` /
-            // `destroy()` on freed memory → SIGSEGV. Set the slot to a non-
-            // private value (UndefinedValue) so the BCE-002 private-value
-            // guard above correctly takes the null path on re-entry.
-            let undef = UndefinedValue();
-            let undef_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &undef,
-            };
-            JS_SetProperty(cx, this_h, c"_appPtr".as_ptr(), undef_h);
+            // Clear the reserved slot so subsequent `stop()` calls are idempotent
+            // no-ops instead of use-after-free on the destroyed `*mut App`.
+            // Without this, a second `server.stop()` (common in try/finally
+            // cleanup paths and `test_http_depth.js`'s `finishTests`) reads the
+            // stale pointer and calls `close()` / `destroy()` on freed memory →
+            // SIGSEGV.
+            unsafe {
+                set_slot(this_obj.get(), SLOT_BUN_SERVE_APP_PTR, core::ptr::null());
+            }
         }
         // Clean up GcStore entries for fetch and websocket callbacks
         let mut fk_val = UndefinedValue();
@@ -4397,10 +4658,9 @@ unsafe extern "C" fn ws_on_open(raw_ws: *mut RawWebSocket) {
     // Call open(ws) with the JS WebSocket wrapper object.
     rooted!(&in(cx_ref) let open_fn_val = ObjectValue(open_fn.get()));
     rooted!(&in(cx_ref) let ws_arg = ObjectValue(ws_obj_root.get()));
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: &*ws_arg.handle(),
-    };
+    rooted!(&in(cx_ref) let call_args_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([ws_arg.handle().get()]));
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
     let mut rval = UndefinedValue();
     let rval_h = MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData,
@@ -4528,11 +4788,11 @@ unsafe extern "C" fn ws_on_message(
     rooted!(&in(cx_ref) let msg_fn_val = ObjectValue(msg_fn.get()));
     rooted!(&in(cx_ref) let ws_arg = ObjectValue(ws_obj_root.get()));
     rooted!(&in(cx_ref) let msg_arg_root = msg_arg);
-    let args = [ws_arg.handle().get(), msg_arg_root.handle().get()];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: args.as_ptr(),
-    };
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+        ws_arg.handle().get(),
+        msg_arg_root.handle().get(),
+    ]));
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
     let mut rval = UndefinedValue();
     let rval_h = MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData,
@@ -4676,15 +4936,13 @@ unsafe extern "C" fn ws_on_close(
                     UndefinedValue()
                 };
                 rooted!(&in(cx_ref) let reason_root = reason_arg);
-                let args = [
-                    ws_arg.handle().get(),
-                    code_root.handle().get(),
-                    reason_root.handle().get(),
-                ];
-                let call_args = HandleValueArray {
-                    length_: 3,
-                    elements_: args.as_ptr(),
-                };
+                rooted!(&in(cx_ref) let call_args_rooted =
+                    mozjs_sys::jsgc::ValueArray::<3>::new([
+                        ws_arg.handle().get(),
+                        code_root.handle().get(),
+                        reason_root.handle().get(),
+                    ]));
+                let call_args = JS::HandleValueArray::from(&call_args_rooted);
                 let mut rval = UndefinedValue();
                 let rval_h = MutableHandle::<Value> {
                     _phantom_0: ::std::marker::PhantomData,
@@ -5067,10 +5325,9 @@ unsafe fn serve_body_stream_signal(st: *mut ServeRequestState, signal: ServeBody
             }
         }
         rooted!(&in(cx_ref) let arg_r = arg_val);
-        let args = HandleValueArray {
-            length_: 1,
-            elements_: &*arg_r.handle(),
-        };
+        rooted!(&in(cx_ref) let args_rooted =
+            mozjs_sys::jsgc::ValueArray::<1>::new([arg_r.handle().get()]));
+        let args = JS::HandleValueArray::from(&args_rooted);
         rooted!(&in(cx_ref) let method_fn_val = ObjectValue(method_fn.get()));
         let mut rv = UndefinedValue();
         let ok = JS_CallFunctionValue(
@@ -5149,10 +5406,9 @@ unsafe fn serve_body_stream_enqueue(st: *mut ServeRequestState, chunk: &[u8]) {
             ::std::ptr::copy_nonoverlapping(chunk.as_ptr(), data, chunk.len());
         }
         rooted!(&in(cx_ref) let arg_v = ObjectValue(arr.get()));
-        let args = HandleValueArray {
-            length_: 1,
-            elements_: &*arg_v.handle(),
-        };
+        rooted!(&in(cx_ref) let args_rooted =
+            mozjs_sys::jsgc::ValueArray::<1>::new([arg_v.handle().get()]));
+        let args = JS::HandleValueArray::from(&args_rooted);
         rooted!(&in(cx_ref) let enq_fn_val = ObjectValue(enq_fn.get()));
         let mut rv = UndefinedValue();
         let ok = JS_CallFunctionValue(
@@ -5415,10 +5671,9 @@ unsafe fn serve_dispatch_headers(st: *mut ServeRequestState) {
         // is cleared, never left pending.
         rooted!(&in(cx_ref) let handler_val = ObjectValue(handler_root.get()));
         rooted!(&in(cx_ref) let req_val_elem = ObjectValue(req_r.get()));
-        let call_args = HandleValueArray {
-            length_: 1,
-            elements_: &*req_val_elem.handle(),
-        };
+        rooted!(&in(cx_ref) let call_args_rooted =
+            mozjs_sys::jsgc::ValueArray::<1>::new([req_val_elem.handle().get()]));
+        let call_args = JS::HandleValueArray::from(&call_args_rooted);
         let mut rval = UndefinedValue();
         let global = CurrentGlobalOrNull(raw_cx);
         if global.is_null() {
@@ -5760,16 +6015,13 @@ unsafe fn serve_build_request_object(
     rooted!(&in(cx_ref) let m_val = StringValue(&*m_js));
     rooted!(&in(cx_ref) let u_val = StringValue(&*u_js));
     rooted!(&in(cx_ref) let h_val = ObjectValue(headers_obj.get()));
-    let call_vals = [
+    rooted!(&in(cx_ref) let call_arr_rooted = mozjs_sys::jsgc::ValueArray::<4>::new([
         m_val.handle().get(),
         u_val.handle().get(),
         h_val.handle().get(),
         body_val.handle().get(),
-    ];
-    let call_arr = HandleValueArray {
-        length_: 4,
-        elements_: call_vals.as_ptr(),
-    };
+    ]));
+    let call_arr = JS::HandleValueArray::from(&call_arr_rooted);
     let mut call_rval = UndefinedValue();
     rooted!(&in(cx_ref) let null_obj = ::std::ptr::null_mut::<JSObject>());
     let called = JS_CallFunctionValue(
@@ -8468,11 +8720,11 @@ unsafe extern "C" fn bun_file_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     rooted!(&in(cx_ref) let parts_arg = ObjectValue(parts.get()));
     rooted!(&in(cx_ref) let opts_arg = ObjectValue(opts.get()));
     // Raw Value copies out of the rooted slots (file-wide call-args pattern).
-    let elems = [parts_arg.handle().get(), opts_arg.handle().get()];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: elems.as_ptr(),
-    };
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+        parts_arg.handle().get(),
+        opts_arg.handle().get(),
+    ]));
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
     let mut blob = UndefinedValue();
     let blob_h = MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData,
@@ -9100,11 +9352,11 @@ pub fn dispatch_exit_handlers(cx: *mut JSContext) -> bool {
         return false;
     }
     rooted!(&in(cx_ref) let exit_str_val = unsafe { StringValue(&*exit_str) });
-    let args_vals = [*exit_str_val.handle(), Int32Value(code)];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: args_vals.as_ptr(),
-    };
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+        exit_str_val.handle().get(),
+        Int32Value(code),
+    ]));
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
 
     let mut rval = UndefinedValue();
     let ok = unsafe {
@@ -9537,6 +9789,134 @@ unsafe extern "C" fn process_umask(_cx: *mut JSContext, _argc: u32, vp: *mut JSV
     #[cfg(not(windows))]
     unsafe { libc::umask(old) };
     args.rval().set(Int32Value(old as i32));
+    true
+}
+
+/// @trace REQ-ENG-004 [api:process.getuid] — node POSIX-only face: the real
+/// user id of the calling process (getuid(2), one libc call). Windows: the
+/// property is absent entirely (node parity — `process.getuid` is undefined
+/// there; the -1 sentinels live on os.userInfo, not here).
+#[cfg(not(windows))]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_getuid(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    args.rval().set(Int32Value(unsafe { libc::getuid() } as i32));
+    true
+}
+
+/// @trace REQ-ENG-004 [api:process.getgid] — node POSIX-only face: the real
+/// group id of the calling process (getgid(2)).
+#[cfg(not(windows))]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_getgid(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    args.rval().set(Int32Value(unsafe { libc::getgid() } as i32));
+    true
+}
+
+/// @trace REQ-ENG-004 [api:process.geteuid] — node POSIX-only face: the
+/// EFFECTIVE user id of the calling process (geteuid(2)).
+#[cfg(not(windows))]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_geteuid(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    args.rval().set(Int32Value(unsafe { libc::geteuid() } as i32));
+    true
+}
+
+/// @trace REQ-ENG-004 [api:process.getegid] — node POSIX-only face: the
+/// EFFECTIVE group id of the calling process (getegid(2)).
+#[cfg(not(windows))]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_getegid(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    args.rval().set(Int32Value(unsafe { libc::getegid() } as i32));
+    true
+}
+
+/// @trace REQ-ENG-004 [api:process.getActiveResourcesInfo] — the resource-type
+/// strings for the handles currently keeping this realm's event loop alive
+/// (node v24 face). Every name is mapped 1:1 from a REAL bao registry face —
+/// zero fabricated types. Honest-subset boundary (classes with only boolean
+/// liveness probes and no per-handle count face are intentionally absent,
+/// never invented): fetch/HTTP/WS (`has_pending` probes), worker_threads
+/// (WORKER_REGISTRY len is a worker-object count, not a uv-handle face),
+/// TLS servers (registry entries are JS-wrapper handles, not wire handles),
+/// child stdio pipes (node adds one "PipeWrap" per stdio pipe; bao drains
+/// child pipes through its poll thread and keeps no per-pipe registry face).
+fn active_resource_info_names() -> Vec<&'static str> {
+    let mut info: Vec<&'static str> = Vec::new();
+    // One "Timeout" entry per held timer (setTimeout/setInterval alike;
+    // node v24 oracle: 2 timers + 1 interval → 3× "Timeout").
+    for _ in 0..crate::timers::active_timer_count() {
+        info.push("Timeout");
+    }
+    // Live child processes (no Exit event pumped yet).
+    for _ in 0..crate::node_child_process::active_child_process_count() {
+        info.push("ProcessWrap");
+    }
+    // Bound UDP sockets.
+    for _ in 0..crate::node_dgram::active_udp_socket_count() {
+        info.push("UDPWrap");
+    }
+    // fs.watch entries / fs.watchFile stat pollers.
+    let (fs_events, stat_pollers) = crate::node_fs::active_fs_watcher_counts();
+    for _ in 0..fs_events {
+        info.push("FSEventWrap");
+    }
+    for _ in 0..stat_pollers {
+        info.push("StatWatcher");
+    }
+    // In-flight async fs requests (node v24 oracle: fifo read →
+    // "FSReqCallback"; the pre-v24 classic name "FSReqWrap" is dead there).
+    for _ in 0..crate::node_fs::fs_async_pending() {
+        info.push("FSReqCallback");
+    }
+    // node net: listening servers + connected sockets; Bun.listen TCP-mode
+    // connected sockets land on the same "TCPSocketWrap" face.
+    let (listening, connected) = crate::node_net::active_net_socket_counts();
+    for _ in 0..listening {
+        info.push("TCPServerWrap");
+    }
+    let tcp_sockets = connected + crate::bun_listen::active_listen_tcp_count();
+    for _ in 0..tcp_sockets {
+        info.push("TCPSocketWrap");
+    }
+    info
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_get_active_resources_info(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let info = active_resource_info_names();
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let arr = unsafe { NewArrayObject1(cx_ref, info.len()) });
+    if arr.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    for (i, name) in info.iter().enumerate() {
+        let js_str = js_string_from_utf8(cx, name);
+        if !js_str.is_null() {
+            rooted!(&in(cx_ref) let v = StringValue(&*js_str));
+            unsafe {
+                JS_DefineElement(
+                    cx,
+                    arr.handle().into(),
+                    i as u32,
+                    v.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+    }
+    args.rval().set(ObjectValue(arr.get()));
     true
 }
 
@@ -11211,6 +11591,270 @@ unsafe extern "C" fn bun_open_in_new_tab(cx: *mut JSContext, argc: u32, vp: *mut
     // Return undefined (Bun behavior)
     args.rval().set(UndefinedValue());
     true
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-LIB-004 [criterion:5] — Bao.run(path, options?): per-script
+// permission sandbox.
+//
+// Flow: parse `{permission}` fail-closed → gate the script-file read by the
+// OUTER guard (`check_fs_read`; nested-run semantics) → read file (node fs
+// coded errors) → install the script's guard scope → evaluate in the caller's
+// realm → restore via Drop on every path (ok / error / unwind). No permission
+// key ⇒ zero `set_permission` calls (guard untouched, criterion ①).
+// ──────────────────────────────────────────────────────────────────────────
+
+/// TypeError carrying a node `code` property (house shape: node_fs
+/// throw_fs_coded_error / bun_inspect_api throw_invalid_arg_type).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn throw_run_coded_type_error(cx: *mut JSContext, code: &str, msg: &str) -> bool {
+    let c_msg = ZBox::from_bytes(msg.as_bytes());
+    JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+    if JS_IsExceptionPending(cx) {
+        rooted!(in(cx) let mut exn = UndefinedValue());
+        JS_GetPendingException(cx, exn.handle_mut().into());
+        let exn_val = exn.get();
+        if !exn_val.is_undefined() && exn_val.is_object() {
+            rooted!(in(cx) let exn_obj = exn_val.to_object());
+            let code_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(code.as_bytes()).as_ptr());
+            if !code_str.is_null() {
+                rooted!(in(cx) let code_val = StringValue(&*code_str));
+                JS_DefineProperty(
+                    cx,
+                    exn_obj.handle().into(),
+                    c"code".as_ptr(),
+                    code_val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+                let name_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(b"TypeError").as_ptr());
+                if !name_str.is_null() {
+                    rooted!(in(cx) let name_val = StringValue(&*name_str));
+                    JS_DefineProperty(
+                        cx,
+                        exn_obj.handle().into(),
+                        c"name".as_ptr(),
+                        name_val.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+                JS_SetPendingException(
+                    cx,
+                    exn.handle().into(),
+                    ExceptionStackBehavior::DoNotCapture,
+                );
+            }
+        }
+    }
+    false
+}
+
+/// Coded fs Error for script-file read failures (house shape mirror of
+/// node_fs throw_fs_error: `{op} '{path}': {err}` + `code` + `path` props).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn throw_run_fs_error(
+    cx: *mut JSContext,
+    op: &str,
+    path: &str,
+    err: &::std::io::Error,
+) -> bool {
+    let code = match err.kind() {
+        ::std::io::ErrorKind::NotFound => "ENOENT",
+        ::std::io::ErrorKind::PermissionDenied => "EACCES",
+        ::std::io::ErrorKind::IsADirectory => "EISDIR",
+        ::std::io::ErrorKind::NotADirectory => "ENOTDIR",
+        _ => "ERR",
+    };
+    let msg = ::std::format!("{} '{}': {}", op, path, err);
+    let c_msg = ZBox::from_bytes(msg.as_bytes());
+    let code_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(code.as_bytes()).as_ptr());
+    if code_str.is_null() {
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+        return false;
+    }
+    JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+    if JS_IsExceptionPending(cx) {
+        rooted!(in(cx) let mut exn = UndefinedValue());
+        JS_GetPendingException(cx, exn.handle_mut().into());
+        let exn_val = exn.get();
+        if !exn_val.is_undefined() && exn_val.is_object() {
+            rooted!(in(cx) let exn_obj = exn_val.to_object());
+            rooted!(in(cx) let code_val = StringValue(&*code_str));
+            JS_DefineProperty(
+                cx,
+                exn_obj.handle().into(),
+                c"code".as_ptr(),
+                code_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            let path_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(path.as_bytes()).as_ptr());
+            if !path_str.is_null() {
+                rooted!(in(cx) let path_val = StringValue(&*path_str));
+                JS_DefineProperty(
+                    cx,
+                    exn_obj.handle().into(),
+                    c"path".as_ptr(),
+                    path_val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            JS_SetPendingException(cx, exn.handle().into(), ExceptionStackBehavior::DoNotCapture);
+        }
+    }
+    false
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bao_run(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    // ── path: string required (node getValidatedPath shape) ──
+    let path_val = if argc == 0 {
+        UndefinedValue()
+    } else {
+        *args.get(0).ptr
+    };
+    if !path_val.is_string() {
+        let received = crate::permission_options::received_descriptor(cx, path_val);
+        return throw_run_coded_type_error(
+            cx,
+            "ERR_INVALID_ARG_TYPE",
+            &::std::format!(
+                "The \"path\" argument must be of type string. Received {}",
+                received
+            ),
+        );
+    }
+    let path = crate::js_to_rust_string(cx, path_val);
+    if path.contains('\0') {
+        return throw_run_coded_type_error(
+            cx,
+            "ERR_INVALID_ARG_VALUE",
+            "The \"path\" argument must be a string without null bytes.",
+        );
+    }
+
+    // ── options.permission: parse fail-closed ──
+    // The parsed check is only INSTALLED after the script file has been read
+    // (see below): the script-file read must stay gated by the OUTER guard
+    // (nested Bao.run semantics — otherwise a sandboxed script would need
+    // read access to its own path just to be loaded), and the script's
+    // sandbox starts exactly at evaluation time. The scope binds to this
+    // frame once constructed: Drop restores the previous guard on every
+    // return path and on unwind.
+    let mut parsed_check: Option<crate::permission_bridge::PermissionCheck> = None;
+    if argc >= 2 {
+        let opts_val = *args.get(1).ptr;
+        if !opts_val.is_undefined() && !opts_val.is_null() {
+            if !opts_val.is_object() {
+                let received = crate::permission_options::received_descriptor(cx, opts_val);
+                return throw_run_coded_type_error(
+                    cx,
+                    "ERR_INVALID_ARG_TYPE",
+                    &::std::format!(
+                        "The \"options\" argument must be of type object. Received {}",
+                        received
+                    ),
+                );
+            }
+            rooted!(in(cx) let opts_obj = opts_val.to_object());
+            // rooted out-slot: JS_GetProperty can run a user getter (GC may
+            // collect while it executes) — lib.rs for_each_string_property
+            // precedent, not the bare-stack-slot shape.
+            rooted!(in(cx) let mut perm_val = UndefinedValue());
+            if !JS_GetProperty(
+                cx,
+                opts_obj.handle().into(),
+                c"permission".as_ptr(),
+                perm_val.handle_mut().into(),
+            ) {
+                // `permission` getter threw: propagate the pending exception
+                // (fail closed — never treat a throwing getter as absent).
+                return false;
+            }
+            let perm_value = perm_val.get();
+            if !perm_value.is_undefined() && !perm_value.is_null() {
+                match crate::permission_options::parse_permission_object(cx, perm_value) {
+                    ::std::result::Result::Ok(check) => {
+                        parsed_check = Some(check);
+                    }
+                    ::std::result::Result::Err(parse_err) => {
+                        if parse_err.exception_pending && JS_IsExceptionPending(cx) {
+                            return false;
+                        }
+                        if parse_err.exception_pending {
+                            // Walk/getter failed without leaving an exception
+                            // pending: fail closed loud — a JSNative `false`
+                            // without a pending exception is UB in SM.
+                            JS_ReportErrorUTF8(
+                                cx,
+                                c"Bao.run: failed to read options.permission".as_ptr(),
+                            );
+                            return false;
+                        }
+                        return throw_run_coded_type_error(
+                            cx,
+                            parse_err.code,
+                            &parse_err.message,
+                        );
+                    }
+                }
+            }
+            // No permission key (or explicit null/undefined): guard untouched
+            // — zero `set_permission` calls (criterion ①).
+        }
+    }
+
+    // ── read the script file under the OUTER guard (nested-run semantics) ──
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_read(&path) {
+        // Bridge denial message verbatim ("Permission denied: read on <path>"),
+        // same gate shape as the node_fs read face.
+        let c_msg = ZBox::from_bytes(e.as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+        return false;
+    }
+    let bytes = match bun_fs::read(&path) {
+        ::std::result::Result::Ok(data) => data,
+        ::std::result::Result::Err(err) => {
+            return throw_run_fs_error(cx, "Bao.run", &path, &err)
+        }
+    };
+
+    // File loaded under the outer guard — NOW install the script's own
+    // sandbox. From here to function exit (every return path and unwind) the
+    // scope's Drop restores the previous guard value (incl. `None`).
+    let _permission_scope =
+        parsed_check.map(crate::permission_options::ScriptPermissionScope::install);
+
+    // node module-loader parity: fs.readFileSync(path, 'utf8') replacement
+    // semantics for invalid UTF-8 (U+FFFD); the engine then parses (or
+    // SyntaxErrors on) the replacement per spec — no silent error swallowing.
+    // A leading U+FEFF BOM needs no stripping: it is whitespace in JS source.
+    let source = ::std::string::String::from_utf8_lossy(&bytes).into_owned();
+    let mut src = mozjs::rust::transform_str_to_source_text(&source);
+
+    // NUL-free validated above → CString cannot fail (NUL is the only
+    // interior byte CString rejects).
+    let c_path = ::std::ffi::CString::new(path).expect("Bao.run path validated NUL-free");
+    let compile_opts = mozjs::glue::NewCompileOptions(cx, c_path.as_ptr(), 1);
+    if compile_opts.is_null() {
+        JS_ReportErrorUTF8(cx, c"Bao.run: failed to allocate compile options".as_ptr());
+        return false;
+    }
+    let mut rval = UndefinedValue();
+    let rval_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut rval,
+    };
+    let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, compile_opts, &mut src, rval_h);
+    mozjs::glue::DeleteCompileOptions(compile_opts);
+
+    // Completion value passes through (criterion ①); `false` propagates the
+    // script's pending exception (never swallowed). The guard scope restores
+    // via Drop on both paths.
+    if ok {
+        args.rval().set(rval);
+    }
+    ok
 }
 
 // @trace REQ-ENG-006 [req:REQ-ENG-006] [level:unit]

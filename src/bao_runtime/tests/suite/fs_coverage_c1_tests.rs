@@ -25,10 +25,12 @@ fn js_escape(p: &std::path::Path) -> String {
         .replace('"', "\\\"")
 }
 
-/// Unique per-test temp dir (nextest runs each test in its own process, but
-/// keep names collision-free anyway).
+/// Unique per-test temp dir. Includes the pid: libtest workers share /tmp and
+/// the old fixed name let one worker's `remove_dir_all` delete another
+/// worker's directory mid-test (ENOENT family under parallel load — seen as
+/// `readdir_array FAIL / unexpected ERR:ENOENT` in 24-worker runs).
 fn tmp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("bao_fs_c1_{tag}"));
+    let dir = std::env::temp_dir().join(format!("bao_fs_c1_{}_{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -130,8 +132,15 @@ fn c1_sync_error_paths_code_family() {
         ck("readlinkSync_einval_regular", function() {{ return codeof(function() {{ fs.readlinkSync(file); }}) === "EINVAL"; }});
         ck("readFileSync_enametoolong", function() {{ return codeof(function() {{ fs.readFileSync(longp); }}) === "ENAMETOOLONG"; }});
         ck("cpSync_missing_reports_message", function() {{
-            var m = msgof(function() {{ fs.cpSync(miss, file + ".cp"); }});
-            return m.indexOf("cpSync") !== -1 && m.indexOf("ENOENT") === -1;
+            // node v24.19.0 oracle (2026-10-27): a missing src throws a real
+            // errno error — code ENOENT, message "ENOENT: no such file or
+            // directory, lstat '<src>'" (cpSync does not rename the message;
+            // the old pin expected a cpSync-branded, ENOENT-free message).
+            var e = null;
+            try {{ fs.cpSync(miss, file + ".cp"); return false; }}
+            catch (err) {{ e = err; }}
+            return e.code === "ENOENT" && String(e.message).indexOf("ENOENT") !== -1
+                && String(e.message).indexOf("lstat") !== -1;
         }});
         R.join("|")
     "#,
@@ -393,19 +402,31 @@ fn c1_read_write_sync_boundary_faces() {
             return fs.readSync(fd, b, 0, 0, 0) === 0;
         }});
         ck("readsync_string_buffer_throws", function() {{
-            return msgof(function() {{ fs.readSync(fd, "notabuffer", 0, 1, 0); }}).indexOf("Buffer or Uint8Array") !== -1;
+            // node v24.19.0 oracle (2026-10-27): ERR_INVALID_ARG_TYPE,
+            // "The \"buffer\" argument must be an instance of Buffer,
+            // TypedArray, or DataView. Received type string ('notabuffer')".
+            return msgof(function() {{ fs.readSync(fd, "notabuffer", 0, 1, 0); }}).indexOf("must be an instance of Buffer") !== -1;
         }});
         ck("readsync_arraybuffer_nonview_throws", function() {{
-            return msgof(function() {{ fs.readSync(fd, new ArrayBuffer(8), 0, 1, 0); }}).indexOf("Buffer or Uint8Array") !== -1;
+            return msgof(function() {{ fs.readSync(fd, new ArrayBuffer(8), 0, 1, 0); }}).indexOf("must be an instance of Buffer") !== -1;
         }});
         ck("readsync_negative_offset_throws", function() {{
-            return msgof(function() {{ fs.readSync(fd, Buffer.alloc(4), -1, 1, 0); }}).indexOf("out of bounds") !== -1;
+            // node oracle: ERR_OUT_OF_RANGE, "The value of \"offset\" is out
+            // of range. It must be >= 0 && <= 9007199254740991. Received -1"
+            // (the old pin's "out of bounds" wording was bao-invented).
+            return msgof(function() {{ fs.readSync(fd, Buffer.alloc(4), -1, 1, 0); }}).indexOf("out of range") !== -1;
         }});
         ck("readsync_offset_past_len_throws", function() {{
-            return msgof(function() {{ fs.readSync(fd, Buffer.alloc(4), 5, 1, 0); }}).indexOf("out of bounds") !== -1;
+            // node oracle: with offset 5 > buffer.len 4, the length check
+            // trips — "The value of \"length\" is out of range. It must be
+            // <= -1. Received 1" (length must fit offset..buffer.len, an
+            // empty window here).
+            return msgof(function() {{ fs.readSync(fd, Buffer.alloc(4), 5, 1, 0); }}).indexOf("out of range") !== -1;
         }});
         ck("readsync_length_beyond_buffer_throws", function() {{
-            return msgof(function() {{ fs.readSync(fd, Buffer.alloc(4), 0, 999, 0); }}).indexOf("beyond buffer") !== -1;
+            // node oracle: "The value of \"length\" is out of range. It must
+            // be <= 4. Received 999" — the bound names the buffer length.
+            return msgof(function() {{ fs.readSync(fd, Buffer.alloc(4), 0, 999, 0); }}).indexOf("out of range") !== -1;
         }});
         fs.closeSync(fd);
 
@@ -1334,13 +1355,14 @@ fn c1_async_cb_read_side_batch() {
             return true;
         });
         ck("readFile_utf8_value", function() { return L.readFile_utf8.val === "readbytes"; });
-        // Observed parity gap: the async callback face of readFile with NO
-        // encoding delivers a utf8 STRING, while the sync face returns a
-        // Buffer (node: both are Buffer). Registered in the wave report;
-        // assertion pins the observed delivery (content intact, length 9).
+        // node v24.19.0 oracle (2026-10-27): readFile with NO encoding
+        // delivers a Buffer on BOTH faces (sync + async callback). The
+        // former pin pinned the string-delivery parity gap as observed
+        // behavior; the E-fs wave closed the gap (probe now answers
+        // "isbuffer" — the schedule writes Buffer.isBuffer(v) verbatim).
         ck("readFile_no_encoding_string_face", function() {
             var v = L.readFile_buffer.val;
-            if (typeof v === "string" && v.indexOf("notbuffer:string:9:String") === 0) return true;
+            if (v === "isbuffer") return true;
             throw new Error("probe=" + v);
         });
         ck("readFile_hex_value", function() { return L.readFile_hex.val === "726561646279746573"; });
@@ -1693,17 +1715,36 @@ fn c1_cp_faces() {
             return fs.readFileSync(d + "/out.txt", "utf8") === "cp-me";
         }});
         ck("cpSync_dir_recursive", function() {{
-            fs.cpSync(d + "/tree", d + "/tree2");
-            return fs.readFileSync(d + "/tree2/top.txt", "utf8") === "top"
+            // node v24.19.0 oracle (2026-10-27): WITHOUT the recursive option
+            // directory src throws ERR_FS_EISDIR ("Recursive option not
+            // enabled, cannot copy a directory: <src>/"); WITH it the copy
+            // lands. The former pin copied a directory with no recursive
+            // flag — node never does that.
+            var eisdir = "";
+            try {{ fs.cpSync(d + "/tree", d + "/tree-noflag"); }}
+            catch (e) {{ eisdir = String(e.code || e.message); }}
+            var threwEisdir = eisdir.indexOf("ERR_FS_EISDIR") !== -1 || eisdir.indexOf("EISDIR") !== -1;
+            fs.cpSync(d + "/tree", d + "/tree2", {{ recursive: true }});
+            return threwEisdir
+                && fs.readFileSync(d + "/tree2/top.txt", "utf8") === "top"
                 && fs.readFileSync(d + "/tree2/nested/deep.txt", "utf8") === "deep";
         }});
         ck("cpSync_missing_src_throws", function() {{
-            return msgof(function() {{ fs.cpSync(d + "/absent", d + "/x"); }}).indexOf("cpSync") !== -1;
+            // node v24.19.0 oracle (2026-10-27): code ENOENT, message
+            // "ENOENT: no such file or directory, lstat '<src>'".
+            return msgof(function() {{ fs.cpSync(d + "/absent", d + "/x"); }}).indexOf("ENOENT") !== -1;
         }});
         ck("cpSync_errorOnExist_file_dst", function() {{
-            return msgof(function() {{
+            // node v24.19.0 oracle (2026-10-27): cpSync(dir → existing FILE)
+            // is a type conflict BEFORE the errorOnExist face — code
+            // ERR_FS_CP_DIR_TO_NON_DIR, message "Cannot overwrite
+            // non-directory <dst> with directory <src>". (The former pin
+            // expected "already exists" — node's ERR_FS_CP_EEXIST face needs
+            // force:false with an existing TARGET-OF-THE-SAME-KIND.)
+            var m = msgof(function() {{
                 fs.cpSync(d + "/tree", d + "/out.txt", {{ errorOnExist: true }});
-            }}).indexOf("already exists") !== -1;
+            }});
+            return m.indexOf("Cannot overwrite non-directory") !== -1 && m.indexOf("with directory") !== -1;
         }});
         ck("cp_form_no_callback", function() {{
             fs.cp(d + "/s.txt", d + "/out2.txt");
@@ -2065,10 +2106,17 @@ fn c1_fh_readfile_reads_from_cursor() {
         "0123456789",
         "fh.readFile after an explicit-position read must read the whole file (cursor still 0)"
     );
+    // node v24.19.0 oracle (bao_oracle_c1 probe): at EOF fh.read(rb2,0,2,null)
+    // reads 0 bytes AND leaves the caller buffer untouched — rb2 stays
+    // zero-filled from Buffer.alloc, so rb2.toString("utf8") renders two NUL
+    // characters: JSON.stringify gives '"\u0000\u0000"' + ':' + 0. The former
+    // ":0" pin eyeballed console output where NULs are invisible.
     assert_eq!(
         eval_string(&mut ctx, "String(globalThis.__kfh.cursorRead)"),
-        ":0",
-        "fh.read(rb,0,2,null) at EOF must read 0 bytes"
+        "\0\0:0",
+        "fh.read(rb,0,2,null) at EOF must read 0 bytes; the zero-filled caller \
+         buffer must stay untouched (node oracle: bytesRead=0, rb2.length=2, \
+         r2.buffer===rb2)"
     );
     assert_eq!(
         eval_string(&mut ctx, "String(globalThis.__kfh.rest)"),

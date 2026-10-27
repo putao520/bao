@@ -10,6 +10,7 @@
 mod cdp_server_ws_url_config_deep_tests;
 mod concurrency_tests;
 mod config_session_transport_deep_tests;
+mod common;
 mod edge_case_tests;
 mod extended_tests;
 mod final_remaining_cdp_tests;

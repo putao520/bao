@@ -2818,9 +2818,33 @@ fn stream_id_from_slot(slot: JSVal) -> u64 {
 
 /// Reserved-slot id read off a rooted `BaoFetchStreamSource` instance.
 ///
-/// SAFETY: `obj` must hold a live BaoFetchStreamSource instance.
-unsafe fn stream_source_id(obj: mozjs::rust::Handle<'_, *mut JSObject>) -> u64 {
+/// SAFETY: `obj` must be a class-gated `BaoFetchStreamSource` instance — the
+/// JS-reachable entry points (`__baoFetchBodyPull` / `__baoFetchBodyCancel`,
+/// both installed on the global) run the JS_InstanceOf class gate here
+/// before the slot read. Returns 0 (the established inert-closed-stream
+/// sentinel) for any foreign receiver.
+/// @trace REQ-ENG-004
+unsafe fn stream_source_id(
+    cx_ref: &mut mozjs::context::JSContext,
+    obj: mozjs::rust::Handle<'_, *mut JSObject>,
+) -> u64 {
     unsafe {
+        // Class gate BEFORE the slot read (BCE-20261025-FFI-SLOT-GATE, same
+        // class as bun_ffi get_lib): page JS can invoke either native with a
+        // forged object; a foreign receiver's reserved-slot read lands on its
+        // fixed-slot area where stale nursery bits pass the is_double()
+        // check and forge a STREAM_REGISTRY id (cross-stream confusion).
+        // JS_InstanceOf with a null CallArgs* is a pure boolean class
+        // comparison and reports nothing; gate failure flows through the
+        // existing id==0 inert path, so no new behavior branch is created.
+        if !mozjs::rust::wrappers2::JS_InstanceOf(
+            cx_ref,
+            obj,
+            &STREAM_SOURCE_CLASS,
+            ::std::ptr::null_mut(),
+        ) {
+            return 0;
+        }
         let mut slot = UndefinedValue();
         JS_GetReservedSlot(obj.get(), SLOT_STREAM_ID, &mut slot);
         stream_id_from_slot(slot)
@@ -2830,6 +2854,9 @@ unsafe fn stream_source_id(obj: mozjs::rust::Handle<'_, *mut JSObject>) -> u64 {
 /// Reserved-slot id read during `BaoFetchStreamSource` finalization.
 ///
 /// SAFETY: `obj` must be the live object supplied to its SpiderMonkey finalizer.
+/// No class gate needed (BCE-20261025-FFI-SLOT-GATE judgment): a JSClassOps
+/// finalizer is invoked by the GC only on objects whose class is exactly
+/// STREAM_SOURCE_CLASS — guaranteed by construction.
 unsafe fn finalizing_stream_source_id(obj: *mut JSObject) -> u64 {
     unsafe {
         let mut slot = UndefinedValue();
@@ -3034,11 +3061,14 @@ unsafe fn build_streaming_response_js(
 
         // body = undefined (the stream source attaches below); the JS class
         // body getter branches on _bodyStreamSource before the byte slots.
-        let elems = [UndefinedValue(), ObjectValue(init_obj.get())];
-        let call_args = HandleValueArray {
-            length_: 2,
-            elements_: elems.as_ptr(),
-        };
+        // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray —
+        // the init_obj Value copy must be GC-traced across the call
+        // (require.rs canary-pinned form).
+        rooted!(&in(cx_ref) let args_array = mozjs_sys::jsgc::ValueArray::<2>::new([
+            UndefinedValue(),
+            ObjectValue(init_obj.get()),
+        ]));
+        let call_args = JS::HandleValueArray::from(&args_array);
         rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
         let mut resp_val = UndefinedValue();
         let called = JS_CallFunctionValue(
@@ -3130,8 +3160,9 @@ unsafe extern "C" fn fetch_body_pull_native(
         }
         rooted!(&in(cx_ref) let src_obj = src_val.to_object());
         // SAFETY: src_obj is the holder object created by
-        // build_stream_source_object (reserved slot 0 = registry id).
-        let id = stream_source_id(src_obj.handle());
+        // build_stream_source_object (reserved slot 0 = registry id), or a
+        // foreign object rejected by the class gate inside stream_source_id.
+        let id = stream_source_id(cx_ref, src_obj.handle());
         if id == 0 {
             // SAFETY: see above.
             resolve_pull_result(cx, promise_h, ::std::option::Option::None);
@@ -3272,8 +3303,9 @@ unsafe extern "C" fn fetch_body_cancel_native(
             mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let src_obj = src_val.to_object());
-        // SAFETY: reserved slot 0 = registry id (see pull).
-        let id = stream_source_id(src_obj.handle());
+        // SAFETY: reserved slot 0 = registry id (see pull); foreign receivers
+        // are rejected by the class gate inside stream_source_id.
+        let id = stream_source_id(cx_ref, src_obj.handle());
         if id == 0 {
             return true;
         }
@@ -3584,18 +3616,17 @@ unsafe fn build_response_js(
         JSPROP_ENUMERATE as u32,
     );
 
-    let elems = [
+    // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray
+    // (require.rs canary-pinned form).
+    rooted!(&in(cx_ref) let args_array = mozjs_sys::jsgc::ValueArray::<2>::new([
         if null_body {
             mozjs::jsval::NullValue()
         } else {
             ObjectValue(body_arr.get())
         },
         ObjectValue(init_obj.get()),
-    ];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: elems.as_ptr(),
-    };
+    ]));
+    let call_args = JS::HandleValueArray::from(&args_array);
     rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
     let mut resp_val = UndefinedValue();
     let called = JS_CallFunctionValue(
@@ -3730,11 +3761,13 @@ unsafe fn build_abort_error_js(cx: *mut JSContext) -> *mut JSObject {
             return ::std::ptr::null_mut();
         }
         rooted!(&in(cx_ref) let name_val = StringValue(&*name_js));
-        let args = [msg_val.get(), name_val.get()];
-        let call_args = HandleValueArray {
-            length_: args.len(),
-            elements_: args.as_ptr(),
-        };
+        // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray
+        // across JS::Construct1 (require.rs canary-pinned form).
+        rooted!(&in(cx_ref) let args_array = mozjs_sys::jsgc::ValueArray::<2>::new([
+            msg_val.get(),
+            name_val.get(),
+        ]));
+        let call_args = JS::HandleValueArray::from(&args_array);
         let mut err_obj: *mut JSObject = ::std::ptr::null_mut();
         if !mozjs_sys::jsapi::JS::Construct1(
             cx,
@@ -3821,11 +3854,11 @@ unsafe fn reject_with_network_error(
                 let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
                 if !msg_js.is_null() {
                     rooted!(&in(cx_ref) let msg_root = StringValue(&*msg_js));
-                    let elems = [msg_root.get()];
-                    let call_args = HandleValueArray {
-                        length_: 1,
-                        elements_: elems.as_ptr(),
-                    };
+                    // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED
+                    // ValueArray (require.rs canary-pinned form).
+                    rooted!(&in(cx_ref) let args_array =
+                        mozjs_sys::jsgc::ValueArray::<1>::new([msg_root.get()]));
+                    let call_args = JS::HandleValueArray::from(&args_array);
                     rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
                     let called = JS_CallFunctionValue(
                         cx,

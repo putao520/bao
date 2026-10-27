@@ -10,7 +10,7 @@ use bao_cdp::{CdpError, CdpEvent, CdpMessage, CdpResponse};
 const TID: &str = "test-target";
 use bao_cdp::{handle_command, parse_message, serialize_event, serialize_response};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ---- parse_message: valid inputs ----
 
@@ -216,7 +216,6 @@ fn test_target_create_target() {
     let err = err_result("Target.createTarget", Some(json!({"url": "http://x"})));
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -226,7 +225,6 @@ fn test_target_close_target() {
     let err = err_result("Target.closeTarget", Some(json!({"targetId": "t1"})));
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -254,7 +252,6 @@ fn test_target_attach_to_target() {
     let err = err_result("Target.attachToTarget", Some(json!({"targetId": "t1"})));
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("WS session registry"));
-
 }
 
 #[test]
@@ -262,7 +259,6 @@ fn test_target_detach_from_target() {
     let err = err_result("Target.detachFromTarget", Some(json!({"sessionId": "s1"})));
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("WS session registry"));
-
 }
 
 #[test]
@@ -273,7 +269,6 @@ fn test_target_send_message_to_target() {
     let err = resp.error.expect("must fail without the WS registry");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("WS session registry"));
-
 }
 
 #[test]
@@ -701,7 +696,10 @@ fn test_network_delete_cookies() {
 fn test_network_set_cookie() {
     // CDP spec SetCookieReturnObject: {"success":true} — also on the
     // no-bridge stub face (matches the browser-side bridge path).
-    assert_eq!(ok_result("Network.setCookie", None), json!({"success": true}));
+    assert_eq!(
+        ok_result("Network.setCookie", None),
+        json!({"success": true})
+    );
 }
 
 #[test]
@@ -728,10 +726,7 @@ fn test_css_get_computed_style() {
     let e = err_result("CSS.getComputedStyleForNode", None);
     assert_eq!(e.code, -32602);
     assert!(e.message.contains("nodeId"));
-    let e = err_result(
-        "CSS.getComputedStyleForNode",
-        Some(json!({"nodeId": 1})),
-    );
+    let e = err_result("CSS.getComputedStyleForNode", Some(json!({"nodeId": 1})));
     assert_eq!(e.code, -32603);
 }
 
@@ -863,7 +858,10 @@ fn test_input_dispatch_mouse_event_no_bridge() {
 #[test]
 fn test_input_dispatch_mouse_event_no_coords() {
     // REQ-BRW-048 task #10: no-bridge input delivery → -32603.
-    let e = err_result("Input.dispatchMouseEvent", Some(json!({"type": "mouseMoved"})));
+    let e = err_result(
+        "Input.dispatchMouseEvent",
+        Some(json!({"type": "mouseMoved"})),
+    );
     assert_eq!(e.code, -32603);
 }
 
@@ -1040,7 +1038,10 @@ fn test_debugger_get_possible_breakpoints() {
 
 #[test]
 fn test_debugger_get_script_source() {
-    let r = ok_result("Debugger.getScriptSource", None);
+    // Bridge-less face: scriptId is param-validated BEFORE the bridge branch
+    // (malformed/missing scriptId is -32602, not a wrong-row query), so the
+    // fixture carries a well-formed id.
+    let r = ok_result("Debugger.getScriptSource", Some(json!({"scriptId": "1"})));
     assert_eq!(r["scriptSource"], "");
 }
 
@@ -1096,18 +1097,19 @@ fn test_fetch_enable_no_patterns() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
 fn test_fetch_enable_with_patterns() {
     // REQ-CDP contract: the command routes through the servo bridge —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.enable", Some(json!({"patterns": [{"urlPattern": "*"}]})));
+    let resp = dispatch(
+        "Fetch.enable",
+        Some(json!({"patterns": [{"urlPattern": "*"}]})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -1126,51 +1128,58 @@ fn test_fetch_continue_request() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_continue_with_response() {
     // REQ-CDP contract: a renamed fulfillRequest — phase-2, use Fetch.fulfillRequest —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.continueWithResponse", Some(json!({"requestId": "r-1"})));
+    let resp = dispatch(
+        "Fetch.continueWithResponse",
+        Some(json!({"requestId": "r-1"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("phase-2"));
-
 }
 
 #[test]
 fn test_fetch_fail_request() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.failRequest", Some(json!({"requestId": "r2", "reason": "Aborted"})));
+    let resp = dispatch(
+        "Fetch.failRequest",
+        Some(json!({"requestId": "r2", "reason": "Aborted"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_fulfill_request() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "r3", "responseCode": 200, "body": "hi"})));
+    let resp = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId": "r3", "responseCode": 200, "body": "hi"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_fulfill_request_default_code() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f1", "body": "x"})));
+    let resp = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId": "f1", "body": "x"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
@@ -1181,7 +1190,6 @@ fn test_fetch_get_request_post_data() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("no request body"));
-
 }
 
 #[test]
@@ -1192,17 +1200,18 @@ fn test_fetch_continue_with_auth() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("auth interception facet is not wired"));
-
 }
 
 #[test]
 fn test_fetch_take_response_body_as_stream() {
     // Stream handles are not part of the P1 interception face — explicit error.
-    let resp = dispatch("Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "r6"})));
+    let resp = dispatch(
+        "Fetch.takeResponseBodyAsStream",
+        Some(json!({"requestId": "r6"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("stream handles"));
-
 }
 
 #[test]
@@ -1391,11 +1400,13 @@ fn test_roundtrip_unknown_domain() {
 fn test_roundtrip_fetch_enable_with_patterns() {
     // REQ-CDP contract: the command routes through the servo bridge —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.enable", Some(json!({"patterns": [{"urlPattern": "*"}]})));
+    let resp = dispatch(
+        "Fetch.enable",
+        Some(json!({"patterns": [{"urlPattern": "*"}]})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -1514,11 +1525,13 @@ fn test_response_preserves_request_id() {
 fn test_attach_to_target_session_id_deterministic() {
     // Session minting lives in the WS session registry — the stateless face
     // refuses explicitly (the deterministic char-sum sessionId is eradicated).
-    let resp = dispatch("Target.attachToTarget", Some(json!({"targetId": "target-abc"})));
+    let resp = dispatch(
+        "Target.attachToTarget",
+        Some(json!({"targetId": "target-abc"})),
+    );
     let err = resp.error.expect("must fail without the WS registry");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("WS session registry"));
-
 }
 
 #[test]
@@ -1531,7 +1544,6 @@ fn test_different_targets_different_session_ids() {
         assert_eq!(err.code, -32000);
         assert!(err.message.contains("WS session registry"));
     }
-
 }
 
 // ---- Page navigate loaderId source (6983871b: bridge truth) ----
@@ -1950,7 +1962,6 @@ fn test_attach_to_target_session_id_formula_self_consistent() {
     let err = resp.error.expect("must fail without the WS registry");
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("WS session registry"));
-
 }
 
 #[test]
@@ -2001,8 +2012,10 @@ fn test_fetch_enable_patterns_non_array_rejected() {
     let resp = dispatch("Fetch.enable", Some(json!({"patterns": "not-an-array"})));
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
-    assert!(err.message.contains("'patterns' must be an array of pattern objects"));
-
+    assert!(
+        err.message
+            .contains("'patterns' must be an array of pattern objects")
+    );
 }
 
 #[test]
@@ -2013,29 +2026,32 @@ fn test_fetch_enable_patterns_null() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
 fn test_fetch_fulfill_request_body_param_missing_interception_id() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f2", "body": "hello"})));
+    let resp = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId": "f2", "body": "hello"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
 fn test_fetch_fulfill_request_unicode_body() {
     // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
-    let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "f3", "body": "héllo"})));
+    let resp = dispatch(
+        "Fetch.fulfillRequest",
+        Some(json!({"requestId": "f3", "body": "héllo"})),
+    );
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
@@ -2046,7 +2062,6 @@ fn test_fetch_continue_request_missing_request_id() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
@@ -2057,7 +2072,6 @@ fn test_fetch_fail_request_missing_reason() {
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]

@@ -329,8 +329,26 @@ unsafe fn get_db_ptr(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut Sq
     if !thisv.is_object() {
         return None;
     }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
+    // Class gate BEFORE the slot read (BCE-20261025-FFI-SLOT-GATE, same fix
+    // as bun_ffi get_lib): every Database method is a JSNative whose `this`
+    // can be foreign (`db.exec.call({})`); on a foreign class the
+    // reserved-slot read lands on the object's fixed-slot area, where stale
+    // nursery-recycled bits pass the val_is_private() encoding check and
+    // yield a dangling *mut SqliteDatabase. JS_InstanceOf with a null
+    // CallArgs* is a pure boolean class comparison and reports nothing; the
+    // caller's "invalid Database object" message stays the single error
+    // surface.
+    // @trace REQ-ENG-004
+    if !w2::JS_InstanceOf(
+        &mut wrapped_cx,
+        obj_root.handle(),
+        &DATABASE_CLASS,
+        ::std::ptr::null_mut(),
+    ) {
+        return None;
+    }
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj_root.get(), SLOT_DB, &mut slot);
     // @trace BCE-20260618-002 — guard non-private doubles before to_private().
@@ -345,8 +363,20 @@ unsafe fn get_stmt_ptr(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut 
     if !thisv.is_object() {
         return None;
     }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
+    // Class gate BEFORE the slot read (BCE-20261025-FFI-SLOT-GATE, same
+    // class as get_db_ptr above): a foreign receiver's slot read must not
+    // surface stale nursery bits as a dangling *mut SqliteStatement.
+    // @trace REQ-ENG-004
+    if !w2::JS_InstanceOf(
+        &mut wrapped_cx,
+        obj_root.handle(),
+        &STATEMENT_CLASS,
+        ::std::ptr::null_mut(),
+    ) {
+        return None;
+    }
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj_root.get(), SLOT_STMT, &mut slot);
     // @trace BCE-20260618-002 — guard non-private doubles before to_private().

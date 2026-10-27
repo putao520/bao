@@ -9,7 +9,8 @@
 // the real PagePool-backed handlers. It also owns the flattened-session
 // routing table (CDP sessionId → target id) that Target.attachToTarget mints,
 // and the auto-attach event stream Playwright's connect_over_cdp requires
-// (Target.attachedToTarget + session-scoped Runtime/Page lifecycle events).
+// (Target.targetCreated/attachedToTarget + session-scoped Runtime/Page
+// lifecycle events).
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -344,13 +345,25 @@ impl BaoWsRegistry {
                         "targetInfo": {
                             "targetId": id,
                             "type": "page",
-                            "title": entry.get("title").cloned().unwrap_or(json!("")),
-                            "url": entry.get("url").cloned().unwrap_or(json!("about:blank")),
+                            // list_targets 写入点(`cmd_list_targets`,
+                            // cdp_handler.rs:840)恒写 title/url/browserContextId
+                            // 三键(`page_title().unwrap_or_default()` /
+                            // `current_url().unwrap_or_else(about:blank)` /
+                            // `page_context_id()` → String 非空)——真缺失
+                            // 属结构性不可达,硬取显形,禁兜底造值。
+                            "title": entry
+                                .get("title")
+                                .cloned()
+                                .expect("list_targets entry must carry title"),
+                            "url": entry
+                                .get("url")
+                                .cloned()
+                                .expect("list_targets entry must carry url"),
                             "attached": true,
                             "browserContextId": entry
                                 .get("browserContextId")
                                 .cloned()
-                                .unwrap_or(json!(DEFAULT_BROWSER_CONTEXT_ID)),
+                                .expect("list_targets entry must carry browserContextId"),
                         },
                     }),
                 );
@@ -633,44 +646,81 @@ impl BaoWsRegistry {
         }
     }
 
-    /// Auto-attach for programmatically created targets:
-    /// Target.createTarget → Target.attachedToTarget event so Playwright's
-    /// context.new_page() completes.
+    /// Target lifecycle entry for programmatically created targets
+    /// (`Target.createTarget` — the anchor where a new page target enters
+    /// this registry's observable lifecycle):
+    /// 1. `Target.targetCreated` (browser-stream, UNGATED — the created
+    ///    half of the REQ-CDP-008 criterion-4 created/destroyed notification
+    ///    pair, mirroring `emit_target_destroyed`'s ungated close face);
+    /// 2. then `Target.attachedToTarget` when auto-attach is on (the
+    ///    Playwright context.new_page() arm) — Chrome flat-session event
+    ///    order: created → attached, targetInfo identical but `attached`
+    ///    still false on the created notification.
     fn emit_target_created_attached(
         &self,
         event_sender: &dyn EventSender,
         result: &Result<Value, CdpError>,
     ) {
+        let Ok(r) = result else {
+            return;
+        };
+        let Some(new_id) = r.get("targetId").and_then(|v| v.as_str()) else {
+            return;
+        };
+        // @trace REQ-CDP-008 [criterion:4] — Target.targetCreated on the
+        // untagged browser stream, same shape the destroyed notification
+        // broadcasts with (targetInfo mirrors the attachedToTarget payload
+        // below; `attached: false` — the target is not attached yet at
+        // creation-notification time, Chrome shape).
+        self.emit(
+            event_sender,
+            None,
+            "Target.targetCreated",
+            json!({
+                "targetInfo": {
+                    "targetId": new_id,
+                    "type": "page",
+                    "title": "",
+                    "url": "about:blank",
+                    "attached": false,
+                    // cmd_create_target(cdp_handler.rs:822)经
+                    // `page_context_id()` 恒写 browserContextId(String 非空)
+                    // ——真缺失属结构性不可达,硬取显形,禁兜底造值。
+                    "browserContextId": r
+                        .get("browserContextId")
+                        .cloned()
+                        .expect("createTarget result must carry browserContextId"),
+                },
+            }),
+        );
         let auto = self.auto_attach.lock().map(|f| *f).unwrap_or(false);
         if !auto {
             return;
         }
-        let Ok(r) = result else {
-            return;
-        };
-        if let Some(new_id) = r.get("targetId").and_then(|v| v.as_str()) {
-            let session_id = self.mint_session(new_id);
-            // REQ-CDS-009 criterion 4/5: the create response carries the
-            // context the page landed in (read back from the pool registry
-            // by the bridge face) — the event attributes the same truth.
-            event_sender.send_event(
-                "Target.attachedToTarget",
-                json!({
-                    "sessionId": session_id,
-                    "targetInfo": {
-                        "targetId": new_id,
-                        "type": "page",
-                        "title": "",
-                        "url": "about:blank",
-                        "attached": true,
-                        "browserContextId": r
-                            .get("browserContextId")
-                            .cloned()
-                            .unwrap_or(json!(DEFAULT_BROWSER_CONTEXT_ID)),
-                    },
-                }),
-            );
-        }
+        let session_id = self.mint_session(new_id);
+        // REQ-CDS-009 criterion 4/5: the create response carries the
+        // context the page landed in (read back from the pool registry
+        // by the bridge face) — the event attributes the same truth.
+        event_sender.send_event(
+            "Target.attachedToTarget",
+            json!({
+                "sessionId": session_id,
+                "targetInfo": {
+                    "targetId": new_id,
+                    "type": "page",
+                    "title": "",
+                    "url": "about:blank",
+                    "attached": true,
+                    // cmd_create_target(cdp_handler.rs:822)经
+                    // `page_context_id()` 恒写 browserContextId(String 非空)
+                    // ——真缺失属结构性不可达,硬取显形,禁兜底造值。
+                    "browserContextId": r
+                        .get("browserContextId")
+                        .cloned()
+                        .expect("createTarget result must carry browserContextId"),
+                },
+            }),
+        );
     }
 }
 
@@ -878,7 +928,8 @@ impl RegistryDispatch for BaoWsRegistry {
                 "Page.navigate" => {
                     self.emit_page_navigate_contexts(event_sender, sid, &result, &target_id);
                 }
-                // Auto-attach — see `emit_target_created_attached`.
+                // Target created + auto-attach — see
+                // `emit_target_created_attached`.
                 "Target.createTarget" => {
                     self.emit_target_created_attached(event_sender, &result);
                 }
@@ -952,7 +1003,8 @@ mod tests {
             let handled = rx.try_process(|cmd| match cmd {
                 BridgeCommand::ListTargets => BridgeResponse {
                     result: Ok(json!([
-                        { "id": "1", "title": "Page 1", "url": "about:blank" }
+                        { "id": "1", "title": "Page 1", "url": "about:blank",
+                          "browserContextId": "bao-default-context" }
                     ])),
                 },
                 BridgeCommand::Navigate { .. } => BridgeResponse {

@@ -1217,6 +1217,83 @@ fn parse_any_response(raw: &[u8]) -> ::std::result::Result<Vec<AnyRecord>, ::std
 
 // ── Resolve RR type dispatch ─────────────────────────────────────────
 
+/// c-ares "fb" lookups 的 file 臂前缀(node v24.19.0 oracle 实测钉死,
+/// 2026-10-27,REQ-ENG-007):resolve4/resolve6/resolveAny 在提交 DNS 查询
+/// 前先咨询系统 hosts 表——c-ares 自身 ares_getaddrinfo 的 next_lookup
+/// case 'f'(ares_getaddrinfo.c)就是这条链(file_lookup →
+/// ares_hosts_search_host → /etc/hosts 解析+按 mtime 缓存),经公开 API
+/// `ares_gethostbyname_file` 走库内实现,零手搓解析。oracle 实测形状:
+///   - resolve4('bao-hosts-probe.invalid')  → ['192.0.2.77'](hosts-only 名,
+///     不打 DNS)
+///   - resolve6('<hosts v6 名>')            → ['2001:db8::77']
+///   - resolve4('<hosts v6-only 名>')       → ENODATA(条目命中、请求族无
+///     记录;NOT ENOTFOUND)
+///   - resolveAny('<hosts 名>')             → [{address, ttl:0, type:'A'}]
+///   - resolve6('localhost')                → ENODATA(RFC 6761 特例,见
+///     is_rfc6761_localhost:hosts 带 `::1 localhost` 也不产出 AAAA 命中;
+///     ANY(localhost) 恒只聚合 v4)
+///   - 未命中 / hosts 文件不可读            → 照旧走 DNS(诚实链:hosts 是
+///     可选前缀查询,无本地条目不是错误;farm 容器 /etc/hosts 有
+///     localhost 即由此面返回 127.0.0.1)
+/// 旧实现(裸 ares_query)对 hosts 名打真 DNS:dockerd 内嵌 DNS(127.0.0.11)
+/// 不答 hosts 名 → resolve4('localhost') 恒 ENOTFOUND(CNAME/PTR 面走
+/// ares_gethostbyname/gethostbyaddr 自带 hosts 查找所以一直绿,同一缺口的
+/// 单侧暴露)。
+enum HostsOutcome {
+    /// hosts 条目命中,携带该族已渲染的地址。
+    Hit(DnsRRData),
+    /// 条目命中但请求族无记录(node oracle:ENODATA)。
+    FamilyMiss,
+    /// 无本地条目(或 hosts 不可读)——照旧提交真实 DNS 查询。
+    NoEntry,
+}
+
+/// RFC 6761 §6.3 special-name set, mirroring c-ares' own `ares_is_localhost`
+/// (ares_getaddrinfo.c:360): the exact name "localhost" (or trailing
+/// ".localhost", case-insensitive). node's AAAA face of a localhost name
+/// reports ENODATA even when /etc/hosts carries ::1 for it (oracle
+/// 2026-10-27, hosts WITH a `::1 localhost` line: `resolve6('localhost')` →
+/// `queryAaaa ENODATA localhost`; a NON-localhost dual-family hosts entry
+/// DOES hit: `resolve6('bao-dualx.invalid')` → ['::1']) — so the localhost
+/// set is excluded from hosts AAAA hits and from the ANY v6 aggregate.
+fn is_rfc6761_localhost(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "localhost" || lower.ends_with(".localhost")
+}
+
+/// Consult the system hosts table for `hostname` via c-ares' own file API
+/// (caller-owned hostent lease ends inside this fn).
+fn hosts_lookup_cares(
+    channel_ptr: *mut cares::Channel,
+    hostname: &str,
+    family: ::std::ffi::c_int,
+) -> HostsOutcome {
+    let mut name_buf = [0u8; 1024];
+    let name_ptr = nul_terminate(&mut name_buf, hostname.as_bytes());
+    let mut hostent: *mut cares::struct_hostent = ::std::ptr::null_mut();
+    // SAFETY: FFI;name_ptr is a NUL-terminated stack buffer;hostent is
+    // caller-owned on ARES_SUCCESS and freed below before any return.
+    let rc =
+        unsafe { cares::ares_gethostbyname_file(channel_ptr, name_ptr, family, &raw mut hostent) };
+    if rc != cares::ARES_SUCCESS || hostent.is_null() {
+        return HostsOutcome::NoEntry;
+    }
+    // SAFETY: live caller-owned hostent from ares_gethostbyname_file.
+    let addrs = unsafe { hostent_inet_addrs(hostent) };
+    // SAFETY: the lease ends here (ares_gethostbyname(3) caller-owned form).
+    unsafe { cares::ares_free_hostent(hostent) };
+    if addrs.is_empty() {
+        // Entry matched by name but carries no address of the requested
+        // family — node reports ENODATA on this face.
+        return HostsOutcome::FamilyMiss;
+    }
+    HostsOutcome::Hit(if family == cares::AF::INET {
+        DnsRRData::A(addrs)
+    } else {
+        DnsRRData::Aaaa(addrs)
+    })
+}
+
 /// Resolve a hostname for the given RR type synchronously using c-ares.
 /// Returns `Ok(DnsRRData)` on success, `Err(error_code_string)` on failure.
 fn resolve_rr_cares(
@@ -1256,6 +1333,21 @@ fn resolve_rr_cares(
     // hostent).
     match ns_type {
         cares::NSType::ns_t_a => {
+            // "fb" file 臂前缀(c-ares 语义,node oracle 钉死):hosts 命中即
+            // 返回不打 DNS(localhost / hosts-only 名面)。
+            match hosts_lookup_cares(channel_ptr, hostname, cares::AF::INET) {
+                HostsOutcome::Hit(data) => {
+                    // SAFETY: no query was submitted on this channel.
+                    unsafe { cares::Channel::destroy(channel_ptr) };
+                    return Ok(data);
+                }
+                HostsOutcome::FamilyMiss => {
+                    // SAFETY: no query was submitted on this channel.
+                    unsafe { cares::Channel::destroy(channel_ptr) };
+                    return Err("ENODATA".to_string());
+                }
+                HostsOutcome::NoEntry => {}
+            }
             let mut handler = AHostentWithTtlsHandler;
             let mut name_buf = [0u8; 1024];
             let name_ptr = nul_terminate(&mut name_buf, hostname.as_bytes());
@@ -1275,6 +1367,29 @@ fn resolve_rr_cares(
             }
         }
         cares::NSType::ns_t_aaaa => {
+            // AAAA 的 file 臂前缀 — 同 A 臂(AF_INET6),唯 RFC 6761 localhost
+            // 名除外:node 的 AAAA localhost 面恒 ENODATA(oracle 2026-10-27,
+            // hosts 带 `::1 localhost` 时 resolve6('localhost') 仍
+            // `queryAaaa ENODATA`;非 localhost 双族条目则正常命中 ::1),
+            // 不吃 hosts 的 AAAA 命中。
+            if is_rfc6761_localhost(hostname) {
+                // SAFETY: no query was submitted on this channel.
+                unsafe { cares::Channel::destroy(channel_ptr) };
+                return Err("ENODATA".to_string());
+            }
+            match hosts_lookup_cares(channel_ptr, hostname, cares::AF::INET6) {
+                HostsOutcome::Hit(data) => {
+                    // SAFETY: no query was submitted on this channel.
+                    unsafe { cares::Channel::destroy(channel_ptr) };
+                    return Ok(data);
+                }
+                HostsOutcome::FamilyMiss => {
+                    // SAFETY: no query was submitted on this channel.
+                    unsafe { cares::Channel::destroy(channel_ptr) };
+                    return Err("ENODATA".to_string());
+                }
+                HostsOutcome::NoEntry => {}
+            }
             let mut handler = AaaaHostentWithTtlsHandler;
             let mut name_buf = [0u8; 1024];
             let name_ptr = nul_terminate(&mut name_buf, hostname.as_bytes());
@@ -1423,6 +1538,43 @@ fn resolve_rr_cares(
             }
         }
         cares::NSType::ns_t_any => {
+            // ANY 的 file 臂前缀:hosts 命中 → 按 family 合成聚合记录
+            // (oracle:resolveAny('hosts v4 名') = [{address, ttl:0,
+            // type:'A'}];dual 名 v4 在前)。先 v4 后 v6,与 node ANY 的
+            // A-before-AAAA 排布一致。localhost 名的 v6 面按 RFC 6761 跳过
+            // (node:ANY(localhost) 恒只聚合 v4,见 AAAA 臂注释)。
+            let mut any_records: Vec<AnyRecord> = Vec::new();
+            let localhost_v6_skipped = is_rfc6761_localhost(hostname);
+            let any_families = if localhost_v6_skipped {
+                &[(cares::AF::INET, true)][..]
+            } else {
+                &[(cares::AF::INET, true), (cares::AF::INET6, false)][..]
+            };
+            for (family, is_v4) in any_families {
+                match hosts_lookup_cares(channel_ptr, hostname, *family) {
+                    HostsOutcome::Hit(DnsRRData::A(addrs)) if *is_v4 => {
+                        any_records.extend(
+                            addrs
+                                .into_iter()
+                                .map(|address| AnyRecord::A { address, ttl: 0 }),
+                        );
+                    }
+                    HostsOutcome::Hit(DnsRRData::Aaaa(addrs)) => {
+                        any_records.extend(
+                            addrs
+                                .into_iter()
+                                .map(|address| AnyRecord::Aaaa { address, ttl: 0 }),
+                        );
+                    }
+                    HostsOutcome::Hit(_) => {}
+                    HostsOutcome::FamilyMiss | HostsOutcome::NoEntry => {}
+                }
+            }
+            if !any_records.is_empty() {
+                // SAFETY: no query was submitted on this channel.
+                unsafe { cares::Channel::destroy(channel_ptr) };
+                return Ok(DnsRRData::Any(any_records));
+            }
             // Single ANY query; the mixed answer is parsed after the drive
             // loop through the record API (see parse_any_response).
             let mut name_buf = [0u8; 1024];

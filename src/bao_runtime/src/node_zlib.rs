@@ -103,11 +103,12 @@ unsafe fn return_bytes(cx: *mut JSContext, args: &CallArgs, data: Vec<u8>) -> bo
                 );
                 if from_fn.is_object() {
                     rooted!(&in(wrapped_cx) let u8_val_root = u8_val);
-                    let u8_val_copy = *u8_val_root;
-                    let call_args = HandleValueArray {
-                        length_: 1,
-                        elements_: &u8_val_copy as *const JSVal,
-                    };
+                    // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED
+                    // ValueArray — `&u8_val_copy` was a bare stack copy
+                    // invisible to GC (require.rs canary-pinned form).
+                    rooted!(&in(wrapped_cx) let args_array =
+                        mozjs_sys::jsgc::ValueArray::<1>::new([u8_val_root.get()]));
+                    let call_args = JS::HandleValueArray::from(&args_array);
                     rooted!(&in(wrapped_cx) let ctor_root = from_fn);
                     let mut rval = UndefinedValue();
                     JS_CallFunctionValue(
@@ -534,11 +535,11 @@ unsafe fn call_callback(cx: *mut JSContext, callback: JSVal, err: JSVal, result:
     let cb_val = mozjs::jsval::ObjectValue(cb_obj);
     rooted!(&in(wrapped_cx) let cb_root = cb_val);
 
-    let vals = [err, result];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: vals.as_ptr(),
-    };
+    // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray across
+    // JS_CallFunctionValue (require.rs canary-pinned form).
+    rooted!(&in(wrapped_cx) let args_array =
+        mozjs_sys::jsgc::ValueArray::<2>::new([err, result]));
+    let call_args = JS::HandleValueArray::from(&args_array);
     let mut rval = UndefinedValue();
     JS_CallFunctionValue(
         cx,
@@ -596,11 +597,12 @@ unsafe fn make_buffer_val(cx: *mut JSContext, data: &[u8]) -> JSVal {
         return u8_val;
     }
     rooted!(&in(wrapped_cx) let u8_val_root = u8_val);
-    let u8_val_copy = *u8_val_root;
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: &u8_val_copy as *const JSVal,
-    };
+    // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray —
+    // `&u8_val_copy` was a bare stack copy invisible to GC (require.rs
+    // canary-pinned form).
+    rooted!(&in(wrapped_cx) let args_array =
+        mozjs_sys::jsgc::ValueArray::<1>::new([u8_val_root.get()]));
+    let call_args = JS::HandleValueArray::from(&args_array);
     rooted!(&in(wrapped_cx) let ctor_root = from_fn);
     let mut buf_rval = UndefinedValue();
     JS_CallFunctionValue(

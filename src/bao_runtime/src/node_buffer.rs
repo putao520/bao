@@ -40,12 +40,31 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        rooted!(&in(cx) let kmax = mozjs::jsval::DoubleValue(4294967296.0_f64));
+        // @trace REQ-ENG-007 [entity:Buffer] — Node.js ≥22 kMaxLength =
+        // 2^53-1 (MAX_SAFE_INTEGER); the legacy 2^32 value made
+        // `new Uint8Array(kMaxLength + 1)` silently allocate instead of
+        // throwing (node/test/parallel/test-buffer-alloc.js). Keep in sync
+        // with globals.rs MAX_BUFFER_SIZE backstop and the JS-side
+        // K_MAX_LENGTH constants.
+        rooted!(&in(cx) let kmax = mozjs::jsval::DoubleValue(9007199254740991.0_f64));
         JS_DefineProperty(
             cx_raw,
             mod_obj.handle().into(),
             c"kMaxLength".as_ptr(),
             kmax.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+
+        // @trace REQ-ENG-007 [entity:Buffer] — Node.js kStringMaxLength =
+        // 536870888 ((1<<29)-24). Required by
+        // node/test/parallel/test-buffer-constants.js (kStringMaxLength ===
+        // constants.MAX_STRING_LENGTH) and test-buffer-tostring-rangeerror.
+        rooted!(&in(cx) let kstrmax = mozjs::jsval::DoubleValue(536870888.0_f64));
+        JS_DefineProperty(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"kStringMaxLength".as_ptr(),
+            kstrmax.handle().into(),
             JSPROP_ENUMERATE as u32,
         );
 
@@ -64,61 +83,121 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             JSPROP_ENUMERATE as u32,
         );
 
-        // @trace REQ-ENG-005 [entity:Buffer] — Node.js module-level constants.
+        // @trace REQ-ENG-007 [entity:Buffer] — Node.js module-level constants.
         // `INSPECT_MAX_BYTES` is the visible-buffer cap used by util.inspect
-        // when stringifying a Buffer (default 512 in Node.js). Upstream tests
-        // (buffer-inspectmaxbytes.test.ts) read, set, and re-read it, so the
-        // property must be a plain writable data property — no getter/setter.
-        rooted!(&in(cx) let inspect_max = Int32Value(512));
-        JS_DefineProperty(
-            cx_raw,
-            mod_obj.handle().into(),
-            c"INSPECT_MAX_BYTES".as_ptr(),
-            inspect_max.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-        // Also expose on the Buffer constructor itself (Node.js keeps the
-        // canonical binding on Buffer.INSPECT_MAX_BYTES; node:buffer.INSPECT_MAX_BYTES
-        // is the same value re-exported). Use the same writable data descriptor
-        // shape so test assignments propagate. The same Buffer constructor
-        // lookup is reused to bind Buffer.poolSize (REQ-ENG-007) — Node.js
-        // keeps the canonical binding on Buffer.poolSize and re-exports it
-        // on the buffer module object.
-        let mut buf_val = UndefinedValue();
-        JS_GetProperty(
-            cx_raw,
-            global.handle().into(),
-            c"Buffer".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut buf_val,
+        // when stringifying a Buffer (default 512 in Node.js). Node.js ≥16
+        // defines it as an ACCESSOR with range validation:
+        //   non-number → TypeError ERR_INVALID_ARG_TYPE
+        //   NaN / negative → RangeError ERR_OUT_OF_RANGE ("It must be >= 0")
+        // node/test/parallel/test-buffer-set-inspect-max-bytes.js drives both
+        // throw shapes on the module face. One closure holds the slot; the
+        // same accessor pair is installed on the module object AND the Buffer
+        // constructor below so both faces share one binding (Node.js
+        // canonical-binding parity).
+        let inspect_src = r#"(function(target1, target2) {
+          var slot = 512;
+          function receivedDesc(v) {
+            if (v === null || v === undefined) return ' Received ' + String(v);
+            var t = typeof v;
+            if (t === 'function') return ' Received function ' + (v.name || '(anonymous)');
+            if (t === 'object') {
+              var name = v.constructor && v.constructor.name;
+              if (typeof name === 'string' && name !== '') return ' Received an instance of ' + name;
+              return ' Received ' + String(v);
+            }
+            // node quotes string values in the inspected form ('abc' —
+            // node's util.inspect renders strings quoted).
+            var inspected = (t === 'string') ? ("'" + v + "'") : String(v);
+            if (inspected.length > 28) inspected = inspected.slice(0, 25) + '...';
+            return ' Received type ' + t + ' (' + inspected + ')';
+          }
+          var desc = {
+            get: function() { return slot; },
+            set: function(v) {
+              if (typeof v !== 'number') {
+                var te = new TypeError(
+                  'The "INSPECT_MAX_BYTES" argument must be of type number.' + receivedDesc(v));
+                te.code = 'ERR_INVALID_ARG_TYPE';
+                throw te;
+              }
+              if (Number.isNaN(v) || v < 0) {
+                var re = new RangeError(
+                  'The value of "INSPECT_MAX_BYTES" is out of range. It must be >= 0. Received ' + v);
+                re.code = 'ERR_OUT_OF_RANGE';
+                throw re;
+              }
+              slot = v;
             },
-        );
-        if buf_val.is_object() {
-            rooted!(&in(cx) let buf_obj = buf_val.to_object());
-            JS_DefineProperty(
+            enumerable: true,
+            configurable: true
+          };
+          // Install on whichever targets are real objects (module face and
+          // Buffer constructor face).
+          var targets = [target1, target2];
+          for (var i = 0; i < targets.length; i++) {
+            if (targets[i] && typeof targets[i] === 'object') {
+              Object.defineProperty(targets[i], 'INSPECT_MAX_BYTES', desc);
+            }
+          }
+          return true;
+        })"#;
+        let inspect_filename = ZBox::from_bytes("node:buffer-inspect-max-bytes".as_bytes());
+        let inspect_opts = mozjs::glue::NewCompileOptions(cx_raw, inspect_filename.as_ptr(), 1);
+        if !inspect_opts.is_null() {
+            let mut inspect_text = mozjs::rust::transform_str_to_source_text(inspect_src);
+            let mut inspect_fn = UndefinedValue();
+            let inspect_fn_h = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut inspect_fn,
+            };
+            mozjs_sys::jsapi::JS::Evaluate2(cx_raw, inspect_opts, &mut inspect_text, inspect_fn_h);
+            mozjs::glue::DeleteCompileOptions(inspect_opts);
+            // Locate the Buffer constructor (may not exist yet in web-only
+            // realms — the accessor is then only on the module face).
+            let mut buf_val = UndefinedValue();
+            JS_GetProperty(
                 cx_raw,
-                buf_obj.handle().into(),
-                c"INSPECT_MAX_BYTES".as_ptr(),
-                inspect_max.handle().into(),
-                JSPROP_ENUMERATE as u32,
+                global.handle().into(),
+                c"Buffer".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut buf_val,
+                },
             );
-            JS_DefineProperty(
-                cx_raw,
-                buf_obj.handle().into(),
-                c"poolSize".as_ptr(),
-                pool_size.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
+            if inspect_fn.is_object() {
+                rooted!(&in(cx) let fn_root = inspect_fn.to_object());
+                let mod_val = unsafe { ObjectValue(mod_obj.get()) };
+                // unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+                rooted!(&in(cx) let args_arr_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+                    mod_val,
+                    buf_val,
+                ]));
+                let args_arr = JS::HandleValueArray::from(&args_arr_rooted);
+                rooted!(&in(cx) let null_obj: *mut JSObject = ::std::ptr::null_mut());
+                rooted!(&in(cx) let fn_val = ObjectValue(fn_root.get()));
+                let mut call_rval = UndefinedValue();
+                let _ = JS_CallFunctionValue(
+                    cx_raw,
+                    null_obj.handle().into(),
+                    fn_val.handle().into(),
+                    &args_arr,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut call_rval,
+                    },
+                );
+            }
         }
 
         rooted!(&in(cx) let constants_obj = w2::JS_NewPlainObject(cx));
         if !constants_obj.get().is_null() {
-            // @trace REQ-ENG-005 [entity:Buffer.constants] — Node.js surface:
-            // constants.MAX_LENGTH = 2^32 (4294967296) on 64-bit platforms.
-            // Exceeds i32 range, so emit as a JS double. buffer.test.js
-            // "constants" asserts the exact value.
-            rooted!(&in(cx) let cmax = mozjs::jsval::DoubleValue(4294967296.0_f64));
+            // @trace REQ-ENG-007 [entity:Buffer.constants] — Node.js ≥22
+            // surface: constants.MAX_LENGTH = kMaxLength = 2^53-1
+            // (MAX_SAFE_INTEGER); constants.MAX_STRING_LENGTH = 536870888
+            // ((1<<29)-24). node/test/parallel/test-buffer-constants.js pins
+            // kMaxLength === MAX_LENGTH and kStringMaxLength ===
+            // MAX_STRING_LENGTH. Both exceed i32 range, so emit as doubles.
+            rooted!(&in(cx) let cmax = mozjs::jsval::DoubleValue(9007199254740991.0_f64));
             JS_DefineProperty(
                 cx_raw,
                 constants_obj.handle().into(),
@@ -126,7 +205,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 cmax.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
-            rooted!(&in(cx) let smax = Int32Value(2147483647));
+            rooted!(&in(cx) let smax = mozjs::jsval::DoubleValue(536870888.0_f64));
             JS_DefineProperty(
                 cx_raw,
                 constants_obj.handle().into(),
@@ -144,8 +223,42 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             );
         }
 
-        // SlowBuffer = Buffer.alloc alias via JS
-        let slow_buf_src = "Buffer.alloc";
+        // @trace REQ-ENG-007 [api:buffer.SlowBuffer] — node v24 SlowBuffer
+        // (deprecated but present): STRICT `typeof size === 'number'`
+        // validation — SlowBuffer() / SlowBuffer('6') / SlowBuffer({}) /
+        // SlowBuffer(true) all throw TypeError ERR_INVALID_ARG_TYPE
+        // 'The "size" argument must be of type number.' + received descriptor
+        // (test-buffer-slow drives the matrix; the previous Buffer.alloc
+        // alias accepted everything and returned a 0-length buffer for
+        // missing args). Valid sizes delegate to the allocUnsafeSlow native
+        // (same uninitialised non-pooled allocation node gives).
+        let slow_buf_src = r#"(function() {
+          function receivedDesc(v) {
+            if (v === null || v === undefined) return ' Received ' + String(v);
+            var t = typeof v;
+            if (t === 'function') return ' Received function ' + (v.name || '(anonymous)');
+            if (t === 'object') {
+              var name = v.constructor && v.constructor.name;
+              if (typeof name === 'string' && name !== '') return ' Received an instance of ' + name;
+              return ' Received ' + String(v);
+            }
+            // node quotes string values in the inspected form ('abc' —
+            // node's util.inspect renders strings quoted).
+            var inspected = (t === 'string') ? ("'" + v + "'") : String(v);
+            if (inspected.length > 28) inspected = inspected.slice(0, 25) + '...';
+            return ' Received type ' + t + ' (' + inspected + ')';
+          }
+          function SlowBuffer(size) {
+            if (typeof size !== 'number') {
+              var e = new TypeError(
+                'The "size" argument must be of type number.' + receivedDesc(size));
+              e.code = 'ERR_INVALID_ARG_TYPE';
+              throw e;
+            }
+            return Buffer.allocUnsafeSlow(size);
+          }
+          return SlowBuffer;
+        })()"#;
         let c_filename = ZBox::from_bytes("node:buffer".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
         if !opts.is_null() {
@@ -169,7 +282,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        // @trace REQ-ENG-005 [api:buffer] — isAscii / isUtf8 / resolveObjectURL.
+        // @trace REQ-ENG-007 [api:buffer] — isAscii / isUtf8 / resolveObjectURL.
         // Node.js 19+ surface: `Buffer.isAscii(input)` and `Buffer.isUtf8(input)`
         // return true if the input is a pure ASCII / valid UTF-8 byte sequence.
         // `resolveObjectURL(url)` reverses `URL.createObjectURL(blob)` —
@@ -190,7 +303,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             mozjs::glue::DeleteCompileOptions(lazy_opts);
         }
 
-        // @trace REQ-ENG-005 [api:buffer] — re-export Blob/File on the
+        // @trace REQ-ENG-007 [api:buffer] — re-export Blob/File on the
         // `buffer` module object so `import { Blob } from "buffer"` resolves
         // (Node.js 19+ surface, mirror of node-fallbacks/buffer.js). Blob
         // itself is installed by install_web_api_constructors on globalThis.
@@ -297,7 +410,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
               return true;
             };
             // resolveObjectURL: Node.js's Blob URL store.
-            // @trace REQ-ENG-005 [api:buffer.resolveObjectURL]
+            // @trace REQ-ENG-007 [api:buffer.resolveObjectURL]
             // Backed by the global _bao_blob_registry maintained alongside
             // URL.createObjectURL/revokeObjectURL (see web_api_constructors
             // in globals.rs). Returns undefined for non-strings, missing, or
@@ -355,7 +468,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        // @trace REQ-ENG-005 [api:buffer.isAscii/isUtf8] — Native SM functions
+        // @trace REQ-ENG-007 [api:buffer.isAscii/isUtf8] — Native SM functions
         // so `new isAscii(...)` returns the primitive boolean (SM honours
         // primitive return values from C++ natives invoked as constructors;
         // JS functions discard them). buffer.test.js "isAscii" drives
@@ -390,7 +503,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             (JSPROP_ENUMERATE as u32) | JSFUN_CONSTRUCTOR,
         );
 
-        // @trace REQ-ENG-005 [api:buffer.transcode] — Bun.transcode is a
+        // @trace REQ-ENG-007 [api:buffer.transcode] — Bun.transcode is a
         // masqueradesAsUndefined function: `typeof BufferModule.transcode`
         // returns "undefined" but invoking it throws "Not implemented".
         //
@@ -427,9 +540,98 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
         cache_builtin(cx, "buffer", mod_obj.get());
     }
+
+    install_internal_errors(cx);
 }
 
-// @trace REQ-ENG-005 [api:buffer.transcode] — Bun's transcode is a
+// @trace REQ-ENG-001 [api:internal/errors] — Node.js `internal/errors` module
+// face (lib/internal/errors.js): a table of error-code classes exposed as
+// `codes`, each carrying its Node.js `.code` and formatting its message from
+// constructor arguments exactly like the Node.js messages table. Installed
+// through the same cache_builtin channel as `internal/test/binding`
+// (node_internal_test_binding.rs) so node test fixtures
+// (`require('internal/errors')`, e.g. node/test/parallel/test-buffer-fill.js)
+// resolve the real module instead of failing at load.
+//
+// Template fidelity: each template below mirrors the corresponding Node.js
+// error message verbatim (verified against node v24):
+//   ERR_OUT_OF_RANGE(str, x, y)  → RangeError
+//       `The value of "${str}" is out of range. It must be ${x}. Received ${y}`
+//   ERR_INVALID_ARG_TYPE(name, expected, actual) → TypeError
+//       `The "${name}" argument must be ${expected}. Received ${actual}`
+//   ERR_UNKNOWN_ENCODING(enc)    → TypeError `Unknown encoding: ${enc}`
+//   ERR_BUFFER_OUT_OF_BOUNDS(name) → RangeError
+//       `${name} is outside of buffer bounds` (or the generic message)
+//   ERR_STRING_TOO_LONG(str)     → Error `${str}`
+fn install_internal_errors(cx: &mut mozjs::context::JSContext) {
+    let source = r#"
+(function() {
+  'use strict';
+  var codes = {};
+
+  function makeError(name, Base, template) {
+    var K = function() {
+      var args = Array.prototype.slice.call(arguments);
+      var msg = template.apply(null, args);
+      // Node.js constructs the base error with the formatted message.
+      Base.call(this, msg);
+      this.message = msg;
+      this.code = name;
+      Error.captureStackTrace ? Error.captureStackTrace(this, K) : void 0;
+      return this;
+    };
+    Object.defineProperty(K, 'name', { value: name, writable: false, enumerable: false, configurable: true });
+    K.prototype = Object.create(Base.prototype, {
+      constructor: { value: K, writable: true, enumerable: false, configurable: true }
+    });
+    codes[name] = K;
+    return K;
+  }
+
+  makeError('ERR_OUT_OF_RANGE', RangeError, function(str, x, y) {
+    return 'The value of "' + str + '" is out of range. It must be ' + x + '. Received ' + y;
+  });
+  makeError('ERR_INVALID_ARG_TYPE', TypeError, function(name, expected, actual) {
+    return 'The "' + name + '" argument must be ' + expected + '. Received ' + actual;
+  });
+  makeError('ERR_UNKNOWN_ENCODING', TypeError, function(enc) {
+    return 'Unknown encoding: ' + enc;
+  });
+  makeError('ERR_BUFFER_OUT_OF_BOUNDS', RangeError, function(name) {
+    return name
+      ? (name + ' is outside of buffer bounds')
+      : 'Attempt to access memory outside buffer bounds';
+  });
+  makeError('ERR_STRING_TOO_LONG', Error, function(str) {
+    return str;
+  });
+
+  return { codes: codes };
+})()
+"#;
+    unsafe {
+        let raw_cx = cx.raw_cx();
+        let mut source_text = mozjs::rust::transform_str_to_source_text(source);
+        let mut rval = UndefinedValue();
+        let rval_handle = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+        let opts = mozjs::glue::NewCompileOptions(raw_cx, c"<internal/errors>".as_ptr(), 1);
+        if !opts.is_null() {
+            let ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut source_text, rval_handle);
+            mozjs::glue::DeleteCompileOptions(opts);
+            if !ok || !rval.is_object() {
+                return;
+            }
+            let obj = rval.to_object();
+            rooted!(&in(cx) let obj_rooted = obj);
+            cache_builtin(cx, "internal/errors", obj_rooted.get());
+        }
+    }
+}
+
+// @trace REQ-ENG-007 [api:buffer.transcode] — Bun's transcode is a
 // masqueradesAsUndefined native: present on the buffer module but reports
 // `typeof === "undefined"` while still being callable. We install it via the
 // mozjs fork's `JS_NewEmulatesUndefinedFunction` (which creates a callable
@@ -457,31 +659,58 @@ unsafe extern "C" fn buffer_transcode(cx: *mut JSContext, _argc: u32, vp: *mut J
 // `bun_simdutf_sys` (repo law 复用优先: workspace crate over a std hand-path);
 // per-face JS plumbing (CallArgs → byte view via the house extractor
 // `collect_byte_view`) stays at each registration site.
-// @trace REQ-ENG-005 [api:buffer.isAscii] [code:bun_simdutf_sys]
+// @trace REQ-ENG-007 [api:buffer.isAscii] [code:bun_simdutf_sys]
 pub(crate) fn is_ascii_bytes(bytes: &[u8]) -> bool {
     bun_simdutf_sys::validate_ascii(bytes)
 }
 
-// @trace REQ-ENG-005 [api:buffer.isUtf8] [code:bun_simdutf_sys]
+// @trace REQ-ENG-007 [api:buffer.isUtf8] [code:bun_simdutf_sys]
 pub(crate) fn is_utf8_bytes(bytes: &[u8]) -> bool {
     bun_simdutf_sys::validate_utf8(bytes)
 }
 
-// @trace REQ-ENG-005 [api:buffer.isAscii] [code:bun_simdutf_sys] — Native
+// @trace REQ-ENG-007 [api:buffer.isAscii] [code:bun_simdutf_sys] — Native
 // SMFunction returning a boolean primitive. Accepts Buffer/Uint8Array/
 // TypedArray/DataView/ArrayBuffer. Returns true iff every byte is < 0x80.
 // Validation delegates to the single owner `is_ascii_bytes`.
 // Used both as a function AND as a constructor (new isAscii(buf)) — SM
 // preserves primitive returns from C++ natives invoked as constructors,
 // matching Bun's behaviour.
+// @trace REQ-ENG-007 [api:buffer.isAscii] — input predicate for the
+// isAscii/isUtf8 faces: only ArrayBuffer / Buffer / TypedArray / DataView
+// qualify; every other value (strings, numbers, booleans, bigints, symbols,
+// plain objects/arrays, null, undefined) makes the predicate return FALSE —
+// predicate semantics, NOT a throw (globals_coverage_c3 pin:
+// Buffer.isAscii(42) === false). node v24 exposes no isAscii/isUtf8 at all
+// (live-verified v24.19.0: typeof Buffer.isAscii === 'undefined'), so this
+// face is bao-registered with no upstream oracle to diverge from. Detached
+// buffers report zero bytes and validate as empty (true).
+unsafe fn input_is_buffer_source(input: JSVal) -> bool {
+    if !input.is_object() {
+        return false;
+    }
+    let obj = input.to_object();
+    let is_ab = unsafe { mozjs_sys::jsapi::JS::IsArrayBufferObject(obj) };
+    let is_view = unsafe { mozjs_sys::jsapi::JS_IsArrayBufferViewObject(obj) };
+    is_ab || is_view
+}
+
+// pub(crate): the GLOBAL Buffer.isAscii face (globals.rs) delegates to this
+// same native so both faces share one validation + truth site.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn buffer_is_ascii(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn buffer_is_ascii(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let input = *args.get(0).ptr;
+    let input = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    if !input_is_buffer_source(input) {
+        // Predicate semantics: non-BufferSource input → false (no throw).
+        args.rval().set(mozjs::jsval::BooleanValue(false));
+        return true;
+    }
     let bytes = match collect_byte_view(cx, input) {
         Some(b) => b,
         None => {
-            args.rval().set(mozjs::jsval::BooleanValue(false));
+            // Detached / unreachable backing store → zero bytes → empty is ASCII.
+            args.rval().set(mozjs::jsval::BooleanValue(true));
             return true;
         }
     };
@@ -490,18 +719,25 @@ unsafe extern "C" fn buffer_is_ascii(cx: *mut JSContext, argc: u32, vp: *mut JSV
     true
 }
 
-// @trace REQ-ENG-005 [api:buffer.isUtf8] [code:bun_simdutf_sys] — Native
+// @trace REQ-ENG-007 [api:buffer.isUtf8] [code:bun_simdutf_sys] — Native
 // SMFunction returning a boolean primitive. Validates UTF-8 byte sequences
 // per RFC 3629 via the single owner `is_utf8_bytes` (rejects overlong
 // encodings, surrogates, and malformed continuation bytes).
+// pub(crate): the GLOBAL Buffer.isUtf8 face (globals.rs) delegates here.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn buffer_is_utf8(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn buffer_is_utf8(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let input = *args.get(0).ptr;
+    let input = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    if !input_is_buffer_source(input) {
+        // Predicate semantics: non-BufferSource input → false (no throw).
+        args.rval().set(mozjs::jsval::BooleanValue(false));
+        return true;
+    }
     let bytes = match collect_byte_view(cx, input) {
         Some(b) => b,
         None => {
-            args.rval().set(mozjs::jsval::BooleanValue(false));
+            // Detached backing store → zero bytes → empty is valid UTF-8.
+            args.rval().set(mozjs::jsval::BooleanValue(true));
             return true;
         }
     };
@@ -510,7 +746,7 @@ unsafe extern "C" fn buffer_is_utf8(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     true
 }
 
-// @trace REQ-ENG-005 — Extracts a byte slice from a Buffer/Uint8Array/
+// @trace REQ-ENG-007 — Extracts a byte slice from a Buffer/Uint8Array/
 // TypedArray/DataView/ArrayBuffer input. Returns None on null/undefined or
 // unrecognized input. The returned Vec is a copy that survives GC.
 // pub(crate): also reused by fetch_api for WHATWG fetch body byte forms.

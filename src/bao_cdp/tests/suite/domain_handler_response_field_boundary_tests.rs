@@ -49,7 +49,9 @@ fn test_page_close_response_error_without_bridge() {
 fn test_page_bring_to_front_response_error_without_bridge() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let err = session.send(&router, "Page.bringToFront", None).unwrap_err();
+    let err = session
+        .send(&router, "Page.bringToFront", None)
+        .unwrap_err();
     assert_eq!(err.code, -32603);
 }
 
@@ -399,9 +401,7 @@ fn test_dom_set_outer_html_explicit_unsupported() {
     // never a fake {} success.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let err = session
-        .send(&router, "DOM.setOuterHTML", None)
-        .unwrap_err();
+    let err = session.send(&router, "DOM.setOuterHTML", None).unwrap_err();
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("no mutation delivery path"));
 }
@@ -412,9 +412,7 @@ fn test_dom_insert_before_explicit_unsupported() {
     // never a fake {} success.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let err = session
-        .send(&router, "DOM.insertBefore", None)
-        .unwrap_err();
+    let err = session.send(&router, "DOM.insertBefore", None).unwrap_err();
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("no mutation delivery path"));
 }
@@ -425,9 +423,7 @@ fn test_dom_remove_node_explicit_unsupported() {
     // never a fake {} success.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let err = session
-        .send(&router, "DOM.removeNode", None)
-        .unwrap_err();
+    let err = session.send(&router, "DOM.removeNode", None).unwrap_err();
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("no mutation delivery path"));
 }
@@ -620,7 +616,11 @@ fn test_debugger_get_script_source_fields() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let result = session
-        .send(&router, "Debugger.getScriptSource", None)
+        .send(
+            &router,
+            "Debugger.getScriptSource",
+            Some(json!({"scriptId": "1"})),
+        )
         .unwrap();
     assert!(result.get("scriptSource").is_some());
 }
@@ -770,7 +770,9 @@ fn test_css_set_style_texts_requires_edits() {
     // REQ-BRW-048 follow-up: the write path requires edits — -32602.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let err = session.send(&router, "CSS.setStyleTexts", None).unwrap_err();
+    let err = session
+        .send(&router, "CSS.setStyleTexts", None)
+        .unwrap_err();
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("edits"));
 }
@@ -811,11 +813,7 @@ fn test_overlay_highlight_node_no_bridge_explicit_error() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session
-        .send(
-            &router,
-            "Overlay.highlightNode",
-            Some(json!({"nodeId": 5})),
-        )
+        .send(&router, "Overlay.highlightNode", Some(json!({"nodeId": 5})))
         .unwrap_err();
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge"));
@@ -942,7 +940,6 @@ fn test_fetch_enable_no_patterns() {
     let err = session.send(&router, "Fetch.enable", None).unwrap_err();
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -954,7 +951,6 @@ fn test_fetch_enable_with_patterns() {
     let err = session.send(&router, "Fetch.enable", None).unwrap_err();
     assert_eq!(err.code, -32603);
     assert!(err.message.contains("no servo bridge connected"));
-
 }
 
 #[test]
@@ -976,11 +972,14 @@ fn test_fetch_continue_request_fields() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session
-        .send(&router, "Fetch.continueRequest", Some(json!({"requestId": "r1"})))
+        .send(
+            &router,
+            "Fetch.continueRequest",
+            Some(json!({"requestId": "r1"})),
+        )
         .unwrap_err();
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
@@ -990,11 +989,14 @@ fn test_fetch_continue_with_response_fields() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session
-        .send(&router, "Fetch.continueWithResponse", Some(json!({"requestId": "r2"})))
+        .send(
+            &router,
+            "Fetch.continueWithResponse",
+            Some(json!({"requestId": "r2"})),
+        )
         .unwrap_err();
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("phase-2"));
-
 }
 
 #[test]
@@ -1004,11 +1006,14 @@ fn test_fetch_fail_request_fields() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session
-        .send(&router, "Fetch.failRequest", Some(json!({"requestId": "r3", "reason": "Aborted"})))
+        .send(
+            &router,
+            "Fetch.failRequest",
+            Some(json!({"requestId": "r3", "reason": "Aborted"})),
+        )
         .unwrap_err();
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
@@ -1018,11 +1023,14 @@ fn test_fetch_fulfill_request_fields() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session
-        .send(&router, "Fetch.fulfillRequest", Some(json!({"requestId": "r4", "responseCode": 200, "body": "hi"})))
+        .send(
+            &router,
+            "Fetch.fulfillRequest",
+            Some(json!({"requestId": "r4", "responseCode": 200, "body": "hi"})),
+        )
         .unwrap_err();
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("missing required 'interceptionId'"));
-
 }
 
 #[test]
@@ -1032,11 +1040,14 @@ fn test_fetch_get_request_post_data_fields() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session
-        .send(&router, "Fetch.getRequestPostData", Some(json!({"requestId": "r5"})))
+        .send(
+            &router,
+            "Fetch.getRequestPostData",
+            Some(json!({"requestId": "r5"})),
+        )
         .unwrap_err();
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("no request body"));
-
 }
 
 #[test]
@@ -1046,11 +1057,14 @@ fn test_fetch_continue_with_auth_fields() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session
-        .send(&router, "Fetch.continueWithAuth", Some(json!({"requestId": "r6"})))
+        .send(
+            &router,
+            "Fetch.continueWithAuth",
+            Some(json!({"requestId": "r6"})),
+        )
         .unwrap_err();
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("auth interception facet is not wired"));
-
 }
 
 #[test]
@@ -1060,11 +1074,14 @@ fn test_fetch_take_response_body_as_stream_fields() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session
-        .send(&router, "Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "r7"})))
+        .send(
+            &router,
+            "Fetch.takeResponseBodyAsStream",
+            Some(json!({"requestId": "r7"})),
+        )
         .unwrap_err();
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("stream handles"));
-
 }
 
 #[test]

@@ -287,7 +287,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     ("EROFS", libc::EROFS as i32),
                     ("ESPIPE", libc::ESPIPE as i32),
                     ("ESRCH", libc::ESRCH as i32),
-                    ("ESTALE", libc::ESTALE as i32),
+                    ("ESTALE", 116), // no libc ESTALE on windows; POSIX/Linux value (EDQUOT/EMULTIHOP form)
                     ("ETIME", libc::ETIME as i32),
                     ("ETIMEDOUT", libc::ETIMEDOUT as i32),
                     ("ETXTBSY", libc::ETXTBSY as i32),

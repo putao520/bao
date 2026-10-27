@@ -9,6 +9,7 @@ mod common;
 
 use ::std::path::PathBuf;
 use common::{CHECK_SCAFFOLD, js_path, make_ctx, run_checks};
+use mozjs::rooted;
 
 fn tmp_dir(label: &str) -> PathBuf {
     let d = ::std::env::temp_dir().join(format!("bao_fs_conf_{}", label));
@@ -22,8 +23,9 @@ fn test_fs_conformance_suite() {
     let mut ctx = make_ctx();
 
     // ===== writeFile / readFile sync =====
-    // NOTE: bao_runtime's readFileSync without an encoding returns a String,
-    // not a Buffer (Node.js returns Buffer). Documented in GAP_REPORT.
+    // NOTE: readFileSync without an encoding now returns a real Buffer
+    // (content_jsval None arm — node parity); the former String-return gap
+    // documented in GAP_REPORT is fixed.
     {
         let dir = tmp_dir("writefile_readfile_sync");
         let f = dir.join("hello.txt");
@@ -131,20 +133,105 @@ fn test_fs_conformance_suite() {
     // Buffer chunks previously went through String(chunk) (utf8-lossy
     // re-encode) — invalid-UTF-8 bytes were corrupted (0xFF → U+FFFD).
     // Chunks must be flushed raw via the byte-view path.
+    //
+    // Delivery shape (node v24.19.0 oracle, bao_oracle_ws probe):
+    // createWriteStream opens the fd ASYNC and delivers 'finish' on a later
+    // tick — a synchronous read-back right after end() throws ENOENT and
+    // `finish` is still false in node itself (receipt: syncRead=THREW:ENOENT,
+    // syncFinish=false, after-tick len=7 + finish=true). The former
+    // synchronous read-back assertions therefore raced the stream even
+    // against node; the block now fires the five scenarios, pumps the loop
+    // until every stream has flushed, then runs the same read-back checks.
     {
         let dir = tmp_dir("writestream_binary");
         let f = dir.join("bin.dat");
         let p = js_path(&f);
+        common::eval_string(
+            &mut ctx,
+            &format!(
+                r##"
+                var fs = require('fs');
+                var p = "{p}";
+                var payload = [0x00, 0x7F, 0x80, 0xC3, 0xFF, 0xFE, 0x01];
+                globalThis.__ws = {{ finish2: false, bytesWritten: 0 }};
+                // Invalid-as-UTF-8 bytes: any String() coercion mangles them.
+                var ws = fs.createWriteStream(p);
+                ws.write(Buffer.from(payload.slice(0, 4)));
+                ws.end(Buffer.from(payload.slice(4)));
+                // bytesWritten is settled only after the writes flush — the
+                // finish callback is the first point where the count is final
+                // (a synchronous snapshot read 0 and could never pass).
+                ws.on('finish', function() {{
+                    globalThis.__ws.bytesWritten = ws.bytesWritten;
+                }});
+                var ws2 = fs.createWriteStream(p + ".2");
+                ws2.on('finish', function() {{ globalThis.__ws.finish2 = true; }});
+                ws2.end(Buffer.from([0x61]));
+                // Mixed string + Buffer chunks: string contributes its UTF-8
+                // bytes, Buffer its raw bytes.
+                var ws3 = fs.createWriteStream(p + ".3");
+                ws3.write("AB");
+                ws3.end(Buffer.from([0xC3, 0xA9, 0xFF]));
+                // String-only chunks keep the legacy byte path (UTF-8 of join).
+                var ws4 = fs.createWriteStream(p + ".4");
+                ws4.write("hello ");
+                ws4.end("包子");
+                // Uint8Array (non-Buffer) chunks are byte views too.
+                var ws5 = fs.createWriteStream(p + ".5");
+                ws5.end(new Uint8Array([0x00, 0x99, 0xFE]));
+                'fired'
+                "##,
+                p = p
+            ),
+        );
+        // Pump until every stream flushed (the last-opened .5 holds its 3
+        // bytes and the .2 finish hook fired), bounded. Tick body = the
+        // settle-pump idiom (realm-aware timer drain → MiniEventLoop tick for
+        // the fs worker's ConcurrentTask completions → RunJobs for reactions).
+        let mut settled = false;
+        for _ in 0..2000 {
+            {
+                let mut cxm = ctx.cx();
+                let global = bao_engine::context::thread_realm_global();
+                if let Some(g) = global {
+                    rooted!(&in(cxm) let g_root = g);
+                    let mut realm =
+                        mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
+                    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+                    bun_runtime::timers::drain_and_check(realm_cx);
+                } else {
+                    bun_runtime::timers::drain_and_check(&mut cxm);
+                }
+            }
+            bun_runtime::timers::with_event_loop(|loop_| {
+                loop_.tick_without_idle(::std::ptr::null_mut());
+            });
+            unsafe {
+                mozjs_sys::jsapi::js::RunJobs(ctx.raw_cx());
+            }
+            let done = common::eval_string(
+                &mut ctx,
+                "(function(){ try { return (fs.readFileSync(p) !== undefined && \
+                 fs.readFileSync(p + '.5').length === 3 && \
+                 globalThis.__ws.finish2 === true && \
+                 globalThis.__ws.bytesWritten === 7) ? 'y' : 'n'; } catch (e) { return 'n'; } })()",
+            );
+            if done == "y" {
+                settled = true;
+                break;
+            }
+            ::std::thread::sleep(::std::time::Duration::from_millis(2));
+        }
+        assert!(
+            settled,
+            "createWriteStream scenarios did not settle (flush + finish within the pump window)"
+        );
         let src = format!(
             r##"
             {scaffold}
             var fs = require('fs');
             var p = "{p}";
-            // Invalid-as-UTF-8 bytes: any String() coercion mangles them.
             var payload = [0x00, 0x7F, 0x80, 0xC3, 0xFF, 0xFE, 0x01];
-            var ws = fs.createWriteStream(p);
-            ws.write(Buffer.from(payload.slice(0, 4)));
-            ws.end(Buffer.from(payload.slice(4)));
             check("createWriteStream_binary_roundtrip", function() {{
                 var back = fs.readFileSync(p);
                 if (back.length !== payload.length) return false;
@@ -154,36 +241,20 @@ fn test_fs_conformance_suite() {
                 return true;
             }});
             check("createWriteStream_bytesWritten", function() {{
-                return ws.bytesWritten === payload.length;
+                return globalThis.__ws.bytesWritten === payload.length;
             }});
             check("createWriteStream_finish_emitted", function() {{
-                var finished = false;
-                var ws2 = fs.createWriteStream(p + ".2");
-                ws2.on('finish', function() {{ finished = true; }});
-                ws2.end(Buffer.from([0x61]));
-                return finished === true;
+                return globalThis.__ws.finish2 === true;
             }});
-            // Mixed string + Buffer chunks: string contributes its UTF-8
-            // bytes, Buffer its raw bytes.
             check("createWriteStream_mixed_chunks", function() {{
-                var ws3 = fs.createWriteStream(p + ".3");
-                ws3.write("AB");
-                ws3.end(Buffer.from([0xC3, 0xA9, 0xFF]));
                 var back = fs.readFileSync(p + ".3");
                 return back.length === 5 && back[0] === 0x41 && back[1] === 0x42 &&
                        back[2] === 0xC3 && back[3] === 0xA9 && back[4] === 0xFF;
             }});
-            // String-only chunks keep the legacy byte path (UTF-8 of join).
             check("createWriteStream_string_only", function() {{
-                var ws4 = fs.createWriteStream(p + ".4");
-                ws4.write("hello ");
-                ws4.end("包子");
                 return fs.readFileSync(p + ".4", "utf8") === "hello 包子";
             }});
-            // Uint8Array (non-Buffer) chunks are byte views too.
             check("createWriteStream_uint8array_chunk", function() {{
-                var ws5 = fs.createWriteStream(p + ".5");
-                ws5.end(new Uint8Array([0x00, 0x99, 0xFE]));
                 var back = fs.readFileSync(p + ".5");
                 return back.length === 3 && back[1] === 0x99 && back[2] === 0xFE;
             }});

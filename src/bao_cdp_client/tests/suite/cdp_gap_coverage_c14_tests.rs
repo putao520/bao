@@ -23,11 +23,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bao_cdp::servo_bridge::{bridge_channel, BridgeCommand, BridgeReceiver, BridgeResponse};
-use bao_cdp::{handle_command, CdpMessage};
+use bao_cdp::servo_bridge::{BridgeCommand, BridgeReceiver, BridgeResponse, bridge_channel};
+use bao_cdp::{CdpMessage, handle_command};
 use bao_cdp_client::bridge::DebugStepAction;
 use bao_cdp_client::{BridgeError, BridgeSenderBackend, MockServoBackend, ServoBackend};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const PUMP_TIMEOUT: Duration = Duration::from_secs(5);
 const TARGET: &str = "1";
@@ -42,11 +42,11 @@ fn spawn_answer_pump(
     std::thread::spawn(move || {
         let mut idle = 0u32;
         while idle < 400 {
-            let handled =
-                rx.recv_and_process(Duration::from_millis(50), |cmd| BridgeResponse {
-                    result: f(&cmd)
-                        .ok_or_else(|| bao_cdp::servo_bridge::BridgeError::from("c14 pump: peer refused")),
-                });
+            let handled = rx.recv_and_process(Duration::from_millis(50), |cmd| BridgeResponse {
+                result: f(&cmd).ok_or_else(|| {
+                    bao_cdp::servo_bridge::BridgeError::from("c14 pump: peer refused")
+                }),
+            });
             if handled {
                 idle = 0;
             } else {
@@ -111,9 +111,17 @@ fn canned_bridge_answer(cmd: &BridgeCommand) -> Value {
         ] }),
         C::DebuggerGetScriptSource { .. } => json!({ "scriptSource": "function f(){return 1}" }),
         C::DebuggerEval { .. } => json!({ "result": { "type": "string", "value": "2" } }),
-        C::ListTargets => json!([ { "id": "t-1", "title": "Title-1", "url": "https://u.test/" } ]),
+        C::ListTargets => {
+            json!([ { "id": "t-1", "title": "Title-1", "url": "https://u.test/", "browserContextId": "ctx-9" } ])
+        }
         C::CreateTarget { .. } => json!({ "targetId": "t-new" }),
         C::GetTargetContextId { .. } => json!({ "browserContextId": "ctx-9" }),
+        // Target-info 真查询面(getTargetInfo 经 live_target_info 逐字段
+        // 查询,bridge 在场 ⇒ 应答必须携带承诺字段——缺字段=协议违规报错,
+        // 不再落到 `_ => {}` 形状)。
+        C::GetTitle { .. } => json!("Title-1"),
+        C::GetUrl { .. } => json!("https://u.test/"),
+        C::GetTargetOpenerAccess { .. } => json!(false),
         C::ListWorkerTargets { .. } => json!({ "workerTargets": [
             { "id": "w-1", "type": "worker", "title": "worker", "url": "https://u.test/w.js" }
         ] }),
@@ -181,9 +189,15 @@ fn page_capture_screenshot_extracts_format_and_quality() {
             json!({ "format": "jpeg", "quality": 80 }),
             Some(tx),
         );
-        assert!(r.error.is_none(), "screenshot must round-trip: {:?}", r.error);
+        assert!(
+            r.error.is_none(),
+            "screenshot must round-trip: {:?}",
+            r.error
+        );
         match last_cmd(&seen) {
-            BridgeCommand::TakeScreenshot { format, quality, .. } => {
+            BridgeCommand::TakeScreenshot {
+                format, quality, ..
+            } => {
                 assert_eq!(format, "jpeg");
                 assert_eq!(quality, Some(80));
             }
@@ -199,7 +213,11 @@ fn page_set_content_synthesizes_document_write_and_rejects_empty() {
         let r = cdp_call("Page.setContent", json!({ "html": "<p>hi</p>" }), Some(tx));
         assert!(r.error.is_none(), "{:?}", r.error);
         match last_cmd(&seen) {
-            BridgeCommand::EvaluateJs { expression, return_by_value, .. } => {
+            BridgeCommand::EvaluateJs {
+                expression,
+                return_by_value,
+                ..
+            } => {
                 assert!(expression.contains("document.open()"));
                 assert!(expression.contains("document.write"));
                 assert!(expression.contains("<p>hi</p>"));
@@ -264,13 +282,25 @@ fn target_get_targets_appends_worker_targets() {
     with_recording_channel(|tx, _seen| {
         let r = cdp_call("Target.getTargets", json!({}), Some(tx));
         assert!(r.error.is_none(), "{:?}", r.error);
-        let infos = r.result.unwrap()["targetInfos"].as_array().cloned().unwrap();
+        let infos = r.result.unwrap()["targetInfos"]
+            .as_array()
+            .cloned()
+            .unwrap();
         // 页面条目走 live_target_info(targetId 键);worker 条目是通道原始
         // 对象 verbatim append(id 键)。
-        let page_ids: Vec<&str> = infos.iter().filter_map(|t| t["targetId"].as_str()).collect();
-        assert!(page_ids.contains(&"t-1"), "page target listed: {page_ids:?}");
+        let page_ids: Vec<&str> = infos
+            .iter()
+            .filter_map(|t| t["targetId"].as_str())
+            .collect();
+        assert!(
+            page_ids.contains(&"t-1"),
+            "page target listed: {page_ids:?}"
+        );
         let worker_ids: Vec<&str> = infos.iter().filter_map(|t| t["id"].as_str()).collect();
-        assert!(worker_ids.contains(&"w-1"), "worker target appended: {worker_ids:?}");
+        assert!(
+            worker_ids.contains(&"w-1"),
+            "worker target appended: {worker_ids:?}"
+        );
         let w = infos.iter().find(|t| t["id"] == "w-1").unwrap();
         assert_eq!(w["type"], "worker");
     });
@@ -281,20 +311,39 @@ fn target_context_id_faces_bridge_empty_and_none() {
     // @trace REQ-CDS-009 [level:integration]
     // (a) bridge 应答非空 → 逐字返回;
     with_recording_channel(|tx, _seen| {
-        let r = cdp_call("Target.getTargetInfo", json!({ "targetId": TARGET }), Some(tx));
+        let r = cdp_call(
+            "Target.getTargetInfo",
+            json!({ "targetId": TARGET }),
+            Some(tx),
+        );
         assert!(r.error.is_none(), "{:?}", r.error);
         let info = r.result.unwrap()["targetInfo"].clone();
         assert_eq!(info["browserContextId"], "ctx-9");
         assert_eq!(info["type"], "page");
         assert_eq!(info["attached"], true);
     });
-    // (b) bridge 应答空串 → 隐式默认;
+    // (b) bridge 应答空串 → 协议违规报错(兜底根治:空串归属不再被洗成
+    //     隐式默认——registry 写入侧 page_context_id() 恒产非空,空串回=
+    //     违约,读取点 surface 不掩盖)。
     {
         let (tx, rx) = bridge_channel(PUMP_TIMEOUT);
-        spawn_answer_pump(rx, |_| Some(json!({ "browserContextId": "" })));
-        let r = cdp_call("Target.getTargetInfo", json!({ "targetId": TARGET }), Some(&tx));
-        let info = r.result.unwrap()["targetInfo"].clone();
-        assert_eq!(info["browserContextId"], "bao-default-context");
+        spawn_answer_pump(rx, |cmd| match cmd {
+            BridgeCommand::GetTargetContextId { .. } => Some(json!({ "browserContextId": "" })),
+            _ => Some(canned_bridge_answer(cmd)),
+        });
+        let r = cdp_call(
+            "Target.getTargetInfo",
+            json!({ "targetId": TARGET }),
+            Some(&tx),
+        );
+        let err = r
+            .error
+            .expect("empty-context answer is a registry-protocol violation");
+        assert_eq!(err.code, -32603);
+        assert!(
+            err.message.contains("Target context query failed"),
+            "{err:?}"
+        );
     }
     // (c) 无 bridge → 隐式默认(list miss / bridge-less 同 fallback)。
     let r = cdp_call("Target.getTargetInfo", json!({ "targetId": TARGET }), None);
@@ -320,10 +369,16 @@ fn network_cookie_and_cache_faces_forward_with_bridge() {
             other => panic!("expected DeleteCookie, got {other:?}"),
         }
 
-        let r = cdp_call("Network.setCacheDisabled", json!({ "cacheDisabled": true }), Some(tx));
+        let r = cdp_call(
+            "Network.setCacheDisabled",
+            json!({ "cacheDisabled": true }),
+            Some(tx),
+        );
         assert!(r.error.is_none(), "{:?}", r.error);
         match last_cmd(&seen) {
-            BridgeCommand::NetworkSetCacheDisabled { cache_disabled, .. } => assert!(cache_disabled),
+            BridgeCommand::NetworkSetCacheDisabled { cache_disabled, .. } => {
+                assert!(cache_disabled)
+            }
             other => panic!("expected NetworkSetCacheDisabled, got {other:?}"),
         }
 
@@ -342,11 +397,17 @@ fn network_cookie_and_cache_faces_forward_with_bridge() {
 
         let r = cdp_call("Network.clearBrowserCache", json!({}), Some(tx));
         assert!(r.error.is_none(), "{:?}", r.error);
-        assert!(matches!(last_cmd(&seen), BridgeCommand::NetworkClearBrowserCache { .. }));
+        assert!(matches!(
+            last_cmd(&seen),
+            BridgeCommand::NetworkClearBrowserCache { .. }
+        ));
 
         let r = cdp_call("Network.clearBrowserCookies", json!({}), Some(tx));
         assert!(r.error.is_none(), "{:?}", r.error);
-        assert!(matches!(last_cmd(&seen), BridgeCommand::NetworkClearBrowserCookies { .. }));
+        assert!(matches!(
+            last_cmd(&seen),
+            BridgeCommand::NetworkClearBrowserCookies { .. }
+        ));
 
         // 带 url/domain 的 setCookie 提取。
         let r = cdp_call(
@@ -356,7 +417,13 @@ fn network_cookie_and_cache_faces_forward_with_bridge() {
         );
         assert!(r.error.is_none(), "{:?}", r.error);
         match last_cmd(&seen) {
-            BridgeCommand::SetCookie { name, value, url, domain, .. } => {
+            BridgeCommand::SetCookie {
+                name,
+                value,
+                url,
+                domain,
+                ..
+            } => {
                 assert_eq!(name, "k");
                 assert_eq!(value, "v");
                 assert_eq!(url.as_deref(), Some("https://x.test/"));
@@ -371,7 +438,11 @@ fn network_cookie_and_cache_faces_forward_with_bridge() {
 fn network_no_bridge_fallbacks_return_empty_cookie_sets() {
     // @trace REQ-CDP-006 [level:integration]
     // 无 bridge 的 getCookies/getAllCookies = 空 cookies 集(诚实空,不报错)。
-    let r = cdp_call("Network.getCookies", json!({ "urls": ["https://x.test/"] }), None);
+    let r = cdp_call(
+        "Network.getCookies",
+        json!({ "urls": ["https://x.test/"] }),
+        None,
+    );
     assert_eq!(r.result.unwrap()["cookies"], json!([]));
     let r = cdp_call("Network.getAllCookies", json!({}), None);
     assert_eq!(r.result.unwrap()["cookies"], json!([]));
@@ -383,10 +454,15 @@ fn fetch_resolution_param_validation_is_strict() {
     with_recording_channel(|tx, seen| {
         // interceptionId 缺失 / 非串 → -32602(解析键 = requestPaused 携带的
         // interceptionId,禁止占位)。
-        for method in ["Fetch.failRequest", "Fetch.fulfillRequest", "Fetch.continueRequest"] {
+        for method in [
+            "Fetch.failRequest",
+            "Fetch.fulfillRequest",
+            "Fetch.continueRequest",
+        ] {
             let r = cdp_call(method, json!({}), Some(tx));
-            let err =
-                r.error.unwrap_or_else(|| panic!("{method} must reject missing interceptionId"));
+            let err = r
+                .error
+                .unwrap_or_else(|| panic!("{method} must reject missing interceptionId"));
             assert_eq!(err.code, -32602, "{method}");
             assert!(err.message.contains("interceptionId"), "{}", err.message);
 
@@ -412,7 +488,11 @@ fn fetch_resolution_param_validation_is_strict() {
         );
         assert!(r.error.is_none(), "{:?}", r.error);
         match last_cmd(&seen) {
-            BridgeCommand::FetchResolve { interception_id, action, .. } => {
+            BridgeCommand::FetchResolve {
+                interception_id,
+                action,
+                ..
+            } => {
                 assert_eq!(interception_id, "i-1");
                 match action {
                     bao_cdp::servo_bridge::FetchResolveAction::Fail { error_reason } => {
@@ -439,10 +519,18 @@ fn fetch_resolution_param_validation_is_strict() {
         );
         assert!(r.error.is_none(), "{:?}", r.error);
         match last_cmd(&seen) {
-            BridgeCommand::FetchResolve { interception_id, action, .. } => {
+            BridgeCommand::FetchResolve {
+                interception_id,
+                action,
+                ..
+            } => {
                 assert_eq!(interception_id, "i-1");
                 match action {
-                    bao_cdp::servo_bridge::FetchResolveAction::Fulfill { response_code, body, .. } => {
+                    bao_cdp::servo_bridge::FetchResolveAction::Fulfill {
+                        response_code,
+                        body,
+                        ..
+                    } => {
                         assert_eq!(response_code, 200);
                         assert_eq!(body.as_deref(), Some("aGk="));
                     }
@@ -469,7 +557,10 @@ fn debugger_pause_resume_steps_forward_step_types() {
     // @trace REQ-CDP-003 [level:integration]
     with_recording_channel(|tx, seen| {
         cdp_call("Debugger.pause", json!({}), Some(tx));
-        assert!(matches!(last_cmd(&seen), BridgeCommand::DebuggerInterrupt { .. }));
+        assert!(matches!(
+            last_cmd(&seen),
+            BridgeCommand::DebuggerInterrupt { .. }
+        ));
 
         cdp_call("Debugger.resume", json!({}), Some(tx));
         match last_cmd(&seen) {
@@ -499,7 +590,11 @@ fn debugger_pause_resume_steps_forward_step_types() {
         );
         assert!(r.error.is_none(), "{:?}", r.error);
         match last_cmd(&seen) {
-            BridgeCommand::DebuggerEval { expression, frame_actor_id, .. } => {
+            BridgeCommand::DebuggerEval {
+                expression,
+                frame_actor_id,
+                ..
+            } => {
                 assert_eq!(expression, "1+1");
                 assert_eq!(frame_actor_id.as_deref(), Some("frame-0"));
             }
@@ -535,7 +630,11 @@ fn emulation_override_faces_synthesize_js_and_ack() {
 
         // overrideNetworkState(Playwright setOffline):offline=true →
         // navigator.onLine 读 false。
-        cdp_call("Network.overrideNetworkState", json!({ "offline": true }), Some(tx));
+        cdp_call(
+            "Network.overrideNetworkState",
+            json!({ "offline": true }),
+            Some(tx),
+        );
         match last_cmd(&seen) {
             BridgeCommand::EvaluateJs { expression, .. } => {
                 assert!(expression.contains("return false"), "{expression}");
@@ -569,7 +668,11 @@ fn storage_faces_forward_origin_type_and_urls() {
         );
         assert!(r.error.is_none(), "{:?}", r.error);
         match last_cmd(&seen) {
-            BridgeCommand::StorageGetStorageItemsForOrigin { origin, storage_type, .. } => {
+            BridgeCommand::StorageGetStorageItemsForOrigin {
+                origin,
+                storage_type,
+                ..
+            } => {
                 assert_eq!(origin, "https://x.test");
                 assert_eq!(storage_type, "local_storage");
             }
@@ -584,7 +687,11 @@ fn storage_faces_forward_origin_type_and_urls() {
         );
         assert!(r.error.is_none(), "{:?}", r.error);
         match last_cmd(&seen) {
-            BridgeCommand::StorageClearDataForOrigin { origin, storage_type, .. } => {
+            BridgeCommand::StorageClearDataForOrigin {
+                origin,
+                storage_type,
+                ..
+            } => {
                 assert_eq!(origin, "https://y.test");
                 assert_eq!(storage_type, "indexeddb");
             }
@@ -600,7 +707,10 @@ fn storage_faces_forward_origin_type_and_urls() {
         assert!(r.error.is_none(), "{:?}", r.error);
         match last_cmd(&seen) {
             BridgeCommand::GetCookies { urls, .. } => {
-                assert_eq!(urls, vec!["https://x.test/".to_string(), "https://y.test/".to_string()]);
+                assert_eq!(
+                    urls,
+                    vec!["https://x.test/".to_string(), "https://y.test/".to_string()]
+                );
             }
             other => panic!("expected GetCookies, got {other:?}"),
         }
@@ -616,9 +726,15 @@ fn security_faces_ack_and_certificate_error_noop() {
     // @trace REQ-CDP-006 [level:integration]
     with_recording_channel(|tx, seen| {
         cdp_call("Security.enable", json!({}), Some(tx));
-        assert!(matches!(last_cmd(&seen), BridgeCommand::SecurityEnable { .. }));
+        assert!(matches!(
+            last_cmd(&seen),
+            BridgeCommand::SecurityEnable { .. }
+        ));
         cdp_call("Security.disable", json!({}), Some(tx));
-        assert!(matches!(last_cmd(&seen), BridgeCommand::SecurityDisable { .. }));
+        assert!(matches!(
+            last_cmd(&seen),
+            BridgeCommand::SecurityDisable { .. }
+        ));
 
         let r = cdp_call(
             "Security.setOverrideCertificateErrors",
@@ -627,7 +743,9 @@ fn security_faces_ack_and_certificate_error_noop() {
         );
         assert!(r.error.is_none(), "{:?}", r.error);
         match last_cmd(&seen) {
-            BridgeCommand::SecuritySetOverrideCertificateErrors { override_errors, .. } => {
+            BridgeCommand::SecuritySetOverrideCertificateErrors {
+                override_errors, ..
+            } => {
                 assert!(override_errors);
             }
             other => panic!("expected SecuritySetOverrideCertificateErrors, got {other:?}"),
@@ -641,11 +759,19 @@ fn security_faces_ack_and_certificate_error_noop() {
             Some(tx),
         );
         assert!(r.error.is_none(), "{:?}", r.error);
-        assert_eq!(seen.lock().unwrap().len(), before, "handleCertificateError must not forward");
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            before,
+            "handleCertificateError must not forward"
+        );
         // 别名字面 "certificateError" 同判。
         let r = cdp_call("Security.certificateError", json!({}), Some(tx));
         assert!(r.error.is_none(), "{:?}", r.error);
-        assert_eq!(seen.lock().unwrap().len(), before, "certificateError alias must not forward");
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            before,
+            "certificateError alias must not forward"
+        );
 
         // 未知 Security method → -32601。
         let r = cdp_call("Security.resetCertificates", json!({}), Some(tx));
@@ -663,14 +789,26 @@ fn profiler_faces_forward_and_reject_unknown() {
         assert!(r.error.is_none(), "{:?}", r.error);
 
         cdp_call("Profiler.start", json!({}), Some(tx));
-        assert!(matches!(last_cmd(&seen), BridgeCommand::ProfilerStart { .. }));
+        assert!(matches!(
+            last_cmd(&seen),
+            BridgeCommand::ProfilerStart { .. }
+        ));
         cdp_call("Profiler.stop", json!({}), Some(tx));
-        assert!(matches!(last_cmd(&seen), BridgeCommand::ProfilerStop { .. }));
+        assert!(matches!(
+            last_cmd(&seen),
+            BridgeCommand::ProfilerStop { .. }
+        ));
 
         // setSamplingInterval 提取 interval(缺省 1000)。
-        cdp_call("Profiler.setSamplingInterval", json!({ "interval": 250 }), Some(tx));
+        cdp_call(
+            "Profiler.setSamplingInterval",
+            json!({ "interval": 250 }),
+            Some(tx),
+        );
         match last_cmd(&seen) {
-            BridgeCommand::ProfilerSetSamplingInterval { interval, .. } => assert_eq!(interval, 250),
+            BridgeCommand::ProfilerSetSamplingInterval { interval, .. } => {
+                assert_eq!(interval, 250)
+            }
             other => panic!("expected ProfilerSetSamplingInterval, got {other:?}"),
         }
         let r = cdp_call("Profiler.getProfile", json!({}), Some(tx));
@@ -717,7 +855,10 @@ fn memory_faces_forward_and_propagate_peer_error() {
     let seen: Arc<Mutex<Vec<BridgeCommand>>> = Arc::new(Mutex::new(Vec::new()));
 
     let r = cdp_call("Memory.getDOMCounters", json!({}), Some(&tx));
-    assert!(r.error.is_some(), "peer error must propagate, not be swallowed");
+    assert!(
+        r.error.is_some(),
+        "peer error must propagate, not be swallowed"
+    );
 
     let r = cdp_call("Memory.prepareForLeakDetection", json!({}), Some(&tx));
     assert!(r.error.is_none(), "{:?}", r.error);
@@ -740,7 +881,10 @@ fn performance_get_metrics_forwards() {
         assert!(r.error.is_none(), "{:?}", r.error);
         let metrics = r.result.unwrap()["metrics"].as_array().unwrap().clone();
         assert!(metrics.iter().any(|m| m["name"] == "Timestamp"));
-        assert!(matches!(last_cmd(&seen), BridgeCommand::PerformanceGetMetrics { .. }));
+        assert!(matches!(
+            last_cmd(&seen),
+            BridgeCommand::PerformanceGetMetrics { .. }
+        ));
         let r = cdp_call("Performance.bogus", json!({}), Some(tx));
         assert_eq!(r.error.unwrap().code, -32601);
     });
@@ -774,7 +918,11 @@ fn system_info_reports_process_truth() {
 fn browser_download_behavior_ack_and_unknown() {
     // @trace REQ-CDP-001 [level:integration]
     // setDownloadBehavior = 偏好 ack(bao 无下载管理器 — 存偏好,不伪造下载)。
-    let r = cdp_call("Browser.setDownloadBehavior", json!({ "behavior": "default" }), None);
+    let r = cdp_call(
+        "Browser.setDownloadBehavior",
+        json!({ "behavior": "default" }),
+        None,
+    );
     assert!(r.error.is_none(), "{:?}", r.error);
     let r = cdp_call("Browser.bogus", json!({}), None);
     assert_eq!(r.error.unwrap().code, -32601);
@@ -809,7 +957,10 @@ fn service_worker_observability_faces() {
         // getAllRegistrations:bridge → ListServiceWorkerRegistrations 转发。
         let r = cdp_call("ServiceWorker.getAllRegistrations", json!({}), Some(tx));
         assert!(r.error.is_none(), "{:?}", r.error);
-        assert!(matches!(last_cmd(&seen), BridgeCommand::ListServiceWorkerRegistrations { .. }));
+        assert!(matches!(
+            last_cmd(&seen),
+            BridgeCommand::ListServiceWorkerRegistrations { .. }
+        ));
         // 无 bridge → 空 registrations(诚实空)。
         let r = cdp_call("ServiceWorker.getAllRegistrations", json!({}), None);
         assert_eq!(r.result.unwrap()["registrations"], json!([]));
@@ -822,7 +973,9 @@ fn service_worker_observability_faces() {
         );
         assert!(r.error.is_none(), "{:?}", r.error);
         match last_cmd(&seen) {
-            BridgeCommand::GetServiceWorkerRegistrationInfo { registration_id, .. } => {
+            BridgeCommand::GetServiceWorkerRegistrationInfo {
+                registration_id, ..
+            } => {
                 assert_eq!(registration_id, "reg-1");
             }
             other => panic!("expected GetServiceWorkerRegistrationInfo, got {other:?}"),
@@ -831,16 +984,28 @@ fn service_worker_observability_faces() {
         assert_eq!(r.result.unwrap()["registration"], json!(null));
 
         // stopWorker / unregister:bridge + id → 转发 Stop/Terminate。
-        cdp_call("ServiceWorker.stopWorker", json!({ "registrationId": "reg-2" }), Some(tx));
+        cdp_call(
+            "ServiceWorker.stopWorker",
+            json!({ "registrationId": "reg-2" }),
+            Some(tx),
+        );
         match last_cmd(&seen) {
-            BridgeCommand::StopServiceWorker { registration_id, .. } => {
+            BridgeCommand::StopServiceWorker {
+                registration_id, ..
+            } => {
                 assert_eq!(registration_id, "reg-2");
             }
             other => panic!("expected StopServiceWorker, got {other:?}"),
         }
-        cdp_call("ServiceWorker.unregister", json!({ "registrationId": "reg-3" }), Some(tx));
+        cdp_call(
+            "ServiceWorker.unregister",
+            json!({ "registrationId": "reg-3" }),
+            Some(tx),
+        );
         match last_cmd(&seen) {
-            BridgeCommand::TerminateServiceWorker { registration_id, .. } => {
+            BridgeCommand::TerminateServiceWorker {
+                registration_id, ..
+            } => {
                 assert_eq!(registration_id, "reg-3");
             }
             other => panic!("expected TerminateServiceWorker, got {other:?}"),
@@ -876,13 +1041,21 @@ fn blanket_impl_forwards_page_and_runtime_faces() {
         &direct.page_navigate(TARGET, "https://x.test/"),
         "page_navigate",
     );
-    assert_forwarding_eq(&blanket.page_reload(TARGET), &direct.page_reload(TARGET), "page_reload");
+    assert_forwarding_eq(
+        &blanket.page_reload(TARGET),
+        &direct.page_reload(TARGET),
+        "page_reload",
+    );
     assert_forwarding_eq(
         &blanket.page_screenshot(TARGET, bao_cdp_client::BridgeScreenshotFormat::Png),
         &direct.page_screenshot(TARGET, bao_cdp_client::BridgeScreenshotFormat::Png),
         "page_screenshot",
     );
-    assert_forwarding_eq(&blanket.page_frame_tree(TARGET), &direct.page_frame_tree(TARGET), "page_frame_tree");
+    assert_forwarding_eq(
+        &blanket.page_frame_tree(TARGET),
+        &direct.page_frame_tree(TARGET),
+        "page_frame_tree",
+    );
     assert_forwarding_eq(
         &blanket.page_navigation_history(TARGET),
         &direct.page_navigation_history(TARGET),
@@ -898,7 +1071,11 @@ fn blanket_impl_forwards_page_and_runtime_faces() {
         &direct.page_set_content(TARGET, "<p>x</p>"),
         "page_set_content",
     );
-    assert_forwarding_eq(&blanket.page_close(TARGET), &direct.page_close(TARGET), "page_close");
+    assert_forwarding_eq(
+        &blanket.page_close(TARGET),
+        &direct.page_close(TARGET),
+        "page_close",
+    );
     assert_forwarding_eq(
         &blanket.page_bring_to_front(TARGET),
         &direct.page_bring_to_front(TARGET),
@@ -935,8 +1112,16 @@ fn blanket_impl_forwards_page_and_runtime_faces() {
         &direct.runtime_release_object(TARGET, "obj-1"),
         "runtime_release_object",
     );
-    assert_forwarding_eq(&blanket.runtime_enable(TARGET), &direct.runtime_enable(TARGET), "runtime_enable");
-    assert_forwarding_eq(&blanket.runtime_disable(TARGET), &direct.runtime_disable(TARGET), "runtime_disable");
+    assert_forwarding_eq(
+        &blanket.runtime_enable(TARGET),
+        &direct.runtime_enable(TARGET),
+        "runtime_enable",
+    );
+    assert_forwarding_eq(
+        &blanket.runtime_disable(TARGET),
+        &direct.runtime_disable(TARGET),
+        "runtime_disable",
+    );
 }
 
 #[test]
@@ -946,20 +1131,72 @@ fn blanket_impl_forwards_dom_network_input_emulation_faces() {
     let blanket: Arc<dyn ServoBackend> = Arc::new(MockServoBackend::new());
     let direct = MockServoBackend::new();
 
-    assert_forwarding_eq(&blanket.dom_get_document(TARGET, 3), &direct.dom_get_document(TARGET, 3), "dom_get_document");
-    assert_forwarding_eq(&blanket.dom_query_selector(TARGET, 1, "div"), &direct.dom_query_selector(TARGET, 1, "div"), "dom_query_selector");
-    assert_forwarding_eq(&blanket.dom_query_selector_all(TARGET, 1, "div"), &direct.dom_query_selector_all(TARGET, 1, "div"), "dom_query_selector_all");
-    assert_forwarding_eq(&blanket.dom_get_box_model(TARGET, 7), &direct.dom_get_box_model(TARGET, 7), "dom_get_box_model");
-    assert_forwarding_eq(&blanket.dom_resolve_node(TARGET, 11), &direct.dom_resolve_node(TARGET, 11), "dom_resolve_node");
-    assert_forwarding_eq(&blanket.dom_describe_node(TARGET, 7, 1), &direct.dom_describe_node(TARGET, 7, 1), "dom_describe_node");
-    assert_forwarding_eq(&blanket.dom_set_attribute(TARGET, 7, "id", "v"), &direct.dom_set_attribute(TARGET, 7, "id", "v"), "dom_set_attribute");
-    assert_forwarding_eq(&blanket.dom_remove_attribute(TARGET, 7, "id"), &direct.dom_remove_attribute(TARGET, 7, "id"), "dom_remove_attribute");
-    assert_forwarding_eq(&blanket.dom_get_outer_html(TARGET, 7), &direct.dom_get_outer_html(TARGET, 7), "dom_get_outer_html");
-    assert_forwarding_eq(&blanket.dom_set_outer_html(TARGET, 7, "<b/>"), &direct.dom_set_outer_html(TARGET, 7, "<b/>"), "dom_set_outer_html");
-    assert_forwarding_eq(&blanket.dom_request_node(TARGET, "obj-1"), &direct.dom_request_node(TARGET, "obj-1"), "dom_request_node");
+    assert_forwarding_eq(
+        &blanket.dom_get_document(TARGET, 3),
+        &direct.dom_get_document(TARGET, 3),
+        "dom_get_document",
+    );
+    assert_forwarding_eq(
+        &blanket.dom_query_selector(TARGET, 1, "div"),
+        &direct.dom_query_selector(TARGET, 1, "div"),
+        "dom_query_selector",
+    );
+    assert_forwarding_eq(
+        &blanket.dom_query_selector_all(TARGET, 1, "div"),
+        &direct.dom_query_selector_all(TARGET, 1, "div"),
+        "dom_query_selector_all",
+    );
+    assert_forwarding_eq(
+        &blanket.dom_get_box_model(TARGET, 7),
+        &direct.dom_get_box_model(TARGET, 7),
+        "dom_get_box_model",
+    );
+    assert_forwarding_eq(
+        &blanket.dom_resolve_node(TARGET, 11),
+        &direct.dom_resolve_node(TARGET, 11),
+        "dom_resolve_node",
+    );
+    assert_forwarding_eq(
+        &blanket.dom_describe_node(TARGET, 7, 1),
+        &direct.dom_describe_node(TARGET, 7, 1),
+        "dom_describe_node",
+    );
+    assert_forwarding_eq(
+        &blanket.dom_set_attribute(TARGET, 7, "id", "v"),
+        &direct.dom_set_attribute(TARGET, 7, "id", "v"),
+        "dom_set_attribute",
+    );
+    assert_forwarding_eq(
+        &blanket.dom_remove_attribute(TARGET, 7, "id"),
+        &direct.dom_remove_attribute(TARGET, 7, "id"),
+        "dom_remove_attribute",
+    );
+    assert_forwarding_eq(
+        &blanket.dom_get_outer_html(TARGET, 7),
+        &direct.dom_get_outer_html(TARGET, 7),
+        "dom_get_outer_html",
+    );
+    assert_forwarding_eq(
+        &blanket.dom_set_outer_html(TARGET, 7, "<b/>"),
+        &direct.dom_set_outer_html(TARGET, 7, "<b/>"),
+        "dom_set_outer_html",
+    );
+    assert_forwarding_eq(
+        &blanket.dom_request_node(TARGET, "obj-1"),
+        &direct.dom_request_node(TARGET, "obj-1"),
+        "dom_request_node",
+    );
 
-    assert_forwarding_eq(&blanket.network_enable(TARGET), &direct.network_enable(TARGET), "network_enable");
-    assert_forwarding_eq(&blanket.network_disable(TARGET), &direct.network_disable(TARGET), "network_disable");
+    assert_forwarding_eq(
+        &blanket.network_enable(TARGET),
+        &direct.network_enable(TARGET),
+        "network_enable",
+    );
+    assert_forwarding_eq(
+        &blanket.network_disable(TARGET),
+        &direct.network_disable(TARGET),
+        "network_disable",
+    );
     assert_forwarding_eq(
         &blanket.network_get_response_body(TARGET, "req-1"),
         &direct.network_get_response_body(TARGET, "req-1"),
@@ -1050,13 +1287,21 @@ fn blanket_impl_forwards_target_css_debugger_and_event_tap() {
     let blanket: Arc<dyn ServoBackend> = Arc::new(MockServoBackend::new());
     let direct = MockServoBackend::new();
 
-    assert_forwarding_eq(&blanket.target_get_targets(), &direct.target_get_targets(), "target_get_targets");
+    assert_forwarding_eq(
+        &blanket.target_get_targets(),
+        &direct.target_get_targets(),
+        "target_get_targets",
+    );
     assert_forwarding_eq(
         &blanket.target_create_target("https://x.test/"),
         &direct.target_create_target("https://x.test/"),
         "target_create_target",
     );
-    assert_forwarding_eq(&blanket.target_close_target(TARGET), &direct.target_close_target(TARGET), "target_close_target");
+    assert_forwarding_eq(
+        &blanket.target_close_target(TARGET),
+        &direct.target_close_target(TARGET),
+        "target_close_target",
+    );
     assert_forwarding_eq(
         &blanket.target_attach_to_target(TARGET),
         &direct.target_attach_to_target(TARGET),
@@ -1084,8 +1329,16 @@ fn blanket_impl_forwards_target_css_debugger_and_event_tap() {
         "css_get_matched_styles_for_node",
     );
 
-    assert_forwarding_eq(&blanket.debugger_enable(TARGET), &direct.debugger_enable(TARGET), "debugger_enable");
-    assert_forwarding_eq(&blanket.debugger_disable(TARGET), &direct.debugger_disable(TARGET), "debugger_disable");
+    assert_forwarding_eq(
+        &blanket.debugger_enable(TARGET),
+        &direct.debugger_enable(TARGET),
+        "debugger_enable",
+    );
+    assert_forwarding_eq(
+        &blanket.debugger_disable(TARGET),
+        &direct.debugger_disable(TARGET),
+        "debugger_disable",
+    );
     assert_forwarding_eq(
         &blanket.debugger_set_breakpoint_by_url(TARGET, "https://x.test/a.js", 3, 0),
         &direct.debugger_set_breakpoint_by_url(TARGET, "https://x.test/a.js", 3, 0),
@@ -1096,7 +1349,11 @@ fn blanket_impl_forwards_target_css_debugger_and_event_tap() {
         &direct.debugger_remove_breakpoint(TARGET, 42, 3, 0),
         "debugger_remove_breakpoint",
     );
-    assert_forwarding_eq(&blanket.debugger_pause(TARGET), &direct.debugger_pause(TARGET), "debugger_pause");
+    assert_forwarding_eq(
+        &blanket.debugger_pause(TARGET),
+        &direct.debugger_pause(TARGET),
+        "debugger_pause",
+    );
     assert_forwarding_eq(
         &blanket.debugger_resume(TARGET, Some(DebugStepAction::Into)),
         &direct.debugger_resume(TARGET, Some(DebugStepAction::Into)),
@@ -1119,7 +1376,10 @@ fn blanket_impl_forwards_target_css_debugger_and_event_tap() {
     );
 
     // event_tap:mock 无 tap → blanket 转发同样 None(缺臂会静默遮蔽内层 tap)。
-    assert!(blanket.event_tap().is_none(), "Arc<dyn> over tap-less mock must forward None");
+    assert!(
+        blanket.event_tap().is_none(),
+        "Arc<dyn> over tap-less mock must forward None"
+    );
     assert!(direct.event_tap().is_none());
 }
 
@@ -1128,7 +1388,10 @@ fn trait_default_event_tap_and_mock_helpers() {
     // @trace REQ-CDP-001 [level:integration]
     // trait 默认 event_tap 体(None)与 mock into_backend/call_function_on_value。
     let plain = MockServoBackend::new();
-    assert!(plain.event_tap().is_none(), "trait default event_tap must be None");
+    assert!(
+        plain.event_tap().is_none(),
+        "trait default event_tap must be None"
+    );
 
     // call_function_on_value 缺省 → undefined 形状;Some(json!(7)) → number。
     let mut m = MockServoBackend::new();
@@ -1157,7 +1420,9 @@ fn trait_default_event_tap_and_mock_helpers() {
 // 第三面:bridge_sender_backend.rs 通道 trait 实现(泵线程应答)
 // ═════════════════════════════════════════════════════════════════════════
 
-fn backend_with(f: impl Fn(&BridgeCommand) -> Option<Value> + Send + 'static) -> BridgeSenderBackend {
+fn backend_with(
+    f: impl Fn(&BridgeCommand) -> Option<Value> + Send + 'static,
+) -> BridgeSenderBackend {
     let (tx, rx) = bridge_channel(PUMP_TIMEOUT);
     spawn_answer_pump(rx, f);
     BridgeSenderBackend::new(tx)
@@ -1223,7 +1488,10 @@ fn bridge_runtime_faces_parse_envelope_and_properties() {
     let r = b.runtime_evaluate(TARGET, "1+1").unwrap();
     // 默认 canned envelope = undefined 形状(evaluate 契约由异常面测试补)。
     assert_eq!(r.result.type_, "undefined");
-    assert!(r.exception_details.is_none(), "no exceptionDetails in canned envelope");
+    assert!(
+        r.exception_details.is_none(),
+        "no exceptionDetails in canned envelope"
+    );
 
     // 带 exceptionDetails 的 envelope → 解析出 exception(text/line/col)。
     let b2 = backend_with(|_| {
@@ -1259,7 +1527,8 @@ fn bridge_runtime_faces_parse_envelope_and_properties() {
     b.runtime_release_object(TARGET, "obj-1").unwrap();
     b.runtime_enable(TARGET).unwrap();
     b.runtime_disable(TARGET).unwrap();
-    b.runtime_call_function_on(TARGET, "obj-1", "function(){}", &[]).unwrap();
+    b.runtime_call_function_on(TARGET, "obj-1", "function(){}", &[])
+        .unwrap();
 }
 
 #[test]
@@ -1309,7 +1578,10 @@ fn bridge_dom_css_faces_parse_node_and_style_shapes() {
     assert_eq!(inline.css_properties[0].name, "color");
     assert_eq!(matched.matched_rules.len(), 1);
     assert_eq!(matched.matched_rules[0].selector, "div.cls");
-    assert_eq!(matched.matched_rules[0].style.css_properties[0].name, "margin");
+    assert_eq!(
+        matched.matched_rules[0].style.css_properties[0].name,
+        "margin"
+    );
 }
 
 #[test]
@@ -1392,7 +1664,10 @@ fn bridge_network_input_emulation_target_faces() {
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].target_id, "t-1");
     assert_eq!(targets[0].type_, "page");
-    assert!(targets[0].attached, "in-memory client is inherently attached");
+    assert!(
+        targets[0].attached,
+        "in-memory client is inherently attached"
+    );
     assert_eq!(
         targets[0].browser_context_id.as_deref(),
         Some("bao-default-context")
@@ -1410,7 +1685,8 @@ fn bridge_debugger_faces_parse_channel_shapes() {
     b.debugger_disable(TARGET).unwrap();
     b.debugger_pause(TARGET).unwrap();
     b.debugger_remove_breakpoint(TARGET, 42, 3, 0).unwrap();
-    b.debugger_resume(TARGET, Some(DebugStepAction::Out)).unwrap();
+    b.debugger_resume(TARGET, Some(DebugStepAction::Out))
+        .unwrap();
 
     let bp = b
         .debugger_set_breakpoint_by_url(TARGET, "https://x.test/a.js", 10, 2)
@@ -1440,18 +1716,54 @@ fn bridge_not_supported_faces_are_explicit() {
     // 通道无生产路径的方法 = 显式 NotSupported(禁假成功)。每臂逐字面登记。
     let b = default_backend();
     let cases: Vec<(&str, Box<dyn Fn() -> Result<(), BridgeError>>)> = vec![
-        ("Page.getNavigationHistory", Box::new(|| b.page_navigation_history(TARGET).map(|_| ()))),
-        ("Page.navigateToHistoryEntry", Box::new(|| b.page_navigate_to_history_entry(TARGET, 1))),
-        ("Page.printToPDF", Box::new(|| b.page_print_to_pdf(TARGET).map(|_| ()))),
-        ("Input.dispatchTouchEvent", Box::new(|| b.input_dispatch_touch_event(TARGET, "touchStart", &[]))),
-        ("Input.setIgnoreInputEvents", Box::new(|| b.input_set_ignore_input_events(TARGET, false))),
-        ("Emulation.clearDeviceMetricsOverride", Box::new(|| b.emulation_clear_device_metrics(TARGET))),
-        ("Emulation.setGeolocationOverride", Box::new(|| b.emulation_set_geolocation_override(TARGET, 0.0, 0.0, 0.0))),
-        ("Target.attachToTarget", Box::new(|| b.target_attach_to_target(TARGET).map(|_| ()))),
-        ("Target.detachFromTarget", Box::new(|| b.target_detach_from_target("s-1"))),
-        ("DOM.setOuterHTML", Box::new(|| b.dom_set_outer_html(TARGET, 7, "<b/>"))),
-        ("DOM.requestNode", Box::new(|| b.dom_request_node(TARGET, "obj-1").map(|_| ()))),
-        ("DOM.getBoxModel", Box::new(|| b.dom_get_box_model(TARGET, 7).map(|_| ()))),
+        (
+            "Page.getNavigationHistory",
+            Box::new(|| b.page_navigation_history(TARGET).map(|_| ())),
+        ),
+        (
+            "Page.navigateToHistoryEntry",
+            Box::new(|| b.page_navigate_to_history_entry(TARGET, 1)),
+        ),
+        (
+            "Page.printToPDF",
+            Box::new(|| b.page_print_to_pdf(TARGET).map(|_| ())),
+        ),
+        (
+            "Input.dispatchTouchEvent",
+            Box::new(|| b.input_dispatch_touch_event(TARGET, "touchStart", &[])),
+        ),
+        (
+            "Input.setIgnoreInputEvents",
+            Box::new(|| b.input_set_ignore_input_events(TARGET, false)),
+        ),
+        (
+            "Emulation.clearDeviceMetricsOverride",
+            Box::new(|| b.emulation_clear_device_metrics(TARGET)),
+        ),
+        (
+            "Emulation.setGeolocationOverride",
+            Box::new(|| b.emulation_set_geolocation_override(TARGET, 0.0, 0.0, 0.0)),
+        ),
+        (
+            "Target.attachToTarget",
+            Box::new(|| b.target_attach_to_target(TARGET).map(|_| ())),
+        ),
+        (
+            "Target.detachFromTarget",
+            Box::new(|| b.target_detach_from_target("s-1")),
+        ),
+        (
+            "DOM.setOuterHTML",
+            Box::new(|| b.dom_set_outer_html(TARGET, 7, "<b/>")),
+        ),
+        (
+            "DOM.requestNode",
+            Box::new(|| b.dom_request_node(TARGET, "obj-1").map(|_| ())),
+        ),
+        (
+            "DOM.getBoxModel",
+            Box::new(|| b.dom_get_box_model(TARGET, 7).map(|_| ())),
+        ),
     ];
     for (face, call) in cases {
         let err = call().expect_err(&format!("{face} must be explicitly NotSupported"));
@@ -1476,9 +1788,8 @@ fn bridge_eval_json_doc_error_arms_and_closed_channel() {
         other => panic!("expected ServoError, got {other:?}"),
     }
     // (b) result.value 非法 JSON 字符串 → 解析失败。
-    let b2 = backend_with(|_| {
-        Some(json!({ "result": { "type": "string", "value": "not-json{{{" } }))
-    });
+    let b2 =
+        backend_with(|_| Some(json!({ "result": { "type": "string", "value": "not-json{{{" } })));
     let err = b2.page_frame_tree(TARGET).unwrap_err();
     match err {
         BridgeError::ServoError(m) => assert!(m.contains("unparseable JSON"), "{m}"),

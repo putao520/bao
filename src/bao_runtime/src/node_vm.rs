@@ -565,11 +565,12 @@ unsafe fn throw_invalid_arg_type(cx: *mut JSContext, name: &str, expected: &str,
             let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
             if !msg_js.is_null() {
                 rooted!(&in(cx_ref) let msg_root = mozjs::jsval::StringValue(&*msg_js));
-                let elems = [msg_root.get()];
-                let call_args = HandleValueArray {
-                    length_: 1,
-                    elements_: elems.as_ptr(),
-                };
+                // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED
+                // ValueArray across JS_CallFunctionValue (require.rs
+                // canary-pinned form).
+                rooted!(&in(cx_ref) let args_array =
+                    mozjs_sys::jsgc::ValueArray::<1>::new([msg_root.get()]));
+                let call_args = JS::HandleValueArray::from(&args_array);
                 rooted!(&in(cx_ref) let undef_this = ptr::null_mut::<JSObject>());
                 let mut err_val = UndefinedValue();
                 let called = JS_CallFunctionValue(

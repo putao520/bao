@@ -469,6 +469,53 @@ fn c5_cp_sync_faces_deep() {
 #[cfg(unix)]
 fn c5_cp_sync_faces_deep_body() {
     let mut ctx = setup_ctx();
+    // exec is ASYNC (node v24.19.0 oracle 2026-10-27, E-cp wave): exec()
+    // spawns the shell and delivers the callback at 'close' — the label
+    // checks below must run AFTER delivery, not inline. The bounded drain
+    // hook (each eval pumps the timer loop) + common::wait_until_deadline is
+    // the file's proven settle shape (c5_cp_async_kill_and_stdin).
+    ctx.set_post_eval_hook(common::bounded_drain_hook);
+
+    // Schedule the two exec-callback children and the no-callback child up
+    // front; the checks then read the recorded deliveries.
+    let setup = eval_str(
+        &mut ctx,
+        r#"
+        var cp = require("child_process");
+        globalThis.__c5cbOk = { done: false, err: "unset", out: "", errout: "unset" };
+        cp.exec("printf exec-cb-ok", function(err, so, se) {
+            globalThis.__c5cbOk = { done: true, err: err, out: so, errout: se };
+        });
+        globalThis.__c5cbFail = { done: false, err: "unset" };
+        cp.exec("/bin/sh -c 'exit 7'", function(err) {
+            globalThis.__c5cbFail = { done: true, err: err };
+        });
+        globalThis.__c5noCb = cp.exec("printf exec-nocb");
+        "setup-ok"
+    "#,
+    );
+    assert_eq!(setup, "setup-ok");
+
+    // Settle window (E21/E27 law): the callback lands on the shim's poll
+    // pump, not on the scheduling eval — a wall-clock window with an
+    // inter-eval timer drain; red within it = genuine event loss. The
+    // no-callback child registers no listeners (the no-cb face), so the
+    // settle keys on the two callback deliveries only.
+    let settled = common::wait_until_deadline(
+        &mut ctx,
+        "(globalThis.__c5cbOk.done === true && globalThis.__c5cbFail.done === true) ? 'y' : 'n'",
+        60,
+        10,
+        eval_str,
+    );
+    let cb_state = eval_str(
+        &mut ctx,
+        "JSON.stringify({ok: globalThis.__c5cbOk, fail: String(globalThis.__c5cbFail.err && globalThis.__c5cbFail.err.message)})",
+    );
+    assert!(
+        settled,
+        "exec callback faces must settle within the 10s window; state: {cb_state}"
+    );
 
     assert_labels(
         &mut ctx,
@@ -617,31 +664,38 @@ fn c5_cp_sync_faces_deep_body() {
         });
 
         // ── exec: callback success + failure + arg error arms ──
-        var cbOk = { done: false, err: "unset", out: "", errout: "unset" };
-        cp.exec("printf exec-cb-ok", function(err, so, se) {
-            cbOk = { done: true, err: err, out: so, errout: se };
-        });
+        // (children scheduled before the settle window above — node delivers
+        // the callback at 'close', not inline; the checks read the recorded
+        // deliveries from globalThis.__c5cbOk / __c5cbFail / __c5noCb.)
         check("exec_cb_success", function() {
+            var cbOk = globalThis.__c5cbOk;
             return cbOk.done && cbOk.err === null && cbOk.out === "exec-cb-ok" && cbOk.errout === "";
-        });
-        var cbFail = { done: false, err: "unset" };
-        cp.exec("/bin/sh -c 'exit 7'", function(err) {
-            cbFail = { done: true, err: err };
         });
         check("exec_cb_failure_msg", function() {
             // node v24.19.0 oracle (2026-10-18): message = "Command failed: "
             // + cmd + "\n" + stderr — the trailing newline stands even with
             // empty stderr; the error is a REAL Error carrying code (number),
             // killed: false, signal: null, cmd.
-            var e = cbFail.err;
-            return cbFail.done && e instanceof Error
+            var e = globalThis.__c5cbFail.err;
+            return globalThis.__c5cbFail.done && e instanceof Error
                 && String(e.message) === "Command failed: /bin/sh -c 'exit 7'\n"
                 && e.code === 7 && e.killed === false && e.signal === null
                 && e.cmd === "/bin/sh -c 'exit 7'";
         });
-        var noCb = cp.exec("printf exec-nocb");
         check("exec_nocallback_child_shape", function() {
-            return typeof noCb.stdout === "string" && noCb.stdout === "exec-nocb" && noCb.exitCode === 0 && noCb.pid > 0;
+            // node v24.19.0 oracle (2026-10-27): no-callback exec returns the
+            // live ChildProcess immediately — stdout is a stream OBJECT
+            // (Socket face), pid > 0, exitCode still null right after the
+            // scheduling eval. The former pin (sync string stdout + immediate
+            // exitCode 0) described the deleted inline-sync native, not
+            // node's async exec. (Registered divergence: node updates
+            // exitCode on close even with zero listeners; the bao shim's
+            // poll pump arms on listener registration, so a listener-less
+            // child's exitCode stays null — the shim documents this at the
+            // exec no-callback return.)
+            var noCb = globalThis.__c5noCb;
+            return noCb && noCb.pid > 0 && noCb.exitCode === null
+                && typeof noCb.stdout === "object";
         });
         check("exec_noargs_throws", function() {
             try { cp.exec(); return "NO-THROW"; }
@@ -842,18 +896,31 @@ fn c5_cp_async_kill_and_stdin_body() {
     );
     assert_eq!(setup, "setup-ok");
 
-    let done = common::wait_until_with(
+    // Wall-clock window (E27 sweep): don't race the cp drain thread's
+    // reap/push chain with an iteration-bounded spin (E21 forensics: the
+    // same race redged cp_followup 5/15 fleet rounds) — see
+    // common::wait_until_deadline.
+    let done = common::wait_until_deadline(
         &mut ctx,
         "(globalThis.__kill9done === true && globalThis.__termdone === true && globalThis.__stdindone === true) ? 'y' : 'n'",
         60,
-        80,
+        10,
         eval_str,
     );
     let klog = eval_str(&mut ctx, "globalThis.__klog.join('|')");
     let stdin_result = eval_str(&mut ctx, "globalThis.__stdinGot");
     assert!(done, "async kill/stdin lifecycle must complete; klog: {klog}; stdin got: {stdin_result:?}");
 
-    for part in ["pid9=true", "ret9=true/flag=true", "kill9=-9/9", "term=-15/15"] {
+    // node oracle (v24.19.0 live probe 2026-10-25): a signal death reports
+    // exit(null, "SIGNAME") — no exit code, the signal NAME string (the
+    // former pins here, "kill9=-9/9" / "term=-15/15", held the leaked
+    // internal -signal wire encoding; REQ-ENG-004 E28 normalization).
+    for part in [
+        "pid9=true",
+        "ret9=true/flag=true",
+        "kill9=null/SIGKILL",
+        "term=null/SIGTERM",
+    ] {
         assert!(
             klog.split('|').any(|entry| entry == part),
             "kill lifecycle log must contain '{part}', got: {klog}"

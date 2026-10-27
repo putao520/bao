@@ -13,7 +13,7 @@ use bao_engine::context::RawValueRootGuard;
 use bun_core::ZBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::{
-    BooleanValue, DoubleValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue,
+    BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, PrivateValue, StringValue,
     UndefinedValue,
 };
 use mozjs::realm::AutoRealm;
@@ -30,7 +30,9 @@ use bun_uws_sys::udp::PacketBuffer;
 use bun_uws_sys::udp::Socket as UdpSocket;
 use bun_uws_sys::{CloseCode, ConnectResult, Loop, SocketKind, us_socket_t};
 
+use crate::bun_udp::UdpUserData;
 use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove, gc_store_unique_key};
+use crate::slot_gate::{set_slot, slot_ptr};
 // Platform socket-type namespace: the winsock mirrors in
 // bun_windows_sys::ws2_32 carry POSIX field names and identical layouts
 // (size/align-asserted), so every producer/consumer below is cfg-blind.
@@ -45,7 +47,62 @@ use bun_windows_sys::ws2_32::{
 
 static LISTEN_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 static CONNECT_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
-static UDP_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+// ──────────────────── Pointer carrier JSClasses (BCE-20261025-FFI-SLOT-GATE) ────────────────────
+
+// The raw uWS / user-data pointers below live ONLY in engine-private reserved
+// slots: JS can neither read nor write them. This retires the former
+// `_socketPtr`/`_udPtr`/`_appPtr` own-property carriers (attrs=0
+// writable+configurable own properties holding PrivateValue / DoubleValue —
+// a page could assign any subnormal double, e.g. `s._socketPtr = 1e-320`,
+// whose bits pass the `(asBits & 0xFFFF000000000000) == 0` private-encoding
+// check and reach `to_private()` → wild `&*ptr` deref / arbitrary-address
+// `Box::from_raw`). A JS-visible carrier is unfixable at the bit level: any
+// x86-64 userland pointer (< 2^48) encodes to a double whose top 16 bits are
+// zero, and every such bit pattern is itself a JS-expressible double, so the
+// encoding check cannot discriminate engine-written from JS-written values.
+//
+// Per-file reserved-slot carrier classes (same fix as bun_udp
+// `UDP_SOCKET_CLASS`, mirror bun_ffi / node_url `sp_take_pairs`).
+
+// Bun.listen HTTP server (`build_http_server` server object).
+const SLOT_HTTP_SRV_APP_PTR: u32 = 0;
+const SLOT_HTTP_SRV_UD_PTR: u32 = 1;
+const HTTP_SERVER_CLASS: JSClass = JSClass {
+    name: c"BunListenHTTPServer".as_ptr(),
+    flags: (2 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: ::std::ptr::null(),
+    spec: ::std::ptr::null(),
+    ext: ::std::ptr::null(),
+    oOps: ::std::ptr::null(),
+};
+
+// Bun.listen TCP server (`build_tcp_server` server object) — owner/user-data
+// box only; the SocketGroup is reachable through that box.
+const SLOT_TCP_SRV_UD_PTR: u32 = 0;
+const TCP_SERVER_CLASS: JSClass = JSClass {
+    name: c"BunListenTCPServer".as_ptr(),
+    flags: (1 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: ::std::ptr::null(),
+    spec: ::std::ptr::null(),
+    ext: ::std::ptr::null(),
+    oOps: ::std::ptr::null(),
+};
+
+// Bun.connect socket — both the Bun.connect entry (build at `bun_connect`)
+// and the Bun.listen TCP-accept bridge (`build_tcp_socket_obj`, shared TCP
+// socket JS object builder) carry their raw pointers on this one class's
+// reserved slots.
+const SLOT_CONN_SOCK_PTR: u32 = 0;
+const SLOT_CONN_UD_PTR: u32 = 1;
+const CONNECT_SOCKET_CLASS: JSClass = JSClass {
+    name: c"BunListenSocket".as_ptr(),
+    flags: (2 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
+    cOps: ::std::ptr::null(),
+    spec: ::std::ptr::null(),
+    ext: ::std::ptr::null(),
+    oOps: ::std::ptr::null(),
+};
 
 // ──────────────────── Event loop helper ────────────────────
 
@@ -182,6 +239,13 @@ thread_local! {
     static CONNECT_RESULT: Cell<Option<usize>> = Cell::new(None);
     /// Whether a connect error occurred.
     static CONNECT_ERROR: Cell<bool> = Cell::new(false);
+}
+
+/// @trace REQ-ENG-004 — process.getActiveResourcesInfo read face: live
+/// Bun.listen TCP sockets (connected peers; node v24 oracle face
+/// "TCPSocketWrap"). JS thread only (thread-local state).
+pub fn active_listen_tcp_count() -> usize {
+    LISTEN_TCP_SOCKETS.with(|m| m.borrow().len())
 }
 
 // ──────────────────── Bun.listen ────────────────────
@@ -498,10 +562,9 @@ fn build_http_server(
         }
 
         rooted!(&in(cx_ref) let req_val_elem = ObjectValue(req_obj.get()));
-        let call_args = HandleValueArray {
-            length_: 1,
-            elements_: &*req_val_elem.handle(),
-        };
+        rooted!(&in(cx_ref) let call_args_rooted =
+            mozjs_sys::jsgc::ValueArray::<1>::new([req_val_elem.handle().get()]));
+        let call_args = JS::HandleValueArray::from(&call_args_rooted);
         let mut rval = UndefinedValue();
         let rval_h = MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
@@ -600,7 +663,10 @@ fn build_http_server(
     // Build JS Server object
     let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let server_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
+    // HTTP_SERVER_CLASS carries the two pointer reserved slots
+    // (BCE-20261025-FFI-SLOT-GATE; default proto stays Object.prototype, same
+    // as the retired JS_NewPlainObject shape)
+    rooted!(&in(cx_ref) let server_obj = unsafe { w2::JS_NewObject(cx_ref, &HTTP_SERVER_CLASS) });
     if server_obj.get().is_null() {
         args.rval().set(UndefinedValue());
         return true;
@@ -641,18 +707,15 @@ fn build_http_server(
         }
     }
 
-    // Store app_ptr as private property
-    let app_val = mozjs::jsval::PrivateValue(app_ptr as *const core::ffi::c_void);
-    rooted!(&in(cx_ref) let app_h = app_val);
+    // Store app_ptr in the engine-private reserved slot — JS can neither read
+    // nor write reserved slots (BCE-20261025-FFI-SLOT-GATE)
     unsafe {
-        JS_DefineProperty(cx, srv_h, c"_appPtr".as_ptr(), app_h.handle().into(), 0);
+        set_slot(server_obj.get(), SLOT_HTTP_SRV_APP_PTR, app_ptr as *const core::ffi::c_void);
     }
 
-    // Store ud_ptr for cleanup
-    let ud_val = mozjs::jsval::PrivateValue(ud_ptr as *const core::ffi::c_void);
-    rooted!(&in(cx_ref) let ud_h = ud_val);
+    // Store ud_ptr for cleanup in the other reserved slot
     unsafe {
-        JS_DefineProperty(cx, srv_h, c"_udPtr".as_ptr(), ud_h.handle().into(), 0);
+        set_slot(server_obj.get(), SLOT_HTTP_SRV_UD_PTR, ud_ptr as *const core::ffi::c_void);
     }
 
     // Store GcStore keys
@@ -684,66 +747,37 @@ fn build_http_server(
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-        let this_h = this_obj.handle().into();
-
-        // Read and nullify _appPtr
-        let mut app_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_appPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut app_val,
-            },
-        );
-        let app_ptr = if app_val.is_double() && (app_val.asBits_ & 0xFFFF000000000000) == 0 {
-            app_val.to_private() as *mut App<false>
-        } else {
-            ptr::null_mut()
-        };
+    
+        // Read and clear the engine-private reserved slots (BCE-20261025-FFI-SLOT-GATE)
+        let app_ptr =
+            slot_ptr(cx, this_obj.handle(), &HTTP_SERVER_CLASS, SLOT_HTTP_SRV_APP_PTR)
+                as *mut App<false>;
         if !app_ptr.is_null() {
             (*app_ptr).close();
             unsafe {
                 crate::node_http::unregister_active_app(app_ptr);
             }
             App::<false>::destroy(app_ptr);
-            // Nullify _appPtr to prevent double-free
-            let undef = UndefinedValue();
-            let undef_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &undef,
-            };
-            JS_SetProperty(cx, this_h, c"_appPtr".as_ptr(), undef_h);
+            // Clear the reserved slot to prevent double-free
+            unsafe {
+                set_slot(this_obj.get(), SLOT_HTTP_SRV_APP_PTR, ::std::ptr::null());
+            }
         }
 
         // Free user data
-        let mut ud_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_udPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ud_val,
-            },
-        );
-        if ud_val.is_double() && (ud_val.asBits_ & 0xFFFF000000000000) == 0 {
-            let ud_ptr = ud_val.to_private() as *mut ListenHttpUserData;
-            if !ud_ptr.is_null() {
-                drop(Box::from_raw(ud_ptr));
+        let ud_ptr =
+            slot_ptr(cx, this_obj.handle(), &HTTP_SERVER_CLASS, SLOT_HTTP_SRV_UD_PTR)
+                as *mut ListenHttpUserData;
+        if !ud_ptr.is_null() {
+            drop(Box::from_raw(ud_ptr));
+            unsafe {
+                set_slot(this_obj.get(), SLOT_HTTP_SRV_UD_PTR, ::std::ptr::null());
             }
-            let undef = UndefinedValue();
-            let undef_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &undef,
-            };
-            JS_SetProperty(cx, this_h, c"_udPtr".as_ptr(), undef_h);
         }
 
         // Clean up GcStore entries
-        cleanup_gc_key(cx, this_h, c"_fetchCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_wsCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_fetchCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_wsCbKey".as_ptr());
 
         args.rval().set(UndefinedValue());
         true
@@ -918,10 +952,12 @@ fn build_tcp_server(
             .store(actual_port, Ordering::Release);
     }
 
-    // Build JS Server object
+    // Build JS Server object — TCP_SERVER_CLASS carries the owner-pointer
+    // reserved slot (BCE-20261025-FFI-SLOT-GATE; default proto stays
+    // Object.prototype, same as the retired JS_NewPlainObject shape)
     let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let server_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
+    rooted!(&in(cx_ref) let server_obj = unsafe { w2::JS_NewObject(cx_ref, &TCP_SERVER_CLASS) });
     if server_obj.get().is_null() {
         // The server is live but can never gain a JS identity. Compliant
         // teardown order (deinit contract, context.c): close_all runs the
@@ -969,13 +1005,11 @@ fn build_tcp_server(
         }
     }
 
-    // Store the owner pointer as a private property; the group is reachable
-    // through the box (ListenTcpUserData.group), so no separate _groupPtr
-    // alias is kept on the JS object.
-    let ud_val = mozjs::jsval::PrivateValue(ud_ptr as *const core::ffi::c_void);
-    rooted!(&in(cx_ref) let u_h = ud_val);
+    // Store the owner pointer in the engine-private reserved slot; the group
+    // is reachable through the box (ListenTcpUserData.group), so no separate
+    // _groupPtr alias is kept on the JS object (BCE-20261025-FFI-SLOT-GATE).
     unsafe {
-        JS_DefineProperty(cx, srv_h, c"_udPtr".as_ptr(), u_h.handle().into(), 0);
+        set_slot(server_obj.get(), SLOT_TCP_SRV_UD_PTR, ud_ptr as *const core::ffi::c_void);
     }
 
     // server.stop()
@@ -985,8 +1019,7 @@ fn build_tcp_server(
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-        let this_h = this_obj.handle().into();
-
+    
         // Teardown the server: close_all runs the FULL close dispatches of
         // every socket in the group (accepted sockets + the listener) with
         // the embedding storage still alive, destroy (= us_socket_group_deinit)
@@ -994,44 +1027,31 @@ fn build_tcp_server(
         // storage embeds the group (ListenTcpUserData.group) — freed. Freeing
         // it any earlier would be the BCE-20260926-001 class (read-after-free
         // of s->group when a close dispatch returns).
-        let mut ud_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_udPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ud_val,
-            },
-        );
-        if ud_val.is_double() && (ud_val.asBits_ & 0xFFFF000000000000) == 0 {
-            let ud_ptr = ud_val.to_private() as *mut ListenTcpUserData;
-            if !ud_ptr.is_null() {
-                let group_ptr: *mut SocketGroup = &raw mut (*ud_ptr).group;
-                (*group_ptr).close_all();
-                SocketGroup::destroy(group_ptr);
-                // Drop the JS-idle liveness token registered in
-                // build_tcp_server (see the BCE-007 note there).
-                unsafe {
-                    crate::node_http::unregister_active_app(
-                        group_ptr as *mut bun_uws_sys::app::App<false>,
-                    )
-                };
-                drop(Box::from_raw(ud_ptr));
-            }
-            let undef = UndefinedValue();
-            let undef_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &undef,
+        let ud_ptr =
+            slot_ptr(cx, this_obj.handle(), &TCP_SERVER_CLASS, SLOT_TCP_SRV_UD_PTR)
+                as *mut ListenTcpUserData;
+        if !ud_ptr.is_null() {
+            let group_ptr: *mut SocketGroup = &raw mut (*ud_ptr).group;
+            (*group_ptr).close_all();
+            SocketGroup::destroy(group_ptr);
+            // Drop the JS-idle liveness token registered in
+            // build_tcp_server (see the BCE-007 note there).
+            unsafe {
+                crate::node_http::unregister_active_app(
+                    group_ptr as *mut bun_uws_sys::app::App<false>,
+                )
             };
-            JS_SetProperty(cx, this_h, c"_udPtr".as_ptr(), undef_h);
+            drop(Box::from_raw(ud_ptr));
+            unsafe {
+                set_slot(this_obj.get(), SLOT_TCP_SRV_UD_PTR, ::std::ptr::null());
+            }
         }
 
         // Clean up GcStore entries
-        cleanup_gc_key(cx, this_h, c"_connectCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_dataCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_closeCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_endCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_connectCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_dataCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_closeCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_endCbKey".as_ptr());
 
         args.rval().set(UndefinedValue());
         true
@@ -1447,10 +1467,12 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         };
     }
 
-    // Build JS Socket object
+    // Build JS Socket object — CONNECT_SOCKET_CLASS carries the socket/user-data
+    // pointer reserved slots (BCE-20261025-FFI-SLOT-GATE; default proto stays
+    // Object.prototype, same as the retired JS_NewPlainObject shape)
     let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let socket_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
+    rooted!(&in(cx_ref) let socket_obj = unsafe { w2::JS_NewObject(cx_ref, &CONNECT_SOCKET_CLASS) });
     if socket_obj.get().is_null() {
         // The connection is live but can never gain a JS identity. Compliant
         // teardown order (deinit contract, context.c): close() runs the FULL
@@ -1474,23 +1496,15 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     }
     let sock_h = socket_obj.handle().into();
 
-    // Store socket pointer as double value (up to 2^53 lossless)
-    rooted!(&in(cx_ref) let ptr_val = DoubleValue(socket_key as f64));
+    // Store socket + user-data pointers in the engine-private reserved slots —
+    // JS can neither read nor write reserved slots (BCE-20261025-FFI-SLOT-GATE).
+    // PrivateValue preserves the full 64-bit pointer (the retired DoubleValue
+    // carrier truncated to 2^53).
     unsafe {
-        JS_DefineProperty(
-            cx,
-            sock_h,
-            c"_socketPtr".as_ptr(),
-            ptr_val.handle().into(),
-            0,
-        );
+        set_slot(socket_obj.get(), SLOT_CONN_SOCK_PTR, socket_key as *const core::ffi::c_void);
     }
-
-    // Store ud_ptr
-    let ud_jsval = mozjs::jsval::PrivateValue(ud_ptr as *const core::ffi::c_void);
-    rooted!(&in(cx_ref) let ud_h = ud_jsval);
     unsafe {
-        JS_DefineProperty(cx, sock_h, c"_udPtr".as_ptr(), ud_h.handle().into(), 0);
+        set_slot(socket_obj.get(), SLOT_CONN_UD_PTR, ud_ptr as *const core::ffi::c_void);
     }
 
     // Store GcStore keys as private properties for cleanup
@@ -1692,23 +1706,9 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-        let this_h = this_obj.handle().into();
-
-        let mut ptr_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_socketPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ptr_val,
-            },
-        );
-        let socket_key = if ptr_val.is_double() {
-            ptr_val.to_double() as usize
-        } else {
-            0
-        };
+    
+        let socket_key =
+        slot_ptr(cx, this_obj.handle(), &CONNECT_SOCKET_CLASS, SLOT_CONN_SOCK_PTR) as usize;
         if socket_key == 0 {
             args.rval().set(BooleanValue(false));
             return true;
@@ -1735,20 +1735,11 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-        let this_h = this_obj.handle().into();
-
-        let mut ptr_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_socketPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ptr_val,
-            },
-        );
-        if ptr_val.is_double() {
-            let socket_ptr = ptr_val.to_double() as usize as *mut us_socket_t;
+    
+        let socket_ptr =
+            slot_ptr(cx, this_obj.handle(), &CONNECT_SOCKET_CLASS, SLOT_CONN_SOCK_PTR)
+                as *mut us_socket_t;
+        if !socket_ptr.is_null() {
             if argc > 0 {
                 let data: Vec<u8> = if (*args.get(0).ptr).is_string() {
                     crate::js_to_rust_string(cx, *args.get(0).ptr).into_bytes()
@@ -1770,7 +1761,7 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         }
 
         // Fire end callback
-        let ud = get_connect_ud(cx, this_h);
+        let ud = get_connect_ud(cx, this_obj.handle());
         if let Some(ud_ref) = ud {
             let _ = invoke_js_callback(ud_ref.cx, &ud_ref.end_cb_key, &[]);
         }
@@ -1786,53 +1777,31 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-        let this_h = this_obj.handle().into();
-
-        let mut ptr_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_socketPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ptr_val,
-            },
-        );
-        if ptr_val.is_double() {
-            let socket_ptr = ptr_val.to_double() as usize as *mut us_socket_t;
+    
+        let socket_ptr =
+            slot_ptr(cx, this_obj.handle(), &CONNECT_SOCKET_CLASS, SLOT_CONN_SOCK_PTR)
+                as *mut us_socket_t;
+        if !socket_ptr.is_null() {
             unsafe {
                 (*socket_ptr).close(CloseCode::failure);
             }
         }
 
         // Clean up GcStore + user data
-        cleanup_gc_key(cx, this_h, c"_dataCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_errorCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_closeCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_openCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_endCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_dataCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_errorCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_closeCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_openCbKey".as_ptr());
+        cleanup_gc_key(cx, this_obj.handle(), c"_endCbKey".as_ptr());
 
-        let mut ud_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_udPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ud_val,
-            },
-        );
-        if ud_val.is_double() && (ud_val.asBits_ & 0xFFFF000000000000) == 0 {
-            let ud_ptr = ud_val.to_private() as *mut ConnectUserData;
-            if !ud_ptr.is_null() {
-                drop(Box::from_raw(ud_ptr));
+        let ud_ptr =
+            slot_ptr(cx, this_obj.handle(), &CONNECT_SOCKET_CLASS, SLOT_CONN_UD_PTR)
+                as *mut ConnectUserData;
+        if !ud_ptr.is_null() {
+            drop(Box::from_raw(ud_ptr));
+            unsafe {
+                set_slot(this_obj.get(), SLOT_CONN_UD_PTR, ::std::ptr::null());
             }
-            let undef = UndefinedValue();
-            let undef_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &undef,
-            };
-            JS_SetProperty(cx, this_h, c"_udPtr".as_ptr(), undef_h);
         }
 
         args.rval().set(UndefinedValue());
@@ -1869,459 +1838,6 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     // Return the Promise — re-read the live address from the root created at
     // entry (the build window above is full of GC points; e206 class).
     args.rval().set(ObjectValue(promise_r.get()));
-    true
-}
-
-// ──────────────────── Bun.udpSocket ────────────────────
-
-/// User data for Bun.udpSocket.
-struct UdpUserData {
-    data_cb_key: Option<String>,
-    drain_cb_key: Option<String>,
-    close_cb_key: Option<String>,
-    error_cb_key: Option<String>,
-    cx: *mut JSContext,
-}
-
-/// @trace REQ-BAO-API-017 [api:Bun.udpSocket] Bun.udpSocket(hostname, port) -> UDPSocket
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-
-    // Bun.udpSocket(options) — parse options object
-    let mut port: u16 = 0;
-    let mut hostname = "0.0.0.0".to_string();
-    let mut on_data: Option<*mut JSObject> = None;
-    let mut on_drain: Option<*mut JSObject> = None;
-    let mut on_close: Option<*mut JSObject> = None;
-    let mut on_error: Option<*mut JSObject> = None;
-
-    if argc > 0 {
-        let opts_val = *args.get(0).ptr;
-        // Support both Bun.udpSocket(port, hostname) and Bun.udpSocket(options)
-        if opts_val.is_object() {
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-            let cx_ref = &mut wrapped_cx;
-            rooted!(&in(cx_ref) let opts_obj = opts_val.to_object());
-            let opts_h = opts_obj.handle().into();
-
-            let mut pv = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                opts_h,
-                c"port".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut pv,
-                },
-            );
-            if pv.is_int32() {
-                port = pv.to_int32().max(0) as u16;
-            } else if pv.is_double() {
-                port = pv.to_double().max(0.0) as u16;
-            }
-
-            let mut hv = UndefinedValue();
-            JS_GetProperty(
-                cx,
-                opts_h,
-                c"hostname".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut hv,
-                },
-            );
-            if hv.is_string() {
-                hostname = crate::js_to_rust_string(cx, hv);
-            }
-
-            on_data = extract_js_callback(cx, opts_h, "data");
-            on_drain = extract_js_callback(cx, opts_h, "drain");
-            on_close = extract_js_callback(cx, opts_h, "close");
-            on_error = extract_js_callback(cx, opts_h, "error");
-        } else if opts_val.is_int32() {
-            // Bun.udpSocket(port) shorthand
-            port = opts_val.to_int32().max(0) as u16;
-            if argc > 1 && (*args.get(1).ptr).is_string() {
-                hostname = crate::js_to_rust_string(cx, *args.get(1).ptr);
-            }
-        }
-    }
-
-    let udp_id = UDP_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    // Store callbacks
-    let data_cb_key = on_data.map(|cb| {
-        let k = gc_store_unique_key(&format!("udp_data_{}", udp_id));
-        gc_store_insert(cx, &k, cb);
-        k
-    });
-    let drain_cb_key = on_drain.map(|cb| {
-        let k = gc_store_unique_key(&format!("udp_drain_{}", udp_id));
-        gc_store_insert(cx, &k, cb);
-        k
-    });
-    let close_cb_key = on_close.map(|cb| {
-        let k = gc_store_unique_key(&format!("udp_close_{}", udp_id));
-        gc_store_insert(cx, &k, cb);
-        k
-    });
-    let error_cb_key = on_error.map(|cb| {
-        let k = gc_store_unique_key(&format!("udp_error_{}", udp_id));
-        gc_store_insert(cx, &k, cb);
-        k
-    });
-
-    crate::timers::with_event_loop(|_| {});
-
-    let loop_ = get_loop();
-    if loop_.is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    // Build user data (stored as udp socket user_data)
-    let ud = Box::new(UdpUserData {
-        data_cb_key,
-        drain_cb_key,
-        close_cb_key,
-        error_cb_key,
-        cx,
-    });
-    let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
-
-    let host_cstr = ZBox::from_bytes(hostname.as_bytes());
-    let mut err: ::std::ffi::c_int = 0;
-
-    let udp_socket = UdpSocket::create(
-        loop_,
-        udp_on_data,
-        udp_on_drain,
-        udp_on_close,
-        udp_on_recv_error,
-        (*host_cstr).as_cstr().as_ptr(),
-        port,
-        0, // options
-        Some(&mut err),
-        ud_ptr,
-    );
-
-    if udp_socket.is_null() || err != 0 {
-        let _ = unsafe { Box::from_raw(ud_ptr as *mut UdpUserData) };
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
-    // Read actual bound port
-    let bound_port = unsafe { (*udp_socket).bound_port() };
-
-    // Build JS UDPSocket object
-    let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let udp_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
-    if udp_obj.get().is_null() {
-        unsafe {
-            (*udp_socket).close();
-        }
-        let _ = Box::from_raw(ud_ptr as *mut UdpUserData);
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let udp_h = udp_obj.handle().into();
-
-    // Store socket pointer as private value
-    let sock_val = mozjs::jsval::PrivateValue(udp_socket as *const core::ffi::c_void);
-    rooted!(&in(cx_ref) let sv = sock_val);
-    unsafe {
-        JS_DefineProperty(cx, udp_h, c"_socketPtr".as_ptr(), sv.handle().into(), 0);
-    }
-
-    // Store ud_ptr for cleanup
-    let ud_jsval = mozjs::jsval::PrivateValue(ud_ptr as *const core::ffi::c_void);
-    rooted!(&in(cx_ref) let uv = ud_jsval);
-    unsafe {
-        JS_DefineProperty(cx, udp_h, c"_udPtr".as_ptr(), uv.handle().into(), 0);
-    }
-
-    // Expose address info
-    let exposed_port = if bound_port > 0 {
-        bound_port
-    } else {
-        port as i32
-    };
-    rooted!(&in(cx_ref) let port_v = Int32Value(exposed_port));
-    unsafe {
-        JS_DefineProperty(
-            cx,
-            udp_h,
-            c"port".as_ptr(),
-            port_v.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    let c_hn = ZBox::from_bytes(hostname.as_bytes());
-    unsafe {
-        let hn_str = JS_NewStringCopyZ(cx, c_hn.as_ptr());
-        if !hn_str.is_null() {
-            rooted!(&in(cx_ref) let hn_v = StringValue(&*hn_str));
-            JS_DefineProperty(
-                cx,
-                udp_h,
-                c"hostname".as_ptr(),
-                hn_v.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-    }
-
-    // udp.send(data, port, address)
-    #[allow(unsafe_op_in_unsafe_fn)]
-    unsafe extern "C" fn udp_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-        let args = CallArgs::from_vp(vp, argc);
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
-        rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-        let this_h = this_obj.handle().into();
-
-        let mut sv = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_socketPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut sv,
-            },
-        );
-        if !sv.is_double() || (sv.asBits_ & 0xFFFF000000000000) != 0 {
-            args.rval().set(Int32Value(-1));
-            return true;
-        }
-        let socket_ptr = sv.to_private() as *mut UdpSocket;
-
-        // Parse arguments: send(data, port, address)
-        let data = if argc > 0 && (*args.get(0).ptr).is_string() {
-            crate::js_to_rust_string(cx, *args.get(0).ptr)
-        } else {
-            String::new()
-        };
-        let target_port: u16 = if argc > 1 {
-            (*args.get(1).ptr).to_int32().max(0) as u16
-        } else {
-            0
-        };
-        let target_addr = if argc > 2 && (*args.get(2).ptr).is_string() {
-            crate::js_to_rust_string(cx, *args.get(2).ptr)
-        } else {
-            "127.0.0.1".to_string()
-        };
-
-        // Build sockaddr for target address
-        let mut addr_storage: sockaddr_storage = unsafe { ::std::mem::zeroed() };
-        let addr_len = build_sockaddr(&target_addr, target_port, &mut addr_storage);
-
-        if addr_len == 0 {
-            args.rval().set(Int32Value(-1));
-            return true;
-        }
-
-        let payloads: [*const u8; 1] = [data.as_ptr()];
-        let lengths: [usize; 1] = [data.len()];
-        let addresses: [*const ::std::ffi::c_void; 1] =
-            [::std::ptr::from_ref(&addr_storage).cast::<::std::ffi::c_void>()];
-
-        let sent = unsafe { (*socket_ptr).send(&payloads, &lengths, &addresses) };
-        args.rval().set(Int32Value(sent));
-        true
-    }
-
-    // udp.close()
-    #[allow(unsafe_op_in_unsafe_fn)]
-    unsafe extern "C" fn udp_close_fn(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-        let args = CallArgs::from_vp(vp, _argc);
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
-        rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-        let this_h = this_obj.handle().into();
-
-        let mut sv = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_socketPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut sv,
-            },
-        );
-        if sv.is_double() && (sv.asBits_ & 0xFFFF000000000000) == 0 {
-            let socket_ptr = sv.to_private() as *mut UdpSocket;
-            if !socket_ptr.is_null() {
-                unsafe {
-                    (*socket_ptr).close();
-                }
-            }
-            let undef = UndefinedValue();
-            let undef_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &undef,
-            };
-            JS_SetProperty(cx, this_h, c"_socketPtr".as_ptr(), undef_h);
-        }
-
-        // Clean up GcStore
-        cleanup_gc_key(cx, this_h, c"_dataCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_drainCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_closeCbKey".as_ptr());
-        cleanup_gc_key(cx, this_h, c"_errorCbKey".as_ptr());
-
-        // Free user data
-        let mut ud_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_udPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut ud_val,
-            },
-        );
-        if ud_val.is_double() && (ud_val.asBits_ & 0xFFFF000000000000) == 0 {
-            let ud_ptr = ud_val.to_private() as *mut UdpUserData;
-            if !ud_ptr.is_null() {
-                drop(Box::from_raw(ud_ptr));
-            }
-            let undef = UndefinedValue();
-            let undef_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &undef,
-            };
-            JS_SetProperty(cx, this_h, c"_udPtr".as_ptr(), undef_h);
-        }
-
-        args.rval().set(UndefinedValue());
-        true
-    }
-
-    // udp.address()
-    #[allow(unsafe_op_in_unsafe_fn)]
-    unsafe extern "C" fn udp_address(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-        let args = CallArgs::from_vp(vp, _argc);
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
-        rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-        let this_h = this_obj.handle().into();
-
-        let mut sv = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_socketPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut sv,
-            },
-        );
-        if !sv.is_double() || (sv.asBits_ & 0xFFFF000000000000) != 0 {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
-        let socket_ptr = sv.to_private() as *mut UdpSocket;
-        let mut buf = [0u8; 64];
-        let mut len = 64i32;
-        unsafe {
-            (*socket_ptr).bound_ip(buf.as_mut_ptr(), &mut len);
-        }
-
-        let ret_obj = unsafe { w2::JS_NewPlainObject(cx_ref) };
-        rooted!(&in(cx_ref) let ret_root = ret_obj);
-        if !ret_root.get().is_null() {
-            let ip_str = ::std::str::from_utf8(&buf[..len.max(0) as usize]).unwrap_or("0.0.0.0");
-            let c_ip = ZBox::from_bytes(ip_str.as_bytes());
-            let js_ip = JS_NewStringCopyZ(cx, c_ip.as_ptr());
-            if !js_ip.is_null() {
-                rooted!(&in(cx_ref) let ip_v = StringValue(&*js_ip));
-                JS_DefineProperty(
-                    cx,
-                    ret_root.handle().into(),
-                    c"address".as_ptr(),
-                    ip_v.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-            }
-            let bound = unsafe { (*socket_ptr).bound_port() };
-            rooted!(&in(cx_ref) let p_v = Int32Value(bound));
-            JS_DefineProperty(
-                cx,
-                ret_root.handle().into(),
-                c"port".as_ptr(),
-                p_v.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-            args.rval().set(ObjectValue(ret_root.get()));
-        } else {
-            args.rval().set(UndefinedValue());
-        }
-        true
-    }
-
-    // udp.ref() / udp.unref() — no-ops (event loop driven)
-    unsafe extern "C" fn udp_ref(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-        let args = CallArgs::from_vp(vp, _argc);
-        args.rval().set(UndefinedValue());
-        true
-    }
-    unsafe extern "C" fn udp_unref(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-        let args = CallArgs::from_vp(vp, _argc);
-        args.rval().set(UndefinedValue());
-        true
-    }
-
-    unsafe {
-        mozjs_sys::jsapi::JS_DefineFunction(
-            cx,
-            udp_h,
-            c"send".as_ptr(),
-            Some(udp_send),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        mozjs_sys::jsapi::JS_DefineFunction(
-            cx,
-            udp_h,
-            c"close".as_ptr(),
-            Some(udp_close_fn),
-            0,
-            JSPROP_ENUMERATE as u32,
-        );
-        mozjs_sys::jsapi::JS_DefineFunction(
-            cx,
-            udp_h,
-            c"address".as_ptr(),
-            Some(udp_address),
-            0,
-            JSPROP_ENUMERATE as u32,
-        );
-        mozjs_sys::jsapi::JS_DefineFunction(
-            cx,
-            udp_h,
-            c"ref".as_ptr(),
-            Some(udp_ref),
-            0,
-            JSPROP_ENUMERATE as u32,
-        );
-        mozjs_sys::jsapi::JS_DefineFunction(
-            cx,
-            udp_h,
-            c"unref".as_ptr(),
-            Some(udp_unref),
-            0,
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    args.rval().set(ObjectValue(udp_obj.get()));
     true
 }
 
@@ -2371,23 +1887,9 @@ unsafe extern "C" fn tcp_sock_write(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-    let this_h = this_obj.handle().into();
 
-    let mut ptr_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        this_h,
-        c"_socketPtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut ptr_val,
-        },
-    );
-    let socket_key = if ptr_val.is_double() {
-        ptr_val.to_double() as usize
-    } else {
-        0
-    };
+    let socket_key =
+        slot_ptr(cx, this_obj.handle(), &CONNECT_SOCKET_CLASS, SLOT_CONN_SOCK_PTR) as usize;
     if socket_key == 0 || argc == 0 {
         args.rval().set(Int32Value(-1));
         return true;
@@ -2423,20 +1925,11 @@ unsafe extern "C" fn tcp_sock_end(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-    let this_h = this_obj.handle().into();
 
-    let mut ptr_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        this_h,
-        c"_socketPtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut ptr_val,
-        },
-    );
-    if ptr_val.is_double() {
-        let socket_ptr = ptr_val.to_double() as usize as *mut us_socket_t;
+    let socket_ptr =
+        slot_ptr(cx, this_obj.handle(), &CONNECT_SOCKET_CLASS, SLOT_CONN_SOCK_PTR)
+            as *mut us_socket_t;
+    if !socket_ptr.is_null() {
         if argc > 0 {
             // Same collect_byte_view contract as tcp_sock_write: string or
             // Buffer/Uint8Array/ArrayBuffer payload.
@@ -2449,10 +1942,10 @@ unsafe extern "C" fn tcp_sock_end(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
                 }
             };
             if !data.is_empty() {
-                (*socket_ptr).write(&data);
+                unsafe { (*socket_ptr).write(&data) };
             }
         }
-        (*socket_ptr).close(CloseCode::normal);
+        unsafe { (*socket_ptr).close(CloseCode::normal) };
     }
     args.rval().set(UndefinedValue());
     true
@@ -2465,21 +1958,12 @@ unsafe extern "C" fn tcp_sock_destroy(cx: *mut JSContext, _argc: u32, vp: *mut J
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
-    let this_h = this_obj.handle().into();
 
-    let mut ptr_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        this_h,
-        c"_socketPtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut ptr_val,
-        },
-    );
-    if ptr_val.is_double() {
-        let socket_ptr = ptr_val.to_double() as usize as *mut us_socket_t;
-        (*socket_ptr).close(CloseCode::failure);
+    let socket_ptr =
+        slot_ptr(cx, this_obj.handle(), &CONNECT_SOCKET_CLASS, SLOT_CONN_SOCK_PTR)
+            as *mut us_socket_t;
+    if !socket_ptr.is_null() {
+        unsafe { (*socket_ptr).close(CloseCode::failure) };
     }
     args.rval().set(UndefinedValue());
     true
@@ -2524,20 +2008,19 @@ unsafe fn build_tcp_socket_obj(
 ) -> *mut JSObject {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let sock_obj = w2::JS_NewPlainObject(cx_ref));
+    // CONNECT_SOCKET_CLASS carries the socket pointer reserved slot
+    // (BCE-20261025-FFI-SLOT-GATE; default proto stays Object.prototype, same
+    // as the retired JS_NewPlainObject shape). PrivateValue preserves the full
+    // 64-bit pointer (the retired DoubleValue carrier truncated to 2^53).
+    rooted!(&in(cx_ref) let sock_obj = unsafe { w2::JS_NewObject(cx_ref, &CONNECT_SOCKET_CLASS) });
     if sock_obj.get().is_null() {
         return ptr::null_mut();
     }
     let sock_h = sock_obj.handle().into();
 
-    rooted!(&in(cx_ref) let ptr_val = DoubleValue(s as usize as f64));
-    JS_DefineProperty(
-        cx,
-        sock_h,
-        c"_socketPtr".as_ptr(),
-        ptr_val.handle().into(),
-        0,
-    );
+    unsafe {
+        set_slot(sock_obj.get(), SLOT_CONN_SOCK_PTR, s as *const core::ffi::c_void);
+    }
 
     // Remote address: prefer the dispatch-provided ip, fall back to the
     // socket's own remote_address.
@@ -3653,13 +3136,16 @@ pub(crate) fn build_sockaddr(host: &str, port: u16, storage: &mut sockaddr_stora
 /// Clean up a GcStore key stored as a JS property on an object.
 pub(crate) unsafe fn cleanup_gc_key(
     cx: *mut JSContext,
-    obj_h: Handle<*mut JSObject>,
+    obj_h: mozjs::rust::Handle<*mut JSObject>,
     prop: *const i8,
 ) {
     let mut val = UndefinedValue();
+    // `JS_GetProperty` (mozjs wrapper) takes the lifetime-less jsapi
+    // `Handle`; `mozjs::rust::Handle` bridges via `.into()` with this
+    // concrete target.
     JS_GetProperty(
         cx,
-        obj_h,
+        obj_h.into(),
         prop,
         MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
@@ -3737,10 +3223,9 @@ unsafe fn reject_connect_promise(cx: *mut JSContext, promise: *mut JSObject, msg
     }
     rooted!(&in(cx_ref) let msg_val = StringValue(&*js_str));
     rooted!(&in(cx_ref) let ctor_root = ctor_val);
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: &*msg_val.handle(),
-    };
+    rooted!(&in(cx_ref) let call_args_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([msg_val.handle().get()]));
+    let call_args = JS::HandleValueArray::from(&call_args_rooted);
     let mut err_val = UndefinedValue();
     let err_h = MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData,
@@ -3765,29 +3250,21 @@ unsafe fn reject_connect_promise(cx: *mut JSContext, promise: *mut JSObject, msg
     mozjs_sys::jsapi::js::RunJobs(cx);
 }
 
-/// Get ConnectUserData from a JS socket object's _udPtr private property.
-/// Returns None if the property is missing or invalid.
+/// Get ConnectUserData from the Bun.connect socket's engine-private reserved
+/// slot (the retired `_udPtr` own property was JS-forgeable —
+/// BCE-20261025-FFI-SLOT-GATE). Returns None on a foreign-class receiver or a
+/// cleared slot.
 unsafe fn get_connect_ud<'a>(
     cx: *mut JSContext,
-    obj_h: Handle<*mut JSObject>,
+    obj_h: mozjs::rust::Handle<*mut JSObject>,
 ) -> Option<&'a ConnectUserData> {
-    let mut ud_val = UndefinedValue();
-    JS_GetProperty(
-        cx,
-        obj_h,
-        c"_udPtr".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut ud_val,
-        },
-    );
-    if ud_val.is_double() && (ud_val.asBits_ & 0xFFFF000000000000) == 0 {
-        let ud_ptr = ud_val.to_private() as *mut ConnectUserData;
-        if !ud_ptr.is_null() {
-            return Some(&*ud_ptr);
-        }
+    let ud_ptr =
+        slot_ptr(cx, obj_h, &CONNECT_SOCKET_CLASS, SLOT_CONN_UD_PTR) as *mut ConnectUserData;
+    if !ud_ptr.is_null() {
+        Some(&*ud_ptr)
+    } else {
+        None
     }
-    None
 }
 
 // ──────────────────── Install entry point ────────────────────
@@ -3817,12 +3294,8 @@ pub unsafe fn install(
         1,
         JSPROP_ENUMERATE as u32,
     );
-    mozjs_sys::jsapi::JS_DefineFunction(
-        raw_cx,
-        bun_h,
-        c"udpSocket".as_ptr(),
-        Some(bun_udp_socket),
-        2,
-        JSPROP_ENUMERATE as u32,
-    );
+    // Bun.udpSocket is NOT defined here — the bun_udp crate owns that face
+    // (its `install` defines `udpSocket` on the same Bun object). The previous
+    // local copy was dead code whose install-order shadowing was a fragile
+    // premise; it has been removed (BCE-20261025-FFI-SLOT-GATE sweep).
 }

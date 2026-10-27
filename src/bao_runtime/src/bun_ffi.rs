@@ -1135,6 +1135,28 @@ unsafe fn spec_arg(
                 return Err(bad("a bun:ffi callback object"));
             }
             let obj = v.to_object();
+            // Class gate BEFORE the slot read (BCE-20261025-FFI-SLOT-GATE):
+            // JS_GetReservedSlot on a foreign class reads that object's first
+            // fixed slot — stale nursery-recycled bits, not an undefined
+            // sentinel — and recycled private-bit patterns pass the encoding
+            // check below, so a forged `{}` argument would deref as
+            // *mut FfiCallback and SIGSEGV inside code_ptr()
+            // (ffi_js_function_arg_error_arms). JS_InstanceOf with a null
+            // CallArgs* is a pure boolean class comparison and reports
+            // nothing; our own message stays the single error surface.
+            // @trace REQ-ENG-004
+            {
+                let mut cb_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                rooted!(&in(cb_cx) let cb_obj = obj);
+                if !w2::JS_InstanceOf(
+                    &mut cb_cx,
+                    cb_obj.handle(),
+                    &FFI_CALLBACK_CLASS,
+                    ::std::ptr::null_mut(),
+                ) {
+                    return Err(bad("a bun:ffi callback object"));
+                }
+            }
             let mut slot = UndefinedValue();
             JS_GetReservedSlot(obj, SLOT_CB, &mut slot);
             if !(slot.is_double() && (slot.asBits_ & 0xFFFF000000000000) == 0) {
@@ -1456,11 +1478,12 @@ unsafe fn bigint_from_decimal(cx: *mut JSContext, decimal: &str) -> JSVal {    l
         return DoubleValue(decimal.parse::<f64>().unwrap_or(0.0));
     }
     rooted!(&in(cx_ref) let sv = mozjs::jsval::StringValue(&*s_js));
-    let elems = [*sv.handle()];
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: elems.as_ptr(),
-    };
+    // BCE (unrooted-args class, 2026-10-26 sweep): ROOTED ValueArray —
+    // a bare stack copy of the string Value goes stale if GC moves it
+    // inside the call (require.rs canary-pinned form).
+    rooted!(&in(cx_ref) let args_array =
+        mozjs_sys::jsgc::ValueArray::<1>::new([*sv.handle()]));
+    let call_args = JS::HandleValueArray::from(&args_array);
     rooted!(&in(cx_ref) let undef_this = ::std::ptr::null_mut::<JSObject>());
     let mut rval = UndefinedValue();
     let called = JS_CallFunctionValue(
@@ -1815,13 +1838,28 @@ unsafe extern "C" fn ffi_library_constructor(
 }
 
 /// Extract FfiLibrary pointer from `this` object's reserved slot.
+/// The class gate (JS_InstanceOf) must run BEFORE the slot read: on a foreign
+/// object the reserved-slot read lands on the object's first fixed slot, whose
+/// stale nursery-recycled bits can pass the private-encoding check and yield a
+/// false-Some dangling pointer (BCE-20261025-FFI-SLOT-GATE — the symThis red:
+/// `lib.symbol.call({})` fell through to the name check because the garbage
+/// slot looked like a private pointer).
 /// @trace BCE-20260618-002 [level:regression]
+/// @trace REQ-ENG-004
 unsafe fn get_lib(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut FfiLibrary> {
     if !thisv.is_object() {
         return None;
     }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
+    if !w2::JS_InstanceOf(
+        &mut wrapped_cx,
+        obj_root.handle(),
+        &FFI_LIBRARY_CLASS,
+        ::std::ptr::null_mut(),
+    ) {
+        return None;
+    }
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj_root.get(), SLOT_LIB, &mut slot);
     // Guard non-private doubles before to_private() — a freshly-constructed
@@ -2426,14 +2464,25 @@ unsafe extern "C" fn ffi_callback(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 
 /// Extract FfiCallback pointer from `this` object's reserved slot.
 /// Mirrors the BCE-20260618-002 guard in `get_lib`: undefined slot must not
-/// reach `to_private()`.
+/// reach `to_private()`. The class gate runs BEFORE the slot read — a foreign
+/// object's fixed slot 0 holds stale nursery bits that can pass the private
+/// encoding check (BCE-20261025-FFI-SLOT-GATE, same class as get_lib).
 /// @trace BCE-20260618-002 [level:regression]
+/// @trace REQ-ENG-004
 unsafe fn get_callback(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut FfiCallback> {
     if !thisv.is_object() {
         return None;
     }
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
+    if !w2::JS_InstanceOf(
+        &mut wrapped_cx,
+        obj_root.handle(),
+        &FFI_CALLBACK_CLASS,
+        ::std::ptr::null_mut(),
+    ) {
+        return None;
+    }
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj_root.get(), SLOT_CB, &mut slot);
     if !(slot.is_double() && (slot.asBits_ & 0xFFFF000000000000) == 0) {

@@ -73,7 +73,8 @@ pub fn start_capture_server() -> (u16, CapturedRequests) {
                         }
                     }
                     sink.lock().unwrap().push(buf);
-                    let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                    let resp =
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
                     let _ = stream.write_all(resp.as_bytes());
                     let _ = stream.flush();
                 }

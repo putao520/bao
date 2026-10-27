@@ -1312,40 +1312,123 @@ t.isCryptoKey=function(){return false};
     return result;
   };
 
-  // ── util.deprecate — node v24 semantics: wraps fn (prototype + length
-  // preserved), emits one DeprecationWarning on first call. The warning
-  // goes through process.emitWarning when the embedder provides it (tests
-  // and embedders can observe/substitute it); otherwise it is written to
-  // stderr so the deprecation is never silent.
-  u.deprecate = function deprecate(fn, msg, code) {
+  // ── util.deprecate — node v24 semantics (lib/util.js public deprecate +
+  // lib/internal/util.js internalDeprecate/getDeprecationWarningEmitter,
+  // oracle: test-util-deprecate / test-util-deprecate-invalid-code):
+  //   * public signature (fn, msg, code, { modifyPrototype } = {}) — the
+  //     options object is destructured, never validated: non-object
+  //     non-null options yield undefined (→ default true); null throws the
+  //     destructuring TypeError.
+  //   * wrapper always returned (NO wrap-time noDeprecation early return —
+  //     node checks the flag at CALL time); name 'deprecated';
+  //     new.target delegates via Reflect.construct (arrow original rejects
+  //     construction with the same TypeError as node).
+  //   * if (modifyPrototype) — default true — setPrototypeOf(wrapper, fn)
+  //     + share fn.prototype by reference + copy the length descriptor
+  //     (node keeps ALL three steps inside this branch, including the
+  //     length copy; rest-arg shapes keep their length through the
+  //     descriptor copy).
+  //   * emitter semantics (getDeprecationWarningEmitter port): the
+  //     noDeprecation flag gates the emitter INVOCATION (a suppressed call
+  //     does not latch); per-closure `warned` latch; code-keyed global
+  //     dedup — an explicit code warns once per process across wrappers
+  //     (test: two fns + same code → count 1), no code warns once per
+  //     wrapper.
+  var deprecatedCodeWarned = new Map();
+  u.deprecate = function deprecate(fn, msg, code, options) {
     if (code !== undefined && typeof code !== 'string') {
       // node errors.js ERR_INVALID_ARG_TYPE message shape — null reports
       // 'Received null', objects 'Received an instance of X' (oracle:
       // test-util-deprecate-invalid-code / common.invalidArgTypeHelper).
       throw invalidArgTypeErr('code', 'string', code);
     }
+    var modifyPrototype = true;
+    if (options !== undefined && options !== null) {
+      // node destructures `{ modifyPrototype }`: non-object options yield
+      // undefined → default true. null reaches the throw above (the
+      // destructuring TypeError; node's text is engine-shaped, this is the
+      // blob's node-shaped equivalent — no test grid covers it).
+      if (typeof options === 'object' && options.modifyPrototype !== undefined) {
+        modifyPrototype = options.modifyPrototype;
+      }
+    }
     var warned = false;
     function deprecated() {
-      if (!warned) {
+      if ((typeof process === 'undefined' || !process.noDeprecation) &&
+          !warned &&
+          !(code !== undefined && deprecatedCodeWarned.has(code))) {
         warned = true;
-        if (typeof process === 'undefined' || !process.noDeprecation) {
-          if (typeof process !== 'undefined' && typeof process.emitWarning === 'function') {
-            process.emitWarning(msg, 'DeprecationWarning', code);
-          } else if (typeof console !== 'undefined' && typeof console.error === 'function') {
-            console.error('DeprecationWarning: ' + msg);
-          }
+        if (code !== undefined) deprecatedCodeWarned.set(code, true);
+        if (typeof process !== 'undefined' && typeof process.emitWarning === 'function') {
+          process.emitWarning(msg, 'DeprecationWarning', code);
+        } else if (typeof console !== 'undefined' && typeof console.error === 'function') {
+          console.error('DeprecationWarning: ' + msg);
         }
       }
       return new.target
         ? Reflect.construct(fn, Array.prototype.slice.call(arguments), new.target)
         : Reflect.apply(fn, this, arguments);
     }
-    // node: ObjectSetPrototypeOf(deprecated, fn) — throws the same native
-    // TypeError for a non-object fn (no silent guard).
-    Object.setPrototypeOf(deprecated, fn);
-    if (fn.prototype) deprecated.prototype = fn.prototype;
-    Object.defineProperty(deprecated, 'length', Object.getOwnPropertyDescriptor(fn, 'length'));
+    if (modifyPrototype) {
+      // node: ObjectSetPrototypeOf(deprecated, fn) — throws the same native
+      // TypeError for a non-object fn (no silent guard).
+      Object.setPrototypeOf(deprecated, fn);
+      if (fn.prototype) deprecated.prototype = fn.prototype;
+      Object.defineProperty(deprecated, 'length', Object.getOwnPropertyDescriptor(fn, 'length'));
+    }
     return deprecated;
+  };
+
+  // ── util._exceptionWithHostPort — node v24 legacy-exposed internal
+  // (lib/internal/util.js exceptionWithHostPort; v24.19 oracle probes):
+  //   * err validated: number (ERR_INVALID_ARG_TYPE 'The "err" argument
+  //     must be of type number. Received …') then negative integer
+  //     (ERR_OUT_OF_RANGE 'The value of "err" is out of range. It must be a
+  //     negative integer. Received …') — syscall/address/port/additional
+  //     are NOT validated (oracle: non-string syscall and numeric
+  //     additional pass through).
+  //   * message = `${syscall} ${code}` + ` ${address}:${port}` when both
+  //     truthy, else ` ${address}` when address truthy, plus
+  //     ` - Local (${additional})` when additional truthy (port 0 and null
+  //     address omit the host:port segment; oracle: 'connect ENOENT
+  //     127.0.0.1' / 'connect ENOENT').
+  //   * plain Error (name 'Error') with own props in assignment order
+  //     errno/code/syscall/address/port — port only set when truthy
+  //     (oracle Reflect.ownKeys order; e.port === undefined for port 0
+  //     comes from absence, e.address === null is preserved).
+  //   * the wrapper's own frame is trimmed from e.stack via
+  //     Error.captureStackTrace's stackStartFn trim (test asserts the
+  //     stack must not mention the wrapper) — same mechanism the
+  //     AssertionError constructor uses above.
+  u._exceptionWithHostPort = function exceptionWithHostPort(err, syscall, address, port, additional) {
+    if (typeof err !== 'number') {
+      throw errOf(TypeError, 'ERR_INVALID_ARG_TYPE',
+        'The "err" argument must be of type number. Received ' + determineSpecificType(err));
+    }
+    if (err !== err || err % 1 !== 0 || err >= 0) {
+      throw errOf(RangeError, 'ERR_OUT_OF_RANGE',
+        'The value of "err" is out of range. It must be a negative integer. Received ' + String(err));
+    }
+    var code = u.getSystemErrorName(err);
+    var message = syscall + ' ' + code;
+    if (address && port) {
+      message += ' ' + address + ':' + port;
+    } else if (address) {
+      message += ' ' + address;
+    }
+    if (additional) {
+      message += ' - Local (' + additional + ')';
+    }
+    var e = new Error(message);
+    e.errno = err;
+    e.code = code;
+    e.syscall = syscall;
+    e.address = address;
+    if (port) e.port = port;
+    if (typeof Error.captureStackTrace === 'function') {
+      Error.captureStackTrace(e, exceptionWithHostPort);
+    }
+    return e;
   };
 })"#;
         eval_js_factory_on_object(cx, util_extra_src, c"<util-extra>", util_obj.handle());
@@ -1395,10 +1478,10 @@ unsafe fn eval_js_factory_on_object(
         let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
         rooted!(&in(wrapped_cx) let global_root = global);
         rooted!(&in(wrapped_cx) let target_val_root = ObjectValue(target.get()));
-        let args_arr = HandleValueArray {
-            length_: 1,
-            elements_: &target_val_root.get() as *const Value,
-        };
+        // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+        rooted!(&in(wrapped_cx) let args_arr_rooted =
+            mozjs_sys::jsgc::ValueArray::<1>::new([target_val_root.get()]));
+        let args_arr = mozjs_sys::jsapi::JS::HandleValueArray::from(&args_arr_rooted);
         let mut call_rval = UndefinedValue();
         let call_rval_h = MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
@@ -3904,7 +3987,16 @@ function makeAssert() {
     // enough for the golden grids (single-line and simple multi-line
     // forms).  Returns undefined when the source cannot be recovered.
     try {
+      // node pins Error.stackTraceLimit=1 around its probe capture
+      // (internal/assert/utils.js getErrMessage: limit pin + restore), so
+      // the extraction is independent of a caller-set limit — oracle grid
+      // test-assert.js:613 sets `Error.stackTraceLimit = 0` and still
+      // expects the source expression. Without the pin the probe stack is
+      // empty and the message degrades to the operator default.
+      var savedLimit = Error.stackTraceLimit;
+      try { Error.stackTraceLimit = 10; } catch (eLim) {}
       var err = new Error();
+      try { if (savedLimit !== undefined) Error.stackTraceLimit = savedLimit; } catch (eLim2) {}
       var stack = err.stack || '';
       var frames = stack.split('\n');
       // frames[0] is the getErrMessageFallback frame; frames[1] is innerOk;
@@ -3968,8 +4060,110 @@ function makeAssert() {
       // Find the innermost assert.ok / assert( / strict.ok call — match the
       // full dotted path so "assert.ok(" wins over a bare "ok(" inside it.
       var callMatch = expr.match(/(?:assert|strict|ok)(?:\.[a-zA-Z_$][\w$]*)*\s*\(/);
-      if (!callMatch) return undefined;
+      if (!callMatch) {
+        // Column-anchored fallback (node getFirstExpression shape; oracle
+        // grid test-assert.js:988 `wrapper(assert, false)`): the falsy call
+        // need not contain the assert/strict/ok literal — the frame column
+        // anchors the callee expression ('fn(value)' inside an arrow
+        // wrapper). Slice [chainStart, terminator) on the frame's own line:
+        // terminator = the matching ')' (inclusive) or the next ';'
+        // (exclusive). Guarded behind regex failure so every grid the
+        // literal path already serves is byte-identical. SM's 1-based
+        // column convention is unverified until runtime; a mismatch degrades
+        // to the previous undefined, never to wrong text on served grids.
+        var colNum = parseInt(m[3], 10);
+        if (isFinite(colNum) && colNum >= 1) {
+          var lineText = srcLines[lineNum - 1];
+          var cs = colNum - 1;
+          if (cs < lineText.length) {
+            while (cs > 0 && /\s/.test(lineText.charAt(cs - 1))) cs--;
+            for (;;) {
+              var wp = cs - 1;
+              if (wp < 0) break;
+              var wch = lineText.charAt(wp);
+              if (/[\w$\u0080-￿]/.test(wch)) {
+                while (wp > 0 && /[\w$\u0080-￿]/.test(lineText.charAt(wp - 1))) wp--;
+                cs = wp;
+                continue;
+              }
+              if (wch === '.') { cs = wp; continue; }
+              break;
+            }
+            var we = -1;
+            var wd = 0;
+            for (var wi = cs; wi < lineText.length; wi++) {
+              var wcur = lineText.charAt(wi);
+              if (wcur === '(') wd++;
+              else if (wcur === ')') { wd--; if (wd === 0) { we = wi + 1; break; } }
+              else if (wcur === ';' && wd === 0) { we = wi; break; }
+            }
+            if (we === -1) we = lineText.length;
+            var colExpr = lineText.slice(cs, we).trim();
+            if (colExpr) {
+              return 'The expression evaluated to a falsy value:\n\n  ' + colExpr + '\n';
+            }
+          }
+        }
+        return undefined;
+      }
       var callStart = callMatch.index;
+      // The literal set (assert/strict/ok) only anchors the callee PROPERTY.
+      // When the receiver is a non-literal member chain root the regex lands
+      // on the property alone — oracle fixture assert-first-line.js declares
+      // `ässört` and expects the FULL chain 'ässört.ok(\'\')' in the message
+      // (node slices the source line by column, no name matching). Extend
+      // the match leftward over the member chain: '.'/'?.' links, identifier
+      // parts (ASCII \\w and any non-ASCII letter unit), and bracketed
+      // ['…'] subscripts. A plain 'assert.ok(' match already starts at the
+      // chain root, so this never alters the literal-anchored grids.
+      for (;;) {
+        var prevIdx = callStart - 1;
+        if (prevIdx < 0) break;
+        var prevCh = expr.charAt(prevIdx);
+        if (prevCh === '.') {
+          // Fold '.prop(' into the chain only when a receiver actually
+          // precedes the dot ('ässört.ok(' → walk to 'ässört'). A statement
+          // initial '.ok(' (node grid: '.ok(null, undefined)' keeps the
+          // property-only form) has whitespace before the dot — leave the
+          // property anchored there.
+          if (prevIdx > 0 && /[\w$\u0080-￿\]?]/.test(expr.charAt(prevIdx - 1))) {
+            callStart = prevIdx;
+            continue;
+          }
+          break;
+        }
+        if (prevCh === '?') {
+          // 'a?.b(' — fold '?.' into the chain when the char before '?' is
+          // a chain continuation point (identifier part or ']').
+          if (prevIdx > 0) {
+            var qPrev = expr.charAt(prevIdx - 1);
+            if (/[\w$\u0080-￿\]]/.test(qPrev)) { callStart = prevIdx; continue; }
+          }
+          break;
+        }
+        if (/[\w$\u0080-￿]/.test(prevCh)) {
+          // Identifier unit: 'ässört' before '.ok(' — walk the whole name.
+          var ni = prevIdx;
+          while (ni > 0 && /[\w$\u0080-￿]/.test(expr.charAt(ni - 1))) ni--;
+          callStart = ni;
+          continue;
+        }
+        if (prevCh === ']') {
+          // Bracketed subscript 'assert['ok'](' — fold back to '['.
+          var bi = prevIdx;
+          var bd = 0;
+          while (bi >= 0) {
+            var bc = expr.charAt(bi);
+            if (bc === ']') bd++;
+            else if (bc === '[') { bd--; if (bd === 0) break; }
+            bi--;
+          }
+          if (bi < 0) break;
+          callStart = bi;
+          continue;
+        }
+        break;
+      }
       var openIdx = expr.indexOf('(', callStart);
       if (openIdx === -1) return undefined;
       // For multi-line: node shows only "funcname(" (up to and including
@@ -5128,11 +5322,12 @@ unsafe fn bun_inspect_delegate(cx: *mut JSContext, val: JSVal, depth: u32) -> Op
         0,
     );
     rooted!(&in(cx_ref) let inspect_root = inspect_v);
-    let call_vals = [val_root.get(), ObjectValue(opts_obj.get())];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: call_vals.as_ptr(),
-    };
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+        val_root.get(),
+        ObjectValue(opts_obj.get()),
+    ]));
+    let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
     let mut rval = UndefinedValue();
     let ok = JS_CallFunctionValue(
         cx,
@@ -5989,10 +6184,10 @@ unsafe fn json_stringify_for_format(cx: *mut JSContext, val: JSVal) -> String {
     }
     // The callee slot takes a VALUE handle — root the jsval form.
     rooted!(&in(wrapped_cx) let stringify_root = stringify_val);
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: &val_root.get() as *const Value,
-    };
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(wrapped_cx) let call_args_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([val_root.get()]));
+    let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
     let mut rval = UndefinedValue();
     let ok = JS_CallFunctionValue(
         cx,
@@ -6206,11 +6401,12 @@ unsafe fn inspect_value_delegate(cx: *mut JSContext, val: JSVal, depth: u32) -> 
     // inspectValue(val, depth, ctx={indent:'',refs:null,refCounter:0})
     rooted!(&in(cx_ref) let val_root = val);
     rooted!(&in(cx_ref) let depth_root = mozjs::jsval::DoubleValue(depth as f64));
-    let call_vals = [val_root.get(), depth_root.get()];
-    let call_args = HandleValueArray {
-        length_: 2,
-        elements_: call_vals.as_ptr(),
-    };
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<2>::new([
+        val_root.get(),
+        depth_root.get(),
+    ]));
+    let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
     let mut rval = UndefinedValue();
     // The callee slot takes a VALUE handle — root the jsval form.
     rooted!(&in(cx_ref) let inspect_root = ObjectValue(inspect_obj.get()));
@@ -7142,11 +7338,10 @@ unsafe fn call_global_number_parser(
         return None;
     }
     rooted!(&in(cx_ref) let fn_root = fn_v);
-    let call_vals = [val_root.get()];
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: call_vals.as_ptr(),
-    };
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(cx_ref) let call_args_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([val_root.get()]));
+    let call_args = mozjs_sys::jsapi::JS::HandleValueArray::from(&call_args_rooted);
     let mut rval = UndefinedValue();
     let ok = JS_CallFunctionValue(
         cx,
@@ -7170,7 +7365,20 @@ unsafe fn call_global_number_parser(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+/// @trace REQ-ENG-004 [api:util.format] — placeholder/argument consumption
+/// follows node v24.19 (oracle: test-util-format.js:63 `format('%d %d', 42)`
+/// → '42 %d'): a specifier with no remaining argument is emitted verbatim.
+///
+/// Trailing arguments left after the placeholder walk are appended with
+/// single-space joins — raw for strings, inspected otherwise (node v24.19
+/// extracted source: `while (a < args.length) { str += join; ...; join = ' '; }`
+/// with the format string formally consuming one argument slot; oracle:
+/// `format('%d', 42, 'extra')` → '42 extra', `format('%c', 'red', 'x')`
+/// → ' x'). `pub(crate)`: node_console routes console message formatting
+/// through this same native (node lib/console.js formats every console face
+/// via formatWithOptions → util.format — one implementation, two faces).
+#[allow(unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
         let s = JS_NewStringCopyZ(cx, c"".as_ptr());
@@ -7194,6 +7402,11 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     match chars.peek() {
                         // %j = JSON.stringify form (node: '{"a":1}' for
                         // util.format('%j', {a:1})), NOT the inspected form.
+                        // node contract (oracle v24.19: format('%d %d', 42) →
+                        // "42 %d"): a specifier with no remaining argument is
+                        // emitted VERBATIM as both characters — the
+                        // placeholder is never silently dropped (former bao
+                        // bug: consumed and rendered nothing → "42 d").
                         Some(&'j') => {
                             chars.next();
                             if arg_idx < argc {
@@ -7202,13 +7415,19 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                                     *args.get(arg_idx).ptr,
                                 ));
                                 arg_idx += 1;
+                            } else {
+                                result.push('%');
+                                result.push('j');
                             }
                         }
-                        Some(&'s') | Some(&'o') | Some(&'O') => {
+                        Some(&which @ ('s' | 'o' | 'O')) => {
                             chars.next();
                             if arg_idx < argc {
                                 result.push_str(&jsval_to_display(cx, *args.get(arg_idx).ptr));
                                 arg_idx += 1;
+                            } else {
+                                result.push('%');
+                                result.push(which);
                             }
                         }
                         // %d — node: BigInt formats as `9n`, Symbol as NaN,
@@ -7234,6 +7453,9 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                                     }
                                 }
                                 arg_idx += 1;
+                            } else {
+                                result.push('%');
+                                result.push('d');
                             }
                         }
                         // %i — node: parseInt(value) (truncation), BigInt
@@ -7254,6 +7476,9 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                                     }
                                 }
                                 arg_idx += 1;
+                            } else {
+                                result.push('%');
+                                result.push('i');
                             }
                         }
                         // %f — node: parseFloat(value), Symbol → NaN.
@@ -7270,6 +7495,9 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                                     }
                                 }
                                 arg_idx += 1;
+                            } else {
+                                result.push('%');
+                                result.push('f');
                             }
                         }
                         // %c consumes the argument and renders nothing.
@@ -7277,6 +7505,9 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                             chars.next();
                             if arg_idx < argc {
                                 arg_idx += 1;
+                            } else {
+                                result.push('%');
+                                result.push('c');
                             }
                         }
                         Some(&'%') => {
@@ -7288,6 +7519,17 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 } else {
                     result.push(c);
                 }
+            }
+            // Trailing arguments (node v24.19 source: `while (a < args.length)
+            // { str += join; ...; join = ' '; }` — join is ' ' once the format
+            // string has been processed): raw strings, inspected otherwise.
+            // oracle: format('%d', 42, 'extra') → '42 extra'; format('%c',
+            // 'red', 'x') → ' x' (leading space: %c consumed every formatted
+            // piece, the join still applies to the first leftover).
+            while arg_idx < argc {
+                result.push(' ');
+                result.push_str(&jsval_to_display(cx, *args.get(arg_idx).ptr));
+                arg_idx += 1;
             }
             let utf16: Vec<u16> = result.encode_utf16().collect();
             let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
@@ -7384,10 +7626,10 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     rooted!(&in(wrapped_cx) let global_root = global);
     rooted!(&in(wrapped_cx) let fn_obj = fn_val.get().to_object());
     rooted!(&in(wrapped_cx) let fn_obj_val = ObjectValue(fn_obj.get()));
-    let args_arr = HandleValueArray {
-        length_: 1,
-        elements_: &fn_obj_val.get() as *const Value,
-    };
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(wrapped_cx) let args_arr_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([fn_obj_val.get()]));
+    let args_arr = mozjs_sys::jsapi::JS::HandleValueArray::from(&args_arr_rooted);
     let mut call_rval = UndefinedValue();
     let call_rval_h = MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData,
@@ -7555,10 +7797,10 @@ unsafe extern "C" fn util_callbackify(cx: *mut JSContext, _argc: u32, vp: *mut J
     // value (including non-objects) reaches the ERR_INVALID_ARG_TYPE throw
     // path, so the arg passes as the raw value, not an ObjectValue.
     rooted!(&in(wrapped_cx) let fn_obj_val = fn_val.get());
-    let args_arr = HandleValueArray {
-        length_: 1,
-        elements_: &fn_obj_val.get() as *const Value,
-    };
+    // (Bao, BCE) rooted ValueArray carrier — bare HandleValueArray slots are untraced.
+    rooted!(&in(wrapped_cx) let args_arr_rooted =
+        mozjs_sys::jsgc::ValueArray::<1>::new([fn_obj_val.get()]));
+    let args_arr = mozjs_sys::jsapi::JS::HandleValueArray::from(&args_arr_rooted);
     let mut call_rval = UndefinedValue();
     let call_rval_h = MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData,

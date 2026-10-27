@@ -58,6 +58,9 @@ use bun_uws::ws_client::{RecvOutcome, WebSocketClient};
 use cdp_server::{CdpServer, EventBroadcaster, EventSender, ServerConfig};
 use serde_json::{json, Value};
 
+#[path = "common/mod.rs"]
+mod common;
+
 /// The closed resourceType wire set (bao_browser's destination mapping —
 /// `webview_state.rs destination_debug_name_to_resource_type`; a value
 /// outside this set would mean the mapping drifted).
@@ -72,14 +75,6 @@ const RESOURCE_TYPES: [&str; 9] = [
     "Fetch",
     "Other",
 ];
-
-fn pick_free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
 
 /// Loopback origin serving the test document and the interception targets:
 /// `/page` → the HTML document; `/net/<name>` → 200 text/plain with body
@@ -147,24 +142,55 @@ impl LiveFixture {
         let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
         let (event_tx, servo_event_rx) = bao_ipc::unbounded::<ServoEvent>();
         runtime.set_event_channel(event_tx);
-        let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
-        let event_router = Arc::clone(&registry);
-        let port = pick_free_port();
-        let mut server = CdpServer::with_registry(
-            ServerConfig::builder().host("127.0.0.1").port(port).build(),
-            registry,
-        );
-        server.set_target_provider(Arc::new(ServoTargetProvider::new(
-            bridge_tx.clone(),
-            page.id().to_string(),
-            "127.0.0.1".into(),
-            port,
-        )));
-        let broadcaster = server.broadcaster();
-        std::thread::spawn(move || {
-            let _ = server.run();
-        });
-        let ws_url = format!("ws://127.0.0.1:{port}/devtools/page/{}", page.id());
+        // E26 ledger class A (probe-release rebind window): the port probe's
+        // drop and CdpServer's bind leave a window a parallel suite process
+        // can claim (E17 fleet: 1/5 EADDRINUSE); run() fails fast at bind
+        // with Err("bind: ... EADDRINUSE ..."). Root fix inside the test's
+        // resource domain: one FRESH probed port per attempt, bind-verified.
+        let (_port, event_router, broadcaster, ws_url) =
+            common::port_probe::retry_probed_port(|port| {
+                let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
+                let event_router = Arc::clone(&registry);
+                let mut server = CdpServer::with_registry(
+                    ServerConfig::builder().host("127.0.0.1").port(port).build(),
+                    registry,
+                );
+                server.set_target_provider(Arc::new(ServoTargetProvider::new(
+                    bridge_tx.clone(),
+                    page.id().to_string(),
+                    "127.0.0.1".into(),
+                    port,
+                )));
+                let broadcaster = server.broadcaster();
+                // run() binds first: an early Err(EADDRINUSE) = lost the
+                // release-rebind race; the connect-poll confirms a live bind.
+                let (run_tx, run_rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = run_tx.send(server.run());
+                });
+                let bind_deadline = std::time::Instant::now() + Duration::from_secs(10);
+                loop {
+                    match run_rx.try_recv() {
+                        Ok(Err(e)) if e.contains("EADDRINUSE") => return None,
+                        Ok(other) => panic!("cdp server run() ended before bind: {other:?}"),
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            panic!("cdp server thread died before binding")
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    }
+                    if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < bind_deadline,
+                        "cdp server did not bind 127.0.0.1:{port} within 10s"
+                    );
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                let ws_url =
+                    format!("ws://127.0.0.1:{port}/devtools/page/{}", page.id());
+                Some((port, event_router, broadcaster, ws_url))
+            });
         Ok(LiveFixture {
             runtime,
             page,

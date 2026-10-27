@@ -183,16 +183,30 @@ unsafe fn attach_require_cache(
 /// `require.cache[path] = { id, filename, exports, loaded }`. Node semantics —
 /// builtins are NOT recorded (they never appear in require.cache).
 ///
+/// The exports value arrives as a Handle (the caller's live root slot), and
+/// it is re-rooted here as the FIRST statement: `get_or_create_require_cache`
+/// and the module-record allocation below are GC points, and a bare Value
+/// parameter whose payload lives in the nursery would not survive them
+/// (gc_store.rs BCE rooting contract).
+///
+/// @trace REQ-ENG-006 — the Handle parameter + first-statement root close
+/// the same rooting class on this function's own side: the pre-fix body ran
+/// three GC points before rooting the bare `Value` parameter.
+///
 /// # Safety
-/// Caller must ensure `cx` is a valid JSContext pointer and `exports_val` is
-/// rooted or otherwise protected from GC.
-unsafe fn record_module_in_cache(cx: *mut JSContext, canonical_path: &str, exports_val: Value) {
+/// Caller must ensure `cx` is a valid JSContext pointer.
+unsafe fn record_module_in_cache(
+    cx: *mut JSContext,
+    canonical_path: &str,
+    exports_val: mozjs::rust::Handle<JSVal>,
+) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let exports_root = exports_val.get());
     let cache = get_or_create_require_cache(cx);
     if cache.is_null() {
         return;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let cache_root = cache);
 
     let module_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
@@ -200,7 +214,6 @@ unsafe fn record_module_in_cache(cx: *mut JSContext, canonical_path: &str, expor
         return;
     }
     rooted!(&in(cx_ref) let module_root = module_obj);
-    rooted!(&in(cx_ref) let exports_root = exports_val);
     unsafe {
         JS_DefineProperty(
             cx,
@@ -390,8 +403,11 @@ unsafe extern "C" fn require_resolve_fn(cx: *mut JSContext, argc: u32, vp: *mut 
     let specifier = crate::js_to_rust_string(cx, spec_val);
     let base_dir = REQUIRE_DIR.with(|d| d.borrow().clone());
 
-    // BUG-ENG-365: built-in modules resolve to their bare specifier (Node.js
-    // semantics: `require.resolve('fs')` returns 'fs', not a file path).
+    // BUG-ENG-365: built-in modules resolve to a specifier-shaped id, not a
+    // file path. The RETURN form is the request echoed verbatim — node
+    // v24.19.0 oracle (2026-10-25, E30): `require.resolve('node:fs')` →
+    // 'node:fs', `require.resolve('fs')` → 'fs'; createRequire().resolve
+    // shares this body (single return point below).
     let builtin_key = specifier.strip_prefix("node:").unwrap_or(&specifier);
     let known_builtins = [
         "fs",
@@ -478,9 +494,26 @@ unsafe extern "C" fn require_resolve_fn(cx: *mut JSContext, argc: u32, vp: *mut 
         "internal/timers",
         "internal/util/debounce",
         "internal/util/throttle",
+        // Internal EventTarget family (registered by
+        // node_internal_event_target::install — the JS-native port of node's
+        // lib/internal/event_target.js: Event/CustomEvent/EventTarget/
+        // NodeEventTarget + the k* symbol exports).
+        "internal/event_target",
+        // Internal fs family (node_internal_fs_modules — the JS-native ports
+        // of node's lib/internal/fs/{utils,watchers,recursive_watch}.js plus
+        // the fs/promises re-export face; GOLDEN A fs MODULE_MISSING family).
+        "internal/fs/utils",
+        "internal/fs/watchers",
+        "internal/fs/recursive_watch",
+        "internal/fs/promises",
+        "internal/fs/glob",
     ];
     if known_builtins.contains(&builtin_key) {
-        let c_path = ZBox::from_bytes(builtin_key.as_bytes());
+        // @trace REQ-ENG-004 — ECHO the request form verbatim (oracle
+        // v24.19.0: 'node:fs' in → 'node:fs' out; 'fs' in → 'fs' out). The
+        // previous form returned the stripped key, diverging on every
+        // prefixed request.
+        let c_path = ZBox::from_bytes(specifier.as_bytes());
         let js_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
         if js_str.is_null() {
             return false;
@@ -514,6 +547,62 @@ pub fn set_require_dir(dir: PathBuf) {
 
 pub fn get_require_dir() -> Option<PathBuf> {
     REQUIRE_DIR.with(|d| d.borrow().clone())
+}
+
+// @trace REQ-ENG-005 [module:createRequire] — shared require.cache accessor.
+// node v24 oracle (2026-10-25): `createRequire(f).cache === Module._cache ===
+// require.cache` — one shared module cache per context across every require
+// face. node:module's `_cache` property mounts the SAME object this returns,
+// so all three surfaces stay one cache.
+///
+/// # Safety
+/// Caller must ensure `cx` is a valid JSContext pointer.
+pub unsafe fn shared_require_cache(cx: *mut JSContext) -> *mut JSObject {
+    get_or_create_require_cache(cx)
+}
+
+// @trace REQ-ENG-005 [module:createRequire] — call the shared CJS require
+// implementation with a per-call resolution base directory. node v24
+// `createRequire(filename)` semantics: the returned require resolves relative
+// specifiers and node_modules chains from `dirname(filename)`, not the entry
+// script's directory. Save/override/restore of the thread-local base mirrors
+// `load_cjs_module`'s scoped pattern; the slot is not GC-traced so no rooting
+// is involved, and restore runs on both the ok and exception-pending paths.
+//
+/// # Safety
+/// Caller must ensure `cx` is a valid JSContext pointer and `vp` is the
+/// argument vector of the currently-dispatching native frame.
+pub unsafe fn call_require_with_base(
+    cx: *mut JSContext,
+    base_dir: &Path,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let saved = REQUIRE_DIR.with(|d| d.borrow().clone());
+    REQUIRE_DIR.with(|d| *d.borrow_mut() = Some(base_dir.to_path_buf()));
+    let ok = require_fn(cx, argc, vp);
+    REQUIRE_DIR.with(|d| *d.borrow_mut() = saved);
+    ok
+}
+
+// @trace REQ-ENG-005 [module:createRequire] — same scoped-base contract as
+// [`call_require_with_base`], dispatching to `require.resolve`
+// (`require_resolve_fn`): `createRequire('/tmp/x.js').resolve('./y')`
+// resolves from `/tmp` (node v24 oracle).
+//
+/// # Safety
+/// Same contract as [`call_require_with_base`].
+pub unsafe fn call_require_resolve_with_base(
+    cx: *mut JSContext,
+    base_dir: &Path,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let saved = REQUIRE_DIR.with(|d| d.borrow().clone());
+    REQUIRE_DIR.with(|d| *d.borrow_mut() = Some(base_dir.to_path_buf()));
+    let ok = require_resolve_fn(cx, argc, vp);
+    REQUIRE_DIR.with(|d| *d.borrow_mut() = saved);
+    ok
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -593,6 +682,104 @@ unsafe extern "C" fn require_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 
     let base_dir = REQUIRE_DIR.with(|d| d.borrow().clone());
 
+    // @trace REQ-ENG-004 [api:internal/event_target] — lazy internal-module
+    // install: `internal/event_target`'s JS-native port MUST NOT be evaluated
+    // during realm init (install-time evaluation poisons the realm — see
+    // node_internal_event_target's module header), so require.rs triggers the
+    // one-time evaluation here — BEFORE resolution, which would otherwise
+    // fail the bare specifier — in user context. Idempotent (internal
+    // once-flag; the gc_store cache short-circuits every later call).
+    // NOTE: no js_cache_authoritative gate — internal/* builtins are never
+    // recorded in require.cache (record_module_in_cache is file-modules
+    // only), so the JS-visible-cache mode is irrelevant to them.
+    if builtin_key == "internal/event_target" {
+        if crate::node_internal_event_target::ensure_installed(cx) {
+            let hit = gc_store::gc_store_get(cx, "builtin:internal/event_target");
+            if let Some(existing) = hit.filter(|p| !p.is_null()) {
+                args.rval().set(mozjs::jsval::ObjectValue(existing));
+                return true;
+            }
+        }
+    }
+
+    // @trace REQ-ENG-004 [api:internal/test/binding] — lazy install for the
+    // internalBinding port (2026-10-26 timeline attribution): install-time
+    // evaluation during realm init poisons the realm (the same GC-pressure
+    // class node_internal_event_target's header documents — init-period
+    // function-object allocations push the nursery allocation order over a
+    // latent engine cliff; any later module-body variable access then
+    // segfaults). Evaluated lazily here, in user context, when realm init
+    // has fully completed. Idempotent (gc_store cache + once-flag).
+    if builtin_key == "internal/test/binding" {
+        if crate::node_internal_test_binding::ensure_installed(cx) {
+            let hit = gc_store::gc_store_get(cx, "builtin:internal/test/binding");
+            if let Some(existing) = hit.filter(|p| !p.is_null()) {
+                args.rval().set(mozjs::jsval::ObjectValue(existing));
+                return true;
+            }
+        }
+    }
+
+    // @trace REQ-ENG-007 [api:node internal HTTP modules] — lazy install for
+    // the `_http_*` family (2026-10-26 timeline attribution, same GC-pressure
+    // class as internal/event_target + internal/test/binding): the six
+    // `_http_{agent,client,common,incoming,outgoing,server}` module bodies
+    // must not be evaluated during realm init. Evaluated lazily here, in user
+    // context, when realm init has fully completed. Idempotent (each module's
+    // gc_store cache + the family once-flag). Same no-js_cache_authoritative
+    // note as the blocks above.
+    if builtin_key.starts_with("_http_") {
+        if crate::node_internal_http::ensure_installed(cx) {
+            let key = format!("builtin:{}", builtin_key);
+            let hit = gc_store::gc_store_get(cx, &key);
+            if let Some(existing) = hit.filter(|p| !p.is_null()) {
+                args.rval().set(mozjs::jsval::ObjectValue(existing));
+                return true;
+            }
+        }
+    }
+
+    // @trace REQ-ENG-048 [api:internal/util] [api:internal/timers]
+    // [api:internal/util/debounce] [api:internal/util/throttle] — lazy install
+    // for the internal util/timers family (2026-10-26 timeline attribution,
+    // same GC-pressure class as internal/event_target + internal/test/binding):
+    // the util module funnels the timers family (timers + util/debounce +
+    // util/throttle) from its own ensure_installed, so a single hook on any
+    // of the four keys installs the whole family and each key then resolves
+    // from the builtin cache. Idempotent (gc_store cache + once-flag). Same
+    // no-js_cache_authoritative note as the blocks above.
+    if builtin_key == "internal/util"
+        || builtin_key == "internal/timers"
+        || builtin_key == "internal/util/debounce"
+        || builtin_key == "internal/util/throttle"
+    {
+        if crate::node_internal_util::ensure_installed(cx) {
+            let key = format!("builtin:{}", builtin_key);
+            let hit = gc_store::gc_store_get(cx, &key);
+            if let Some(existing) = hit.filter(|p| !p.is_null()) {
+                args.rval().set(mozjs::jsval::ObjectValue(existing));
+                return true;
+            }
+        }
+    }
+
+    // @trace REQ-ENG-004 [api:internal/fs/utils|watchers|recursive_watch|promises]
+    // — lazy internal fs module install (same pattern as internal/event_target):
+    // the sources require() each other, so ALL FOUR evaluate together on the
+    // first internal/fs/* require, then each key resolves from the builtin
+    // cache. Idempotent (cache short-circuits every later call). Same
+    // no-js_cache_authoritative-gate note as the block above.
+    if builtin_key.starts_with("internal/fs/") {
+        if crate::node_internal_fs_modules::ensure_installed(cx) {
+            let key = format!("builtin:{}", builtin_key);
+            let hit = gc_store::gc_store_get(cx, &key);
+            if let Some(existing) = hit.filter(|p| !p.is_null()) {
+                args.rval().set(mozjs::jsval::ObjectValue(existing));
+                return true;
+            }
+        }
+    }
+
     let resolved = match resolve_specifier(&specifier, base_dir.as_deref()) {
         Some(p) => p,
         None => {
@@ -642,6 +829,9 @@ unsafe extern "C" fn require_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         return true;
     }
 
+    // @trace REQ-ENG-004 — the internal/event_target lazy install lives
+    // ABOVE (before resolve_specifier): the bare specifier has no file to
+    // resolve and would die at the "Cannot find module" point first.
     let cached = if js_cache_authoritative {
         None
     } else {
@@ -674,6 +864,31 @@ unsafe extern "C" fn require_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         return true;
     }
 
+    // @trace REQ-ENG-004 — .node native addon dispatch (E30 minimal real
+    // body): the .node face is BINARY — it must not `read_to_string` (an ELF
+    // fails the UTF-8 read before any loader could run; the previous shape
+    // died at "Cannot read module"). Node contract chain: fresh module
+    // record → Module._extensions['.node'](module, filename) →
+    // process.dlopen(module, filename) populates module.exports → require
+    // returns module.exports. The shared dlopen body is
+    // node_module::process_dlopen_impl — the same body both JS faces
+    // (process.dlopen, Module._extensions['.node']) call.
+    let exports_val = if resolved.extension().is_some_and(|e| e == "node") {
+        let path_str = resolved.to_string_lossy().into_owned();
+        let module_obj = crate::node_module::new_module_record(cx, &path_str, &path_str);
+        if module_obj.is_null() {
+            let msg = format!("Failed to load module '{}'", specifier);
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+        match crate::node_module::process_dlopen_impl(cx, module_obj, &path_str) {
+            Ok(exports) => exports,
+            // process_dlopen_impl reported through the pending exception —
+            // propagate it to the require() caller unchanged.
+            Err(()) => return false,
+        }
+    } else {
     let content = match bun_fs::read_to_string(&resolved.to_string_lossy()) {
         Ok(c) => c,
         Err(e) => {
@@ -684,7 +899,7 @@ unsafe extern "C" fn require_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         }
     };
 
-    let exports_val = if resolved.extension().is_some_and(|e| e == "json") {
+    if resolved.extension().is_some_and(|e| e == "json") {
         let obj = load_json_module(cx, &content, &specifier);
         if obj.is_null() {
             let msg = format!("Failed to parse JSON module '{}'", specifier);
@@ -727,26 +942,38 @@ unsafe extern "C" fn require_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
             // the engine re-throws it to the require() caller unchanged.
             Err(CjsLoadError::ExceptionPending) => return false, // @evidence SPEC/10-REQUIREMENTS.html:2324
         }
+        }
     };
 
+    // @trace REQ-ENG-004 — root the module's public value BEFORE any cache
+    // write (gc_store.rs BCE rooting contract): exports_val is a bare Value
+    // whose object payload (fresh CJS/JSON/ESM/dlopen exports) may live in
+    // the NURSERY, and the steps below (gc_store_insert's JS_DefineProperty,
+    // record_module_in_cache's cache/module-record allocations) are GC
+    // points that can evacuate it.
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let exports_root = exports_val);
+
     // Cache: for objects, store directly; for primitives, wrap in {__primitive__: val}
-    let cache_obj = if exports_val.is_object() {
-        exports_val.to_object()
+    let cache_obj = if (*exports_root).is_object() {
+        (*exports_root).to_object()
     } else {
         let wrapper = mozjs_sys::jsapi::JS_NewPlainObject(cx);
-        if !wrapper.is_null() {
-            let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        if wrapper.is_null() {
+            wrapper
+        } else {
             rooted!(&in(wrapped_cx) let wrapper_root = wrapper);
-            rooted!(&in(wrapped_cx) let val_root = exports_val);
             JS_DefineProperty(
                 cx,
                 wrapper_root.handle().into(),
                 c"__primitive__".as_ptr(),
-                val_root.handle().into(),
+                exports_root.handle().into(),
                 0,
             );
+            // Fresh read AFTER the define — property creation is a GC point
+            // and the pre-fix raw `wrapper` could already be stale here.
+            wrapper_root.get()
         }
-        wrapper
     };
     if !cache_obj.is_null() {
         gc_store::gc_store_insert(cx, &cache_key, cache_obj);
@@ -756,9 +983,9 @@ unsafe extern "C" fn require_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     // canonical path: require.cache[path] = { id, filename, exports, loaded }.
     // The JS-visible cache and the internal gc_store entry stay in sync; the
     // JS-visible one is authoritative (see the lookup above).
-    record_module_in_cache(cx, &cache_key, exports_val);
+    record_module_in_cache(cx, &cache_key, exports_root.handle());
 
-    args.rval().set(exports_val);
+    args.rval().set(*exports_root);
     true
 }
 
@@ -1069,7 +1296,12 @@ unsafe fn eval_cjs_body(
     rooted!(&in(wrapped_cx) let module_root = module_obj);
 
     // module.exports = exports (Node's initial alias; the body may rebind it).
-    rooted!(&in(wrapped_cx) let ev = mozjs::jsval::ObjectValue(exports_obj));
+    // @trace REQ-ENG-048 [bug:eval-cjs-body-unrooted-args] — read from the
+    // LIVE root, not the raw parameter: `exports_root` was rooted at entry
+    // (fresh from the caller's root read) and the GC updates it across every
+    // GC point below; the raw parameter does not enjoy that property once any
+    // GC has run. Uniform root-read form for the whole function.
+    rooted!(&in(wrapped_cx) let ev = mozjs::jsval::ObjectValue(*exports_root));
     JS_DefineProperty(
         cx,
         module_root.handle().into(),
@@ -1126,39 +1358,71 @@ unsafe fn eval_cjs_body(
     }
     rooted!(&in(wrapped_cx) let global_root = global);
     let require_val = get_prop(cx, global, c"require".as_ptr());
+    // @trace REQ-ENG-048 — root the require value IMMEDIATELY: the
+    // JS_NewStringCopyZ calls below are GC points, and this raw value must
+    // not cross them unrooted.
+    rooted!(&in(wrapped_cx) let require_root = require_val);
 
-    // String arguments (allocated with every object pointer already rooted).
+    // String arguments — each JSString is rooted BEFORE the next allocation
+    // (JS_NewStringCopyZ is a GC point; a raw nursery JSString must not wait
+    // its turn).
     let dirname_str = path
         .parent()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     let c_filename_arg = ZBox::from_bytes(filename_str.into_bytes());
     let filename_js = JS_NewStringCopyZ(cx, c_filename_arg.as_ptr());
-    let c_dirname_arg = ZBox::from_bytes(dirname_str.into_bytes());
-    let dirname_js = JS_NewStringCopyZ(cx, c_dirname_arg.as_ptr());
-    if filename_js.is_null() || dirname_js.is_null() {
+    if filename_js.is_null() {
         JS_ClearPendingException(cx);
         return Err(CjsLoadError::NoException);
     }
     rooted!(&in(wrapped_cx) let filename_root = mozjs::jsval::StringValue(&*filename_js));
+    let c_dirname_arg = ZBox::from_bytes(dirname_str.into_bytes());
+    let dirname_js = JS_NewStringCopyZ(cx, c_dirname_arg.as_ptr());
+    if dirname_js.is_null() {
+        JS_ClearPendingException(cx);
+        return Err(CjsLoadError::NoException);
+    }
     rooted!(&in(wrapped_cx) let dirname_root = mozjs::jsval::StringValue(&*dirname_js));
 
     // Node calls compiledWrapper.call(exports, exports, require, module,
-    // filename, dirname) — `this` = exports.
-    rooted!(&in(wrapped_cx) let exports_val_root = mozjs::jsval::ObjectValue(exports_obj));
-    rooted!(&in(wrapped_cx) let module_val_root = mozjs::jsval::ObjectValue(module_obj));
-    rooted!(&in(wrapped_cx) let require_root = require_val);
-    let args = [
+    // filename, dirname) — `this` = exports. Seeds read from the caller's
+    // live roots (fresh post-compile reads). BCE (unrooted-args class,
+    // canary-pinned 2026-10-26): the five call arguments MUST live in a
+    // ROOTED ValueArray for the whole call — the pre-fix shape passed raw
+    // JS::Value copies through HandleValueArray, relying on a "GC-free
+    // window" that any GC inside JS_CallFunctionValue's entry (frame push,
+    // proxy call setup) or a layout-shifted allocation before it silently
+    // broke: the module body then executed against a from-space `module`
+    // object and SIGSEGV'd in JSClass::getOpsSetProperty on write.
+    //
+    // @trace REQ-ENG-048 [bug:eval-cjs-body-unrooted-args] — the ROOTED
+    // ValueArray alone was NOT sufficient: these two seeds re-wrapped the
+    // RAW `*mut JSObject` parameters instead of reading the live roots.
+    // Between entry and here this function runs four GC points
+    // (JS_DefineProperty, JS::Evaluate2 compiling the whole wrapper,
+    // 2× JS_NewStringCopyZ); a nursery GC in any of them evacuates the
+    // fresh exports/module objects and the raw parameter becomes a
+    // from-space pointer — rooting the stale bits protects nothing (the
+    // relocation was consumed by the GC that already ran). The call then
+    // handed the from-space `module`/`exports` to the body's interpreter,
+    // which crashed in the JSClass ops dispatch (shape→base→clasp chain
+    // read a non-canonical double from the moved cell; live-gdb: obj
+    // header word had FORWARD_BIT set). Read BOTH seeds from the live
+    // roots — the same form `require_root`/`filename_root`/`dirname_root`
+    // below already used. Repro (deterministic): ESM module chain that
+    // require()s a CJS file whose body runs `module.exports = { get x() {} }`
+    // (node test/common/tmpdir.js + common/index.js via test-fs-stat-date.mjs).
+    rooted!(&in(wrapped_cx) let exports_val_root = mozjs::jsval::ObjectValue(*exports_root));
+    rooted!(&in(wrapped_cx) let module_val_root = mozjs::jsval::ObjectValue(*module_root));
+    rooted!(&in(wrapped_cx) let args_array = mozjs_sys::jsgc::ValueArray::<5>::new([
         *exports_val_root,
         *require_root,
         *module_val_root,
         *filename_root,
         *dirname_root,
-    ];
-    let arg_array = HandleValueArray {
-        length_: args.len(),
-        elements_: args.as_ptr(),
-    };
+    ]));
+    let arg_array = JS::HandleValueArray::from(&args_array);
     let mut call_rval = UndefinedValue();
     let called = JS_CallFunctionValue(
         cx,
@@ -1198,26 +1462,39 @@ unsafe fn load_cjs_module(
     // realm's PERSISTENT global lexical environment (the same-name const in
     // any later script → SyntaxError → "Failed to load module"), and
     // top-level var/function leaked across modules as global properties.
-    let exports_obj = JS_NewPlainObject(cx);
-    if exports_obj.is_null() {
+    // @trace REQ-ENG-048 — root BOTH objects at allocation, before any GC
+    // point (gc_store.rs BCE rooting contract). eval_cjs_body compiles the
+    // wrapper (JS::Evaluate2) and executes the module body — every one of
+    // those steps can run a nursery GC that MOVES these fresh objects. The
+    // pre-fix shape re-read the raw pointers after evaluation and seeded a
+    // fresh Rooted from the stale from-space address: JS_GetProperty then
+    // read a non-canonical garbage pointer out of the handle slot and
+    // SIGSEGV'd in JSObject::getOpsGetProperty (observed on farm,
+    // gdb #0-#5).
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let exports_root = JS_NewPlainObject(cx));
+    if exports_root.get().is_null() {
         JS_ClearPendingException(cx);
         return Err(CjsLoadError::NoException);
     }
-    let module_obj = JS_NewPlainObject(cx);
-    if module_obj.is_null() {
+    rooted!(&in(wrapped_cx) let module_root = JS_NewPlainObject(cx));
+    if module_root.get().is_null() {
         JS_ClearPendingException(cx);
         return Err(CjsLoadError::NoException);
     }
 
     let dir = match path.parent() {
         Some(d) => d,
-        None => return Ok(mozjs::jsval::ObjectValue(exports_obj)), // @evidence SPEC/10-REQUIREMENTS.html:237
+        None => return Ok(mozjs::jsval::ObjectValue(*exports_root)), // @evidence SPEC/10-REQUIREMENTS.html:237
     };
 
     let saved_dir = REQUIRE_DIR.with(|d| d.borrow().clone());
     REQUIRE_DIR.with(|d| *d.borrow_mut() = Some(dir.to_path_buf()));
 
-    let evaluated = eval_cjs_body(cx, source, path, exports_obj, module_obj);
+    // Fresh reads from the LIVE roots: the GC-free window between this copy
+    // and eval_cjs_body's own re-rooting (its first statements) carries no
+    // allocation.
+    let evaluated = eval_cjs_body(cx, source, path, *exports_root, *module_root);
 
     REQUIRE_DIR.with(|d| *d.borrow_mut() = saved_dir);
 
@@ -1228,8 +1505,8 @@ unsafe fn load_cjs_module(
     // global save/restore dance, no cross-module global pollution, and a
     // nested require during the call can no longer observe this module's
     // partially-initialized exports/module through the global object.
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let module_root = module_obj);
+    // Read back through the LIVE root — the pre-fix raw `module_obj` seed
+    // was the from-space address whenever the body's GCs had moved it.
     let mut final_exports = UndefinedValue();
     JS_GetProperty(
         cx,

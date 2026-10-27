@@ -130,6 +130,10 @@ pub use api::accessibility::{AXNode, Accessibility};
 pub use api::browser::{Browser as HighLevelBrowser, BrowserOptions, Pid};
 pub use api::browser_context::{BrowserContext, ContextOptions, PermissionOverride};
 pub use api::console_message::ConsoleMessage;
+// E49 后补的 crate 根 re-export:api/mod.rs 已导出 `cdp_session::CdpSession`,
+// 顶层此前漏挂(E49 终报:未触 lib.rs crate 根 re-export,超 api/ 授权目录)。
+// @trace REQ-BAO-API-006 [level:library]
+pub use api::CdpSession;
 pub use api::coverage::Coverage;
 pub use api::dialog::{Dialog, DialogType};
 pub use api::element_handle::{BoundingBox, ElementHandle};

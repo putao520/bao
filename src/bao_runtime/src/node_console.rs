@@ -235,15 +235,66 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
 // --- Helper: format arguments to a string ---
 
+/// Console message formatting. node routes every console output face through
+/// `formatWithOptions` → `util.format` (lib/console.js), so the placeholder
+/// grammar (%s/%d/%i/%f/%j/%o/%O/%c/%% + verbatim leftover specifiers +
+/// trailing-argument append) is util.format's — reused verbatim by invoking
+/// `node_util::util_format` over a synthetic vp (one implementation, two
+/// faces). @trace REQ-ENG-004
+///
+/// `None` = the formatter threw (throwing valueOf/toString converter): node
+/// propagates that exception to the script (oracle v24.19:
+/// `console.log('%d', {valueOf(){throw}})` throws) — callers return `false`
+/// with the pending exception left in place.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn format_args(cx: *mut JSContext, args: &CallArgs) -> String {
+unsafe fn format_args(cx: *mut JSContext, args: &CallArgs) -> Option<String> {
+    let argc = args.argc_ as usize;
+    let mut vals: Vec<JSVal> = Vec::with_capacity(argc);
+    for i in 0..argc {
+        vals.push(*args.get(i as u32).ptr);
+    }
+    format_js_values(cx, &vals)
+}
+
+/// Shared value-list formatter behind every console message face (log family,
+/// trace/group labels, assert message args): when the first value is a string
+/// containing `%` and a consumer argument remains, the full util.format
+/// placeholder grammar applies (invoked via `node_util::util_format`, the same
+/// native that backs `util.format` — node lib/console.js is the identical
+/// arrangement); otherwise values render as space-joined display strings.
+/// @trace REQ-ENG-004
+///
+/// GC note: the originals of `vals` stay GC-live in the ongoing native call's
+/// own vp for the duration; the synthetic vp below is a convenience alias, not
+/// a rooting change. The `None` contract matches `format_args`.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn format_js_values(cx: *mut JSContext, vals: &[JSVal]) -> Option<String> {
+    let argc = vals.len() as u32;
+    if argc > 0 {
+        let first = vals[0];
+        if first.is_string() {
+            let fmt = crate::js_to_rust_string(cx, first);
+            if fmt.contains('%') && argc > 1 {
+                // rval slot = `vp[argc]` (CallArgs::from_vp semantics inside
+                // util_format).
+                let mut vp: Vec<JSVal> = Vec::with_capacity(vals.len() + 1);
+                vp.extend_from_slice(vals);
+                vp.push(UndefinedValue());
+                let ok = crate::node_util::util_format(cx, argc, vp.as_mut_ptr());
+                if !ok {
+                    return None;
+                }
+                let rval = vp[vals.len()];
+                return Some(js_val_to_display_string(cx, rval));
+            }
+        }
+    }
     let mut parts: Vec<String> = Vec::new();
-    for i in 0..args.argc_ {
-        let val = *args.get(i).ptr;
+    for &val in vals {
         let s = js_val_to_display_string(cx, val);
         parts.push(s);
     }
-    parts.join(" ")
+    Some(parts.join(" "))
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -307,11 +358,11 @@ unsafe fn js_val_to_display_string(cx: *mut JSContext, val: JSVal) -> String {
                     },
                 );
                 if stringify_val.is_object() {
-                    let elems = [ObjectValue(obj.get())];
-                    let call_args = HandleValueArray {
-                        length_: elems.len(),
-                        elements_: elems.as_ptr(),
-                    };
+// unrooted-args class (B-sweep 2026-10-26, require.rs golden): call args must live in a rooted ValueArray — bare stack copies do not track GC moves.
+                    rooted!(&in(cx_ref) let call_args_rooted = mozjs_sys::jsgc::ValueArray::<1>::new([
+                        ObjectValue(obj.get()),
+                    ]));
+                    let call_args = JS::HandleValueArray::from(&call_args_rooted);
                     rooted!(&in(cx_ref) let stringify_fn = ObjectValue(stringify_val.to_object()));
                     let mut rval = UndefinedValue();
                     JS_CallFunctionValue(
@@ -433,7 +484,9 @@ fn stderr_coloured(code: &str, s: &str) -> String {
 unsafe extern "C" fn console_log(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let prefix = get_indent_prefix();
-    let msg = format_args(cx, &args);
+    let Some(msg) = format_args(cx, &args) else {
+        return false;
+    };
     console_out(&format!("{}{}", prefix, msg));
     args.rval().set(UndefinedValue());
     true
@@ -443,7 +496,9 @@ unsafe extern "C" fn console_log(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 unsafe extern "C" fn console_warn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let prefix = get_indent_prefix();
-    let msg = format_args(cx, &args);
+    let Some(msg) = format_args(cx, &args) else {
+        return false;
+    };
     console_err(&stderr_coloured("\x1b[33m", &format!("{}{}", prefix, msg)));
     args.rval().set(UndefinedValue());
     true
@@ -453,7 +508,9 @@ unsafe extern "C" fn console_warn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 unsafe extern "C" fn console_error(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let prefix = get_indent_prefix();
-    let msg = format_args(cx, &args);
+    let Some(msg) = format_args(cx, &args) else {
+        return false;
+    };
     console_err(&stderr_coloured("\x1b[31m", &format!("{}{}", prefix, msg)));
     args.rval().set(UndefinedValue());
     true
@@ -464,7 +521,9 @@ unsafe extern "C" fn console_info(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     // info is same as log in most implementations
     let args = CallArgs::from_vp(vp, argc);
     let prefix = get_indent_prefix();
-    let msg = format_args(cx, &args);
+    let Some(msg) = format_args(cx, &args) else {
+        return false;
+    };
     console_out(&format!("{}{}", prefix, msg));
     args.rval().set(UndefinedValue());
     true
@@ -475,7 +534,9 @@ unsafe extern "C" fn console_debug(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     // debug is same as log in most implementations
     let args = CallArgs::from_vp(vp, argc);
     let prefix = get_indent_prefix();
-    let msg = format_args(cx, &args);
+    let Some(msg) = format_args(cx, &args) else {
+        return false;
+    };
     console_out(&format!("{}{}", prefix, msg));
     args.rval().set(UndefinedValue());
     true
@@ -632,7 +693,10 @@ unsafe extern "C" fn console_time_log(cx: *mut JSContext, argc: u32, vp: *mut JS
 unsafe extern "C" fn console_trace(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let label = if argc > 0 {
-        format!(" {}", format_args(cx, &args))
+        let Some(formatted) = format_args(cx, &args) else {
+            return false;
+        };
+        format!(" {}", formatted)
     } else {
         String::new()
     };
@@ -704,17 +768,21 @@ unsafe extern "C" fn console_assert(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     }
 
     // Assertion failed
+    // node lib/console.js assert formats the message args (everything after
+    // the condition) through formatWithOptions → util.format — the full
+    // placeholder grammar applies (oracle v24.19: assert(false, 'msg %s',
+    // 'hi') → 'Assertion failed: msg hi'); same formatter as every other
+    // console message face.
     let mut msg_parts: Vec<String> = vec!["Assertion failed".to_string()];
     if argc > 1 {
-        // Extra args after the condition are the message
-        let mut extra = Vec::new();
+        let mut vals: Vec<JSVal> = Vec::with_capacity(argc as usize - 1);
         for i in 1..argc {
-            let val = *args.get(i).ptr;
-            extra.push(js_val_to_display_string(cx, val));
+            vals.push(*args.get(i).ptr);
         }
-        if !extra.is_empty() {
-            msg_parts.push(extra.join(" "));
-        }
+        let Some(formatted) = format_js_values(cx, &vals) else {
+            return false;
+        };
+        msg_parts.push(formatted);
     }
     console_err(&stderr_coloured("\x1b[31m", &msg_parts.join(": ")));
     args.rval().set(UndefinedValue());
@@ -792,7 +860,9 @@ unsafe extern "C" fn console_count_reset(cx: *mut JSContext, argc: u32, vp: *mut
 unsafe extern "C" fn console_group(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc > 0 {
-        let label = format_args(cx, &args);
+        let Some(label) = format_args(cx, &args) else {
+            return false;
+        };
         console_out(&label);
     }
     CONSOLE_INDENT.with(|indent| {
@@ -823,10 +893,7 @@ unsafe extern "C" fn console_clear(_cx: *mut JSContext, _argc: u32, vp: *mut JSV
     // ANSI clear screen + move cursor home, on stdout with no trailing
     // newline (Node writes the escape sequence verbatim).
     ensure_output_source();
-    bun_core::output::write_bytes(
-        bun_core::output::Destination::Stdout,
-        b"\x1b[2J\x1b[H",
-    );
+    bun_core::output::write_bytes(bun_core::output::Destination::Stdout, b"\x1b[2J\x1b[H");
     args.rval().set(UndefinedValue());
     true
 }

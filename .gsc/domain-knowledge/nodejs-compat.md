@@ -211,3 +211,13 @@ source: https://nodejs.org/api/dgram.html, https://nodejs.org/api/net.html, http
 6. **node_* 模块三段式导出陷阱**:NET_JS IIFE return 块+install 白名单拷贝清单+单测断言清单三处必须同步(IIFE 加导出不进白名单=require 面静默 undefined,编译绿假象)。
 
 7. **process.features.typescript 值语义**:Node v24="strip"(TS 直跑经类型剥离);bao 实证="strip"(bao run x.ts 走 bun_sm strip_typescript 主链 bun_transpiler::transpile_ts 备 legacy;needs_transpile 门覆盖 .ts/.tsx/.jsx)。值不是 boolean——如实按字符串契约暴露,禁占位 false 冒充。
+
+## native 静态 vs 端口 JS 双面接线类(2026-10-26 E53/E55 实证)
+
+**坑**:require('events') 不触发端口求值——native 静态(on/once/listenerCount/getEventListeners)直接挂 ctor,而双面静态的实现住在端口 JS 源(internal/event_target);native 路径调用时端口从未求值→listenerCount(EventTarget/signal) 恒 0、promise once 缺失。症状=「某 API 在 require 内置模块后才活」。
+
+**律**:native 静态若依赖端口 JS 实现面,必须做 **trampoline**(首调 bootstrap 端口求值+helper 求值,之后 redispatch 到 JS 函数;callee 指针同一性判仍在 trampoline 才走原生体)。先例:node_events.rs events_static_once/listener_count/get_event_listeners 三面(E53);farm p10 探针实证接线即活。
+
+**JS 可伪造指针载体类(2026-10-26 E50/E54/E55 同族横扫)**:`_socketPtr`/`_udPtr`/`_appPtr`/`\x00__ee_state` 等 JS 可见属性(含 NUL 前缀隐藏属性——JS 立方括号完全可达)携带裸指针→wild deref/任意 free。修法两选:①reserved slot+JS_InstanceOf 类门(E46/E50/E54 惯形:per-file JSClass 2 slots+中央 slot_ptr getter)②Rust 侧注册表+真 GC 回收(E55 惯形:Heap 键槽就地重定位+weak-zones callback sweep;类门被原型链外部消费阻塞时的替代)。判别=外来 this 的 node oracle 行为先实测再镜像(events 是宽容静默注册)。
+
+**CString 错误消息 NUL 类**:JS 字符串 \x00 进 received_description→CString::new Err;fallback 换静态串=丢真实消息。修=cstring_for_error 转义(\x00→字面 \u0000,node JSON 形)后 unwrap(结构性安全)。先例 globals.rs:5234(E56,12 处)。
