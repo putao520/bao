@@ -1,10 +1,13 @@
 [package]
 name = "bun_http"
+# 0.2.6 (2026-10-28): test-only content drift (tests/common port_probe +
+# fetch_error_paths_tests, d97f062c6) — e99 same-name-drift discipline bump
+# (tests ship in the tarball); lib face unchanged → patch.
 # 0.1.1 (2026-08-19): 15-station ChanVec facade conversion — dual-channel green (e54bfb47).
 # 0.2.5 (2026-10-03): fetch deflate RFC 1950 zlib-vs-raw autodetect
 # (has_zlib_header CM=8/CINFO<=7/x31; one-byte-wait before decoder creation;
 # upstream faac63e6d4).
-version = "0.2.5"
+version = "0.2.6"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

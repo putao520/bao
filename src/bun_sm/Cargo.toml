@@ -1,11 +1,14 @@
 [package]
 name = "bun_sm"
+# 0.4.0 (2026-10-28): ESM interop face wave (d97f062c6 + a8092be46) — new pub
+# `cjs_exports` module (oxc AST named-export static extraction, BUG-ENG-365),
+# module_loader/host_fn/async_module/host_call rework; new oxc_* deps.
 # 0.3.1 (2026-09-23): RTP token chokepoint fix (2b0d4a8b) — global_object.rs
 # registration stamp; no new API, consumers' req floors unchanged.
 # 0.1.18 (2026-09-17): dev-dep bun_runtime floor → ^0.2 (0.2.0 breaking wave).
 # 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
 # so this patch release ships alone. spawn watch loop-alive + exit double-dispatch root fix.
-version = "0.3.6"
+version = "0.4.0"
 description = "SpiderMonkey-backed API compatibility layer replacing bun_jsc"
 edition.workspace = true
 license.workspace = true
@@ -14,7 +17,7 @@ repository = "https://github.com/putao520/bao"
 [dependencies]
 # NOTE: bun_sm is the bottom layer — it does NOT depend on bao_engine.
 # bao_engine depends on bun_sm and re-exports its types.
-bao_engine_macros = { path = "../bao_engine_macros", version = "0.1.0" }
+bao_engine_macros = { path = "../bao_engine_macros", version = "0.2.0" }
 mozjs.workspace = true
 mozjs_sys.workspace = true
 bun_core = { path = "../bun_core", version = "0.2.0" }
@@ -59,7 +62,7 @@ bao_bundler = { path = "../bao_bundler", version = "^0.2.1" }
 # co-linking with bun_sm's own dispatch bodies is dual-def-free.
 bao_native_stubs = { path = "../bao_native_stubs", version = "^0.1" }
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }
-bun_runtime = { path = "../bao_runtime", version = "^0.5" }
+bun_runtime = { path = "../bao_runtime", version = "^0.6" }
 # Type-alias sources for the lib-test seams (macro-context faces: bun_ast /
 # bun_js_parser; ProcessExit faces: bun_spawn; WindowsNamedPipe faces:
 # bun_uws_sys + bun_boringssl_sys — all below bun_sm, cycle-free).

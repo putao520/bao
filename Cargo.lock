@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "bao-browser"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "bao-mozjs",
  "bao-servo",
@@ -2477,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "bao-browser",
  "bao_engine",
@@ -2493,7 +2493,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp_client"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bao_cdp",
  "bao_engine",
@@ -2535,7 +2535,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2559,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine_macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3390,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "bun_http"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "bao_boringssl_bridge",
  "bao_native_stubs",
@@ -3876,7 +3876,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.5.7"
+version = "0.6.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -4045,7 +4045,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sm"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -4512,7 +4512,7 @@ dependencies = [
 
 [[package]]
 name = "cdp-server"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bao_ipc",
  "bun_url",

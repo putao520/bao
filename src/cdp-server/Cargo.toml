@@ -1,6 +1,9 @@
 [package]
 name = "cdp-server"
-version = "0.2.1"
+# 0.2.2 (2026-10-28): test-only content drift (suite common/port_probe +
+# server_stop_tests, d97f062c6) — e99 same-name-drift discipline bump
+# (tests ship in the tarball); lib face unchanged → patch.
+version = "0.2.2"
 edition = "2021"
 repository.workspace = true
 readme = "README.md"

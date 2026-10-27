@@ -1,5 +1,11 @@
 [package]
 name = "bun_runtime"
+# 0.6.0 (2026-10-28): node-compat face wave (d97f062c6 + a8092be46) —
+# permission model (CliPermissionModel/process.permission.has + fs gates),
+# fs.cp engine/read window/streams, glob v24 engine, dns hosts arm,
+# child_process exec async, node:test run-form + MockTracker; new pub
+# modules (permission_bridge/permission_options/slot_gate/
+# node_internal_event_target/node_internal_fs_modules).
 # 0.2.0 (2026-09-17): BREAKING — BaoSettingsRunner Box<dyn Fn> → fn pointer
 # (58a395f3) + BaoRuntime::drop now fully terminates owned resources (B1
 # runtime-ownership sweeps: runtime token/UDP/worker/child_process registry
@@ -8,7 +14,7 @@ name = "bun_runtime"
 # so this patch release ships alone. runtime fix batch: atob/btoa binary fidelity, async_hooks promise identity, spawn watch, SC bridge + WHATWG URL parity, premature loop exit fetch teardown.
 # 0.1.2 (2026-08-19): stable-channel fix — http_client body handoff via
 # bun_core::vec::chan_vec_to_std (Bytes::From needs the std Vec).
-version = "0.5.7"
+version = "0.6.0"
 description = "Bao runtime integration — JS engine + Bun API + event loop"
 edition.workspace = true
 license.workspace = true
@@ -22,7 +28,7 @@ bao_stealth = { path = "../bao_stealth", version = "^0.4.0" }
 bao_boringssl_bridge = { path = "../bao_boringssl_bridge", version = "^0.2.0" }
 bun_boringssl_sys = { path = "../boringssl_sys", version = "^0.2.0" }
 bao_crypto = { path = "../bao_crypto", version = "0.1.0" }
-bao_cdp_client = { path = "../bao_cdp_client", version = "^0.5.0" }
+bao_cdp_client = { path = "../bao_cdp_client", version = "^0.6.0" }
 mozjs.workspace = true
 mozjs_sys.workspace = true
 log = "0.4"
@@ -133,7 +139,7 @@ regex = "1"
 [dev-dependencies]
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }
 bao_uloop = { path = "../bao_uloop", version = "0.2.0" }
-bao_cdp = { path = "../bao_cdp", version = "0.4.0" }
+bao_cdp = { path = "../bao_cdp", version = "0.5.0" }
 cdp-server = { path = "../cdp-server", version = "0.2.0" }
 # @trace REQ-CLI-001 [dep:bun_libarchive] — libarchive extraction regression
 # tests (upstream bun 5c26a6cca5 tar directory-mode masking). Dev-only: the

@@ -1,6 +1,9 @@
 [package]
 name = "bao_engine"
-version = "0.3.7"
+# 0.3.8 (2026-10-28): internal-only (d97f062c6) — job_queue flush-hook
+# catch_unwind + nextTick arg rooting rework (moved-Heap store-buffer edge,
+# e127 class); zero pub API change → patch.
+version = "0.3.8"
 description = "SpiderMonkey engine wrapper for Bao runtime"
 edition.workspace = true
 license.workspace = true
@@ -8,8 +11,8 @@ repository = "https://github.com/putao520/bao"
 
 [dependencies]
 # sibling 精确下限(用户裁决 2026-09-02):#27/#28 裁决面消费 bun_sm 0.1.16
-bun_sm = { path = "../bun_sm", version = "^0.3.0" }
-bao_engine_macros = { path = "../bao_engine_macros", version = "0.1.0" }
+bun_sm = { path = "../bun_sm", version = "^0.4.0" }
+bao_engine_macros = { path = "../bao_engine_macros", version = "0.2.0" }
 mozjs.workspace = true
 mozjs_sys.workspace = true
 libc = "0.2"
@@ -34,7 +37,7 @@ bao_bundler = { path = "../bao_bundler", version = "^0.2.0" }
 # Wave 73-G: tests need bao_native_stubs to pull in C-library stubs (uSockets uws_get_loop, etc.)
 bao_native_stubs = { path = "../bao_native_stubs", version = "0.1.0" }
 # bao_runtime provides __bun_run_file_poll (extern "Rust") referenced by bun_io::FilePoll::on_update.
-bun_runtime = { path = "../bao_runtime", version = ">=0.4.2, <0.6" }
+bun_runtime = { path = "../bao_runtime", version = ">=0.4.2, <0.7" }
 # TASK-12 E2E fusion tests parse a typeof-snapshot via JSON.
 serde_json = "1"
 

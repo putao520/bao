@@ -2,6 +2,7 @@
 name = "bao-browser"
 # crates.io name; lib target name pinned to `bao_browser` below so in-tree
 # `bao_browser::` code and downstream re-exports are unchanged.
+# 0.5.0 (2026-10-28): ws_registry face rework (d97f062c6).
 # 0.1.1 (2026-08-19): PageState load_complete root fix (30cc90c9); servo =0.5.0 pins unchanged
 # 0.1.2 (2026-08-19): terminal-gate re-stamp — same tree as 0.1.1
 # (PageState load_complete 30cc90c9 already in 0.1.1); re-publish so
@@ -13,7 +14,7 @@ name = "bao-browser"
 # 0.1.21 (2026-09-17): bun_runtime floor → ^0.2 via workspace dep (0.2.0
 # breaking wave); same-wave sibling bumps beneath (bun_core/bao_engine/
 # bao_stealth/bao_cdp_client).
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 description.workspace = true
 license.workspace = true
@@ -121,8 +122,8 @@ dashmap.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 base64 = "0.22"
 serde_json = "1"
-bao_cdp = { path = "../bao_cdp", version = "0.4.0" }
-bao_cdp_client = { path = "../bao_cdp_client", version = "^0.5.0" }
+bao_cdp = { path = "../bao_cdp", version = "0.5.0" }
+bao_cdp_client = { path = "../bao_cdp_client", version = "^0.6.0" }
 # REQ-ARCH-3 (wave F2a): unified MPMC message substrate — the bridge-surface
 # channel family (servo events / worker ports / runtime bridge) imports
 # `bao_ipc::{channel, unbounded, Sender, Receiver}` instead of touching
