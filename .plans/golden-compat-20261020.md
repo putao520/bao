@@ -1809,3 +1809,13 @@ E-exclude in-flight;glob SEGV 彩票面留 rooting 审计二轮(E-glob-segv 上�
 ## 域闭环批量 V(src/bao_runtime/tests 4 errFails→closed,2026-10-28)
 
 bce-domain-guard 域 4 errFails(战役中四家族测试的红/编译错:c1 断言漂移/dns hosts 缺陷/node:test drain 断言/cp exec 时序 label)根治已随 d97f062c6 入库;末次批量 V 定向复验:**58 tests run: 58 passed, 0 failed**(farm bao-vfin,PIPE_RC=0,零语义退出)——residualZero 证据在案,域 closed。
+
+## 第二十轮:发布闭包全量执行完成(bao-core 0.3.14 终点,2026-10-28)
+
+**执行史**(verify 错误驱动的漂移定位法,每错必真源):首批 macros/cdp/client 过→bun_sm 卡 bun_url percent_decode 同号漂移→发三基建(bun_url 0.2.2/bao-mozjs 0.24.4/bun_http_types 0.2.1)→bun_sm/bun_runtime 又卡 JS_IsProxy(载体=src-js 卫星,非 mozjs 主包!)→mozjs 家族 exact-pin 级联(src-js -2→sys -5→mozjs 0.24.5)→bun_sm 0.4.0/bun_runtime 0.6.0/bao_engine 0.3.8 上库→cdp-server/bun_http 过→bao-browser 引爆 servo 族 29 组件内容漂移(历波累积:WebCodecs/WebBundle/WebVTT/DBSC/counter/Ruby)→全族扫描+24 patch bump 批量发布→atoms "list-item" 缺(stylo-atoms 漂移)→0.22.1→15 manifest "=0.22.0" 精确钉撞新版(盲替换误伤 stylo-traits 族→四底座 0.22.1 补发)→layout Ruby 变体缺(bao-stylo 漂移→0.22.2)→browser 自身 from_random_seed 缺(bao-stealth 漂移→0.4.5)→**bao-browser 0.5.0 全 verify 上库**→**bao-core 0.3.14 全 verify 上库(纯 registry 闭包构建证明)**。
+
+**curl-200 全验 27/27**;commit 041b2e3b2 已推。
+
+**事件类沉淀**(新增):①漂移定位正道=publish verify 的 missing-symbol 错误逐个指向漂移 crate(比全量 tarball hash 扫描精准——后者含打包排除面伪阳);②mozjs 家族符号链:jsapi 面(如 JS_IsProxy)载体=src-js 卫星的 jsapi.h,非 mozjs 主包 wrappers;③精确钉在 family bump 时的三倍代价(原钉撞新+盲放宽撞未发+已发 tarball 携旧钉需重发)——servo 组件族 stylo-atoms 钉全量 range 化已根治该类;④docker compose 网络池耗尽(直跑 compose 每次建网)→批量前清 bao-* 网;⑤PUBSTRIP(farm 侧 dev-dep 剥离)= dev-dep 环发布的标准解(farm 树一次性,免恢复)。
+
+**战役总收官**:GOLDEN A 100%(96/96+18/18 双轮)+BCE 残留扫清(HandleValueArray 15 站/events registry core 取证/execFile)+win-cross RC=0+发布闭包 27+ crate 全上库(bao-core 0.3.14)。移交余项(低优):no-cb exec exitCode 分歧;sync 族 env 三 face(~15 行/face 材料在案);BUG-KNOWLEDGE fixTemplate 归档面更新;bce_scan_gc_unsafe detector 结构位。
