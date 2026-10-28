@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-net"
-version = "0.5.41"
+version = "0.5.42"
 publish = true
 autotests = false # Inhibit lookup for tests/*.rs without [[test]] sections
 
@@ -91,7 +91,7 @@ regex = {version = "1.12"}
 # API between versions), SHA-256 for RSASSA-PKCS1-v1_5, and `serde_json`
 # for the session-instructions bodies.
 resvg = {version = "0.48.1"}
-rsa = {version = "0.10.0-rc.19"}
+rsa = {version = "0.10"}
 rustc-hash = {version = "2.1.2"}
 serde_json = {version = "1.0.150"}
 sha2 = {version = "0.11"}
