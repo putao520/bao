@@ -7,11 +7,16 @@
 
 use std::os::raw::c_void;
 
-#[cfg(not(feature = "allocation-tracking"))]
+// BAO PATCH (embed): the global allocator is installed ONLY behind
+// `install-global-allocator` — library embeds (frog tools path-dep on
+// package `bao`) provide their own process allocator; dual
+// `#[global_allocator]` fails the link. Standalone servo/shell builds
+// enable the feature explicitly.
+#[cfg(all(not(feature = "allocation-tracking"), feature = "install-global-allocator"))]
 #[global_allocator]
 static ALLOC: Allocator = Allocator;
 
-#[cfg(feature = "allocation-tracking")]
+#[cfg(all(feature = "allocation-tracking", feature = "install-global-allocator"))]
 #[global_allocator]
 static ALLOC: crate::tracking::AccountingAlloc<Allocator> =
     crate::tracking::AccountingAlloc::with_allocator(Allocator);
