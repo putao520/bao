@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-storage"
-version = "0.5.18"
+version = "0.5.19"
 publish = true
 autotests = false # Inhibit lookup for tests/*.rs without [[test]] sections
 

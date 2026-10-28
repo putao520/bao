@@ -1,7 +1,7 @@
 [package]
 name = "bao-servo-hyper-serde"
 publish = true
-version = "0.5.2"
+version = "0.5.3"
 documentation = "https://docs.rs/hyper_serde"
 categories = ["encoding", "web-programming"]
 keywords = ["serde", "serialization", "hyper", "cookie", "mime"]

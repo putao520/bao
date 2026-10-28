@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-devtools"
-version = "0.5.33"
+version = "0.5.34"
 publish = true
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"

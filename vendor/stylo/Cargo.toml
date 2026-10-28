@@ -18,7 +18,7 @@ name = "bao-stylo"
 # servo-owned upstream names (stylo_atoms / servo_arc / stylo_traits), so the
 # version number is bumped to carry the new dependency graph — same number
 # with different content is not publishable on crates.io.
-version = "0.22.1"
+version = "0.22.2"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 repository = "https://github.com/servo/stylo"

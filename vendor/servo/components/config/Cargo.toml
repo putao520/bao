@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-config"
-version = "0.5.15"
+version = "0.5.17"
 publish = true
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
@@ -18,7 +18,7 @@ serde = {version = "1.0.228", features = ["derive"]}
 serde_json = {version = "1.0"}
 servo-config-macro = {package = "bao-servo-config-macro", path = "../config/macro", version = ">=0.5.4, <0.6.0"}
 strum = {version = "0.28", features = ["derive"]}
-stylo_static_prefs = {version = "=0.22.0", package = "bao-stylo-static-prefs", path = "../../../stylo_static_prefs"}
+stylo_static_prefs = {version = ">=0.22.1, <0.23", package = "bao-stylo-static-prefs", path = "../../../stylo_static_prefs"}
 
 [lints.rust]
 unexpected_cfgs = {level = "warn", check-cfg = ["cfg(crown)", "cfg(coverage)", "cfg(llvm_pgo)", "cfg(ohos_mock)"]}

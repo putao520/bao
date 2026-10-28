@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-fonts"
-version = "0.5.21"
+version = "0.5.23"
 publish = true
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
@@ -59,7 +59,7 @@ servo_arc = {version = "=0.5.0", package = "bao-servo-arc", path = "../../../ser
 skrifa = {version = "0.46.2"}
 smallvec = {version = "1.15", features = ["serde", "union"]}
 style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
-stylo_atoms = {version = "=0.22.0", package = "bao-stylo-atoms", path = "../../../stylo_atoms"}
+stylo_atoms = {version = ">=0.22.1, <0.23", package = "bao-stylo-atoms", path = "../../../stylo_atoms"}
 tracing = {version = "0.1.44", optional = true}
 unicode-properties = {version = "0.1.4", features = ["emoji"]}
 unicode-script = {version = "0.5"}

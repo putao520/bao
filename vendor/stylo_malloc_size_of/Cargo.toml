@@ -10,7 +10,7 @@
 # Upstream sync: re-copy from the monorepo rev servo pins, redo inlining.
 [package]
 name = "bao-stylo-malloc-size-of"
-version = "0.22.0"
+version = "0.22.1"
 authors = ["The Servo Project Developers"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/servo/stylo"

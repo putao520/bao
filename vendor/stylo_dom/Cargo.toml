@@ -10,7 +10,7 @@
 # Upstream sync: re-copy from the monorepo rev servo pins, redo inlining.
 [package]
 name = "bao-stylo-dom"
-version = "0.22.0"
+version = "0.22.1"
 authors = ["The Servo Project Developers"]
 documentation = "https://docs.rs/stylo_dom/"
 description = "DOM state types for Stylo"

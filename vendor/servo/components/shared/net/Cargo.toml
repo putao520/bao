@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-net-traits"
-version = "0.5.19"
+version = "0.5.20"
 publish = true
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
