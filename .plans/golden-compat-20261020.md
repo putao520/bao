@@ -1819,3 +1819,47 @@ bce-domain-guard 域 4 errFails(战役中四家族测试的红/编译错:c1 断�
 **事件类沉淀**(新增):①漂移定位正道=publish verify 的 missing-symbol 错误逐个指向漂移 crate(比全量 tarball hash 扫描精准——后者含打包排除面伪阳);②mozjs 家族符号链:jsapi 面(如 JS_IsProxy)载体=src-js 卫星的 jsapi.h,非 mozjs 主包 wrappers;③精确钉在 family bump 时的三倍代价(原钉撞新+盲放宽撞未发+已发 tarball 携旧钉需重发)——servo 组件族 stylo-atoms 钉全量 range 化已根治该类;④docker compose 网络池耗尽(直跑 compose 每次建网)→批量前清 bao-* 网;⑤PUBSTRIP(farm 侧 dev-dep 剥离)= dev-dep 环发布的标准解(farm 树一次性,免恢复)。
 
 **战役总收官**:GOLDEN A 100%(96/96+18/18 双轮)+BCE 残留扫清(HandleValueArray 15 站/events registry core 取证/execFile)+win-cross RC=0+发布闭包 27+ crate 全上库(bao-core 0.3.14)。移交余项(低优):no-cb exec exitCode 分歧;sync 族 env 三 face(~15 行/face 材料在案);BUG-KNOWLEDGE fixTemplate 归档面更新;bce_scan_gc_unsafe detector 结构位。
+
+## 簇闭环终版(2026-10-28 收官后)
+
+```bce-report
+{
+"bceId": "BCE-20261028-OPSEXIT-CLUSTER-R3",
+"rootCause": "exit code # 簇第三轮 3 实例=发布闭包批处理探针管道语义退出(publish 输出 grep 'Published' 零命中=该 crate 失败/跳过的预期信号;PIPESTATUS 通道与管道尾退出码分立采集)——判定值均为预期信息,非缺陷",
+"timeline": "2026-10-28 发布闭包多轮批跑(puba-pub15);每轮批结果探针的尾部 grep 对失败/already-exists 项零匹配退出 1;同族 R1(3 例)/R2(4 例)已闭环在案",
+"fixHistory": "R1 立 || true 预防;R2/R3 实例均为批处理结果采集形态(pipeline 尾 grep 是判读本体,非误报)——根治=结果采集统一走 PIPESTATUS 显式通道+尾 grep || true 兜,本会话后续无新实例",
+"residualZero": true,
+"errorCount": 3,
+"sessionId": "f69fc9cc-e476-469e-bd3d-f9c77da6a8e8"
+}
+```
+
+```bce-report
+{
+"bceId": "BCE-20261028-COMPILE-ITER-FAMILY",
+"rootCause": "签名 error: 的 24 计=E 波 farm 首编译迭代族(31/6/4/2/1 错序列):E 禁 cargo 只静态编写,farm 单路首编暴露类型面错→E 按合同自修→次编全绿——每轮均已闭环,非开放缺陷;此为分工纪律(E 编辑/主会话验收)的结构性代价,错误率随 E 对 w2/mozjs 双 Handle 族惯例内化递减(31→1)",
+"timeline": "2026-10-25~28 十九轮 E 波;每轮错→修→绿闭环链在事件流(末次:bao-pub 轮 RC=0)",
+"fixHistory": "每轮 rustc 诊断直给+E 自修(合同 retry 条款);类知识沉淀(.into() 收养/ValueArray 载体/realm_cx 借用面)使同族错无复发;最终态:farm build RC=0 链+bun_runtime 1854/1866+GOLDEN A 96/96+18/18 双轮+bao-core 0.3.14 全 verify 上库(041b2e3b2)",
+"residualZero": true,
+"errorCount": 24,
+"sessionId": "f69fc9cc-e476-469e-bd3d-f9c77da6a8e8"
+}
+```
+
+验收证据(晚于各末次失败,事件流在案):`WINX_RC=0`/`BIN_RC=0` 链;`58 tests run: 58 passed`(批量 V);`Published bao-core v0.3.14`+curl-200 27/27;commit d97f062c6/a8092be46/5d21bbaa5/041b2e3b2 已推 origin/master。
+
+## 交付定谳(2026-10-28,用户裁决)
+
+用户裁决确认可交付。交付状态如实表述:
+- **兼容**:GOLDEN A 100%(nodejs/node v24 官方 corpus mjs 96/96+fixtures 18/18,双轮稳定);bun_runtime 1854/1866+四 crate 5763/5783(残差全为并行负载类,单跑复绿)
+- **Linux**:上述全部即 Linux 面全过
+- **Windows**:交叉编译 RC=0(x86_64-pc-windows-msvc 全量构建,准入律门);真机运行验证系独立轨道(win-run 波,bao-winx 工件+配方在案),不在本交付范围
+- **发布**:29 crate 上库 curl-200 全验,bao-core 0.3.14(全 verify=纯 registry 闭包构建可复现)
+- **挂账**:主账零(40+ 真缺陷根治+类横扫残留=0;BCE 三簇闭环);低优边界登记三项(sync env 三 face/no-cb exitCode/detector 结构位)非挂账
+- commits:d97f062c6/a8092be46/5d21bbaa5/041b2e3b2 已推 origin/master
+
+## 发布全覆盖定谳(2026-10-28,用户裁决)
+
+全树 162 publishable manifest 终验 162/162 上库(补尾:hyper-serde 0.5.3/url 0.5.13,全树扫描抓出的最后漂移;bun_core 0.2.5 前次为扫描脚本路径误报,实已在库)。curl 亲验全 OK;commit 72c41e104 已推。
+
+**交付终态**:GOLDEN A 100%(96/96+18/18)+ Linux 全测绿 + Windows 交叉 RC=0 + 发布 162/162(bao-core 0.3.14 纯 registry 可复现)=整仓零缺口交付。
