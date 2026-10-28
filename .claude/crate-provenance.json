@@ -831,6 +831,24 @@
       "divergence": "none",
       "publish": false,
       "member": false
+    },
+    {
+      "dir": "vendor/usvg",
+      "package": "bao-usvg",
+      "origin": "mirror",
+      "upstream_path": "registry usvg 0.48.1(linebender/resvg 上游;pristine 基准 ~/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/usvg-0.48.1.crate)",
+      "divergence": "fork-rename 发布(2026-10-29,用户裁决方案 1):包名 usvg→bao-usvg([lib] name=\"usvg\" 保上游;[patch.crates-io] 不能改名故退役,镜像 W0b/REQ-ARCH-4 先例)+ 既有 clip-cycle 守卫补丁(clip-path-recursion-001 2026-10-04:clippath/mask in_progress 守卫+[[test]] clip_cycle+vestigial dev-dep once_cell 删除);消费面=vendor/resvg 的 usvg dep(package+path 双声明);上游新版本吸收→重放 manifest 改名+守卫补丁(见 CLAUDE.md vendor 清单 usvg 行重放要点)",
+      "publish": true,
+      "member": false
+    },
+    {
+      "dir": "vendor/resvg",
+      "package": "bao-resvg",
+      "origin": "mirror",
+      "upstream_path": "registry resvg 0.48.1(linebender/resvg 上游;pristine 基准 ~/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/resvg-0.48.1.crate)",
+      "divergence": "manifest-only(2026-10-29,fork 改名发布配套件):包名 resvg→bao-resvg([lib]/[[bin]] name=\"resvg\" 保上游)+ usvg 依赖 repoint(dep 键保 usvg,package=\"bao-usvg\"+path=\"../usvg\" 双声明);零源码 .rs 补丁;删内部 Cargo.lock/.cargo_vcs_info.json/Cargo.toml.orig(单一编译宇宙形态);消费面=bao-servo-{net,script,malloc-size-of} 三组件(package+path 双声明,bump net 0.5.43/script 0.5.38/malloc-size-of 0.5.15)",
+      "publish": true,
+      "member": false
     }
   ]
 }

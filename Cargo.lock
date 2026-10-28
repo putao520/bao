@@ -727,6 +727,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao-resvg"
+version = "0.48.1"
+dependencies = [
+ "bao-usvg",
+ "bytemuck",
+ "gif",
+ "image-webp",
+ "log",
+ "pico-args",
+ "rgb",
+ "svgtypes",
+ "tiny-skia",
+ "zune-jpeg",
+]
+
+[[package]]
 name = "bao-selectors"
 version = "0.41.0"
 dependencies = [
@@ -813,7 +829,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-allocator"
-version = "0.5.3"
+version = "0.5.5"
 dependencies = [
  "libc",
  "tikv-jemalloc-sys",
@@ -1365,11 +1381,12 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-malloc-size-of"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "app_units",
  "atomic_refcell",
  "bao-ipc-channel",
+ "bao-resvg",
  "bao-servo-allocator",
  "bao-servo-arc",
  "bao-stylo",
@@ -1391,7 +1408,6 @@ dependencies = [
  "mime",
  "once_cell",
  "parking_lot",
- "resvg",
  "smallvec",
  "string_cache",
  "taffy",
@@ -1627,13 +1643,14 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.40"
+version = "0.5.43"
 dependencies = [
  "async-compression",
  "async-recursion",
  "async-tungstenite",
  "aws-lc-rs",
  "bao-ipc-channel",
+ "bao-resvg",
  "bao-servo-arc",
  "bao-servo-base",
  "bao-servo-config",
@@ -1685,7 +1702,6 @@ dependencies = [
  "quick_cache",
  "rand 0.10.2",
  "regex",
- "resvg",
  "rsa",
  "rusqlite",
  "rustc-hash",
@@ -1711,9 +1727,10 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net-traits"
-version = "0.5.20"
+version = "0.5.21"
 dependencies = [
  "bao-ipc-channel",
+ "bao-resvg",
  "bao-servo-arc",
  "bao-servo-base",
  "bao-servo-config",
@@ -1740,7 +1757,6 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "rand 0.10.2",
- "resvg",
  "rustc-hash",
  "rustls",
  "rustls-pki-types",
@@ -1870,7 +1886,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.36"
+version = "0.5.38"
 dependencies = [
  "accesskit",
  "aes",
@@ -1884,6 +1900,7 @@ dependencies = [
  "backtrace",
  "bao-ipc-channel",
  "bao-mozjs",
+ "bao-resvg",
  "bao-selectors",
  "bao-servo-arc",
  "bao-servo-background-hang-monitor-api",
@@ -1987,7 +2004,6 @@ dependencies = [
  "postcard",
  "rand 0.10.2",
  "regex",
- "resvg",
  "rsa",
  "rustc-hash",
  "serde",
@@ -2434,9 +2450,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao-usvg"
+version = "0.48.1"
+dependencies = [
+ "base64 0.23.1",
+ "data-url",
+ "flate2",
+ "fontdb",
+ "harfrust",
+ "imagesize",
+ "kurbo",
+ "log",
+ "pico-args",
+ "roxmltree 0.21.1",
+ "simplecss",
+ "siphasher 1.0.3",
+ "skrifa 0.44.0",
+ "strict-num",
+ "svgtypes",
+ "tiny-skia-path",
+ "unicode-bidi",
+ "unicode-script",
+ "unicode-vo",
+ "xmlwriter",
+]
+
+[[package]]
 name = "bao_bin"
 version = "0.1.0"
 dependencies = [
+ "bao-servo-allocator",
  "bao_cli",
  "env_logger",
 ]
@@ -2479,6 +2522,7 @@ dependencies = [
 name = "bao_cdp"
 version = "0.5.0"
 dependencies = [
+ "bao-browser",
  "bao_engine",
  "bao_ipc",
  "bun_uws",
@@ -2546,6 +2590,7 @@ dependencies = [
  "bun_crash_handler",
  "bun_event_loop",
  "bun_io",
+ "bun_runtime",
  "bun_sm",
  "bun_spawn",
  "bun_uws",
@@ -2601,8 +2646,10 @@ version = "0.4.5"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
+ "bao_bundler",
  "bao_engine",
  "bun_core",
+ "bun_runtime",
  "bun_sha_hmac",
  "dashmap",
  "serde",
@@ -3878,6 +3925,7 @@ dependencies = [
  "bao-mozjs-sys",
  "bao_boringssl_bridge",
  "bao_bundler",
+ "bao_cdp",
  "bao_cdp_client",
  "bao_crypto",
  "bao_engine",
@@ -3927,6 +3975,7 @@ dependencies = [
  "bun_wyhash",
  "bun_zlib",
  "bytes",
+ "cdp-server",
  "compact_str 0.8.2",
  "crc32fast",
  "dashmap",
@@ -4044,6 +4093,7 @@ dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
  "bao_bundler",
+ "bao_engine",
  "bao_engine_macros",
  "bao_native_stubs",
  "bun_ast",
@@ -4055,6 +4105,7 @@ dependencies = [
  "bun_install",
  "bun_io",
  "bun_js_parser",
+ "bun_runtime",
  "bun_spawn",
  "bun_sys",
  "bun_threading",
@@ -9786,24 +9837,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
-name = "resvg"
-version = "0.48.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67e3803f97b999e80cbf7c6ecdd07a8102204d92e1633cf48783720c521196bd"
-dependencies = [
- "bytemuck",
- "gif",
- "image-webp",
- "log",
- "pico-args",
- "rgb",
- "svgtypes",
- "tiny-skia",
- "usvg",
- "zune-jpeg",
-]
-
-[[package]]
 name = "rfc6979"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11764,32 +11797,6 @@ dependencies = [
  "serde",
  "unic-ucd-ident",
  "url",
-]
-
-[[package]]
-name = "usvg"
-version = "0.48.1"
-dependencies = [
- "base64 0.23.1",
- "data-url",
- "flate2",
- "fontdb",
- "harfrust",
- "imagesize",
- "kurbo",
- "log",
- "pico-args",
- "roxmltree 0.21.1",
- "simplecss",
- "siphasher 1.0.3",
- "skrifa 0.44.0",
- "strict-num",
- "svgtypes",
- "tiny-skia-path",
- "unicode-bidi",
- "unicode-script",
- "unicode-vo",
- "xmlwriter",
 ]
 
 [[package]]

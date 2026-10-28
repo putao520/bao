@@ -12,7 +12,8 @@
 [package]
 edition = "2024"
 rust-version = "1.85.0"
-name = "usvg"
+# BAO PATCH (2026-10-29): fork-renamed for crates.io publication (upstream owns `usvg`); source identical to vendored patched usvg 0.48.1 (clip-cycle guard).
+name = "bao-usvg"
 version = "0.48.1"
 build = false
 exclude = ["tests"]
