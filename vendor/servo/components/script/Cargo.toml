@@ -180,7 +180,7 @@ profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profil
 rand = {version = "0.10"}
 regex = {version = "1.12"}
 resvg = {version = "0.48.1"}
-rsa = {version = "=0.10.0-rc.18", optional = true}
+rsa = {version = "0.10.0-rc.19", optional = true}
 rustc-hash = {version = "2.1.2"}
 # BAO patch (fork-maintained, 2026-09-28): webcrypto hybrid-KEM dependency,
 # synced with the upstream 7ca99fe3f subtlecrypto.rs end-state (REQ-BRW-047 wave ③).
