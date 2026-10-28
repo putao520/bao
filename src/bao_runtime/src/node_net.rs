@@ -1876,10 +1876,13 @@ unsafe extern "C" fn net_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     // ownership and frees the contents at GC finalize via JS_free (system
     // free — SM contract, ArrayBuffer.h "|contents| must be allocated
     // compatible with deallocation by |JS_free|"; ArrayBufferObject::
-    // releaseData MALLOCED_UNKNOWN_ARENA arm → gcx->free_). The process
-    // global allocator is jemalloc (servo components/allocator
-    // #[global_allocator] = tikv Jemalloc), so a std::alloc pointer here gets
-    // libc free()'d at the process-exit sweep → "free(): invalid pointer"
+    // releaseData MALLOCED_UNKNOWN_ARENA arm → gcx->free_).
+    // This pairing is allocator-agnostic: JS_free frees via the C library
+    // free(), so the contents MUST come from libc::malloc in every process
+    // configuration (standalone binary installs jemalloc as the process
+    // allocator; library embeds run the embedder's allocator) — a std::alloc
+    // (Rust Global) pointer gets libc free()'d at the process-exit sweep →
+    // "free(): invalid pointer"
     // SIGABRT (same class as 崩①-b). Allocator-pairing law: @trace
     // REQ-ENG-048. Mirror of web_api.rs bytes_to_arraybuffer_val.
     let alloc = unsafe { libc::malloc(len) } as *mut u8;

@@ -68,7 +68,17 @@ pub static enclosing_size: Option<EnclosingSizeFn> = Some(crate::enclosing_size_
 #[cfg(not(feature = "allocation-tracking"))]
 pub static enclosing_size: Option<EnclosingSizeFn> = None;
 
-#[cfg(all(feature = "use-jemalloc", not(any(windows, target_env = "ohos"))))]
+// BAO PATCH (embed): the introspection platform must follow the allocator
+// that actually owns process pointers. Without `install-global-allocator`,
+// Rust allocations flow through the system allocator even when
+// `use-jemalloc` is on — jemalloc introspection (usable_size /
+// libc_compat / heap_reports) on system-owned pointers is cross-allocator
+// UB. jemalloc is only the real process allocator when installed.
+#[cfg(all(
+    feature = "use-jemalloc",
+    feature = "install-global-allocator",
+    not(any(windows, target_env = "ohos"))
+))]
 mod platform {
     use std::ffi::CStr;
     use std::mem::size_of_val;
@@ -157,7 +167,16 @@ mod platform {
     }
 }
 
-#[cfg(all(not(windows), any(target_env = "ohos", not(feature = "use-jemalloc"))))]
+#[cfg(all(
+    not(windows),
+    any(
+        target_env = "ohos",
+        not(all(
+            feature = "use-jemalloc",
+            feature = "install-global-allocator"
+        ))
+    )
+))]
 mod platform {
     pub use std::alloc::System as Allocator;
     use std::os::raw::c_void;

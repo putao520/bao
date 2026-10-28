@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-allocator"
-version = "0.5.4"
+version = "0.5.5"
 publish = true
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
@@ -13,16 +13,20 @@ path = "lib.rs"
 
 name = "servo_allocator"
 [features]
-# BAO PATCH (embed): only install `#[global_allocator]` when this feature is
-# enabled. Library embeds (frog tools path-dep on package `bao`) already
-# provide their own process allocator; dual `#[global_allocator]` fails link.
-# BAO PATCH (allocator): default to jemalloc on unix (upstream only enables it
-# from servoshell, which bao does not use).
-allocation-tracking = ["backtrace", "dep:rustc-hash", "log"]
+# BAO PATCH (embed): the custom allocator is fully opt-in — the default build
+# has NO custom allocator at all: no `#[global_allocator]` installed and no
+# tikv-jemalloc deps in the graph (System allocator + System introspection).
+# Library embeds (frog tools path-dep on package `bao`) own the process
+# allocator; dual `#[global_allocator]` fails link.
+# `install-global-allocator` is the single knob (implies use-jemalloc —
+# installing the System allocator is meaningless): install jemalloc as the
+# process allocator with the matching introspection platform. The standalone
+# bao binary enables it (upstream servoshell parity).
+allocation-tracking = ["backtrace", "dep:rustc-hash", "log", "install-global-allocator"]
 use-jemalloc = ["dep:tikv-jemalloc-sys", "dep:tikv-jemallocator"]
 
-default = ["use-jemalloc"]
-install-global-allocator = []
+default = []
+install-global-allocator = ["use-jemalloc"]
 [dependencies]
 backtrace = {version = "0.3", optional = true}
 log = {version = "0.4.32", optional = true}

@@ -18,3 +18,8 @@ bao_cli = { path = "../bao_cli", version = "0.1.0" }
 # REQ-CLI-001 (e200): env-gated logger init for the binary entry. Already in
 # the lock via bao-servo — zero new source, one dep-graph edge.
 env_logger = "0.11"
+# Standalone binary = the "shell" embed: installs the process allocator
+# (jemalloc on unix) explicitly. Library embeds (path/registry dep on
+# package `bao`) never get this — the embedder owns the process allocator
+# (install-global-allocator gating, embed-host fix).
+bao-servo-allocator = { path = "../../vendor/servo/components/allocator", version = "0.5.5", features = ["install-global-allocator"] }
