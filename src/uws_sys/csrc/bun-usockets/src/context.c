@@ -623,10 +623,11 @@ void *us_socket_group_connect(struct us_socket_group_t *group, unsigned char kin
         }
     }
 
-    /* CodeRabbit: us_calloc is mimalloc, which aborts on OOM (matches the
-     * other 13 unchecked allocations in this library). A NULL-check here would
-     * also have to cancel the in-flight ai_req — brittle for an unreachable
-     * path. */
+    /* CodeRabbit: us_calloc maps to libc calloc in bao (BAO PORT in
+     * libusockets.h; the mimalloc face was retired with bun_alloc 0.2.0,
+     * #45). Allocation matches the other 13 unchecked allocations in this
+     * library. A NULL-check here would also have to cancel the in-flight
+     * ai_req — brittle for an unreachable path. */
     struct us_connecting_socket_t *c = us_calloc(1, sizeof(struct us_connecting_socket_t) + socket_ext_size);
     c->socket_ext_size = socket_ext_size;
     c->options = options;

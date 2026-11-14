@@ -1,6 +1,7 @@
-# BAO PATCH (W54 2026-10-01 -> e128 2026-10-07 refresh): fork of the
-# servo/stylo monorepo `style` crate @ 0cb50925b (upstream servo pin in
-# commit 614cd411f "Upgrade Stylo to 2026-10-01"; crates.io tops at 0.22.0).
+# BAO PATCH (W54 2026-10-01 -> e128 2026-10-07 refresh; derive dep bump
+# 2026-11-14, issue #58): fork of the servo/stylo monorepo `style` crate @
+# 0cb50925b (upstream servo pin in commit 614cd411f "Upgrade Stylo to
+# 2026-10-01"; crates.io tops at 0.22.0).
 # Package renamed stylo -> bao-stylo for crates.io publication; consumers
 # keep the `style` dep key (lib name stays `style`).
 # Delta vs monorepo style/ @ 0cb50925b:
@@ -9,6 +10,10 @@
 #     bao-stylo-derive in-tree fork (issue #44), readme key dropped,
 #     Cargo.toml.orig exclude dropped (monorepo tree has none).
 #   - stylo_atoms resolves to the sibling vendored fork (BAO atom additions).
+#   - style_derive dep requires bao-stylo-derive 0.22.1: 0.22.0 on the
+#     registry still emits bare `Ok(())` tails in to_css.rs and fails every
+#     multi-field `#[css(function)]` ToCss derive site when serde_fmt is in
+#     the graph (issue #58; 0.22.0 is immutable, the fix ships in 0.22.1).
 # Upstream sync: re-copy from the monorepo rev servo pins, redo this header.
 [package]
 name = "bao-stylo"
@@ -18,7 +23,13 @@ name = "bao-stylo"
 # servo-owned upstream names (stylo_atoms / servo_arc / stylo_traits), so the
 # version number is bumped to carry the new dependency graph — same number
 # with different content is not publishable on crates.io.
-version = "0.22.2"
+# 0.22.3 (issue #58, 2026-11-14): republished against bao-stylo-derive 0.22.1.
+# 0.22.2 on the registry requires bao-stylo-derive ^0.22.0, whose immutable
+# registry content still has the bare `Ok(())` block tail (E0282/E0283 on
+# multi-field `#[css(function)]` ToCss sites when serde_fmt is in the
+# consumer graph); the fixed derive must ship under a new version and this
+# crate must re-publish against it (@trace REQ-ARCH-004).
+version = "0.22.3"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 repository = "https://github.com/servo/stylo"
@@ -112,7 +123,7 @@ static_prefs = { version = "0.22.0", path = "../stylo_static_prefs", package = "
 string_cache = { version = "0.11", optional = true }
 strum = "0.28"
 strum_macros = "0.28"
-style_derive = { version = "0.22.0", path = "bao-stylo-derive", package = "bao-stylo-derive" }
+style_derive = { version = "0.22.1", path = "bao-stylo-derive", package = "bao-stylo-derive" }
 style_traits = { version = "0.22.0", path = "../stylo_traits", package = "bao-stylo-traits", features = ["servo"] }
 to_shmem = { version = "0.6.0", path = "../to_shmem", package = "bao-to-shmem", features = ["servo"] }
 to_shmem_derive = { version = "0.2.0", path = "../to_shmem_derive", package = "bao-to-shmem-derive" }

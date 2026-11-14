@@ -588,7 +588,9 @@ impl us_socket_stream_buffer_t {
             list: if !self.list_ptr.is_null() {
                 unsafe {
                     // SAFETY: list_ptr/list_len/list_cap were produced by decomposing a
-                    // Vec<u8> in `update`; global allocator (mimalloc) matches.
+                    // Vec<u8> in `update`; reconstruction and drop both go through the
+                    // same Rust global allocator (whatever the binary installs — System
+                    // by default; the mimalloc face retired with bun_alloc 0.2.0, #45).
                     Vec::from_raw_parts(self.list_ptr, self.list_len, self.list_cap)
                 }
             } else {
@@ -603,13 +605,14 @@ impl us_socket_stream_buffer_t {
     ///
     /// SAFETY: `this` must point to a live `us_socket_stream_buffer_t` whose
     /// `list_ptr`/`list_cap` were produced by `update` (decomposed `Vec<u8>` on
-    /// the global mimalloc allocator). Not called more than once.
+    /// the binary's Rust global allocator). Not called more than once.
     pub unsafe fn destroy(this: *mut Self) {
         // SAFETY: caller contract — `this` is non-null and exclusively borrowed
         let this = unsafe { &mut *this };
         if !this.list_ptr.is_null() {
             unsafe {
-                // SAFETY: list_ptr/list_cap came from a decomposed Vec<u8> (global mimalloc).
+                // SAFETY: list_ptr/list_cap came from a decomposed Vec<u8>; the same
+                // Rust global allocator frees it here (no mimalloc face since #45).
                 drop(Vec::from_raw_parts(this.list_ptr, 0, this.list_cap));
             }
         }

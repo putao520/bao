@@ -26,13 +26,26 @@
 void Bun__internal_dispatch_ready_poll(void* loop, void* poll);
 // void Bun__internal_dispatch_ready_poll(void* loop, void* poll) {}
 
+/* BAO PORT: the mimalloc face is retired in bao (bun_alloc 0.2.0, #45) —
+ * us_* allocations map to libc (see libusockets.h BAO PORT block). These
+ * three hooks were absorbed from oven-sh/bun 4af1842c8c (loop-idle GC sweep
+ * hand-off) and are supplied as no-ops by bun_uws_sys's Rust side
+ * (c_hooks.rs mi_on_thread_idle_*), so no mimalloc header or library is
+ * needed. Issue #59: the system <mimalloc.h> include that stood here coupled
+ * clean-container consumer builds to a host header with no library behind
+ * it (observed: rust:1-bookworm, fatal error 'mimalloc.h' file not found).
+ * The declarations stay outside the WIN32 include gate below because their
+ * only call site (us_loop_run_bun_tick) is unguarded within this TU. */
+int mi_on_thread_idle_start(void);
+void mi_on_thread_idle(void);
+void mi_on_thread_idle_end(void);
+
 #ifndef WIN32
 /* Cannot include this one on Windows */
 #include <unistd.h>
 #include <stdint.h>
 #include <errno.h>
 #include <string.h> // memset
-#include <mimalloc.h>
 #endif
 
 void us_loop_run_bun_tick(struct us_loop_t *loop, const struct timespec* timeout, uint64_t now_ns);

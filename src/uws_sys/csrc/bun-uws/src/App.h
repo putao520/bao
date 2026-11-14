@@ -760,21 +760,27 @@ public:
         return std::move(*this);
     }
 
-    void setOnSocketClosed(HttpContextData<SSL>::OnSocketClosedCallback onClose) {
+    // BAO PORT (issue #59 consumer-build closure): these dependent-type
+    // callback params omit `typename`, a form only accepted by clang 15+
+    // under C++20; clang 14 (rust:1-bookworm / MW desktop image) rejects
+    // every site in this file. The explicit typename is C++-valid on all
+    // compilers and does not change semantics. Upstream sync replay: keep
+    // the typename on every Dep<SSL>::On*Callback parameter here.
+    void setOnSocketClosed(typename HttpContextData<SSL>::OnSocketClosedCallback onClose) {
         httpContext->getSocketContextData()->onSocketClosed = onClose;
     }
-    void setOnSocketDrain(HttpContextData<SSL>::OnSocketDrainCallback onDrain) {
+    void setOnSocketDrain(typename HttpContextData<SSL>::OnSocketDrainCallback onDrain) {
         httpContext->getSocketContextData()->onSocketDrain = onDrain;
     }
-    void setOnSocketData(HttpContextData<SSL>::OnSocketDataCallback onData) {
+    void setOnSocketData(typename HttpContextData<SSL>::OnSocketDataCallback onData) {
         httpContext->getSocketContextData()->onSocketData = onData;
     }
 
-    void setOnClientError(HttpContextData<SSL>::OnClientErrorCallback onClientError) {
+    void setOnClientError(typename HttpContextData<SSL>::OnClientErrorCallback onClientError) {
         httpContext->getSocketContextData()->onClientError = std::move(onClientError);
     }
 
-    void setOnSocketUpgraded(HttpContextData<SSL>::OnSocketUpgradedCallback onUpgraded) {
+    void setOnSocketUpgraded(typename HttpContextData<SSL>::OnSocketUpgradedCallback onUpgraded) {
         httpContext->getSocketContextData()->onSocketUpgraded = onUpgraded;
     }
 

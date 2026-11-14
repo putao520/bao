@@ -1,6 +1,14 @@
 [package]
 name = "bun_uws_sys"
-version = "0.2.3"
+# 0.2.4 (2026-11-14, issue #59 consumer-build closure): the C face no longer
+# requires any undeclared system header on clean images — the dead
+# <mimalloc.h> include is removed from epoll_kqueue.c (the mi_on_thread_idle*
+# hooks resolve from the crate's Rust no-op supply, and the allocator face
+# maps to libc since bun_alloc 0.2.0 / #45), and the uWS headers carry
+# explicit `typename` on dependent-type callback params (a form clang 15+
+# only; clang 14 — rust:1-bookworm / MW desktop image — rejected all 9
+# sites). Clean rust:1-bookworm consumer probe: cargo check RC=0.
+version = "0.2.4"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

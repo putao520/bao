@@ -14,7 +14,14 @@ name = "bun_alloc"
 # const `Vec::new_in`); build.rs probes the live compiler and lib.rs
 # declares whichever feature the running nightly accepts, so floating new
 # nightlies compile again. Const surface unchanged on every channel.
-version = "0.2.1"
+# 0.2.2 (2026-11-14): gate selection is now proven, not assumed (#57
+# follow-up) — build.rs probes `allocator_ext` first, then `allocator_api`,
+# and fails closed when neither permits const `Vec::new_in`, instead of
+# silently falling back to `allocator_api` (whose unproven arm is exactly
+# the 0.1.4/0.2.0 E0658 class on a >= 1.100 nightly). Gate matrix
+# re-verified: 1.101.0-nightly=ext, 1.99.0-nightly/2026-07-20=api,
+# 2026-05-06=api, stable 1.99.1=api2 mirror.
+version = "0.2.2"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

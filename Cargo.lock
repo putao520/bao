@@ -2298,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "bao-stylo"
-version = "0.22.2"
+version = "0.22.3"
 dependencies = [
  "app_units",
  "arrayvec",
@@ -2363,7 +2363,7 @@ dependencies = [
 
 [[package]]
 name = "bao-stylo-derive"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -2719,21 +2719,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bench-harness"
-version = "0.1.0"
-dependencies = [
- "bao-browser",
- "bao-mozjs",
- "bao_bundler",
- "bao_cdp",
- "bao_engine",
- "bao_stealth",
- "bun_runtime",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "better_scoped_tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2949,7 +2934,7 @@ dependencies = [
 
 [[package]]
 name = "bun_alloc"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -4333,7 +4318,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws_sys"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",

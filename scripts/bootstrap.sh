@@ -58,7 +58,9 @@ command -v pkg-config >/dev/null 2>&1 || warn "pkg-config not found — some ven
 # scripts/bootstrap-repro.sh (10 layers, 2026-09-29). gcc cannot substitute
 # for clang here — the vendored chains (boringssl_sys/uws_sys/lsquic_sys)
 # hardcode clang/clang++ (doctor.rs precedent); uws_sys's C face includes
-# <mimalloc.h>/<libdeflate.h>; the servo media stack resolves
+# <libdeflate.h> (the mimalloc face was retired — bun_alloc 0.2.0 / #45, and
+# issue #59 removed the dead <mimalloc.h> include; libmimalloc-dev is no
+# longer needed); the servo media stack resolves
 # gstreamer-play/webrtc via pkg-config (the play/webrtc .pc files ship in the
 # gstreamer1.0-plugins-bad RUNTIME package on Ubuntu 24.04 — measured, the
 # -dev package alone does not carry them); and bao-servo-script-bindings'
@@ -66,12 +68,12 @@ command -v pkg-config >/dev/null 2>&1 || warn "pkg-config not found — some ven
 SUDO=""
 if [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
 if command -v apt-get >/dev/null 2>&1; then
-    say "Installing native build dependencies (clang, mimalloc, libdeflate, gstreamer faces)..."
+    say "Installing native build dependencies (clang, libdeflate, gstreamer faces)..."
     export DEBIAN_FRONTEND=noninteractive
     $SUDO apt-get update -qq
     $SUDO apt-get install -y -qq \
         clang pkg-config \
-        libmimalloc-dev libdeflate-dev \
+        libdeflate-dev \
         libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
         gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-dev \
         libasound2-dev libudev-dev libssl-dev \

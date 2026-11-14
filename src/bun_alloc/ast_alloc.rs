@@ -421,6 +421,14 @@ pub type AstBox<T> = alloc::boxed::Box<T, AstAlloc>;
 #[cfg(not(bao_nightly))]
 pub type AstBox<T> = crate::core_alloc::AllocBox<T, AstAlloc>;
 
+// STATIC GATE CARRIER (issue #57). `AstAlloc::vec` is a `const fn` over
+// `Vec::new_in`, so a feature gate that does not make `new_in` const fails
+// *here*, at the crate's own named site, instead of at some far-away caller
+// with a bare E0015/E0658. `build.rs` proves the selected gate against the
+// live compiler; this item keeps that proof load-bearing in-tree: if the gate
+// regresses on any channel, this const evaluation is the first compile error.
+const _: AstVec<u8> = AstAlloc::vec();
+
 #[inline(always)]
 fn heap_alloc(layout: Layout) -> *mut u8 {
     with_active_state(|state| match state {

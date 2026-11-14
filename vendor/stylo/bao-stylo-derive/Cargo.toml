@@ -1,12 +1,20 @@
-# BAO PATCH (issue #44 -> e128 2026-10-07 rebase): fork of the monorepo
-# `style_derive` crate @ 0cb50925b, package renamed stylo_derive ->
-# bao-stylo-derive. Delta vs monorepo: pinned `Ok::<(), ::std::fmt::Error>`
-# tails in to_css.rs (E0282/E0283 `fmt::Error: From<_>` ambiguity when
-# serde_fmt is in the dependency graph). Dep key stays `style_derive`
-# (lib code does `use style_derive::...`).
+# BAO PATCH (issue #44 -> e128 2026-10-07 rebase; issue #58 restore
+# 2026-11-14): fork of the monorepo `style_derive` crate @ 0cb50925b,
+# package renamed stylo_derive -> bao-stylo-derive. Delta vs monorepo: pinned
+# `Ok::<(), ::std::fmt::Error>` tails in to_css.rs (E0282/E0283
+# `fmt::Error: From<_>` ambiguity when serde_fmt is in the dependency graph;
+# log's "kv_unstable_serde" -> value-bag-serde1 -> serde_fmt).
+# History: #44 pinned three tails; the W54 forward-jump (29a4ce2d4) rewrote
+# `derive_variant_fields_expr` back to a bare `Ok(())` tail while this header
+# kept claiming three pins, so registry 0.22.0 still fails every multi-field
+# `#[css(function)]` ToCss site. #58 restores the third pin and adds
+# token-level regression tests in to_css.rs (`cargo test -p bao-stylo-derive
+# --lib`). Registry 0.22.0 is immutable and broken; version 0.22.1 carries
+# the fix. Dep key stays `style_derive` (lib code does
+# `use style_derive::...`). @trace REQ-ARCH-004
 [package]
 name = "bao-stylo-derive"
-version = "0.22.0"
+version = "0.22.1"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 repository = "https://github.com/servo/stylo"

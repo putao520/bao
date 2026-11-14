@@ -155,6 +155,10 @@ fn derive_variant_arm(variant: &VariantInfo, generics: &mut Option<WhereClause>)
     let separator = if variant_attrs.comma { ", " } else { " " };
 
     if variant_attrs.skip {
+        // BAO PATCH (issues #44/#58): keep the generated arm's error type
+        // explicit so the ToCss derive output never depends on `From<_>`
+        // inference (same anchor as the block tail in
+        // `derive_variant_fields_expr`).
         return quote!(Ok::<(), ::std::fmt::Error>(()));
     }
 
@@ -201,6 +205,9 @@ fn derive_variant_fields_expr(
 
     let (first, attrs) = match iter.next() {
         Some(pair) => pair,
+        // BAO PATCH (issues #44/#58): this expression can land under the
+        // `#[css(function)]` template's `#expr?;`, so it must carry the same
+        // error-type anchor as the block tail below.
         None => return quote! { Ok::<(), ::std::fmt::Error>(()) },
     };
     if attrs.field_bound {
@@ -240,10 +247,23 @@ fn derive_variant_fields_expr(
         derive_single_field_expr(binding, attrs, where_clause, bindings).to_tokens(&mut expr)
     }
 
+    // BAO PATCH (issue #58, restoring the #44 pin that the W54 forward-jump
+    // dropped): anchor the block's error type. This block is emitted with a
+    // trailing `?` by the `#[css(function)]` template in `derive_variant_arm`
+    // (`#expr?;`), so a bare `Ok(())` tail leaves the `Result` error type as
+    // an inference variable constrained only by `std::fmt::Error: From<_>`.
+    // Core's reflexive `impl<T> From<T> for T` is the sole candidate normally,
+    // but when serde_fmt is in the dependency graph (log's
+    // "kv_unstable_serde" -> value-bag-serde1 -> serde_fmt) its
+    // `impl From<serde_fmt::Error> for std::fmt::Error` adds a second
+    // candidate and every multi-field `#[css(function)]` ToCss derive site
+    // fails with E0282/E0283. Pinning the tail removes the inference
+    // variable; semantics are identical with and without serde_fmt.
+    // @trace REQ-ARCH-004
     quote! {{
         let mut writer = style_traits::values::SequenceWriter::new(dest, #separator);
         #expr
-        Ok(())
+        Ok::<(), ::std::fmt::Error>(())
     }}
 }
 
@@ -380,4 +400,90 @@ pub struct CssFieldAttrs {
     pub represents_keyword: bool,
     pub contextual_skip_if: Option<Path>,
     pub skip_if: Option<Path>,
+}
+
+// BAO PATCH (issue #58): token-level regression locks for the explicit
+// `::std::fmt::Error` anchors above. They run without serde_fmt in the graph
+// (the ambiguity needs a second `From<_>` candidate to be observable at
+// compile time), so they assert the generated tokens instead of compiling the
+// expansion: `Ok(())` must never come back at these sites. Run with
+// `cargo test -p bao-stylo-derive --lib`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proc_macro2::TokenStream;
+
+    /// Whitespace-insensitive rendering of a generated token stream.
+    fn normalized(tokens: TokenStream) -> String {
+        tokens
+            .to_string()
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect()
+    }
+
+    fn derive_for(input: TokenStream) -> String {
+        let input: syn::DeriveInput = syn::parse2(input).expect("test input must parse");
+        normalized(derive(input))
+    }
+
+    fn assert_anchored(generated: &str, what: &str) {
+        assert!(
+            generated.contains("Ok::<(),::std::fmt::Error>(())"),
+            "{what} lost its explicit `::std::fmt::Error` anchor; a bare `Ok(())` \
+             reintroduces the E0282/E0283 ambiguity when serde_fmt is in the \
+             consumer graph. Generated: {generated}"
+        );
+        assert!(
+            !generated.contains("Ok(())"),
+            "{what} reintroduced a bare `Ok(())` tail in generated ToCss code; \
+             every generated `Ok` consumed under `?` must carry the \
+             `::std::fmt::Error` anchor. Generated: {generated}"
+        );
+    }
+
+    #[test]
+    fn function_form_multi_field_pins_block_error_type() {
+        let generated = derive_for(quote! {
+            #[css(function)]
+            struct FunctionForm {
+                first: i32,
+                second: i32,
+            }
+        });
+        assert_anchored(&generated, "multi-field #[css(function)] block tail");
+    }
+
+    #[test]
+    fn function_form_iterable_field_pins_block_error_type() {
+        let generated = derive_for(quote! {
+            #[css(function)]
+            struct IterableForm(#[css(iterable)] Vec<i32>);
+        });
+        assert_anchored(&generated, "iterable #[css(function)] block tail");
+    }
+
+    #[test]
+    fn function_form_all_fields_skipped_pins_error_type() {
+        let generated = derive_for(quote! {
+            enum AllSkipped {
+                #[css(function)]
+                Variant(#[css(skip)] i32),
+                Other,
+            }
+        });
+        assert_anchored(&generated, "all-fields-skipped #[css(function)] arm");
+    }
+
+    #[test]
+    fn skipped_variant_pins_error_type() {
+        let generated = derive_for(quote! {
+            enum Skipped {
+                #[css(skip)]
+                First,
+                Second,
+            }
+        });
+        assert_anchored(&generated, "skipped variant arm");
+    }
 }

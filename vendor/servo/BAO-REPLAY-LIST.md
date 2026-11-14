@@ -93,7 +93,7 @@
 - 86 窗口文件三分：**85 CLEAN-REPLACE**（当前树=240a 纯净态,整体替换;含 stylo fixup rename 波的 layout 31/script 47 文件、webgl BACK/_BITS、stream 零拷贝三连、reflect_dom_object 迁移、a11y test、attr str ref）+ **1 三方合并**（webgl2renderingcontext.rs:上游 0b365e20b 把 new_inherited 重构为 `(base: &WebGLRenderingContext)` 参形[恰完成 Window 解锚],BAO W3b `new_in_worker` 以 reflect_dom_object 新形重放,`new` 用上游原生形）+ 0 删除。
 - support/android 2 kt 同步（窗口新增文件）;tests/ 32 文件零交集跳过（vendor 不载 wpt,参考仓 29b280def 已含）。
 - BAO patch 存活面核验（读级+编译级）：非窗口 patch 文件全部不动（§三清单+e102-e127 波回放面）;溶解探针——GL make-current（rendering_context.rs:140 字节在位）/SM153 job_queue（编译绿即证）/csp canonical 名（编译绿）/AudioWorklet e126/e127 收口（instantiate_processor 在位）/BFCache 833137b3（document.rs+windowproxy.rs 均不在窗口）。
-- stylo 全家 vendor 落地与接线见根 Cargo.toml 注释与 CLAUDE.md;stylo_atoms 零变更;bao-stylo-derive 重锚 0cb50925b（pinned-Ok 3 位点,第 4 裸位点按原 delta 保持裸置）。
+- stylo 全家 vendor 落地与接线见根 Cargo.toml 注释与 CLAUDE.md;stylo_atoms 零变更;bao-stylo-derive 重锚 0cb50925b（pinned-Ok 4 位点:skip arm/空字段 arm/bitflags 尾/derive_variant_fields_expr 块尾——第 4 位点系 #44 dcb075d14 的承重 pin,W54 曾被反转、#58 aedbdc2a 恢复,非「原 delta 裸置」;上游同步重放须 4 点全保）。
 - 坑位：vendor 同步 mtime 回退复用 stale 生成物（properties.rs 旧 clone_* 形 101 错;清 build/fingerprint 后绿——stylo_atoms build.rs rerun-if-changed patch 同类,但该 patch 防内容追加不防 mtime 回退）。
 
 ### 3.8 e128 补丁终态对齐轮（2026-10-07,用户裁定「终态一次合并」模式）——§三全清单对账收口

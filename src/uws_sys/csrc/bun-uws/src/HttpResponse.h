@@ -912,7 +912,13 @@ public:
     }
 
     /* Attach handler for writable HTTP response */
-    HttpResponse *onWritable(void* userData, HttpResponseData<SSL>::OnWritableCallback handler) {
+    // BAO PORT (issue #59 consumer-build closure): these dependent-type
+    // callback params omit `typename`, a form only accepted by clang 15+
+    // under C++20; clang 14 (rust:1-bookworm / MW desktop image) rejects
+    // every site in this file. The explicit typename is C++-valid on all
+    // compilers and does not change semantics. Upstream sync replay: keep
+    // the typename on every Dep<SSL>::On*Callback parameter here.
+    HttpResponse *onWritable(void* userData, typename HttpResponseData<SSL>::OnWritableCallback handler) {
         HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
 
         httpResponseData->writableUserData = userData;
@@ -930,7 +936,7 @@ public:
     }
 
     /* Attach handler for aborted HTTP request */
-    HttpResponse *onAborted(void* userData,  HttpResponseData<SSL>::OnAbortedCallback handler) {
+    HttpResponse *onAborted(void* userData,  typename HttpResponseData<SSL>::OnAbortedCallback handler) {
         HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
 
         httpResponseData->userData = userData;
@@ -938,7 +944,7 @@ public:
         return this;
     }
 
-    HttpResponse *onTimeout(void* userData,  HttpResponseData<SSL>::OnTimeoutCallback handler) {
+    HttpResponse *onTimeout(void* userData,  typename HttpResponseData<SSL>::OnTimeoutCallback handler) {
         HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
 
         httpResponseData->userData = userData;
@@ -971,7 +977,7 @@ public:
         return this;
     }
     /* Attach a read handler for data sent. Will be called with FIN set true if last segment. */
-    void onData(void* userData, HttpResponseData<SSL>::OnDataCallback handler) {
+    void onData(void* userData, typename HttpResponseData<SSL>::OnDataCallback handler) {
         HttpResponseData<SSL> *data = getHttpResponseData();
         data->userData = userData;
         data->inStream = handler;

@@ -34,8 +34,11 @@ WORK=$(mktemp -d)/consumer-gate
 mkdir -p "$WORK"
 trap 'rm -rf "$(dirname "$WORK")"' EXIT
 
-# Representative published set (e18b7158 closure faces).
-CRATES=(bao-core bao-browser bun_runtime bao-servo bao-mozjs)
+# Representative published set (e18b7158 closure faces). bun_uws_sys added
+# after issue #59: its C face is the system-header dependency frontier
+# (libdeflate/mimalloc history) — the crate most likely to break on a clean
+# image that lacks an undeclared system header.
+CRATES=(bao-core bao-browser bun_runtime bao-servo bao-mozjs bun_uws_sys)
 MODE="registry"
 GIT_TAG=""
 DO_BUILD=0

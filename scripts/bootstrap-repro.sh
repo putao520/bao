@@ -55,7 +55,7 @@ if [ "$MODE" != "--local" ]; then
     # clean-OS run of the bare recipe would fail the same way (reported).
     cexec "apt-get update -qq && apt-get install -y -qq build-essential clang curl git pkg-config \
         libssl-dev libasound2-dev libudev-dev libc-ares-dev zlib1g-dev libarchive-dev libdeflate-dev libfontconfig-dev libfreetype-dev \
-        libglib2.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-bad libmimalloc-dev cmake python3 llvm" \
+        libglib2.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-bad cmake python3 llvm" \
         || { say "RED: apt face failed"; docker rm -f "$CONTAINER" >/dev/null; exit 1; }
     say "step 2: rustup + pinned toolchain + clone"
     cexec "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none" \

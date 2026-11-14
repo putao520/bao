@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["vendor/servo", "vendor/ipc-channel", "vendor/stylo", "vendor/stylo_atoms", "vendor/stylo_dom", "vendor/stylo_malloc_size_of", "vendor/stylo_static_prefs", "vendor/stylo_traits", "vendor/selectors", "vendor/servo_arc", "vendor/to_shmem", "vendor/to_shmem_derive", "vendor/freetype-wrapper", "vendor/usvg", "vendor/webrender", "vendor/surfman", "examples"]
+exclude = ["vendor/servo", "vendor/ipc-channel", "vendor/stylo", "vendor/stylo_atoms", "vendor/stylo_dom", "vendor/stylo_malloc_size_of", "vendor/stylo_static_prefs", "vendor/stylo_traits", "vendor/selectors", "vendor/servo_arc", "vendor/to_shmem", "vendor/to_shmem_derive", "vendor/freetype-wrapper", "vendor/usvg", "vendor/resvg", "vendor/webrender", "vendor/surfman", "examples"]
 members = [
     # Public unified library entry (consumers depend on package `bao` only).
     "src/bao",
@@ -84,9 +84,6 @@ members = [
     "src/transpiler",
     "src/lsquic_sys",
     "src/lolhtml_sys",
-    # Performance baseline harness (issue #19 Phase A); pure addition — no
-    # product member changes. Shares the workspace lockfile/target cache.
-    "bench/harness",
     # ── mozjs build-face unification (2026-09-21, user ruling: one universe
     # only): the former vendor/mozjs workspace root is absorbed — these five
     # crates are now members of THIS workspace. Single lockfile, single
@@ -252,7 +249,7 @@ bun_libuv_sys = { path = "src/libuv_sys", version = "0.2.0" }
 bun_simdutf_sys = { path = "src/simdutf_sys", version = "0.1.0" }
 bun_spawn_sys = { path = "src/spawn_sys", version = "0.2.0" }
 bun_tcc_sys = { path = "src/tcc_sys", version = "0.1.0" }
-bun_uws_sys = { path = "src/uws_sys", version = "0.2.2" }
+bun_uws_sys = { path = "src/uws_sys", version = "0.2.4" }
 
 # @trace REQ-ENG-BUILDGOV-001 (P0+P1; size audit .plans/audits-20261017/
 # size-audit-report.md, 2026-10-17): release is the DISTRIBUTION form.
@@ -489,10 +486,14 @@ map_identity = "allow"
 [patch.crates-io]
 freetype = { path = "vendor/freetype-wrapper" }
 
-# BAO PATCH (clip-path-recursion-001, 2026-10-04): vendored usvg 0.48.1
-# (pristine registry source, checksum-verified) with a clipPath reference-cycle
-# guard - see vendor/usvg/src/parser/clippath.rs and the CLAUDE.md vendor list.
-usvg = { path = "vendor/usvg" }
+# BAO PATCH (2026-10-29): [patch.crates-io] usvg entry REMOVED (was the
+# clip-path-recursion-001 vendored patched usvg 0.48.1). The fork is renamed
+# to `bao-usvg` ([patch] replacements must keep the ORIGINAL package name —
+# a renamed fork cannot be served through [patch], cf. the W0b note above) and
+# is wired as a path+package dep of the bao-resvg fork (vendor/resvg), which
+# the three servo components (net/script/malloc-size-of) consume directly —
+# registry consumers now receive the clipPath reference-cycle guard too. See
+# the CLAUDE.md vendor list.
 
 # BAO PATCH (REQ-BRW-051 gl-oom-defense-001, 2026-10-20): vendored webrender
 # 0.70.0 + surfman 0.14.0 (pristine registry source, sha256-verified against
