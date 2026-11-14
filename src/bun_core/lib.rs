@@ -3540,7 +3540,7 @@ pub mod ffi {
     /// bionic spells it `__errno()`, Darwin/BSD spell it `__error()`, and the
     /// Windows CRT spells it `_errno()`. Every higher-tier crate routes through
     /// this — `bun_errno::posix::errno`, `bun_sys::last_errno`,
-    /// `bun_sys::c::errno_location`, `bun_platform::linux` — instead of each
+    /// `bun_sys::c::errno_location` — instead of each
     /// re-deriving the same target_os→symbol mapping.
     ///
     /// Obtaining the pointer has no preconditions (the per-libc TLS accessor

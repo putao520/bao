@@ -5785,8 +5785,9 @@ pub mod darwin {
         pub fn as_ptr(&self) -> *const OSLog {
             core::ptr::from_ref(self)
         }
-        /// Full signpost API lives in `bun_platform::darwin`; this stub lets
-        /// `bun_perf` compile its Darwin arm without pulling that crate up-tier.
+        /// Full signpost API lived in `bun_platform::darwin` (retired
+        /// 2026-11-14; signpost face not wired). This stub lets `bun_perf`
+        /// compile its Darwin arm without pulling a platform crate up-tier.
         pub fn signpost(&self, name: i32) -> os_log::Signpost<'_> {
             os_log::Signpost { log: self, name }
         }

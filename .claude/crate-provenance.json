@@ -475,14 +475,6 @@
       "publish": true
     },
     {
-      "dir": "src/platform",
-      "package": "bun_platform",
-      "origin": "mirror",
-      "upstream_path": "~/code/rust/bun/src/platform",
-      "divergence": "none",
-      "publish": true
-    },
-    {
       "dir": "src/ast",
       "package": "bun_ast",
       "origin": "mirror",
@@ -527,14 +519,6 @@
       "package": "bun_event_loop",
       "origin": "mirror",
       "upstream_path": "~/code/rust/bun/src/event_loop",
-      "divergence": "none",
-      "publish": true
-    },
-    {
-      "dir": "src/sql",
-      "package": "bun_sql",
-      "origin": "mirror",
-      "upstream_path": "~/code/rust/bun/src/sql",
       "divergence": "none",
       "publish": true
     },

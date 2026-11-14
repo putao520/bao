@@ -3822,9 +3822,9 @@ impl_integer!(
 ///
 /// Replaces Zig's `comptime T: type` + `std.mem.readIntSliceNative` /
 /// `std.mem.asBytes` / `@bitCast` reflection pattern with an explicit trait
-/// bound. Shared by the peechy wire codec (`bun_analytics::SchemaInt`) and the
-/// MySQL protocol reader (`bun_sql::ReadableInt`), which re-export this under
-/// their local names.
+/// bound. Shared by the peechy wire codec (`bun_analytics::SchemaInt`), which
+/// re-exports this under its local name. (bun_sql crate retired 2026-11-14;
+/// the NativeEndianInt shape lives in this crate's own int parsing.)
 pub trait NativeEndianInt: Copy + 'static {
     const SIZE: usize;
     /// Reinterpret `b[..SIZE]` as `Self` (native endian).

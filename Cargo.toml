@@ -64,14 +64,12 @@ members = [
     "src/clap_macros",
     "src/install_types",
     "src/options_types",
-    "src/platform",
     "src/ast",
     "src/js_parser",
     "src/js_printer",
     "src/http",
     "src/http_types",
     "src/event_loop",
-    "src/sql",
     "src/s3_signing",
     "src/sourcemap",
     "src/semver",
@@ -207,7 +205,6 @@ bun_ast = { path = "src/ast", version = "0.2.3" }
 bun_picohttp = { path = "src/picohttp", version = "0.2.0" }
 bun_s3_signing = { path = "src/s3_signing", version = "0.2.0" }
 bun_zlib = { path = "src/zlib", version = "0.2.0" }
-bun_platform = { path = "src/platform", version = "0.2.0" }
 bun_sha_hmac = { path = "src/sha_hmac", version = "0.2.0" }
 bun_dispatch = { path = "src/dispatch", version = "0.1.0" }
 bun_brotli = { path = "src/brotli", version = "0.2.0" }
