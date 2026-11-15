@@ -1,3 +1,0 @@
-libEGL warning: DRI3 error: Could not get DRI3 device
-libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
-[bench-harness] result written to bench/results/2026-10-01-8f15ad22/soak.run-1.json
