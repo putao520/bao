@@ -20,7 +20,7 @@ name = "bun_core"
 # 0.2.5 (2026-10-21): allocator_ext gate probe (
 # same-origin copy of
 # bun_alloc/build.rs) — compiles on floating new nightlies (1.101+).
-version = "0.2.5"
+version = "0.2.6"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

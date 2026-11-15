@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "bao-browser"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bao-mozjs",
  "bao-servo",
@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "bao-core"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "bao-browser",
  "bao_cdp",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo"
-version = "0.5.29"
+version = "0.5.30"
 dependencies = [
  "accesskit",
  "bao-ipc-channel",
@@ -989,7 +989,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation"
-version = "0.5.30"
+version = "0.5.31"
 dependencies = [
  "accesskit",
  "backtrace",
@@ -1033,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation-traits"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "accesskit",
  "bao-servo-base",
@@ -1886,7 +1886,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.38"
+version = "0.5.39"
 dependencies = [
  "accesskit",
  "aes",
@@ -2079,7 +2079,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-traits"
-version = "0.5.19"
+version = "0.5.20"
 dependencies = [
  "accesskit",
  "bao-servo-base",
@@ -3196,7 +3196,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -4198,7 +4198,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sys"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
