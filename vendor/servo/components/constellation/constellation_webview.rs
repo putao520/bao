@@ -107,6 +107,12 @@ pub(crate) struct ConstellationWebView {
     /// are hidden will be throttled.
     hidden: bool,
 
+    /// BAO PATCH (REQ-BRW-052, DomOnly render mode): whether layout is
+    /// suppressed for this entire [`ConstellationWebView`]. Applies to every
+    /// pipeline of the WebView and survives navigation — newly activated
+    /// pipelines receive the state again at the activation digest.
+    layout_suppressed: bool,
+
     /// Whether or not this [`ConstellationWebView`] has system focus. This is
     /// a distinct piece of state from [`Self::focused_browsing_context_id`] which
     /// tracks the frame with focus regardless of system focus state.
@@ -150,6 +156,7 @@ impl ConstellationWebView {
             pending_viewport_details: Default::default(),
             theme: Theme::Light,
             hidden: false,
+            layout_suppressed: false,
             has_system_focus: true,
             accessibility_active: false,
             screenshot_readiness_requests: Default::default(),
@@ -191,6 +198,20 @@ impl ConstellationWebView {
     pub(crate) fn set_hidden(&mut self, hidden: bool) -> bool {
         let old_hidden = std::mem::replace(&mut self.hidden, hidden);
         old_hidden != self.hidden
+    }
+
+    /// BAO PATCH (REQ-BRW-052, DomOnly render mode): whether layout is
+    /// suppressed for this [`ConstellationWebView`].
+    pub(crate) fn layout_suppressed(&self) -> bool {
+        self.layout_suppressed
+    }
+
+    /// BAO PATCH (REQ-BRW-052, DomOnly render mode): set whether layout is
+    /// suppressed for this [`ConstellationWebView`], returning true if the
+    /// value changed.
+    pub(crate) fn set_layout_suppressed(&mut self, suppressed: bool) -> bool {
+        let old_suppressed = std::mem::replace(&mut self.layout_suppressed, suppressed);
+        old_suppressed != self.layout_suppressed
     }
 
     /// Set whether or not this [`ConstellationWebView`] has system focus, returning true

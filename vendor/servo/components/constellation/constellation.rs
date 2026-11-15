@@ -1428,6 +1428,9 @@ where
             EmbedderToConstellationMessage::SetWebViewHidden(webview_id, hidden) => {
                 self.set_webview_hidden(webview_id, hidden);
             },
+            EmbedderToConstellationMessage::SetLayoutSuppressed(webview_id, suppressed) => {
+                self.set_layout_suppressed(webview_id, suppressed);
+            },
             EmbedderToConstellationMessage::SetScrollStates(pipeline_id, scroll_states) => {
                 self.handle_set_scroll_states(pipeline_id, scroll_states)
             },
@@ -5499,6 +5502,41 @@ where
         for pipeline in self.pipelines.values() {
             if pipeline.webview_id == webview_id {
                 pipeline.send_throttle_messages(hidden);
+                // BAO PATCH (REQ-BRW-052, Background render mode): a hidden
+                // `WebView` also has hidden documents — mirror the hidden state
+                // onto `document.visibilityState` (visibilitychange dispatch on
+                // the script thread). Documents created by a later navigation
+                // receive the state again at activation, see
+                // `handle_activate_document_msg`.
+                let message = ScriptThreadMessage::SetDocumentVisible(pipeline.id, !hidden);
+                if let Err(error) = pipeline.event_loop.send(message) {
+                    warn!("Sending SetDocumentVisible to script failed ({error}).");
+                }
+            }
+        }
+    }
+
+    /// BAO PATCH (REQ-BRW-052, DomOnly render mode): suppress or restore
+    /// layout for every pipeline of the given `WebView`. Suppression is
+    /// fail-closed — script keeps running, but `Window::reflow` never computes
+    /// layout or produces display lists. State is kept per WebView so newly
+    /// activated pipelines (navigation/iframes) inherit it.
+    #[servo_tracing::instrument(skip_all)]
+    fn set_layout_suppressed(&mut self, webview_id: WebViewId, suppressed: bool) {
+        if self
+            .webviews
+            .get_mut(&webview_id)
+            .is_none_or(|webview| !webview.set_layout_suppressed(suppressed))
+        {
+            return;
+        }
+
+        for pipeline in self.pipelines.values() {
+            if pipeline.webview_id == webview_id {
+                let message = ScriptThreadMessage::SetLayoutSuppressed(pipeline.id, suppressed);
+                if let Err(error) = pipeline.event_loop.send(message) {
+                    warn!("Sending SetLayoutSuppressed to script failed ({error}).");
+                }
             }
         }
     }
@@ -5924,6 +5962,37 @@ where
         }
 
         self.change_session_history(change);
+
+        // BAO PATCH (REQ-BRW-052, page render modes): render-mode state
+        // survives navigation. A hidden WebView (Background mode) and/or a
+        // layout-suppressed one (DomOnly mode) applies to every document of
+        // that WebView, including documents created by navigation. The
+        // activation digest is the point where the new pipeline's document
+        // exists and is reachable from script, so replay the WebView-level
+        // state onto it — otherwise a Background/DomOnly page would silently
+        // fall back to Full after navigating.
+        if let Some(pipeline) = self.pipelines.get(&pipeline_id)
+            && let Some(webview) = self.webviews.get(&webview_id)
+        {
+            if let Err(error) = pipeline
+                .event_loop
+                .send(ScriptThreadMessage::SetDocumentVisible(
+                    pipeline_id,
+                    !webview.hidden(),
+                ))
+            {
+                warn!("Sending SetDocumentVisible to activated pipeline failed ({error}).");
+            }
+            if let Err(error) = pipeline
+                .event_loop
+                .send(ScriptThreadMessage::SetLayoutSuppressed(
+                    pipeline_id,
+                    webview.layout_suppressed(),
+                ))
+            {
+                warn!("Sending SetLayoutSuppressed to activated pipeline failed ({error}).");
+            }
+        }
 
         if let Some(webview) = self.webviews.get_mut(&webview_id) {
             webview.send_screenshot_readiness_requests_to_pipelines(

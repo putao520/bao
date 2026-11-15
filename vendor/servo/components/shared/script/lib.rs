@@ -209,6 +209,16 @@ pub enum ScriptThreadMessage {
     SetDocumentActivity(PipelineId, DocumentActivity),
     /// Set whether to use less resources by running timers at a heavily limited rate.
     SetThrottled(PipelineId, bool),
+    /// BAO PATCH (REQ-BRW-052, Background render mode): set the visibility
+    /// state of this pipeline's document — mirrors the `WebView` hidden state
+    /// onto `document.visibilityState` (dispatching `visibilitychange`). New
+    /// documents created by navigation receive the state again at activation.
+    SetDocumentVisible(PipelineId, bool),
+    /// BAO PATCH (REQ-BRW-052, DomOnly render mode): set whether layout is
+    /// suppressed for this pipeline's `Window`. `true` makes every `reflow`
+    /// return without computing layout; `false` triggers one
+    /// `UpdateTheRendering` reflow to restore rendering.
+    SetLayoutSuppressed(PipelineId, bool),
     /// Notifies script thread that a url should be loaded in this iframe.
     /// PipelineId is for the parent, BrowsingContextId is for the nested browsing context
     NavigateIframe(

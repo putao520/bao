@@ -103,8 +103,8 @@ pub mod uloop {
 // Browser embedding (primary BrowserRuntime)
 pub use bao_browser::{
     BaoConfig, BrowserConfig, BrowserError, BrowserRuntime, PageConfig, PageHandle, PagePool,
-    PageState, Permission, PermissionDenied, PermissionGuard, ScreenshotFormat, encode_image,
-    run_browser,
+    PageRenderMode, PageState, Permission, PermissionDenied, PermissionGuard, ScreenshotFormat,
+    encode_image, run_browser,
 };
 
 /// Deprecated alias for [`BrowserRuntime`] (0.x transition; removed in 1.0).

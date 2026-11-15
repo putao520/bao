@@ -77,6 +77,12 @@ impl MixedMessage {
                 ScriptThreadMessage::GetDocumentOriginDetails(id, _) => Some(*id),
                 ScriptThreadMessage::SetDocumentActivity(id, ..) => Some(*id),
                 ScriptThreadMessage::SetThrottled(id, ..) => Some(*id),
+                // BAO PATCH (REQ-BRW-052, page render modes): both messages
+                // target exactly one pipeline. Kept adjacent to `SetThrottled`
+                // — this match is exhaustive, so new `ScriptThreadMessage`
+                // variants must be classified here as well.
+                ScriptThreadMessage::SetDocumentVisible(id, ..) => Some(*id),
+                ScriptThreadMessage::SetLayoutSuppressed(id, ..) => Some(*id),
                 ScriptThreadMessage::NavigateIframe(id, ..) => Some(*id),
                 ScriptThreadMessage::PostMessage { target: id, .. } => Some(*id),
                 ScriptThreadMessage::UpdatePipelineId(_, _, _, id, _) => Some(*id),

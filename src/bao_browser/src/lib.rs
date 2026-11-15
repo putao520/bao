@@ -27,7 +27,7 @@ mod screenshot;
 pub mod webdriver_host;
 mod ws_registry;
 
-pub use config::{BaoConfig, BrowserConfig, PageConfig};
+pub use config::{BaoConfig, BrowserConfig, PageConfig, PageRenderMode};
 // Bridge-command handler — the servo-side executor that drains
 // BridgeCommand during the event loop (run_with_bridge's per-command entry).
 // Public for e2e tests that drive the same loop shape as run_browser.

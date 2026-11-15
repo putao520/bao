@@ -67,6 +67,12 @@ mod from_embedder {
                 Self::ExitFullScreen(_) => target!("ExitFullScreen"),
                 Self::MediaSessionAction(_) => target!("MediaSessionAction"),
                 Self::SetWebViewHidden(_, _) => target!("SetWebViewHidden"),
+                // BAO PATCH (REQ-BRW-052): DomOnly layout-suppression toggle.
+                // This match is a fourth exhaustive face of the embedder
+                // message enum (next to the constellation dispatch and the
+                // script-thread dispatch); new variants need an arm here or
+                // the `tracing` feature build breaks.
+                Self::SetLayoutSuppressed(_, _) => target!("SetLayoutSuppressed"),
                 Self::SetScrollStates(..) => target!("SetScrollStates"),
                 Self::PaintMetric(..) => target!("PaintMetric"),
                 Self::EvaluateJavaScript(..) => target!("EvaluateJavaScript"),

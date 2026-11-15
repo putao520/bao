@@ -5500,7 +5500,12 @@ impl Document {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#visibility-state>
-    fn update_visibility_state(
+    ///
+    /// BAO PATCH (REQ-BRW-052, Background render mode): widened to
+    /// `pub(crate)` so the script thread can drive it from
+    /// `ScriptThreadMessage::SetDocumentVisible` when the containing `WebView`
+    /// is hidden (upstream only reaches it from page-show/page-hide steps).
+    pub(crate) fn update_visibility_state(
         &self,
         cx: &mut JSContext,
         visibility_state: DocumentVisibilityState,

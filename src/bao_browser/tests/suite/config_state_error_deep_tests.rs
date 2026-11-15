@@ -4,7 +4,7 @@
 // ScreenshotFormat enum, BaoWebViewState Default, BaoServoDelegate new/last_error.
 
 use bao_browser::{
-    BaoConfig, BrowserConfig, BrowserError, PageConfig, PageState, ScreenshotFormat,
+    BaoConfig, BrowserConfig, BrowserError, PageConfig, PageRenderMode, PageState, ScreenshotFormat,
 };
 use std::time::Duration;
 
@@ -165,6 +165,8 @@ fn test_page_config_default() {
     assert!(cfg.viewport_height.is_none());
     assert!(cfg.stealth_profile.is_none());
     assert!(cfg.permission.is_none());
+    // REQ-BRW-052 AC1: the create-time default render mode is Full.
+    assert_eq!(cfg.render_mode, PageRenderMode::Full);
 }
 
 #[test]
@@ -184,6 +186,10 @@ fn test_page_config_clone() {
         stealth_disabled: false,
         permission: None,
         browser_context_id: None,
+        // REQ-BRW-052: full-field literal (no `..Default::default()`
+        // spread) — every explicitly enumerated PageConfig field, including
+        // the new render-mode axis.
+        render_mode: PageRenderMode::Full,
     };
     let cloned = cfg.clone();
     assert_eq!(cloned.url, cfg.url);

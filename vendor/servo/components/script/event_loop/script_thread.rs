@@ -61,7 +61,7 @@ use js::jsval::UndefinedValue;
 use js::realm::CurrentRealm;
 use js::rust::ParentRuntime;
 use js::rust::wrappers2::{JS_AddInterruptCallback, JS_GC, SetWindowProxyClass};
-use layout_api::{LayoutConfig, LayoutFactory, RestyleReason, ScriptThreadFactory};
+use layout_api::{LayoutConfig, LayoutFactory, ReflowGoal, RestyleReason, ScriptThreadFactory};
 use media::WindowGLContext;
 use metrics::MAX_TASK_NS;
 use net_traits::image_cache::{ImageCacheFactory, ImageCacheResponseMessage};
@@ -123,7 +123,9 @@ use url::Position;
 #[cfg(feature = "webgpu")]
 use webgpu_traits::{WebGPUDevice, WebGPUMsg};
 
-use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
+use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
+    DocumentMethods, DocumentVisibilityState,
+};
 use crate::dom::bindings::codegen::Bindings::NavigatorBinding::NavigatorMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::conversions::{
@@ -2673,6 +2675,12 @@ impl ScriptThread {
             ScriptThreadMessage::SetThrottled(pipeline_id, throttled) => {
                 self.handle_set_throttled_msg(pipeline_id, throttled)
             },
+            ScriptThreadMessage::SetDocumentVisible(pipeline_id, visible) => {
+                self.handle_set_document_visible_msg(cx, pipeline_id, visible)
+            },
+            ScriptThreadMessage::SetLayoutSuppressed(pipeline_id, suppressed) => {
+                self.handle_set_layout_suppressed_msg(cx, pipeline_id, suppressed)
+            },
             ScriptThreadMessage::PostMessage {
                 target: target_pipeline_id,
                 source_webview,
@@ -3745,6 +3753,79 @@ impl ScriptThread {
         }
 
         warn!("SetThrottled sent to nonexistent pipeline");
+    }
+
+    /// BAO PATCH (REQ-BRW-052, Background render mode): mirror the `WebView`
+    /// hidden state onto the document's visibility state, dispatching
+    /// `visibilitychange` as a side effect of `update_visibility_state`.
+    fn handle_set_document_visible_msg(
+        &self,
+        cx: &mut js::context::JSContext,
+        pipeline_id: PipelineId,
+        visible: bool,
+    ) {
+        // A pipeline whose document is still loading has no `Document` yet; the
+        // state is re-applied at the activation digest
+        // (`Constellation::handle_activate_document_msg`), so only a truly
+        // nonexistent pipeline is reported.
+        let pipeline_is_loading = self
+            .incomplete_loads
+            .borrow()
+            .iter()
+            .any(|load| load.pipeline_id == pipeline_id);
+        let document = self.documents.borrow().find_document(pipeline_id);
+        let Some(document) = document else {
+            if !pipeline_is_loading {
+                warn!("SetDocumentVisible sent to nonexistent pipeline {pipeline_id}");
+            }
+            return;
+        };
+        let visibility_state = if visible {
+            DocumentVisibilityState::Visible
+        } else {
+            DocumentVisibilityState::Hidden
+        };
+        let mut realm = enter_auto_realm(cx, &*document);
+        let cx = &mut realm.current_realm();
+        document.update_visibility_state(cx, visibility_state);
+    }
+
+    /// BAO PATCH (REQ-BRW-052, DomOnly render mode): suppress or restore
+    /// layout for the pipeline's window. Clearing the suppression triggers one
+    /// `UpdateTheRendering` reflow so the page becomes renderable again
+    /// without waiting for an unrelated event.
+    fn handle_set_layout_suppressed_msg(
+        &self,
+        cx: &mut js::context::JSContext,
+        pipeline_id: PipelineId,
+        suppressed: bool,
+    ) {
+        // Same pre-document window as `handle_set_document_visible_msg`: the
+        // state is replayed at the activation digest.
+        let pipeline_is_loading = self
+            .incomplete_loads
+            .borrow()
+            .iter()
+            .any(|load| load.pipeline_id == pipeline_id);
+        let window = self.documents.borrow().find_window(pipeline_id);
+        let Some(window) = window else {
+            if !pipeline_is_loading {
+                warn!("SetLayoutSuppressed sent to nonexistent pipeline {pipeline_id}");
+            }
+            return;
+        };
+        if !window.set_layout_suppressed(suppressed) || suppressed {
+            return;
+        }
+        let mut realm = enter_auto_realm(cx, &*window);
+        let cx = &mut realm.current_realm();
+        let (phases, _statistics) = window.reflow(cx, ReflowGoal::UpdateTheRendering);
+        // Restore rendering eagerly: the reflow produced a display list and
+        // nothing else in this message turn would generate a frame for it.
+        if phases.needs_frame() {
+            self.paint_api
+                .generate_frame(vec![window.webview_id().into()]);
+        }
     }
 
     /// Handles activity change message

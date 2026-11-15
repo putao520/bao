@@ -1,6 +1,7 @@
 // @trace REQ-BRW-001 [entity:PageHandle]  REQ-BRW-002: Page lifecycle management (navigate, evaluate, screenshot)
 // @trace REQ-LIB-001 REQ-LIB-004: PageHandle high-level API (waitForSelector, click, type, fill, etc.)
 // @trace REQ-BRW-051: renderer-init GL-OOM fails page creation closed (gl-oom-defense-001)
+// @trace REQ-BRW-052: runtime page render mode (Full / Background / DomOnly) switching
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -13,7 +14,7 @@ use servo::{
     Servo, SoftwareRenderingContext, StorageType, WebView, WebViewBuilder, WebViewPoint,
 };
 
-use crate::config::PageConfig;
+use crate::config::{PageConfig, PageRenderMode};
 use crate::delegate::{BaoWebViewDelegate, BaoWebViewState};
 use crate::error::BrowserError;
 use crate::permission::PermissionGuard;
@@ -206,6 +207,129 @@ impl PageInner {
             );
             self.webview.paint();
         }
+    }
+
+    // ── Page render mode (REQ-BRW-052) ───────────────────────────────────
+    //
+    // The mode-to-servo-command mapping is the single truth table for the
+    // whole render-mode feature; `PageHandle::set_render_mode` / `render_mode`
+    // are thin pass-throughs. State storage is `BaoWebViewState::render_mode`
+    // (single writer here); the servo WebView is the authoritative carrier of
+    // the real effect (visibility + layout suppression) and is ALWAYS
+    // commanded on every transition — never a bao-side shadow flag (AC6).
+
+    /// The page's current render mode (REQ-BRW-052 AC1/AC6).
+    ///
+    /// Consistency contract (AC6): the stored mode is re-verified against
+    /// servo's real visibility bit (`WebView::hidden()`), so a caller can
+    /// never be told a mode the engine does not honour. On a mismatch the
+    /// stored mode is CORRECTED to the engine's verifiable truth (and a
+    /// `log::error!` records the divergence): the real state wins, which is
+    /// the only way the query cannot silently lie. The mode implied by the
+    /// real state is:
+    ///
+    /// - `hidden() == false` → visible ⇒ [`PageRenderMode::Full`] (both
+    ///   hidden modes are impossible).
+    /// - `hidden() == true` → [`PageRenderMode::DomOnly`] is kept only when
+    ///   the stored mode already claimed it; otherwise the truthful
+    ///   projection is [`PageRenderMode::Background`].
+    ///
+    /// Layout suppression has no read-back accessor in the current servo
+    /// facade (`set_layout_suppressed` is write-only), so the
+    /// Background/DomOnly split is verified through the visibility bit both
+    /// share: a stored `DomOnly` is preserved while the engine reports
+    /// hidden, and a visible engine — whose suppression half cannot be
+    /// proven either way — is honestly reported as `Full` (loudly logged).
+    /// Every `set_render_mode` transition re-issues BOTH halves, so a
+    /// suppression drift cannot survive the next mode change.
+    pub fn render_mode(&self) -> PageRenderMode {
+        let stored = self.webview_state.borrow().render_mode;
+        let servo_hidden = self.webview.hidden();
+        let truth = if servo_hidden {
+            if stored == PageRenderMode::DomOnly {
+                PageRenderMode::DomOnly
+            } else {
+                PageRenderMode::Background
+            }
+        } else {
+            PageRenderMode::Full
+        };
+        if truth != stored {
+            log::error!(
+                "[page:{}] render-mode desync: stored={stored:?} but servo reports \
+                 hidden={servo_hidden} — correcting the stored mode to {truth:?} \
+                 (engine state is authoritative; layout suppression has no read-back, \
+                 so a visible engine is reported as Full)",
+                self.id
+            );
+            self.webview_state.borrow_mut().render_mode = truth;
+        }
+        truth
+    }
+
+    /// Switch the page render mode at runtime (REQ-BRW-052 AC1/AC3/AC5).
+    ///
+    /// Transition table (identical to the SPEC contract — every arm issues
+    /// the real servo command, so the engine and the stored mode move
+    /// together):
+    ///
+    /// | from     | to         | servo action                                   |
+    /// |----------|------------|------------------------------------------------|
+    /// | Full     | Background | `hide()`                                       |
+    /// | Background | Full     | `show()`                                       |
+    /// | Full     | DomOnly    | `set_layout_suppressed(true)` + `hide()`       |
+    /// | Background | DomOnly  | `set_layout_suppressed(true)` + `hide()`       |
+    /// | DomOnly  | Full       | `set_layout_suppressed(false)` + `show()`      |
+    /// | DomOnly  | Background | `set_layout_suppressed(false)` (stays hidden)  |
+    /// | same     | same       | no-op (idempotent)                             |
+    ///
+    /// The Full-return path also relies on servo's `set_layout_suppressed`
+    /// implementation to schedule the one `UpdateTheRendering` reflow that
+    /// re-materializes geometry (AC3) — this layer only issues the command.
+    pub fn set_render_mode(&self, mode: PageRenderMode) -> Result<(), BrowserError> {
+        let current = self.webview_state.borrow().render_mode;
+        // AC1 idempotency: same mode = no-op, and crucially no redundant
+        // servo commands (a same-value Background→Background must not
+        // re-hide / re-throttle an already-hidden page).
+        if current == mode {
+            return Ok(());
+        }
+        match (current, mode) {
+            (PageRenderMode::Full, PageRenderMode::Background) => self.webview.hide(),
+            (PageRenderMode::Background, PageRenderMode::Full) => self.webview.show(),
+            (PageRenderMode::Full, PageRenderMode::DomOnly)
+            | (PageRenderMode::Background, PageRenderMode::DomOnly) => {
+                self.webview.set_layout_suppressed(true);
+                self.webview.hide();
+            }
+            (PageRenderMode::DomOnly, PageRenderMode::Full) => {
+                self.webview.set_layout_suppressed(false);
+                self.webview.show();
+            }
+            (PageRenderMode::DomOnly, PageRenderMode::Background) => {
+                // Background keeps the WebView hidden but layout live: only
+                // the suppression half is lifted.
+                self.webview.set_layout_suppressed(false);
+            }
+            // Equal pairs were returned early as idempotent no-ops. The arms
+            // are spelled out (instead of a wildcard) so a future mode
+            // variant forces a compile-time decision here; the assert mirrors
+            // the illegal-transition reporting in `apply` below.
+            (PageRenderMode::Full, PageRenderMode::Full)
+            | (PageRenderMode::Background, PageRenderMode::Background)
+            | (PageRenderMode::DomOnly, PageRenderMode::DomOnly) => {
+                debug_assert!(false, "equal render-mode pairs must return early");
+                log::error!(
+                    "[page:{}] render-mode transition {current:?} -> {mode:?} bypassed the \
+                     idempotent guard — no servo command issued",
+                    self.id
+                );
+            },
+        }
+        // Single write point: the stored mode only advances after the servo
+        // face has been commanded (AC6 — no shadow-only state).
+        self.webview_state.borrow_mut().render_mode = mode;
+        Ok(())
     }
 
     /// Apply a PageLifecycle event through the `transition` table — the
@@ -1526,6 +1650,15 @@ impl PageHandle {
             initial_url,
             partition,
         } = blueprint;
+        // REQ-BRW-052: `BaoWebViewState::default()` carries
+        // `render_mode: Full`. `PagePool::create_page` lands the page on its
+        // configured `PageConfig::render_mode` through `set_render_mode`
+        // AFTER the pipeline-ready wait (a page hidden from the very first
+        // moment could gate that wait on servo delivering a first frame for
+        // a WebView that never composites). `window.open` popups never get
+        // that call and therefore stay `Full` — they do NOT inherit the
+        // opener's mode (an independent page's render state is its own; an
+        // inherited hidden mode would silently create an invisible popup).
         let webview_state = Rc::new(RefCell::new(BaoWebViewState::default()));
         // CDP target identity (REQ-CDP-004): every ServoEvent this webview's
         // delegate emits is tagged with the page's decimal id — the same
@@ -1970,6 +2103,29 @@ impl PageHandle {
             .borrow()
             .as_ref()
             .and_then(|inner| inner.stealth_profile.clone())
+    }
+
+    /// The page's current render mode (REQ-BRW-052 AC1/AC6).
+    ///
+    /// Re-verified against servo's real visibility bit on every read (see
+    /// `PageInner::render_mode` for the correction contract — the engine
+    /// state wins and any divergence is loudly logged).
+    /// A closed page has no live WebView and therefore no render state — it
+    /// reports the pre-creation default [`PageRenderMode::Full`] (the state
+    /// was reclaimed with the WebView, AC5).
+    pub fn render_mode(&self) -> PageRenderMode {
+        self.with_inner_opt(|inner| Some(inner.render_mode()))
+            .unwrap_or(PageRenderMode::Full)
+    }
+
+    /// Switch the page render mode at runtime (REQ-BRW-052 AC1).
+    ///
+    /// Idempotent (same mode = no-op). Every transition is dispatched to the
+    /// servo WebView (hide/show + layout suppression) — see
+    /// `PageInner::set_render_mode` for the truth table. Fails closed with
+    /// [`BrowserError::Init`] on a closed page (no WebView to command).
+    pub fn set_render_mode(&self, mode: PageRenderMode) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.set_render_mode(mode))
     }
 
     /// Access the page's BaoWebViewState for Worker lifecycle management.

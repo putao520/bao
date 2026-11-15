@@ -1,4 +1,5 @@
 // @trace REQ-BRW-001  REQ-CDP-008: CDP and browser configuration structs
+// @trace REQ-BRW-052: page render mode (Full / Background / DomOnly) configuration
 use std::time::Duration;
 
 use bao_stealth::StealthProfile;
@@ -76,6 +77,40 @@ impl BaoConfig {
     }
 }
 
+/// Page render mode (REQ-BRW-052) — the runtime page-rendering axis,
+/// switchable at any time through
+/// [`PageHandle::set_render_mode`](crate::PageHandle::set_render_mode).
+///
+/// Semantics (the servo-side carrier is `WebView::hide`/`show` plus
+/// `WebView::set_layout_suppressed`):
+///
+/// - [`Full`](Self::Full): page visible, laid out and composited — the
+///   normal interactive page.
+/// - [`Background`](Self::Background): the WebView is hidden (the painter
+///   skips compositing and servo throttles rAF/animation frames, surfacing
+///   `document.visibilityState === "hidden"` + a `visibilitychange` event);
+///   layout stays live and fetch/timers are unaffected.
+/// - [`DomOnly`](Self::DomOnly): the WebView is hidden AND layout is
+///   suppressed (servo's `Window::reflow` early-returns for every reflow
+///   goal — no display list, no compositing), so geometry queries fail
+///   closed to zero rects while DOM/JS/events/network stay fully
+///   functional.
+///
+/// This enum is bao-side storage only; every transition is dispatched to the
+/// servo WebView face (REQ-BRW-052 AC6 — no shadow flag without a real
+/// engine command), and [`PageHandle::render_mode`](crate::PageHandle::render_mode)
+/// re-verifies the stored mode against servo's real visibility bit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PageRenderMode {
+    /// Visible + laid out + composited (the create-time default).
+    #[default]
+    Full,
+    /// Hidden (no compositing, rAF paused) but layout still live.
+    Background,
+    /// Hidden + layout-suppressed (zero geometry); DOM/JS/events live.
+    DomOnly,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PageConfig {
     pub url: Option<String>,
@@ -102,6 +137,13 @@ pub struct PageConfig {
     /// fail closed (Chrome's "Failed to find browser context" error), never
     /// a page silently parked in the wrong context.
     pub browser_context_id: Option<String>,
+    /// REQ-BRW-052: initial render mode of the page. Defaults to
+    /// [`PageRenderMode::Full`] (backward compatible: every existing
+    /// `PageConfig { ..Default::default() }` construction keeps full
+    /// rendering). `PagePool::create_page` lands the WebView on this mode
+    /// before the page is published; afterwards it is switchable at runtime
+    /// via [`PageHandle::set_render_mode`](crate::PageHandle::set_render_mode).
+    pub render_mode: PageRenderMode,
 }
 
 #[derive(Debug, Clone)]

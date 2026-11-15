@@ -91,6 +91,15 @@ pub enum EmbedderToConstellationMessage {
     /// which means they use less resources, by stopping animations and running timers at a
     /// heavily limited rate.
     SetWebViewHidden(WebViewId, bool),
+    /// BAO PATCH (REQ-BRW-052, DomOnly render mode): set whether layout is
+    /// suppressed for every pipeline of the given `WebView`. Suppressed
+    /// layout means `Window::reflow` returns immediately for every
+    /// `ReflowGoal` — no layout is computed, no display lists are produced
+    /// and geometry queries observe no layout data (fail-closed) — while
+    /// script, DOM, events and network keep running. Clearing the flag
+    /// (`false`) triggers one `UpdateTheRendering` reflow per pipeline so the
+    /// page becomes renderable again.
+    SetLayoutSuppressed(WebViewId, bool),
     /// The Servo renderer scrolled and is updating the scroll states of the nodes in the
     /// given pipeline via the constellation.
     SetScrollStates(PipelineId, ScrollStateUpdate),

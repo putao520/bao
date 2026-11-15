@@ -449,6 +449,13 @@ pub(crate) struct Window {
     /// no longer active or when the `WebView` that contains them is hidden.
     throttled: Cell<bool>,
 
+    /// BAO PATCH (REQ-BRW-052, DomOnly render mode): whether layout is
+    /// suppressed for this [`Window`]. When true, [`Window::reflow`] returns
+    /// immediately for every [`ReflowGoal`] — no layout is computed, no
+    /// display lists are produced and geometry queries observe no layout data
+    /// (fail-closed). Script, DOM, events and network are unaffected.
+    layout_suppressed: Cell<bool>,
+
     /// A shared marker for the validity of any cached layout values. A value of true
     /// indicates that any such values remain valid; any new layout that invalidates
     /// those values will cause the marker to be set to false.
@@ -2659,6 +2666,15 @@ impl Window {
             return Default::default();
         }
 
+        // BAO PATCH (REQ-BRW-052, DomOnly render mode): while layout is
+        // suppressed no reflow runs for any goal — `LayoutQuery`,
+        // `UpdateScrollNode` and `UpdateTheRendering` alike. This is
+        // fail-closed: geometry queries observe no layout data instead of a
+        // stale or partial one, and no display list is produced for compositing.
+        if self.layout_suppressed.get() {
+            return Default::default();
+        }
+
         self.document_unrooted(cx.no_gc())
             .ensure_safe_to_run_script_or_layout();
 
@@ -3027,6 +3043,11 @@ impl Window {
     /// from the most recent reflow, but do not need it to reflect the current state of
     /// the DOM / style.
     pub(crate) fn padding_query_without_reflow(&self, node: &Node) -> Option<PhysicalSides> {
+        // BAO PATCH (REQ-BRW-052, DomOnly render mode): no layout is
+        // computed while suppressed, so there is no padding to report.
+        if self.layout_suppressed() {
+            return None;
+        }
         let layout = self.layout.borrow();
         layout.query_padding(node.to_trusted_node_address())
     }
@@ -3041,6 +3062,12 @@ impl Window {
         area: BoxAreaType,
         exclude_transform_and_inline: bool,
     ) -> Option<Rect<Au, CSSPixel>> {
+        // BAO PATCH (REQ-BRW-052, DomOnly render mode): fail closed — the
+        // layout tree (if any) predates the suppression and must not be
+        // reported as current geometry.
+        if self.layout_suppressed() {
+            return None;
+        }
         let layout = self.layout.borrow();
         layout.ensure_stacking_context_tree(self.viewport_details.get());
         layout.query_box_area(
@@ -3061,6 +3088,11 @@ impl Window {
     }
 
     pub(crate) fn box_areas_query(&self, node: &Node, area: BoxAreaType) -> CSSPixelRectVec {
+        // BAO PATCH (REQ-BRW-052, DomOnly render mode): fail closed — no
+        // layout result means no boxes to report.
+        if self.layout_suppressed() {
+            return CSSPixelRectVec::default();
+        }
         self.layout_reflow(QueryMsg::BoxAreas);
         self.layout
             .borrow()
@@ -3068,6 +3100,11 @@ impl Window {
     }
 
     pub(crate) fn client_rect_query(&self, node: &Node) -> Rect<i32, CSSPixel> {
+        // BAO PATCH (REQ-BRW-052, DomOnly render mode): fail closed —
+        // `clientWidth`/`clientHeight`-family queries observe the zero rect.
+        if self.layout_suppressed() {
+            return Rect::zero();
+        }
         self.layout_reflow(QueryMsg::ClientRectQuery);
         self.layout
             .borrow()
@@ -3091,6 +3128,11 @@ impl Window {
     /// Find the scroll area of the given node, if it is not None. If the node
     /// is None, find the scroll area of the viewport.
     pub(crate) fn scrolling_area_query(&self, node: Option<&Node>) -> Rect<i32, CSSPixel> {
+        // BAO PATCH (REQ-BRW-052, DomOnly render mode): fail closed — no
+        // layout means no scrolling area.
+        if self.layout_suppressed() {
+            return Rect::zero();
+        }
         self.layout_reflow(QueryMsg::ScrollingAreaOrOffsetQuery);
         self.layout
             .borrow()
@@ -3185,6 +3227,12 @@ impl Window {
         &self,
         node: &Node,
     ) -> (Option<DomRoot<Element>>, Rect<Au, CSSPixel>) {
+        // BAO PATCH (REQ-BRW-052, DomOnly render mode): fail closed — the
+        // `offset*`-family geometry observes the zero rect (and no offset
+        // parent) while layout is suppressed.
+        if self.layout_suppressed() {
+            return (None, Rect::zero());
+        }
         self.layout_reflow(QueryMsg::OffsetParentQuery);
         let response = self
             .layout
@@ -3676,6 +3724,21 @@ impl Window {
         self.throttled.get()
     }
 
+    /// BAO PATCH (REQ-BRW-052, DomOnly render mode): set whether layout is
+    /// suppressed for this [`Window`], returning true if the value changed.
+    pub(crate) fn set_layout_suppressed(&self, suppressed: bool) -> bool {
+        let old_suppressed = self.layout_suppressed.replace(suppressed);
+        old_suppressed != suppressed
+    }
+
+    /// BAO PATCH (REQ-BRW-052, DomOnly render mode): whether layout is
+    /// suppressed for this [`Window`]. Geometry queries consult this to fail
+    /// closed (zero rects) instead of reporting a layout tree left over from
+    /// before the suppression started.
+    pub(crate) fn layout_suppressed(&self) -> bool {
+        self.layout_suppressed.get()
+    }
+
     pub(crate) fn unminified_css_dir(&self) -> Option<String> {
         self.unminified_css_dir.borrow().clone()
     }
@@ -4064,6 +4127,7 @@ impl Window {
             user_scripts,
             player_context,
             throttled: Cell::new(false),
+            layout_suppressed: Cell::new(false),
             layout_marker: DomRefCell::new(Rc::new(Cell::new(true))),
             current_event: DomRefCell::new(None),
             trusted_types: Default::default(),

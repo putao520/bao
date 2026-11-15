@@ -357,6 +357,22 @@ impl PagePool {
             );
         }
 
+        // REQ-BRW-052: land the page on its configured initial render mode.
+        // Applied here — after the pipeline-ready wait and the single
+        // injection entry — rather than before the wait: a page hidden from
+        // the very first moment could gate `wait_for_pipeline_ready` on a
+        // first frame that a never-composited WebView will not produce. The
+        // mode still takes effect before the page is published into the pool
+        // (same-page observation is impossible before this point).
+        if let Err(err) = page.set_render_mode(config.render_mode) {
+            // The page is alive here (creation just succeeded), so this is a
+            // real defect: close through the normal path first — that reclaims
+            // the WebView, the per-page injectors and the WEBVIEW_ID_BY_PAGE
+            // registry row — then fail the creation closed.
+            let _ = page.close();
+            return Err(err);
+        }
+
         self.active_pages.borrow_mut().insert(id, page.clone());
         // REQ-CDS-009 criterion 5: record the context attribution the moment
         // the page enters the pool (only live pages are attributed).

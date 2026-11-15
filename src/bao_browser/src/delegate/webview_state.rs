@@ -1,5 +1,8 @@
 use super::*;
 
+// REQ-BRW-052: the page render-mode axis stored on every webview state.
+use crate::config::PageRenderMode;
+
 use bao_ipc::{Receiver, Sender};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -326,6 +329,14 @@ pub struct BaoWebViewState {
     /// installs it once per page; `None` = not armed).
     /// @trace REQ-CDP-010 [entity:DomContentEvent]
     pub dom_content_hook_script_id: Option<u64>,
+    /// Current page render mode (REQ-BRW-052). Single writer:
+    /// `PageInner::set_render_mode` — every write is paired with the real
+    /// servo WebView command (hide/show + layout suppression), never a
+    /// shadow-only flag (AC6). Initialized from `PageConfig::render_mode` at
+    /// page creation; `window.open` popups start `Full` (no inheritance).
+    /// Dropped together with the WebView when the page closes (AC5).
+    /// @trace REQ-BRW-052
+    pub render_mode: PageRenderMode,
 }
 
 /// One entry of the CDP session-history journal.
@@ -425,6 +436,10 @@ impl Default for BaoWebViewState {
             cdp_bindings: Vec::new(),
             cdp_bindings_script_id: None,
             dom_content_hook_script_id: None,
+            // REQ-BRW-052: full rendering until the page (or its config)
+            // says otherwise — the pre-creation default and the popup
+            // default are both `Full`.
+            render_mode: PageRenderMode::Full,
         }
     }
 }

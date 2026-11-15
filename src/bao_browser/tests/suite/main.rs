@@ -104,6 +104,7 @@ mod permission_screenshot_error_tests;
 mod realworld_anti_scraping_e2e_tests;
 mod realworld_browser_automation_tests;
 mod realworld_full_stack_tests;
+mod render_mode_tests;
 mod rendering_pipeline_tests;
 mod runtime_bridge_deep_tests;
 mod runtime_invariant_latency_tests;

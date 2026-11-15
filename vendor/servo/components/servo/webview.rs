@@ -136,6 +136,14 @@ pub(crate) struct WebViewInner {
     animating: bool,
     cursor: Cursor,
 
+    /// BAO PATCH (REQ-BRW-052, page render modes): the hidden state last
+    /// applied to the paint layer via [`WebView::show`]/[`WebView::hide`].
+    /// The paint layer stays the driver of
+    /// [`EmbedderToConstellationMessage::SetWebViewHidden`]; this mirror only
+    /// backs the embedder-facing read side ([`WebView::hidden`]) so mode state
+    /// can be queried without guessing at the paint layer's state.
+    hidden: bool,
+
     /// The back / forward list of this WebView.
     back_forward_list: Vec<Url>,
 
@@ -195,6 +203,7 @@ impl WebView {
             focused: true,
             animating: false,
             cursor: Cursor::Pointer,
+            hidden: false,
             back_forward_list: Default::default(),
             back_forward_list_index: 0,
             user_content_manager: builder.user_content_manager.clone(),
@@ -510,6 +519,9 @@ impl WebView {
             .paint()
             .show_webview(self.id())
             .expect("BUG: invalid WebView instance");
+        // BAO PATCH (REQ-BRW-052): keep the embedder-facing read side
+        // ([`WebView::hidden`]) in lockstep with what was applied to paint.
+        self.inner_mut().hidden = false;
     }
 
     /// Hide this [`WebView`] within its [`RenderingContext`].
@@ -518,6 +530,29 @@ impl WebView {
             .paint()
             .hide_webview(self.id())
             .expect("BUG: invalid WebView instance");
+        // BAO PATCH (REQ-BRW-052): see [`WebView::show`].
+        self.inner_mut().hidden = true;
+    }
+
+    /// BAO PATCH (REQ-BRW-052, Background render mode): whether this
+    /// [`WebView`] is currently hidden — the embedder-facing read side of the
+    /// hidden state that [`WebView::hide`]/[`WebView::show`] apply to paint.
+    pub fn hidden(&self) -> bool {
+        self.inner().hidden
+    }
+
+    /// BAO PATCH (REQ-BRW-052, DomOnly render mode): suppress or restore
+    /// layout for this [`WebView`]. While suppressed, script/JS, DOM, events
+    /// and network keep running, but no layout is computed for any reflow
+    /// goal: geometry queries observe no layout data (fail-closed) and no
+    /// display lists are produced. Passing `false` triggers one
+    /// `UpdateTheRendering` reflow per pipeline to restore rendering. The
+    /// state is remembered by the constellation and replayed onto documents
+    /// created by later navigations.
+    pub fn set_layout_suppressed(&self, suppressed: bool) {
+        self.servo().constellation_proxy().send(
+            EmbedderToConstellationMessage::SetLayoutSuppressed(self.id(), suppressed),
+        );
     }
 
     /// Notify this [`WebView`] of a change to the system theme (e.g. light or dark mode).
